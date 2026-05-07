@@ -23,7 +23,7 @@ hyper-util   = { version = "0.1", features = ["tokio", "server"] }
 rustls       = { version = "0.23", features = ["ring"] }
 tokio-rustls       = "0.26"
 rustls-native-certs = "0.8"
-rcgen        = { version = "0.13", features = ["x509-parser"] }
+rcgen        = { version = "0.14", features = ["x509-parser"] }
 time         = "0.3"
 lru          = "0.18"
 serde        = { version = "1", features = ["derive"] }
