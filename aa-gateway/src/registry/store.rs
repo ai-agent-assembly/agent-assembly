@@ -317,6 +317,48 @@ impl AgentRegistry {
             .map(|r| r.status)
             .ok_or(RegistryError::NotFound(*agent_id))
     }
+
+    /// Return the direct child registry keys of the given agent.
+    pub fn children_of(&self, agent_id: &[u8; 16]) -> Vec<[u8; 16]> {
+        self.agents.get(agent_id).map(|r| r.children.clone()).unwrap_or_default()
+    }
+
+    /// Return the ancestor chain from the given agent up to (but not including)
+    /// the root. The first element is the direct parent; the last is the root.
+    pub fn ancestors_of(&self, agent_id: &[u8; 16]) -> Vec<[u8; 16]> {
+        let mut result = Vec::new();
+        let mut current = match self.agents.get(agent_id) {
+            Some(r) => r.parent_key,
+            None => return result,
+        };
+        while let Some(pk) = current {
+            result.push(pk);
+            current = self.agents.get(&pk).and_then(|r| r.parent_key);
+        }
+        result
+    }
+
+    /// Return all agent keys belonging to the given team.
+    pub fn team_members(&self, team_id: &str) -> Vec<[u8; 16]> {
+        self.team_index
+            .get(team_id)
+            .map(|s| s.iter().map(|k| *k).collect())
+            .unwrap_or_default()
+    }
+
+    /// Return the registry keys of all root agents (depth == 0).
+    pub fn root_agents(&self) -> Vec<[u8; 16]> {
+        self.agents
+            .iter()
+            .filter(|r| r.depth == 0)
+            .map(|r| r.agent_id)
+            .collect()
+    }
+
+    /// Return the delegation depth of the given agent, or `None` if not found.
+    pub fn agent_depth(&self, agent_id: &[u8; 16]) -> Option<u32> {
+        self.agents.get(agent_id).map(|r| r.depth)
+    }
 }
 
 impl Default for AgentRegistry {
