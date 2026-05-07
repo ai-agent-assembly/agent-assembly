@@ -188,10 +188,7 @@ impl AgentRegistry {
     /// Also removes any associated control stream sender.
     pub fn deregister(&self, agent_id: &[u8; 16]) -> Result<AgentRecord, RegistryError> {
         self.control_senders.remove(agent_id);
-        let (_, record) = self
-            .agents
-            .remove(agent_id)
-            .ok_or(RegistryError::NotFound(*agent_id))?;
+        let (_, record) = self.agents.remove(agent_id).ok_or(RegistryError::NotFound(*agent_id))?;
 
         // Remove from parent's children list.
         if let Some(pk) = record.parent_key {
@@ -320,7 +317,10 @@ impl AgentRegistry {
 
     /// Return the direct child registry keys of the given agent.
     pub fn children_of(&self, agent_id: &[u8; 16]) -> Vec<[u8; 16]> {
-        self.agents.get(agent_id).map(|r| r.children.clone()).unwrap_or_default()
+        self.agents
+            .get(agent_id)
+            .map(|r| r.children.clone())
+            .unwrap_or_default()
     }
 
     /// Return the ancestor chain from the given agent up to (but not including)
@@ -382,5 +382,120 @@ impl AgentGraph {
             team_stats.insert(entry.key().clone(), entry.value().len());
         }
         Self { team_stats }
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn make_record(id: [u8; 16], parent_key: Option<[u8; 16]>, team_id: Option<&str>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(|s| s.to_string()),
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+        }
+    }
+
+    #[test]
+    fn children_of_root_then_deregister() {
+        let reg = AgentRegistry::new();
+        let root_id = [1u8; 16];
+        let child_id = [2u8; 16];
+
+        reg.register(make_record(root_id, None, Some("teamA"), 0)).unwrap();
+        reg.register(make_record(child_id, Some(root_id), Some("teamA"), 1))
+            .unwrap();
+
+        // children_of root contains child
+        let children = reg.children_of(&root_id);
+        assert_eq!(children, vec![child_id]);
+
+        // ancestors_of child is [root]
+        let ancestors = reg.ancestors_of(&child_id);
+        assert_eq!(ancestors, vec![root_id]);
+
+        // team_members
+        let members = reg.team_members("teamA");
+        assert!(members.contains(&root_id));
+        assert!(members.contains(&child_id));
+
+        // root_agents
+        let roots = reg.root_agents();
+        assert!(roots.contains(&root_id));
+        assert!(!roots.contains(&child_id));
+
+        // agent_depth
+        assert_eq!(reg.agent_depth(&root_id), Some(0));
+        assert_eq!(reg.agent_depth(&child_id), Some(1));
+
+        // deregister child — root's children cleared
+        reg.deregister(&child_id).unwrap();
+        assert!(reg.children_of(&root_id).is_empty());
+
+        // team_index updated
+        let members_after = reg.team_members("teamA");
+        assert!(!members_after.contains(&child_id));
+        assert!(members_after.contains(&root_id));
+    }
+
+    #[test]
+    fn agent_graph_team_stats() {
+        let reg = AgentRegistry::new();
+        reg.register(make_record([10u8; 16], None, Some("eng"), 0)).unwrap();
+        reg.register(make_record([11u8; 16], None, Some("eng"), 0)).unwrap();
+        reg.register(make_record([12u8; 16], None, Some("ops"), 0)).unwrap();
+
+        let graph = AgentGraph::from_registry(&reg);
+        assert_eq!(graph.team_stats.get("eng"), Some(&2));
+        assert_eq!(graph.team_stats.get("ops"), Some(&1));
+    }
+
+    #[test]
+    fn ancestors_of_three_levels() {
+        let reg = AgentRegistry::new();
+        let r = [1u8; 16];
+        let c = [2u8; 16];
+        let g = [3u8; 16];
+
+        reg.register(make_record(r, None, None, 0)).unwrap();
+        reg.register(make_record(c, Some(r), None, 1)).unwrap();
+        reg.register(make_record(g, Some(c), None, 2)).unwrap();
+
+        // grandchild's ancestors: [child, root]
+        let ancestors = reg.ancestors_of(&g);
+        assert_eq!(ancestors, vec![c, r]);
+
+        // children_of root = [child]
+        assert_eq!(reg.children_of(&r), vec![c]);
+        // children_of child = [grandchild]
+        assert_eq!(reg.children_of(&c), vec![g]);
     }
 }
