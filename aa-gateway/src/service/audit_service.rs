@@ -9,11 +9,12 @@ use tokio::sync::{mpsc, Mutex};
 use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
-use aa_core::{AuditEntry, AuditEventType};
+use aa_core::{AuditEntry, AuditEventType, Lineage};
 use aa_proto::assembly::audit::v1::audit_service_server::AuditService;
 use aa_proto::assembly::audit::v1::{AuditEvent, ReportEventsRequest, ReportEventsResponse, StreamEventsResponse};
 use aa_proto::assembly::common::v1::Decision;
 
+use crate::registry::{convert as registry_convert, AgentRegistry};
 use crate::service::convert;
 
 /// gRPC service implementation wiring `ReportEvents` / `StreamEvents` to the
@@ -23,6 +24,7 @@ pub struct AuditServiceImpl {
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
     last_hash: Mutex<[u8; 32]>,
+    registry: Option<Arc<AgentRegistry>>,
 }
 
 impl AuditServiceImpl {
@@ -36,6 +38,24 @@ impl AuditServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            registry: None,
+        }
+    }
+
+    /// Create a new service backed by the given audit channel, with access to
+    /// the agent registry for lineage enrichment.
+    pub fn new_with_registry(
+        audit_tx: mpsc::Sender<AuditEntry>,
+        audit_drops: Arc<AtomicU64>,
+        initial_hash: [u8; 32],
+        registry: Arc<AgentRegistry>,
+    ) -> Self {
+        Self {
+            audit_tx,
+            audit_drops,
+            seq: AtomicU64::new(0),
+            last_hash: Mutex::new(initial_hash),
+            registry: Some(registry),
         }
     }
 
@@ -47,11 +67,21 @@ impl AuditServiceImpl {
         let event_id = event.event_id.clone();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
-        let agent_id = event
+        // agent_id_bytes: hash of just the agent_id string (existing AuditEntry convention).
+        let agent_id_bytes = event
             .agent_id
             .as_ref()
-            .map(|a| AgentId::from_bytes(convert::hash_to_16(&a.agent_id)))
-            .unwrap_or_else(|| AgentId::from_bytes([0u8; 16]));
+            .map(|a| convert::hash_to_16(&a.agent_id))
+            .unwrap_or([0u8; 16]);
+        let agent_id = AgentId::from_bytes(agent_id_bytes);
+
+        // registry_key: composite hash (org/team/agent_id) matching the lifecycle-service
+        // registration path — must use proto_agent_id_to_key to find the correct record.
+        let registry_key = event
+            .agent_id
+            .as_ref()
+            .map(registry_convert::proto_agent_id_to_key)
+            .unwrap_or([0u8; 16]);
 
         let session_id = if event.trace_id.is_empty() {
             SessionId::from_bytes([0u8; 16])
@@ -75,9 +105,26 @@ impl AuditServiceImpl {
         })
         .to_string();
 
+        let lineage = self
+            .registry
+            .as_ref()
+            .and_then(|r| r.get(&registry_key))
+            .map(|record| Lineage {
+                root_agent_id: record.root_agent_id.map(AgentId::from_bytes),
+                // parent_agent_id is stored as Option<String> in AgentRecord (the raw
+                // string from the registration proto). Converting it to AgentId bytes
+                // requires a separate registry lookup by name — deferred to a follow-up.
+                parent_agent_id: None,
+                team_id: record.team_id.clone(),
+                delegation_reason: record.delegation_reason.clone(),
+                spawned_by_tool: record.spawned_by_tool.clone(),
+                depth: Some(record.depth),
+            })
+            .unwrap_or_default();
+
         let mut last_hash = self.last_hash.lock().await;
 
-        let entry = AuditEntry::new(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash);
+        let entry = AuditEntry::new_with_lineage(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash, lineage);
 
         *last_hash = *entry.entry_hash();
         drop(last_hash);

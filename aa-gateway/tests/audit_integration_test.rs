@@ -295,3 +295,97 @@ async fn stream_events_ingests_client_stream() {
     assert_eq!(e2.event_type(), AuditEventType::PolicyViolation);
     assert_eq!(e3.event_type(), AuditEventType::ApprovalRequested);
 }
+
+// ── Task 3 (AAASM-965): lineage populated from AgentRegistry ───────────────
+
+#[tokio::test]
+async fn audit_service_populates_lineage_from_registry() {
+    use aa_gateway::registry::store::AgentRecord;
+    use aa_gateway::registry::{AgentRegistry, AgentStatus};
+    use aa_gateway::service::audit_service::AuditServiceImpl;
+    use aa_proto::assembly::audit::v1::audit_service_server::AuditService;
+    use aa_proto::assembly::audit::v1::{AuditEvent, ReportEventsRequest};
+    use aa_proto::assembly::common::v1::{AgentId as ProtoAgentId, Timestamp};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    use aa_gateway::registry::convert::proto_agent_id_to_key;
+
+    let registry = Arc::new(AgentRegistry::new());
+
+    let root_bytes = [0x07u8; 16];
+
+    // The proto agent_id that the AuditEvent will carry.
+    let proto_agent_id = ProtoAgentId {
+        org_id: String::new(),
+        team_id: String::new(),
+        agent_id: "test-agent-001".to_string(),
+    };
+    // The registry key must match what ingest_event() will derive (proto_agent_id_to_key).
+    let agent_registry_key = proto_agent_id_to_key(&proto_agent_id);
+
+    registry
+        .register(AgentRecord {
+            agent_id: agent_registry_key,
+            name: "test-agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: String::new(),
+            credential_token: String::new(),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: Some("parent-placeholder".into()),
+            team_id: Some("team-alpha".into()),
+            depth: 2,
+            delegation_reason: Some("summarise".into()),
+            spawned_by_tool: Some("langgraph".into()),
+            root_agent_id: Some(root_bytes),
+        })
+        .unwrap();
+
+    let (tx, mut rx) = mpsc::channel::<aa_core::AuditEntry>(16);
+    let drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let svc = AuditServiceImpl::new_with_registry(tx, drops, [0u8; 32], registry);
+
+    let event = AuditEvent {
+        event_id: "evt-001".into(),
+        agent_id: Some(proto_agent_id),
+        occurred_at: Some(Timestamp { unix_ms: 1_700_000_000_000 }),
+        ..Default::default()
+    };
+
+    let req = tonic::Request::new(ReportEventsRequest {
+        events: vec![event],
+    });
+    svc.report_events(req).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let entry = rx.try_recv().expect("entry should have been sent");
+    assert_eq!(entry.team_id(), Some("team-alpha"), "team_id from registry");
+    assert_eq!(entry.depth(), Some(2), "depth from registry");
+    assert_eq!(
+        entry.spawned_by_tool(),
+        Some("langgraph"),
+        "spawned_by_tool from registry"
+    );
+    assert!(entry.root_agent_id().is_some(), "root_agent_id from registry");
+    assert!(
+        entry.verify_integrity(),
+        "lineage-enriched entry must verify"
+    );
+}
