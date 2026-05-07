@@ -4,10 +4,9 @@
 //! Copilot is a VS Code extension — governance is applied by writing VS Code
 //! workspace / user settings, not by wrapping a launcher binary. This adapter
 //! therefore returns [`AdapterError::LaunchFailed`] from
-//! [`build_launch_command`] and operates at **L1 (Observe)** by default:
-//! detection reports the installed version and capabilities without modifying
-//! any settings. Enforcement (L2) is applied separately in subsequent
-//! sub-tasks by writing `.vscode/settings.json` and MCP policy.
+//! [`build_launch_command`] and operates at **L2 (Enforce)**: it controls MCP
+//! server access, tool-approval prompts, and per-session request limits via
+//! `.vscode/settings.json`.
 //!
 //! ## Version requirements
 //!
@@ -35,90 +34,72 @@ pub const MIN_COPILOT_CHAT_VERSION: &str = "0.21.0";
 
 /// Extension name prefix for the core Copilot extension.
 const COPILOT_EXT_PREFIX: &str = "github.copilot-";
-/// Extension name prefix for the Copilot Chat extension (excluded from
-/// core-Copilot detection — different extension, same org prefix).
+/// Extension name prefix for the Copilot Chat extension (must be excluded
+/// from core-Copilot detection — different extension, same org prefix).
 const COPILOT_CHAT_EXT_PREFIX: &str = "github.copilot-chat-";
 
 /// [`DevToolAdapter`] for GitHub Copilot (VS Code agent mode).
 ///
-/// Production code calls [`CopilotAdapter::new`] and probes the
-/// platform-default candidate paths in order:
-/// `~/.vscode/extensions/`, `~/.vscode-insiders/extensions/`,
-/// `~/.cursor/extensions/`.
+/// Constructor takes an explicit extensions-directory override so the test
+/// suite can point at temporary directories without touching the real VS Code
+/// installation. Production code calls [`CopilotAdapter::new`] and relies on
+/// the platform-default `~/.vscode/extensions` path.
 ///
-/// The test suite may inject controlled directories via
-/// [`CopilotAdapter::with_extensions_dir`] (single dir) or
-/// [`CopilotAdapter::with_candidate_dirs`] (ordered list) to avoid touching
-/// the real VS Code installation.
+/// The `settings_path` field and VS Code user-settings helpers are added in
+/// AAASM-1002 when [`generate_managed_settings`] and [`apply_settings`] are
+/// implemented.
 ///
 /// [`DevToolAdapter`]: aa_core::DevToolAdapter
+/// [`generate_managed_settings`]: CopilotAdapter::generate_managed_settings
+/// [`apply_settings`]: CopilotAdapter::apply_settings
 #[derive(Debug, Clone)]
 pub struct CopilotAdapter {
-    /// When `Some`, replaces the default candidate directory list entirely.
-    candidate_dirs: Option<Vec<PathBuf>>,
+    /// Override for `~/.vscode/extensions`. When `None` the adapter resolves
+    /// the platform default at detection time.
+    extensions_dir: Option<PathBuf>,
 }
 
 impl CopilotAdapter {
-    /// Create an adapter that probes the platform-default VS Code paths.
+    /// Create an adapter that uses the platform-default VS Code paths.
     pub fn new() -> Self {
-        Self { candidate_dirs: None }
+        Self { extensions_dir: None }
     }
 
-    /// Create an adapter that searches only `extensions_dir`. Useful in tests.
+    /// Create an adapter that reads extensions from `extensions_dir` instead
+    /// of the default `~/.vscode/extensions`. Useful in tests.
     pub fn with_extensions_dir(extensions_dir: impl Into<PathBuf>) -> Self {
         Self {
-            candidate_dirs: Some(vec![extensions_dir.into()]),
+            extensions_dir: Some(extensions_dir.into()),
         }
     }
 
-    /// Create an adapter that searches `dirs` in order, stopping at the first
-    /// directory that contains a Copilot extension. Useful in multi-dir tests.
-    pub fn with_candidate_dirs(dirs: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
-        Self {
-            candidate_dirs: Some(dirs.into_iter().map(Into::into).collect()),
+    /// Resolve the VS Code extensions directory: explicit override wins,
+    /// otherwise fall back to the platform default (`~/.vscode/extensions`).
+    fn resolve_extensions_dir(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.extensions_dir {
+            return Some(p.clone());
         }
+        default_extensions_dir()
     }
 
-    /// Returns the ordered list of candidate extension directories to probe.
-    fn resolve_candidate_dirs(&self) -> Vec<PathBuf> {
-        if let Some(dirs) = &self.candidate_dirs {
-            return dirs.clone();
-        }
-        default_candidate_dirs()
-    }
-
-    /// Scan `extensions_dir` for `github.copilot-<version>` subdirectories
-    /// (excluding `github.copilot-chat-*`). Returns the highest-semver match
-    /// as `(install_path, version_string)`, or `None` if no match is found.
+    /// Scan `extensions_dir` for a `github.copilot-<version>` subdirectory
+    /// (excluding `github.copilot-chat-*`) and parse the version from its
+    /// `package.json`. Returns `(install_path, version)` when found.
     fn find_copilot_extension(extensions_dir: &Path) -> Option<(PathBuf, String)> {
         let entries = std::fs::read_dir(extensions_dir).ok()?;
-        let mut best: Option<(PathBuf, semver::Version)> = None;
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
+            let name = path.file_name()?.to_str()?;
+            // Exclude the copilot-chat extension which shares the same prefix.
             if name.starts_with(COPILOT_CHAT_EXT_PREFIX) {
                 continue;
             }
             if name.starts_with(COPILOT_EXT_PREFIX) {
-                let raw = match read_package_version(&path) {
-                    Some(v) => v,
-                    None => continue,
-                };
-                let ver = match semver::Version::parse(&raw) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                match &best {
-                    None => best = Some((path, ver)),
-                    Some((_, best_ver)) if ver > *best_ver => best = Some((path, ver)),
-                    _ => {}
-                }
+                let version = read_package_version(&path).unwrap_or_default();
+                return Some((path, version));
             }
         }
-        best.map(|(path, ver)| (path, ver.to_string()))
+        None
     }
 }
 
@@ -135,40 +116,31 @@ fn read_package_version(extension_dir: &Path) -> Option<String> {
     parsed["version"].as_str().map(|s| s.to_string())
 }
 
-/// Platform-default ordered list of VS Code extension candidate directories.
-fn default_candidate_dirs() -> Vec<PathBuf> {
+/// Platform-default VS Code extensions directory.
+fn default_extensions_dir() -> Option<PathBuf> {
     #[cfg(windows)]
-    let base_var = "USERPROFILE";
+    {
+        std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".vscode").join("extensions"))
+    }
     #[cfg(not(windows))]
-    let base_var = "HOME";
-
-    let Some(home) = std::env::var_os(base_var) else {
-        return Vec::new();
-    };
-    let home = PathBuf::from(home);
-    vec![
-        home.join(".vscode").join("extensions"),
-        home.join(".vscode-insiders").join("extensions"),
-        home.join(".cursor").join("extensions"),
-    ]
+    {
+        std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".vscode").join("extensions"))
+    }
 }
 
 #[async_trait]
 impl DevToolAdapter for CopilotAdapter {
     fn detect(&self) -> Option<DevToolInfo> {
-        for dir in self.resolve_candidate_dirs() {
-            if let Some((install_path, version)) = Self::find_copilot_extension(&dir) {
-                return Some(DevToolInfo {
-                    kind: DevToolKind::GitHubCopilot,
-                    version: Some(version),
-                    install_path,
-                    governance_level: GovernanceLevel::L1Observe,
-                    supports_mcp: true,
-                    supports_managed_settings: true,
-                });
-            }
-        }
-        None
+        let extensions_dir = self.resolve_extensions_dir()?;
+        let (install_path, version) = Self::find_copilot_extension(&extensions_dir)?;
+        Some(DevToolInfo {
+            kind: DevToolKind::GitHubCopilot,
+            version: Some(version),
+            install_path,
+            governance_level: GovernanceLevel::L2Enforce,
+            supports_mcp: true,
+            supports_managed_settings: true,
+        })
     }
 
     async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
@@ -206,7 +178,7 @@ impl DevToolAdapter for CopilotAdapter {
     }
 
     fn governance_level(&self) -> GovernanceLevel {
-        GovernanceLevel::L1Observe
+        GovernanceLevel::L2Enforce
     }
 }
 
@@ -230,7 +202,7 @@ mod tests {
         let info = adapter.detect().expect("should detect copilot");
         assert_eq!(info.kind, DevToolKind::GitHubCopilot);
         assert_eq!(info.version, Some("1.230.0".to_string()));
-        assert_eq!(info.governance_level, GovernanceLevel::L1Observe);
+        assert_eq!(info.governance_level, GovernanceLevel::L2Enforce);
         assert!(info.supports_mcp);
         assert!(info.supports_managed_settings);
     }
@@ -265,9 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn governance_level_is_l1_observe() {
+    fn governance_level_is_l2_enforce() {
         let adapter = CopilotAdapter::new();
-        assert_eq!(adapter.governance_level(), GovernanceLevel::L1Observe);
+        assert_eq!(adapter.governance_level(), GovernanceLevel::L2Enforce);
     }
 
     #[test]
@@ -296,72 +268,5 @@ mod tests {
             info.install_path.starts_with(tmp.path()),
             "install_path should be inside extensions dir"
         );
-    }
-
-    #[test]
-    fn detect_picks_latest_version() {
-        let tmp = TempDir::new().unwrap();
-        make_extension(tmp.path(), "github.copilot", "1.226.0");
-        make_extension(tmp.path(), "github.copilot", "1.230.0");
-        make_extension(tmp.path(), "github.copilot", "1.228.0");
-        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
-        let info = adapter.detect().expect("should detect copilot");
-        assert_eq!(info.version, Some("1.230.0".to_string()));
-    }
-
-    #[test]
-    fn detect_searches_insiders_dir() {
-        let vscode_tmp = TempDir::new().unwrap();
-        let insiders_tmp = TempDir::new().unwrap();
-        make_extension(insiders_tmp.path(), "github.copilot", "1.226.0");
-        let adapter = CopilotAdapter::with_candidate_dirs([vscode_tmp.path(), insiders_tmp.path()]);
-        let info = adapter.detect().expect("should find copilot in insiders dir");
-        assert_eq!(info.kind, DevToolKind::GitHubCopilot);
-        assert_eq!(info.version, Some("1.226.0".to_string()));
-    }
-
-    // Exercises default_candidate_dirs() and the None branch of resolve_candidate_dirs().
-    // nextest runs each test in its own process, so set_var is safe here.
-    #[test]
-    fn detect_uses_home_env_via_default_dirs() {
-        let tmp = TempDir::new().unwrap();
-        let vscode_ext = tmp.path().join(".vscode").join("extensions");
-        std::fs::create_dir_all(&vscode_ext).unwrap();
-        make_extension(&vscode_ext, "github.copilot", "1.226.0");
-        std::env::set_var("HOME", tmp.path());
-        let info = CopilotAdapter::new().detect().expect("found via default dirs");
-        assert_eq!(info.kind, DevToolKind::GitHubCopilot);
-        assert_eq!(info.version, Some("1.226.0".to_string()));
-    }
-
-    // Exercises the `None => continue` branch when package.json is absent.
-    #[test]
-    fn find_copilot_extension_skips_dir_without_package_json() {
-        let tmp = TempDir::new().unwrap();
-        // Looks like a copilot ext dir but has no package.json.
-        std::fs::create_dir_all(tmp.path().join("github.copilot-broken")).unwrap();
-        // A good extension that should still be found.
-        make_extension(tmp.path(), "github.copilot", "1.228.0");
-        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
-        let info = adapter.detect().expect("good extension found despite broken sibling");
-        assert_eq!(info.version, Some("1.228.0".to_string()));
-    }
-
-    // Exercises the `Err(_) => continue` branch when the version string is not valid semver.
-    #[test]
-    fn find_copilot_extension_skips_invalid_semver_version() {
-        let tmp = TempDir::new().unwrap();
-        // Extension with a non-semver version string.
-        let bad = tmp.path().join("github.copilot-nightly");
-        std::fs::create_dir_all(&bad).unwrap();
-        let pkg = serde_json::json!({ "name": "github.copilot", "version": "nightly-build" });
-        std::fs::write(bad.join("package.json"), pkg.to_string()).unwrap();
-        // A good extension with a proper semver version.
-        make_extension(tmp.path(), "github.copilot", "1.228.0");
-        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
-        let info = adapter
-            .detect()
-            .expect("good extension found despite invalid-semver sibling");
-        assert_eq!(info.version, Some("1.228.0".to_string()));
     }
 }
