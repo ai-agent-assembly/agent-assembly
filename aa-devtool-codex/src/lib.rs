@@ -12,6 +12,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use aa_core::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo,
+    PolicyDocument,
+};
+use async_trait::async_trait;
+
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
 /// version.
 ///
@@ -160,5 +166,68 @@ impl std::fmt::Debug for CodexAdapter {
         // The trait-object hooks aren't `Debug`; surface the type name
         // instead so logs aren't cluttered with implementation pointers.
         f.debug_struct("CodexAdapter").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl DevToolAdapter for CodexAdapter {
+    fn detect(&self) -> Option<DevToolInfo> {
+        let install_path = self
+            .locator
+            .locate_via_path()
+            .or_else(|| self.locator.locate_via_npm_global())?;
+        let version = self.probe.probe_version(&install_path);
+        Some(DevToolInfo {
+            kind: DevToolKind::Codex,
+            version,
+            install_path,
+            governance_level: GovernanceLevel::L2Enforce,
+            supports_mcp: false,
+            supports_managed_settings: true,
+        })
+    }
+
+    async fn generate_managed_settings(
+        &self,
+        _policy: &PolicyDocument,
+    ) -> Result<String, AdapterError> {
+        // Sandbox + approval translation lands in AAASM-978 / AAASM-983.
+        unimplemented!("generate_managed_settings — implemented in AAASM-978 / AAASM-983")
+    }
+
+    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
+        // Writing to ~/.codex/config.toml lands in AAASM-988.
+        unimplemented!("apply_settings — implemented in AAASM-988")
+    }
+
+    fn build_launch_command(
+        &self,
+        _tool_args: &[String],
+        _agent_id: &str,
+        _team_id: Option<&str>,
+        _proxy_addr: Option<&str>,
+    ) -> Result<Command, AdapterError> {
+        // Launch wiring lands in AAASM-988.
+        unimplemented!("build_launch_command — implemented in AAASM-988")
+    }
+
+    async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+        // Codex does not expose an MCP server list (DevToolInfo::supports_mcp == false);
+        // the trait contract for that case is to return an empty Vec.
+        Ok(Vec::new())
+    }
+
+    async fn apply_mcp_governance(
+        &self,
+        _allowed: &[String],
+        _denied: &[String],
+    ) -> Result<(), AdapterError> {
+        // Codex does not expose MCP governance; the trait contract for tools
+        // without MCP support is to return Ok(()) without performing any work.
+        Ok(())
+    }
+
+    fn governance_level(&self) -> GovernanceLevel {
+        GovernanceLevel::L2Enforce
     }
 }
