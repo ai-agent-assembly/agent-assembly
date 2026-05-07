@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use rcgen::PKCS_ECDSA_P256_SHA256;
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use time::{Duration, OffsetDateTime};
 
 use crate::error::ProxyError;
@@ -121,15 +121,11 @@ impl CaStore {
 
     /// Generate a DER-encoded leaf certificate for `domain`, signed by this CA.
     pub fn sign_cert(&self, domain: &str) -> Result<CertifiedKey, ProxyError> {
-        // Load the CA key and reconstruct the CA cert from the persisted PEM.
-        // Using from_ca_cert_pem ensures the issued leaf cert's AKID matches
-        // the SKID of the actual trusted CA cert in the system keychain.
+        // Load the CA issuer from the persisted PEM files so issued leaf certs
+        // keep the AKID/SKID relationship with the trusted CA certificate.
         let ca_key = KeyPair::from_pem(&self.ca_key_pem).map_err(|e| ProxyError::CertGen(e.to_string()))?;
-        let ca_params =
-            CertificateParams::from_ca_cert_pem(&self.ca_cert_pem).map_err(|e| ProxyError::CertGen(e.to_string()))?;
-        let ca_cert = ca_params
-            .self_signed(&ca_key)
-            .map_err(|e| ProxyError::CertGen(e.to_string()))?;
+        let ca_issuer =
+            Issuer::from_ca_cert_pem(&self.ca_cert_pem, ca_key).map_err(|e| ProxyError::CertGen(e.to_string()))?;
 
         // Generate a fresh EC P-256 leaf key and cert for `domain`.
         let leaf_key =
@@ -143,7 +139,7 @@ impl CaStore {
             .expect("date arithmetic cannot overflow for 1-year span");
 
         let leaf_cert = leaf_params
-            .signed_by(&leaf_key, &ca_cert, &ca_key)
+            .signed_by(&leaf_key, &ca_issuer)
             .map_err(|e| ProxyError::CertGen(e.to_string()))?;
 
         Ok(CertifiedKey {
@@ -223,6 +219,19 @@ mod tests {
         let ck = ca.sign_cert("api.openai.com").unwrap();
         assert!(!ck.cert_der.is_empty(), "cert DER must not be empty");
         assert!(!ck.key_der.is_empty(), "key DER must not be empty");
+    }
+
+    #[tokio::test]
+    async fn sign_cert_rejects_invalid_ca_cert_pem() {
+        let dir = TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let ca = CaStore {
+            ca_dir: dir.path().to_path_buf(),
+            ca_cert_pem: "not a certificate".to_string(),
+            ca_key_pem: ca.ca_key_pem,
+        };
+
+        assert!(matches!(ca.sign_cert("api.openai.com"), Err(ProxyError::CertGen(_))));
     }
 
     #[tokio::test]
