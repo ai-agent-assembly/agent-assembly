@@ -5,6 +5,7 @@ use std::path::Path;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rand::RngExt as _;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -59,10 +60,7 @@ impl ApiKey {
 
     /// Hash this key using argon2 for secure storage.
     pub fn hash(&self) -> Result<String, ApiKeyError> {
-        let mut rng = rand::rng();
-        let mut salt_bytes = [0u8; 16];
-        rng.fill(&mut salt_bytes);
-        let salt = SaltString::encode_b64(&salt_bytes).map_err(|e| ApiKeyError::HashError(e.to_string()))?;
+        let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let hash = argon2
             .hash_password(self.0.as_bytes(), &salt)
