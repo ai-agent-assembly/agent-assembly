@@ -16,6 +16,7 @@ type ToolsList = Vec<ToolInfoSchema>;
 /// The real handler returns `Vec<DevToolInfo>` directly; this wrapper is only
 /// referenced by utoipa's `#[utoipa::path]` macro so it can generate a schema
 /// entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
+#[allow(dead_code)] // fields are only used by utoipa's macro for OpenAPI schema generation
 #[derive(ToSchema)]
 struct ToolInfoSchema {
     kind: String,

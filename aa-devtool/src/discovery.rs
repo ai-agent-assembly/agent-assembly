@@ -28,10 +28,10 @@ impl DiscoveryService {
     pub fn new() -> Self {
         use crate::adapters::{ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, WindsurfAdapter};
         Self::with_adapters(vec![
-            Box::new(ClaudeCodeAdapter::default()),
-            Box::new(CodexAdapter::default()),
-            Box::new(CopilotAdapter::default()),
-            Box::new(WindsurfAdapter::default()),
+            Box::new(ClaudeCodeAdapter),
+            Box::new(CodexAdapter),
+            Box::new(CopilotAdapter),
+            Box::new(WindsurfAdapter),
         ])
     }
 
