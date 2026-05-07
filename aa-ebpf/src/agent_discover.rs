@@ -65,15 +65,30 @@ impl AgentDiscoveryClassifier {
     pub fn new() -> Self {
         Self::with_patterns(vec![
             // Claude Code CLI — installed by `npm i -g @anthropic-ai/claude-code`.
-            Pattern { basename: "claude",    tool_name: "ClaudeCode" },
+            Pattern {
+                basename: "claude",
+                tool_name: "ClaudeCode",
+            },
             // OpenAI Codex CLI — installed by `npm i -g @openai/codex`.
-            Pattern { basename: "codex",     tool_name: "Codex" },
+            Pattern {
+                basename: "codex",
+                tool_name: "Codex",
+            },
             // GitHub Copilot agent-mode shim (VS Code extension spawns this).
-            Pattern { basename: "copilot",   tool_name: "GitHubCopilot" },
+            Pattern {
+                basename: "copilot",
+                tool_name: "GitHubCopilot",
+            },
             // Windsurf Cascade IDE agent binary.
-            Pattern { basename: "windsurf",  tool_name: "WindsurfCascade" },
+            Pattern {
+                basename: "windsurf",
+                tool_name: "WindsurfCascade",
+            },
             // Alternative Windsurf executable name on some distros.
-            Pattern { basename: "cascade",   tool_name: "WindsurfCascade" },
+            Pattern {
+                basename: "cascade",
+                tool_name: "WindsurfCascade",
+            },
         ])
     }
 
@@ -143,9 +158,10 @@ mod tests {
 
     #[test]
     fn custom_pattern_is_matched() {
-        let clf = AgentDiscoveryClassifier::with_patterns(vec![
-            Pattern { basename: "my-agent", tool_name: "MyCustomTool" },
-        ]);
+        let clf = AgentDiscoveryClassifier::with_patterns(vec![Pattern {
+            basename: "my-agent",
+            tool_name: "MyCustomTool",
+        }]);
         assert_eq!(clf.classify("/opt/my-agent"), Some("MyCustomTool"));
         assert_eq!(clf.classify("/usr/bin/claude"), None);
     }

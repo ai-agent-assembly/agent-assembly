@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use futures::future;
 use aa_core::{DevToolAdapter, DevToolInfo};
+use futures::future;
 
 /// Runs all registered [`DevToolAdapter`]s concurrently and collects detected tools.
 ///
@@ -75,11 +75,9 @@ impl DiscoveryService {
 mod tests {
     use std::path::PathBuf;
 
-    use async_trait::async_trait;
-    use aa_core::{
-        AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo,
-    };
     use aa_core::policy::PolicyDocument;
+    use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+    use async_trait::async_trait;
 
     use super::DiscoveryService;
 
@@ -106,60 +104,97 @@ mod tests {
         async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
             Err(AdapterError::SettingsApplyFailed(std::io::Error::other("stub")))
         }
-        fn build_launch_command(&self, _a: &[String], _b: &str, _c: Option<&str>, _d: Option<&str>) -> Result<std::process::Command, AdapterError> {
+        fn build_launch_command(
+            &self,
+            _a: &[String],
+            _b: &str,
+            _c: Option<&str>,
+            _d: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
             Err(AdapterError::LaunchFailed("stub".into()))
         }
-        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> { Ok(vec![]) }
-        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> { Ok(()) }
-        fn governance_level(&self) -> GovernanceLevel { GovernanceLevel::L3Native }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L3Native
+        }
     }
 
     struct NeverDetected;
 
     #[async_trait]
     impl DevToolAdapter for NeverDetected {
-        fn detect(&self) -> Option<DevToolInfo> { None }
+        fn detect(&self) -> Option<DevToolInfo> {
+            None
+        }
         async fn generate_managed_settings(&self, _p: &PolicyDocument) -> Result<String, AdapterError> {
             Err(AdapterError::SettingsGenerationFailed("stub".into()))
         }
         async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
             Err(AdapterError::SettingsApplyFailed(std::io::Error::other("stub")))
         }
-        fn build_launch_command(&self, _a: &[String], _b: &str, _c: Option<&str>, _d: Option<&str>) -> Result<std::process::Command, AdapterError> {
+        fn build_launch_command(
+            &self,
+            _a: &[String],
+            _b: &str,
+            _c: Option<&str>,
+            _d: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
             Err(AdapterError::LaunchFailed("stub".into()))
         }
-        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> { Ok(vec![]) }
-        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> { Ok(()) }
-        fn governance_level(&self) -> GovernanceLevel { GovernanceLevel::L0Discover }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L0Discover
+        }
     }
 
     struct PanicAdapter;
 
     #[async_trait]
     impl DevToolAdapter for PanicAdapter {
-        fn detect(&self) -> Option<DevToolInfo> { panic!("intentional panic for test") }
+        fn detect(&self) -> Option<DevToolInfo> {
+            panic!("intentional panic for test")
+        }
         async fn generate_managed_settings(&self, _p: &PolicyDocument) -> Result<String, AdapterError> {
             Err(AdapterError::SettingsGenerationFailed("stub".into()))
         }
         async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
             Err(AdapterError::SettingsApplyFailed(std::io::Error::other("stub")))
         }
-        fn build_launch_command(&self, _a: &[String], _b: &str, _c: Option<&str>, _d: Option<&str>) -> Result<std::process::Command, AdapterError> {
+        fn build_launch_command(
+            &self,
+            _a: &[String],
+            _b: &str,
+            _c: Option<&str>,
+            _d: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
             Err(AdapterError::LaunchFailed("stub".into()))
         }
-        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> { Ok(vec![]) }
-        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> { Ok(()) }
-        fn governance_level(&self) -> GovernanceLevel { GovernanceLevel::L0Discover }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L0Discover
+        }
     }
 
     // ---- tests --------------------------------------------------------------
 
     #[tokio::test]
     async fn discover_returns_only_detected_tools() {
-        let svc = DiscoveryService::with_adapters(vec![
-            Box::new(AlwaysDetected),
-            Box::new(NeverDetected),
-        ]);
+        let svc = DiscoveryService::with_adapters(vec![Box::new(AlwaysDetected), Box::new(NeverDetected)]);
         let tools = svc.discover_all().await;
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].kind, DevToolKind::ClaudeCode);
@@ -167,10 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn discover_handles_panicking_adapter() {
-        let svc = DiscoveryService::with_adapters(vec![
-            Box::new(PanicAdapter),
-            Box::new(AlwaysDetected),
-        ]);
+        let svc = DiscoveryService::with_adapters(vec![Box::new(PanicAdapter), Box::new(AlwaysDetected)]);
         // The panic must not propagate; the surviving adapter's result is returned.
         let tools = svc.discover_all().await;
         assert_eq!(tools.len(), 1);
@@ -178,10 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn discover_empty_when_no_tools_found() {
-        let svc = DiscoveryService::with_adapters(vec![
-            Box::new(NeverDetected),
-            Box::new(NeverDetected),
-        ]);
+        let svc = DiscoveryService::with_adapters(vec![Box::new(NeverDetected), Box::new(NeverDetected)]);
         let tools = svc.discover_all().await;
         assert!(tools.is_empty());
     }
@@ -213,12 +242,24 @@ mod tests {
             async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
                 Err(AdapterError::SettingsApplyFailed(std::io::Error::other("stub")))
             }
-            fn build_launch_command(&self, _a: &[String], _b: &str, _c: Option<&str>, _d: Option<&str>) -> Result<std::process::Command, AdapterError> {
+            fn build_launch_command(
+                &self,
+                _a: &[String],
+                _b: &str,
+                _c: Option<&str>,
+                _d: Option<&str>,
+            ) -> Result<std::process::Command, AdapterError> {
                 Err(AdapterError::LaunchFailed("stub".into()))
             }
-            async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> { Ok(vec![]) }
-            async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> { Ok(()) }
-            fn governance_level(&self) -> GovernanceLevel { GovernanceLevel::L2Enforce }
+            async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+                Ok(vec![])
+            }
+            async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+                Ok(())
+            }
+            fn governance_level(&self) -> GovernanceLevel {
+                GovernanceLevel::L2Enforce
+            }
         }
 
         let svc = DiscoveryService::with_adapters(vec![

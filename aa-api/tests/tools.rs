@@ -36,5 +36,9 @@ async fn get_tools_returns_empty_array_when_no_tools() {
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json, serde_json::json!([]), "expected empty array when no tools are installed");
+    assert_eq!(
+        json,
+        serde_json::json!([]),
+        "expected empty array when no tools are installed"
+    );
 }

@@ -4,9 +4,9 @@
 
 use std::path::PathBuf;
 
-use async_trait::async_trait;
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
 use aa_core::policy::PolicyDocument;
+use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+use async_trait::async_trait;
 
 /// Adapter for GitHub Copilot (VS Code extension).
 ///

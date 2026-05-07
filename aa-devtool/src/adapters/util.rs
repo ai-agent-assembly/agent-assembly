@@ -22,10 +22,10 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
 /// Returns `None` if the process fails to start, exits with a non-zero status,
 /// or produces no output.
 pub fn probe_version(binary: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new(binary)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = std::process::Command::new(binary).arg("--version").output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_owned())
+    stdout
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_owned())
 }

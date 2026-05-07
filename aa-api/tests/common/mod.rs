@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aa_api::alerts::store::InMemoryAlertStore;
-use aa_devtool::DiscoveryService;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
@@ -17,6 +16,7 @@ use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
 use aa_api::trace_store::InMemoryTraceStore;
+use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;

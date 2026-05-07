@@ -1,7 +1,7 @@
 //! `GET /api/v1/tools` — list auto-discovered AI dev tools on the gateway host.
 
-use axum::{Extension, Json};
 use aa_core::DevToolInfo;
+use axum::{Extension, Json};
 use utoipa::ToSchema;
 
 use crate::error::ProblemDetail;
@@ -39,9 +39,7 @@ struct ToolInfoSchema {
         (status = 200, description = "Discovered tools", body = Vec<ToolInfoSchema>)
     )
 )]
-pub async fn list_tools(
-    Extension(state): Extension<AppState>,
-) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
+pub async fn list_tools(Extension(state): Extension<AppState>) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
     let tools = state.discovery.discover_all().await;
     Ok(Json(tools))
 }
