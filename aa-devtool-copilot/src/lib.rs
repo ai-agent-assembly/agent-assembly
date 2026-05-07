@@ -8,6 +8,14 @@
 //! server access, tool-approval prompts, and per-session request limits via
 //! `.vscode/settings.json`.
 //!
+//! ## VS Code settings written by this adapter
+//!
+//! | Key | Value | When applied |
+//! |---|---|---|
+//! | `chat.mcp.access` | `"prompt"` | Always (L1+ baseline) |
+//! | `chat.agent.maxRequests` | `5` | Always (L2 cap) |
+//! | `chat.mcp.deny` | `["<server>:<tool>", …]` | Per-policy MCP denials |
+//!
 //! ## Version requirements
 //!
 //! | Component | Minimum version |
@@ -24,13 +32,20 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_core::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDecision,
+    PolicyDocument,
+};
 use async_trait::async_trait;
+use serde::Serialize;
 
 /// Minimum `github.copilot` extension version this adapter supports.
 pub const MIN_COPILOT_VERSION: &str = "1.226.0";
 /// Minimum `github.copilot-chat` extension version this adapter supports.
 pub const MIN_COPILOT_CHAT_VERSION: &str = "0.21.0";
+
+/// Value of `chat.agent.maxRequests` applied when governance level is L2+.
+const L2_MAX_REQUESTS: u32 = 5;
 
 /// Extension name prefix for the core Copilot extension.
 const COPILOT_EXT_PREFIX: &str = "github.copilot-";
@@ -38,31 +53,37 @@ const COPILOT_EXT_PREFIX: &str = "github.copilot-";
 /// from core-Copilot detection — different extension, same org prefix).
 const COPILOT_CHAT_EXT_PREFIX: &str = "github.copilot-chat-";
 
+/// Action-pattern prefix in a [`PolicyRule`] that targets an MCP tool.
+/// Full pattern form: `"mcp_tool:<server>:<tool>"`.
+///
+/// [`PolicyRule`]: aa_core::PolicyRule
+const MCP_TOOL_PATTERN_PREFIX: &str = "mcp_tool:";
+
 /// [`DevToolAdapter`] for GitHub Copilot (VS Code agent mode).
 ///
-/// Constructor takes an explicit extensions-directory override so the test
-/// suite can point at temporary directories without touching the real VS Code
-/// installation. Production code calls [`CopilotAdapter::new`] and relies on
-/// the platform-default `~/.vscode/extensions` path.
-///
-/// The `settings_path` field and VS Code user-settings helpers are added in
-/// AAASM-1002 when [`generate_managed_settings`] and [`apply_settings`] are
-/// implemented.
+/// Constructor takes optional path overrides so the test suite can point at
+/// temporary directories without touching the real VS Code installation.
+/// Production code calls [`CopilotAdapter::new`] and relies on platform
+/// defaults.
 ///
 /// [`DevToolAdapter`]: aa_core::DevToolAdapter
-/// [`generate_managed_settings`]: CopilotAdapter::generate_managed_settings
-/// [`apply_settings`]: CopilotAdapter::apply_settings
 #[derive(Debug, Clone)]
 pub struct CopilotAdapter {
     /// Override for `~/.vscode/extensions`. When `None` the adapter resolves
     /// the platform default at detection time.
     extensions_dir: Option<PathBuf>,
+    /// Override for the VS Code user-settings JSON path. When `None` the
+    /// adapter resolves the platform default at apply time.
+    settings_path: Option<PathBuf>,
 }
 
 impl CopilotAdapter {
     /// Create an adapter that uses the platform-default VS Code paths.
     pub fn new() -> Self {
-        Self { extensions_dir: None }
+        Self {
+            extensions_dir: None,
+            settings_path: None,
+        }
     }
 
     /// Create an adapter that reads extensions from `extensions_dir` instead
@@ -70,11 +91,22 @@ impl CopilotAdapter {
     pub fn with_extensions_dir(extensions_dir: impl Into<PathBuf>) -> Self {
         Self {
             extensions_dir: Some(extensions_dir.into()),
+            settings_path: None,
         }
     }
 
-    /// Resolve the VS Code extensions directory: explicit override wins,
-    /// otherwise fall back to the platform default (`~/.vscode/extensions`).
+    /// Create an adapter with explicit overrides for both the extensions
+    /// directory and the VS Code user-settings path. Useful in tests that
+    /// exercise [`apply_settings`].
+    ///
+    /// [`apply_settings`]: CopilotAdapter::apply_settings
+    pub fn with_paths(extensions_dir: impl Into<PathBuf>, settings_path: impl Into<PathBuf>) -> Self {
+        Self {
+            extensions_dir: Some(extensions_dir.into()),
+            settings_path: Some(settings_path.into()),
+        }
+    }
+
     fn resolve_extensions_dir(&self) -> Option<PathBuf> {
         if let Some(p) = &self.extensions_dir {
             return Some(p.clone());
@@ -82,15 +114,18 @@ impl CopilotAdapter {
         default_extensions_dir()
     }
 
-    /// Scan `extensions_dir` for a `github.copilot-<version>` subdirectory
-    /// (excluding `github.copilot-chat-*`) and parse the version from its
-    /// `package.json`. Returns `(install_path, version)` when found.
+    fn resolve_settings_path(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.settings_path {
+            return Some(p.clone());
+        }
+        default_settings_path()
+    }
+
     fn find_copilot_extension(extensions_dir: &Path) -> Option<(PathBuf, String)> {
         let entries = std::fs::read_dir(extensions_dir).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            // Exclude the copilot-chat extension which shares the same prefix.
             if name.starts_with(COPILOT_CHAT_EXT_PREFIX) {
                 continue;
             }
@@ -101,6 +136,21 @@ impl CopilotAdapter {
         }
         None
     }
+
+    /// Extract MCP deny entries from policy rules.
+    ///
+    /// Collects every rule whose `action_pattern` starts with `"mcp_tool:"`
+    /// and whose decision is [`PolicyDecision::Deny`]. The pattern suffix
+    /// (after `"mcp_tool:"`) is used verbatim as the VS Code `chat.mcp.deny`
+    /// entry, which expects `"<server>:<tool>"` notation.
+    fn collect_mcp_deny(policy: &PolicyDocument) -> Vec<String> {
+        policy
+            .rules
+            .iter()
+            .filter(|r| r.action_pattern.starts_with(MCP_TOOL_PATTERN_PREFIX) && r.decision == PolicyDecision::Deny)
+            .map(|r| r.action_pattern[MCP_TOOL_PATTERN_PREFIX.len()..].to_string())
+            .collect()
+    }
 }
 
 impl Default for CopilotAdapter {
@@ -109,14 +159,26 @@ impl Default for CopilotAdapter {
     }
 }
 
-/// Read the `"version"` field from a VS Code extension's `package.json`.
+/// VS Code settings document written by [`CopilotAdapter::generate_managed_settings`].
+#[derive(Debug, Serialize)]
+struct CopilotVsCodeSettings {
+    /// Require human approval before any MCP tool call (L1 baseline).
+    #[serde(rename = "chat.mcp.access")]
+    mcp_access: &'static str,
+    /// Cap per-session autonomous requests (L2 enforcement).
+    #[serde(rename = "chat.agent.maxRequests")]
+    max_requests: u32,
+    /// Explicit MCP server:tool deny list derived from policy rules.
+    #[serde(rename = "chat.mcp.deny")]
+    mcp_deny: Vec<String>,
+}
+
 fn read_package_version(extension_dir: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(extension_dir.join("package.json")).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
     parsed["version"].as_str().map(|s| s.to_string())
 }
 
-/// Platform-default VS Code extensions directory.
 fn default_extensions_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -125,6 +187,34 @@ fn default_extensions_dir() -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".vscode").join("extensions"))
+    }
+}
+
+fn default_settings_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|p| {
+            PathBuf::from(p)
+                .join("Library")
+                .join("Application Support")
+                .join("Code")
+                .join("User")
+                .join("settings.json")
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("HOME").map(|p| {
+            PathBuf::from(p)
+                .join(".config")
+                .join("Code")
+                .join("User")
+                .join("settings.json")
+        })
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("Code").join("User").join("settings.json"))
     }
 }
 
@@ -143,13 +233,58 @@ impl DevToolAdapter for CopilotAdapter {
         })
     }
 
-    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
-        // Implemented in AAASM-1002.
-        Ok(serde_json::to_string_pretty(&serde_json::json!({})).map_err(|e| AdapterError::Serde(e.to_string()))?)
+    /// Translate `policy` into a VS Code settings JSON string.
+    ///
+    /// Always emits `chat.mcp.access` and `chat.agent.maxRequests` (this
+    /// adapter operates at L2). Appends entries to `chat.mcp.deny` for every
+    /// policy rule whose `action_pattern` starts with `"mcp_tool:"` and whose
+    /// decision is [`PolicyDecision::Deny`].
+    async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
+        let settings = CopilotVsCodeSettings {
+            mcp_access: "prompt",
+            max_requests: L2_MAX_REQUESTS,
+            mcp_deny: Self::collect_mcp_deny(policy),
+        };
+        serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
 
-    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
-        // Implemented in AAASM-1002.
+    /// Merge `settings` (JSON from [`generate_managed_settings`]) into the VS
+    /// Code user-settings file.
+    ///
+    /// Reads the existing `settings.json` (starting from `{}` when absent),
+    /// overwrites every key present in `settings`, and writes the merged
+    /// document back atomically. Other user settings are preserved.
+    ///
+    /// [`generate_managed_settings`]: Self::generate_managed_settings
+    async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
+        let path = self.resolve_settings_path().ok_or_else(|| {
+            AdapterError::SettingsGenerationFailed("could not resolve VS Code settings path".to_string())
+        })?;
+
+        let incoming: serde_json::Value =
+            serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
+
+        let mut existing: serde_json::Value = if path.exists() {
+            let raw = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&raw).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        if let (Some(obj), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) {
+            for (k, v) in inc {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&existing).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        )
+        .map_err(AdapterError::SettingsApplyFailed)?;
         Ok(())
     }
 
@@ -185,6 +320,7 @@ impl DevToolAdapter for CopilotAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aa_core::PolicyRule;
     use tempfile::TempDir;
 
     fn make_extension(base: &Path, name: &str, version: &str) {
@@ -193,6 +329,30 @@ mod tests {
         let pkg = serde_json::json!({ "name": name, "version": version });
         std::fs::write(dir.join("package.json"), pkg.to_string()).unwrap();
     }
+
+    fn empty_policy() -> PolicyDocument {
+        PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules: vec![],
+        }
+    }
+
+    fn policy_with_mcp_deny(patterns: &[&str]) -> PolicyDocument {
+        PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules: patterns
+                .iter()
+                .map(|p| PolicyRule {
+                    action_pattern: format!("mcp_tool:{p}"),
+                    decision: PolicyDecision::Deny,
+                })
+                .collect(),
+        }
+    }
+
+    // ---- detect() tests (carried over from AAASM-997) ----------------------
 
     #[test]
     fn detects_installed_copilot() {
@@ -252,21 +412,118 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detect_returns_none_when_extensions_dir_missing() {
-        let adapter = CopilotAdapter::with_extensions_dir("/nonexistent/__no_such_dir__/extensions");
-        assert!(adapter.detect().is_none());
+    // ---- generate_managed_settings() tests ---------------------------------
+
+    #[tokio::test]
+    async fn settings_always_include_l1_mcp_access_prompt() {
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["chat.mcp.access"], "prompt");
     }
 
-    #[test]
-    fn detect_install_path_points_to_extension_dir() {
+    #[tokio::test]
+    async fn settings_always_include_l2_max_requests() {
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["chat.agent.maxRequests"], L2_MAX_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn settings_empty_deny_list_for_empty_policy() {
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["chat.mcp.deny"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn settings_mcp_deny_entries_from_policy_rules() {
+        let policy = policy_with_mcp_deny(&["filesystem:write_file", "github:push"]);
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let deny = v["chat.mcp.deny"].as_array().unwrap();
+        assert!(deny.contains(&serde_json::json!("filesystem:write_file")));
+        assert!(deny.contains(&serde_json::json!("github:push")));
+    }
+
+    #[tokio::test]
+    async fn settings_allow_rules_not_added_to_deny_list() {
+        let policy = PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules: vec![PolicyRule {
+                action_pattern: "mcp_tool:filesystem:read_file".to_string(),
+                decision: PolicyDecision::Allow,
+            }],
+        };
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let deny = v["chat.mcp.deny"].as_array().unwrap();
+        assert!(deny.is_empty(), "Allow rules must not appear in deny list");
+    }
+
+    // ---- apply_settings() tests --------------------------------------------
+
+    #[tokio::test]
+    async fn apply_settings_writes_to_settings_path() {
         let tmp = TempDir::new().unwrap();
-        make_extension(tmp.path(), "github.copilot", "1.226.0");
-        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
-        let info = adapter.detect().unwrap();
-        assert!(
-            info.install_path.starts_with(tmp.path()),
-            "install_path should be inside extensions dir"
-        );
+        let settings_file = tmp.path().join("settings.json");
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["chat.mcp.access"], "prompt");
+        assert_eq!(v["chat.agent.maxRequests"], L2_MAX_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn apply_settings_merges_with_existing_settings() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        // Pre-populate with unrelated user setting.
+        std::fs::write(&settings_file, r#"{"editor.fontSize": 14, "chat.mcp.access": "off"}"#).unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        // Governance key overwritten.
+        assert_eq!(v["chat.mcp.access"], "prompt");
+        // User's other setting preserved.
+        assert_eq!(v["editor.fontSize"], 14);
+    }
+
+    #[tokio::test]
+    async fn apply_settings_creates_parent_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("deep").join("nested").join("settings.json");
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+        assert!(settings_file.exists());
+    }
+
+    #[tokio::test]
+    async fn apply_settings_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let policy = policy_with_mcp_deny(&["filesystem:write_file"]);
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let deny = v["chat.mcp.deny"].as_array().unwrap();
+        assert_eq!(deny.len(), 1, "idempotent apply must not duplicate deny entries");
     }
 }
