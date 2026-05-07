@@ -81,7 +81,7 @@ fn find_windsurf_binary() -> Option<PathBuf> {
 fn probe_version(binary: &Path) -> Option<String> {
     let output = Command::new(binary).arg("--version").output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let token = stdout.split_whitespace().find(|t| t.contains('.') && t.chars().next().map_or(false, |c| c.is_ascii_digit()))?;
+    let token = stdout.split_whitespace().find(|t| t.contains('.') && t.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
     Some(token.to_string())
 }
 
