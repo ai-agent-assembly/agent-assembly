@@ -222,6 +222,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sign_cert_rejects_invalid_ca_cert_pem() {
+        let dir = TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let ca = CaStore {
+            ca_dir: dir.path().to_path_buf(),
+            ca_cert_pem: "not a certificate".to_string(),
+            ca_key_pem: ca.ca_key_pem,
+        };
+
+        assert!(matches!(ca.sign_cert("api.openai.com"), Err(ProxyError::CertGen(_))));
+    }
+
+    #[tokio::test]
     async fn sign_cert_different_domains_produce_different_certs() {
         let dir = TempDir::new().unwrap();
         let ca = CaStore::load_or_create(dir.path()).await.unwrap();
