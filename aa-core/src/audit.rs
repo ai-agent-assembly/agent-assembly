@@ -63,6 +63,39 @@ impl AuditEventType {
 }
 
 // ---------------------------------------------------------------------------
+// Lineage
+// ---------------------------------------------------------------------------
+
+/// Optional agent-topology fields attached to an [`AuditEntry`].
+///
+/// All fields are `None` for entries emitted without an `AgentContext`
+/// (legacy path). `Lineage::default()` passed to
+/// [`AuditEntry::new_with_lineage`] produces a hash identical to
+/// [`AuditEntry::new`] with the same base fields.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Lineage {
+    /// Root agent identifier at the top of the delegation chain.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub root_agent_id: Option<AgentId>,
+    /// Identifier of the agent that directly spawned this agent.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub parent_agent_id: Option<AgentId>,
+    /// Team identifier associated with the agent that produced the entry.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub team_id: Option<String>,
+    /// Human-readable reason the action was delegated to this agent.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub delegation_reason: Option<String>,
+    /// Name of the tool or framework that spawned this agent (e.g. `"langgraph"`).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub spawned_by_tool: Option<String>,
+    /// Delegation depth from the root agent (`0` = root, `1` = first delegate, …).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub depth: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
 // AuditEntry
 // ---------------------------------------------------------------------------
 
@@ -96,6 +129,18 @@ pub struct AuditEntry {
     payload: String,
     previous_hash: [u8; 32],
     entry_hash: [u8; 32],
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    root_agent_id: Option<AgentId>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    parent_agent_id: Option<AgentId>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    team_id: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    delegation_reason: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    spawned_by_tool: Option<String>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    depth: Option<u32>,
 }
 
 impl AuditEntry {
@@ -147,6 +192,7 @@ impl AuditEntry {
             &session_id,
             &previous_hash,
             &payload,
+            &Lineage::default(),
         );
         Self {
             seq,
@@ -157,6 +203,57 @@ impl AuditEntry {
             payload,
             previous_hash,
             entry_hash,
+            root_agent_id: None,
+            parent_agent_id: None,
+            team_id: None,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            depth: None,
+        }
+    }
+
+    /// Create a new [`AuditEntry`] with optional lineage fields, computing `entry_hash`
+    /// over all fields including the lineage data.
+    ///
+    /// When `lineage` is `Lineage::default()` (all fields `None`), the resulting
+    /// `entry_hash` is identical to that produced by [`AuditEntry::new`] with the
+    /// same base fields, preserving backward compatibility.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lineage(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        session_id: SessionId,
+        payload: String,
+        previous_hash: [u8; 32],
+        lineage: Lineage,
+    ) -> Self {
+        let entry_hash = Self::compute_hash(
+            seq,
+            timestamp_ns,
+            &event_type,
+            &agent_id,
+            &session_id,
+            &previous_hash,
+            &payload,
+            &lineage,
+        );
+        Self {
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+            entry_hash,
+            root_agent_id: lineage.root_agent_id,
+            parent_agent_id: lineage.parent_agent_id,
+            team_id: lineage.team_id,
+            delegation_reason: lineage.delegation_reason,
+            spawned_by_tool: lineage.spawned_by_tool,
+            depth: lineage.depth,
         }
     }
 
@@ -212,6 +309,42 @@ impl AuditEntry {
         &self.entry_hash
     }
 
+    /// Root agent identifier in the delegation chain, if present.
+    #[inline]
+    pub fn root_agent_id(&self) -> Option<AgentId> {
+        self.root_agent_id
+    }
+
+    /// Parent agent identifier that directly spawned this agent, if present.
+    #[inline]
+    pub fn parent_agent_id(&self) -> Option<AgentId> {
+        self.parent_agent_id
+    }
+
+    /// Team identifier associated with the agent, if present.
+    #[inline]
+    pub fn team_id(&self) -> Option<&str> {
+        self.team_id.as_deref()
+    }
+
+    /// Reason this agent was delegated the action, if present.
+    #[inline]
+    pub fn delegation_reason(&self) -> Option<&str> {
+        self.delegation_reason.as_deref()
+    }
+
+    /// Name of the tool that spawned this agent, if present.
+    #[inline]
+    pub fn spawned_by_tool(&self) -> Option<&str> {
+        self.spawned_by_tool.as_deref()
+    }
+
+    /// Delegation depth from the root agent, if present.
+    #[inline]
+    pub fn depth(&self) -> Option<u32> {
+        self.depth
+    }
+
     // -----------------------------------------------------------------------
     // Integrity
     // -----------------------------------------------------------------------
@@ -222,6 +355,14 @@ impl AuditEntry {
     /// Returns `false` if any field has been altered after construction — including
     /// via `unsafe` code.
     pub fn verify_integrity(&self) -> bool {
+        let lineage = Lineage {
+            root_agent_id: self.root_agent_id,
+            parent_agent_id: self.parent_agent_id,
+            team_id: self.team_id.clone(),
+            delegation_reason: self.delegation_reason.clone(),
+            spawned_by_tool: self.spawned_by_tool.clone(),
+            depth: self.depth,
+        };
         let expected = Self::compute_hash(
             self.seq,
             self.timestamp_ns,
@@ -230,6 +371,7 @@ impl AuditEntry {
             &self.session_id,
             &self.previous_hash,
             &self.payload,
+            &lineage,
         );
         expected == self.entry_hash
     }
@@ -241,7 +383,9 @@ impl AuditEntry {
     /// Canonical SHA-256 computation over all tamper-meaningful fields.
     ///
     /// Field order and encoding are fixed — see [`AuditEntry::new`] for the
-    /// documented byte sequence.
+    /// documented byte sequence. Lineage fields append only when `Some`;
+    /// when all lineage fields are `None`, output equals the pre-AAASM-934 hash exactly.
+    #[allow(clippy::too_many_arguments)]
     fn compute_hash(
         seq: u64,
         timestamp_ns: u64,
@@ -250,6 +394,7 @@ impl AuditEntry {
         session_id: &SessionId,
         previous_hash: &[u8; 32],
         payload: &str,
+        lineage: &Lineage,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seq.to_be_bytes());
@@ -259,6 +404,29 @@ impl AuditEntry {
         hasher.update(session_id.as_bytes());
         hasher.update(previous_hash);
         hasher.update(payload.as_bytes());
+        // Lineage — append only when present; None contributes 0 bytes.
+        // When all fields are None, hash equals pre-AAASM-934 output exactly.
+        if let Some(id) = &lineage.root_agent_id {
+            hasher.update(id.as_bytes());
+        }
+        if let Some(id) = &lineage.parent_agent_id {
+            hasher.update(id.as_bytes());
+        }
+        if let Some(s) = &lineage.team_id {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
+        }
+        if let Some(s) = &lineage.delegation_reason {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
+        }
+        if let Some(s) = &lineage.spawned_by_tool {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
+        }
+        if let Some(d) = lineage.depth {
+            hasher.update(d.to_be_bytes());
+        }
         hasher.finalize().into()
     }
 }
@@ -438,6 +606,42 @@ impl AuditLog {
         // next_entry constructs the entry with the correct seq and previous_hash,
         // so push() cannot fail here.
         self.push(entry).expect("next_entry invariant: push cannot fail");
+        self.entries.last().expect("entry was just pushed")
+    }
+
+    /// Build and append the next [`AuditEntry`] with lineage fields in one atomic step.
+    ///
+    /// Equivalent to [`AuditLog::next_entry`] but attaches agent-topology metadata.
+    /// `seq` and `previous_hash` are derived automatically from the log's current state.
+    ///
+    /// ## Parameters
+    ///
+    /// - `event_type` — category of the governance event.
+    /// - `timestamp_ns` — nanoseconds since Unix epoch (caller-supplied for `no_std` compatibility).
+    /// - `payload` — pre-serialized UTF-8 string (JSON in practice).
+    /// - `lineage` — optional agent-topology fields; `Lineage::default()` produces the same hash
+    ///   as [`AuditLog::next_entry`] with the same base fields.
+    ///
+    /// Returns a reference to the newly appended entry.
+    pub fn next_entry_with_lineage(
+        &mut self,
+        event_type: AuditEventType,
+        timestamp_ns: u64,
+        payload: String,
+        lineage: Lineage,
+    ) -> &AuditEntry {
+        let entry = AuditEntry::new_with_lineage(
+            self.next_seq,
+            timestamp_ns,
+            event_type,
+            self.agent_id,
+            self.session_id,
+            payload,
+            self.last_hash,
+            lineage,
+        );
+        self.push(entry)
+            .expect("next_entry_with_lineage invariant: push cannot fail");
         self.entries.last().expect("entry was just pushed")
     }
 
@@ -998,5 +1202,193 @@ mod tests {
             (*ptr)[0] = 0xFF;
         }
         assert!(!log.verify_chain());
+    }
+}
+
+#[cfg(all(test, feature = "alloc", feature = "serde"))]
+mod lineage_tests {
+    use super::*;
+
+    const AGENT: AgentId = AgentId::from_bytes([1u8; 16]);
+    const SESSION: SessionId = SessionId::from_bytes([2u8; 16]);
+    const ROOT: AgentId = AgentId::from_bytes([7u8; 16]);
+    const PARENT: AgentId = AgentId::from_bytes([9u8; 16]);
+
+    fn base_entry() -> AuditEntry {
+        AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+        )
+    }
+
+    #[test]
+    fn lineage_default_is_all_none() {
+        let l = Lineage::default();
+        assert!(l.root_agent_id.is_none());
+        assert!(l.parent_agent_id.is_none());
+        assert!(l.team_id.is_none());
+        assert!(l.delegation_reason.is_none());
+        assert!(l.spawned_by_tool.is_none());
+        assert!(l.depth.is_none());
+    }
+
+    #[test]
+    fn new_with_empty_lineage_produces_same_hash_as_new() {
+        let legacy = base_entry();
+        let with_lineage = AuditEntry::new_with_lineage(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+            Lineage::default(),
+        );
+        assert_eq!(
+            legacy.entry_hash(),
+            with_lineage.entry_hash(),
+            "Lineage::default() must not change the hash"
+        );
+    }
+
+    #[test]
+    fn new_with_lineage_getters_return_correct_values() {
+        let lineage = Lineage {
+            root_agent_id: Some(ROOT),
+            parent_agent_id: Some(PARENT),
+            team_id: Some("team-alpha".into()),
+            delegation_reason: Some("summarise".into()),
+            spawned_by_tool: Some("langgraph".into()),
+            depth: Some(2),
+        };
+        let entry = AuditEntry::new_with_lineage(
+            0,
+            1_000,
+            AuditEventType::PolicyViolation,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            lineage,
+        );
+        assert_eq!(entry.root_agent_id(), Some(ROOT));
+        assert_eq!(entry.parent_agent_id(), Some(PARENT));
+        assert_eq!(entry.team_id(), Some("team-alpha"));
+        assert_eq!(entry.delegation_reason(), Some("summarise"));
+        assert_eq!(entry.spawned_by_tool(), Some("langgraph"));
+        assert_eq!(entry.depth(), Some(2));
+    }
+
+    #[test]
+    fn verify_integrity_true_with_lineage() {
+        let lineage = Lineage {
+            root_agent_id: Some(ROOT),
+            team_id: Some("ops".into()),
+            depth: Some(1),
+            ..Lineage::default()
+        };
+        let entry = AuditEntry::new_with_lineage(
+            0,
+            1_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            lineage,
+        );
+        assert!(entry.verify_integrity());
+    }
+
+    #[test]
+    fn lineage_fields_change_hash() {
+        let no_lineage = base_entry();
+        let lineage = Lineage {
+            depth: Some(1),
+            ..Lineage::default()
+        };
+        let with_depth = AuditEntry::new_with_lineage(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+            lineage,
+        );
+        assert_ne!(
+            no_lineage.entry_hash(),
+            with_depth.entry_hash(),
+            "A present lineage field must change the hash"
+        );
+    }
+
+    #[test]
+    fn serde_round_trip_with_lineage() {
+        let lineage = Lineage {
+            root_agent_id: Some(ROOT),
+            parent_agent_id: Some(PARENT),
+            team_id: Some("t1".into()),
+            delegation_reason: Some("r".into()),
+            spawned_by_tool: Some("s".into()),
+            depth: Some(3),
+        };
+        let entry = AuditEntry::new_with_lineage(
+            0,
+            1_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            lineage,
+        );
+        let json = serde_json::to_string(&entry).unwrap();
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(entry.entry_hash(), restored.entry_hash());
+        assert_eq!(restored.root_agent_id(), Some(ROOT));
+        assert_eq!(restored.depth(), Some(3));
+    }
+
+    #[test]
+    fn legacy_jsonl_without_lineage_fields_deserialises_and_verifies() {
+        let pre_change_entry = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+        );
+        let json = serde_json::to_string(&pre_change_entry).unwrap();
+        assert!(!json.contains("root_agent_id"), "None fields must not appear in JSON");
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert!(restored.root_agent_id().is_none());
+        assert!(
+            restored.verify_integrity(),
+            "Legacy entries must still verify after adding lineage fields"
+        );
+    }
+
+    #[test]
+    fn next_entry_with_lineage_links_chain() {
+        let mut log = AuditLog::new(AGENT, SESSION);
+        let lineage = Lineage {
+            depth: Some(1),
+            team_id: Some("t".into()),
+            ..Lineage::default()
+        };
+        log.next_entry_with_lineage(AuditEventType::ToolCallIntercepted, 1_000, "{}".into(), lineage.clone());
+        log.next_entry_with_lineage(AuditEventType::PolicyViolation, 2_000, "{}".into(), lineage);
+        assert!(log.verify_chain());
+        assert_eq!(log.len(), 2);
     }
 }
