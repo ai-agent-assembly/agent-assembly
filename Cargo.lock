@@ -55,6 +55,7 @@ dependencies = [
  "csv",
  "dirs",
  "futures-util",
+ "libc",
  "owo-colors",
  "ratatui",
  "reqwest",

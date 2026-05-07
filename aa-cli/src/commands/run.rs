@@ -9,6 +9,9 @@ use clap::Args;
 use serde::Deserialize;
 use uuid::Uuid;
 
+#[cfg(unix)]
+use tokio::signal::unix::SignalKind;
+
 use aa_core::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument, PolicyRule,
 };
@@ -118,6 +121,49 @@ struct RegistrationHandle {
     proxy_addr: Option<String>,
     /// Carried from [`RunArgs::team_id`] (or echoed by the gateway) for `AA_TEAM_ID` injection.
     team_id: Option<String>,
+}
+
+/// RAII guard that sends a best-effort `DELETE /api/v1/agents/<registration_id>` on drop.
+///
+/// The primary deregistration path is the explicit `deregister_with_gateway` async call
+/// in `execute_with_adapters`. Set `deregistered = true` after that call to suppress the
+/// duplicate backup. The backup fires only when a panic unwinds the stack before the
+/// explicit call can run.
+pub struct RegistrationGuard {
+    registration_id: String,
+    api_url: String,
+    api_key: Option<String>,
+    /// True after `deregister_with_gateway` ran; suppresses the backup Drop.
+    pub deregistered: bool,
+}
+
+impl Drop for RegistrationGuard {
+    fn drop(&mut self) {
+        if self.deregistered {
+            return;
+        }
+        let url = format!(
+            "{}/api/v1/agents/{}",
+            self.api_url.trim_end_matches('/'),
+            self.registration_id,
+        );
+        let api_key = self.api_key.clone();
+        // Spawn a detached OS thread so we never block or create a runtime inside
+        // an existing tokio async context. Fire-and-forget: not guaranteed to reach
+        // the gateway before process termination (panic path only).
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    let mut req = client.delete(&url);
+                    if let Some(ref key) = api_key {
+                        req = req.header("Authorization", format!("Bearer {key}"));
+                    }
+                    let _ = req.send().await;
+                });
+            }
+        });
+    }
 }
 
 /// Register the detected tool with the Agent Assembly gateway.
@@ -272,12 +318,69 @@ fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
     }
 }
 
-/// Testable core of `execute`: detect, register, apply settings, optionally dry-run.
-async fn execute_with_adapters(
+/// Send `DELETE /api/v1/agents/<registration_id>` using the async HTTP client.
+///
+/// Errors are silently discarded — the DELETE is idempotent and best-effort.
+async fn deregister_with_gateway(registration_id: &str, ctx: &ResolvedContext) {
+    let url = format!(
+        "{}/api/v1/agents/{}",
+        ctx.api_url.trim_end_matches('/'),
+        registration_id,
+    );
+    let client = reqwest::Client::new();
+    let mut req = client.delete(&url);
+    if let Some(ref key) = ctx.api_key {
+        req = req.header("Authorization", format!("Bearer {key}"));
+    }
+    let _ = req.send().await;
+}
+
+/// Spawn `cmd` as a tokio child process, forward SIGTERM/SIGINT on Unix,
+/// and wait for the child to exit. Returns the child's exit code.
+async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
+    let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
+    tokio_cmd.args(cmd.get_args());
+    tokio_cmd.envs(child_env);
+
+    let mut child = tokio_cmd.spawn()?;
+    let child_pid = child.id().unwrap_or(0) as i32;
+
+    #[cfg(unix)]
+    let status = {
+        let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
+        tokio::select! {
+            _ = sigterm.recv() => {
+                if child_pid > 0 {
+                    // Safety: child_pid is a valid pid we just spawned.
+                    unsafe { libc::kill(child_pid, libc::SIGTERM); }
+                }
+                child.wait().await?
+            }
+            _ = sigint.recv() => {
+                if child_pid > 0 {
+                    unsafe { libc::kill(child_pid, libc::SIGTERM); }
+                }
+                child.wait().await?
+            }
+            s = child.wait() => s?
+        }
+    };
+
+    #[cfg(not(unix))]
+    let status = child.wait().await?;
+
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Testable core of `execute`: detect, register, apply settings, spawn child.
+///
+/// Returns the child process exit code, or 0 on `--dry-run`.
+pub async fn execute_with_adapters(
     args: &RunArgs,
     ctx: &ResolvedContext,
     adapters: &HashMap<&str, Box<dyn DevToolAdapter>>,
-) -> Result<()> {
+) -> Result<i32> {
     let adapter = adapters.get(args.tool.as_str()).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown tool: {}, supported: claude, codex, copilot, windsurf",
@@ -325,15 +428,28 @@ async fn execute_with_adapters(
 
     if args.dry_run {
         print!("{}", format_dry_run_output(&handle, &settings, &cmd, &child_env));
-        return Ok(());
+        return Ok(0);
     }
 
-    // AAASM-942: exec the child process here.
-    Ok(())
+    let mut guard = RegistrationGuard {
+        registration_id: handle.registration_id.clone(),
+        api_url: ctx.api_url.clone(),
+        api_key: ctx.api_key.clone(),
+        deregistered: false,
+    };
+
+    let code = spawn_and_wait(cmd, &child_env).await?;
+
+    // Primary deregistration path — async, reliable. Mark the guard first so its
+    // Drop does not fire a duplicate request when the function returns normally.
+    guard.deregistered = true;
+    deregister_with_gateway(&handle.registration_id, ctx).await;
+
+    Ok(code)
 }
 
 /// Launch the specified AI dev tool with governance wiring.
-pub async fn execute(args: RunArgs, ctx: &ResolvedContext) -> Result<()> {
+pub async fn execute(args: RunArgs, ctx: &ResolvedContext) -> Result<i32> {
     let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
     for tool in ["claude", "codex", "copilot", "windsurf"] {
         adapters.insert(tool, resolve_adapter(tool)?);
@@ -345,10 +461,10 @@ pub async fn execute(args: RunArgs, ctx: &ResolvedContext) -> Result<()> {
 pub fn dispatch(args: RunArgs, ctx: &ResolvedContext, _output: OutputFormat) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     match rt.block_on(execute(args, ctx)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::FAILURE
+            std::process::exit(1)
         }
     }
 }
