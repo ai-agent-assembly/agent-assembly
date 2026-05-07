@@ -71,9 +71,7 @@ mod tests {
 
     #[test]
     fn empty_allowlist_rejects_all() {
-        let overlay = ClaudeAiOverlay {
-            mcp_allowlist: vec![],
-        };
+        let overlay = ClaudeAiOverlay { mcp_allowlist: vec![] };
         assert!(overlay.check_mcp_server("filesystem").is_err());
         assert!(overlay.check_mcp_server("github").is_err());
     }

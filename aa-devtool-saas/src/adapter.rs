@@ -112,11 +112,7 @@ impl DevToolAdapter for SaasCodingAgentAdapter {
     /// For Claude.ai, the [`crate::overlay::claude_ai::ClaudeAiOverlay`]
     /// type holds the MCP allowlist and is applied separately by the
     /// operator via the Workspaces API — not by this method.
-    async fn apply_mcp_governance(
-        &self,
-        _allowed: &[String],
-        _denied: &[String],
-    ) -> Result<(), AdapterError> {
+    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
         Ok(())
     }
 

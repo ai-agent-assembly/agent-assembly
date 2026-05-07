@@ -104,8 +104,7 @@ fn verify_raw_hex(
         .and_then(|v| v.to_str().ok())
         .ok_or(SignatureError::MissingHeader)?;
 
-    let received_bytes =
-        hex::decode(header_value).map_err(|_| SignatureError::InvalidSignature)?;
+    let received_bytes = hex::decode(header_value).map_err(|_| SignatureError::InvalidSignature)?;
 
     let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| SignatureError::InvalidSignature)?;
     mac.update(body);

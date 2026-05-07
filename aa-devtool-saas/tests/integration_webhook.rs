@@ -27,25 +27,27 @@ fn compute_hmac(secret: &[u8], body: &[u8]) -> Vec<u8> {
 fn build_test_router(test_secret: &'static [u8]) -> Router {
     Router::new().route(
         "/v1/devtools/saas/{provider}/events",
-        post(move |Path(provider_str): Path<String>, headers: HeaderMap, body: Bytes| async move {
-            use aa_devtool_saas::provider::SaasProvider;
-            use aa_devtool_saas::signature::{self, SignatureError};
+        post(
+            move |Path(provider_str): Path<String>, headers: HeaderMap, body: Bytes| async move {
+                use aa_devtool_saas::provider::SaasProvider;
+                use aa_devtool_saas::signature::{self, SignatureError};
 
-            let provider = match provider_str.as_str() {
-                "claude-ai" => SaasProvider::ClaudeAi,
-                "chatgpt" => SaasProvider::ChatGpt,
-                "cursor-cloud" => SaasProvider::CursorCloud,
-                _ => return StatusCode::BAD_REQUEST,
-            };
+                let provider = match provider_str.as_str() {
+                    "claude-ai" => SaasProvider::ClaudeAi,
+                    "chatgpt" => SaasProvider::ChatGpt,
+                    "cursor-cloud" => SaasProvider::CursorCloud,
+                    _ => return StatusCode::BAD_REQUEST,
+                };
 
-            // Convert axum HeaderMap to http::HeaderMap (same type — axum re-exports http).
-            match signature::verify(&provider, &headers, &body, test_secret) {
-                Ok(()) => StatusCode::ACCEPTED,
-                Err(SignatureError::MissingHeader) | Err(SignatureError::InvalidSignature) => {
-                    StatusCode::UNAUTHORIZED
+                // Convert axum HeaderMap to http::HeaderMap (same type — axum re-exports http).
+                match signature::verify(&provider, &headers, &body, test_secret) {
+                    Ok(()) => StatusCode::ACCEPTED,
+                    Err(SignatureError::MissingHeader) | Err(SignatureError::InvalidSignature) => {
+                        StatusCode::UNAUTHORIZED
+                    }
                 }
-            }
-        }),
+            },
+        ),
     )
 }
 
