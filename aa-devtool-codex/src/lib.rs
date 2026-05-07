@@ -9,6 +9,23 @@
 
 #![warn(missing_docs)]
 
+use std::path::Path;
+
+/// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
+/// version.
+///
+/// Concrete production implementation: [`CommandVersionProbe`], which
+/// runs `<bin> --version` via [`std::process::Command`]. Tests inject a
+/// deterministic stub instead so they don't depend on a real Codex
+/// install.
+pub trait VersionProbe: Send + Sync {
+    /// Run the binary's "report version" entry point and return the
+    /// parsed semver string (e.g. `"0.125.0"`), or `None` when the
+    /// probe failed for any reason (binary missing, non-zero exit,
+    /// unparseable output).
+    fn probe_version(&self, bin: &Path) -> Option<String>;
+}
+
 /// Filename of the Codex CLI binary as installed by `npm install -g @openai/codex`
 /// or by the standalone Homebrew formula.
 pub const CODEX_BIN: &str = "codex";
