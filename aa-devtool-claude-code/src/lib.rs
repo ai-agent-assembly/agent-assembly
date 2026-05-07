@@ -271,3 +271,165 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         GovernanceLevel::L2Enforce
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── extract_semver ──────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_semver_bare_version() {
+        assert_eq!(extract_semver("1.9.2"), Some((1, 9, 2)));
+    }
+
+    #[test]
+    fn extract_semver_prefixed_with_tool_name() {
+        assert_eq!(extract_semver("claude 1.9.2"), Some((1, 9, 2)));
+        assert_eq!(extract_semver("Claude Code 2.0.1"), Some((2, 0, 1)));
+    }
+
+    #[test]
+    fn extract_semver_v_prefix() {
+        assert_eq!(extract_semver("v1.0.0"), Some((1, 0, 0)));
+    }
+
+    #[test]
+    fn extract_semver_patch_with_prerelease_suffix() {
+        assert_eq!(extract_semver("1.0.0-rc1"), Some((1, 0, 0)));
+    }
+
+    #[test]
+    fn extract_semver_non_version_string_returns_none() {
+        assert_eq!(extract_semver("not a version"), None);
+    }
+
+    #[test]
+    fn extract_semver_two_part_version_returns_none() {
+        assert_eq!(extract_semver("1.0"), None);
+    }
+
+    #[test]
+    fn extract_semver_empty_returns_none() {
+        assert_eq!(extract_semver(""), None);
+    }
+
+    // ── version_meets_minimum ───────────────────────────────────────────────
+
+    #[test]
+    fn version_meets_minimum_equal_to_min() {
+        assert!(version_meets_minimum(MIN_VERSION, MIN_VERSION));
+    }
+
+    #[test]
+    fn version_meets_minimum_major_above() {
+        assert!(version_meets_minimum("2.0.0", MIN_VERSION));
+    }
+
+    #[test]
+    fn version_meets_minimum_minor_above() {
+        assert!(version_meets_minimum("1.1.0", MIN_VERSION));
+    }
+
+    #[test]
+    fn version_meets_minimum_patch_above() {
+        assert!(version_meets_minimum("1.0.1", MIN_VERSION));
+    }
+
+    #[test]
+    fn version_meets_minimum_below_min() {
+        assert!(!version_meets_minimum("0.9.9", MIN_VERSION));
+        assert!(!version_meets_minimum("0.0.1", MIN_VERSION));
+    }
+
+    #[test]
+    fn version_meets_minimum_unparseable_returns_false() {
+        assert!(!version_meets_minimum("not-a-version", MIN_VERSION));
+        assert!(!version_meets_minimum(MIN_VERSION, "also-bad"));
+    }
+
+    // ── ClaudeCodeAdapter::detect ───────────────────────────────────────────
+
+    #[test]
+    fn detect_returns_none_for_nonexistent_binary_override() {
+        let adapter =
+            ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
+        assert!(adapter.detect().is_none());
+    }
+
+    #[test]
+    fn governance_level_is_l2_enforce() {
+        assert_eq!(
+            ClaudeCodeAdapter::new().governance_level(),
+            GovernanceLevel::L2Enforce
+        );
+    }
+
+    #[test]
+    fn default_equals_new() {
+        let a = ClaudeCodeAdapter::new();
+        let b = ClaudeCodeAdapter::default();
+        // Both use the same code path; verifying they don't panic is sufficient.
+        assert_eq!(a.governance_level(), b.governance_level());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_returns_none_for_version_below_minimum() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "#!/bin/sh\necho '0.9.9'\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        assert!(adapter.detect().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_returns_some_for_valid_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "#!/bin/sh\necho '1.9.2'\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        let info = adapter.detect().expect("should detect stub binary");
+        assert_eq!(info.kind, DevToolKind::ClaudeCode);
+        assert_eq!(info.version.as_deref(), Some("1.9.2"));
+        assert_eq!(info.governance_level, GovernanceLevel::L2Enforce);
+        assert!(info.supports_mcp);
+        assert!(info.supports_managed_settings);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_normalizes_version_with_prefix() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "#!/bin/sh\necho 'claude 2.1.0'\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        let info = adapter.detect().unwrap();
+        assert_eq!(info.version.as_deref(), Some("2.1.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dot_claude_marker_found_when_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dot_claude = tmp.path().join(".claude");
+        std::fs::create_dir(&dot_claude).unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(None, Some(tmp.path().to_path_buf()));
+        assert_eq!(adapter.dot_claude_marker(), Some(dot_claude));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dot_claude_marker_absent_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(None, Some(tmp.path().to_path_buf()));
+        assert!(adapter.dot_claude_marker().is_none());
+    }
+}
