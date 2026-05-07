@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "windsurf-mcp-fs",
+      "args": ["--root", "/workspace"]
+    },
+    "github": {
+      "command": "windsurf-mcp-github",
+      "args": ["--token-env", "GITHUB_TOKEN"]
+    },
+    "internal-search": {
+      "command": "windsurf-mcp-search",
+      "args": []
+    }
+  }
+}
