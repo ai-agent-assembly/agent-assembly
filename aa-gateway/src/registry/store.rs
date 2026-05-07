@@ -366,3 +366,21 @@ impl Default for AgentRegistry {
         Self::new()
     }
 }
+
+/// Point-in-time snapshot of registry-wide topology statistics.
+#[derive(Debug, Clone)]
+pub struct AgentGraph {
+    /// Number of currently registered agents per team.
+    pub team_stats: std::collections::HashMap<String, usize>,
+}
+
+impl AgentGraph {
+    /// Build a snapshot from the current registry state.
+    pub fn from_registry(registry: &AgentRegistry) -> Self {
+        let mut team_stats = std::collections::HashMap::new();
+        for entry in registry.team_index.iter() {
+            team_stats.insert(entry.key().clone(), entry.value().len());
+        }
+        Self { team_stats }
+    }
+}
