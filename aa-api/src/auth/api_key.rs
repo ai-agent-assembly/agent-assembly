@@ -2,10 +2,9 @@
 
 use std::path::Path;
 
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use rand::Rng;
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,7 +45,7 @@ impl ApiKey {
     ///
     /// Returns the `ApiKey` and the plaintext string (for display to the user).
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut hex_bytes = [0u8; API_KEY_HEX_LEN / 2];
         rng.fill(&mut hex_bytes);
         let hex = hex::encode(&hex_bytes);
@@ -60,7 +59,10 @@ impl ApiKey {
 
     /// Hash this key using argon2 for secure storage.
     pub fn hash(&self) -> Result<String, ApiKeyError> {
-        let salt = SaltString::generate(&mut OsRng);
+        let mut rng = rand::rng();
+        let mut salt_bytes = [0u8; 16];
+        rng.fill(&mut salt_bytes);
+        let salt = SaltString::encode_b64(&salt_bytes).map_err(|e| ApiKeyError::HashError(e.to_string()))?;
         let argon2 = Argon2::default();
         let hash = argon2
             .hash_password(self.0.as_bytes(), &salt)
