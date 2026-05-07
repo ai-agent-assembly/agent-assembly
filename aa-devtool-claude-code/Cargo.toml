@@ -1,0 +1,20 @@
+[package]
+name = "aa-devtool-claude-code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DevToolAdapter implementation for Anthropic Claude Code CLI"
+
+[dependencies]
+aa-core = { path = "../aa-core", features = ["std", "serde"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
