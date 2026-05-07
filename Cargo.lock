@@ -43,6 +43,7 @@ name = "aa-cli"
 version = "0.0.1"
 dependencies = [
  "aa-core",
+ "aa-devtool-windsurf",
  "aa-gateway",
  "anyhow",
  "async-trait",

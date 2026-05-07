@@ -15,6 +15,7 @@ use tokio::signal::unix::SignalKind;
 use aa_core::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument, PolicyRule,
 };
+use aa_devtool_windsurf::WindsurfCascadeAdapter;
 
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
@@ -311,7 +312,7 @@ fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
         "claude" => Ok(Box::new(PlaceholderAdapter)),
         "codex" => Ok(Box::new(PlaceholderAdapter)),
         "copilot" => Ok(Box::new(PlaceholderAdapter)),
-        "windsurf" => Ok(Box::new(PlaceholderAdapter)),
+        "windsurf" => Ok(Box::new(WindsurfCascadeAdapter::new())),
         _ => Err(anyhow::anyhow!(
             "unknown tool: {tool}, supported: claude, codex, copilot, windsurf"
         )),

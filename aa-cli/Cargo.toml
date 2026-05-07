@@ -11,8 +11,9 @@ name = "aasm"
 path = "src/main.rs"
 
 [dependencies]
-aa-core        = { path = "../aa-core" }
-aa-gateway     = { path = "../aa-gateway" }
+aa-core              = { path = "../aa-core" }
+aa-devtool-windsurf  = { path = "../aa-devtool-windsurf" }
+aa-gateway           = { path = "../aa-gateway" }
 anyhow         = "1"
 async-trait    = "0.1"
 chrono         = { version = "0.4", features = ["serde"] }
