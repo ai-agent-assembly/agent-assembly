@@ -12,10 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{
-    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo,
-    PolicyDocument,
-};
+use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
 use async_trait::async_trait;
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
@@ -187,10 +184,7 @@ impl DevToolAdapter for CodexAdapter {
         })
     }
 
-    async fn generate_managed_settings(
-        &self,
-        _policy: &PolicyDocument,
-    ) -> Result<String, AdapterError> {
+    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
         // Sandbox + approval translation lands in AAASM-978 / AAASM-983.
         unimplemented!("generate_managed_settings — implemented in AAASM-978 / AAASM-983")
     }
@@ -217,11 +211,7 @@ impl DevToolAdapter for CodexAdapter {
         Ok(Vec::new())
     }
 
-    async fn apply_mcp_governance(
-        &self,
-        _allowed: &[String],
-        _denied: &[String],
-    ) -> Result<(), AdapterError> {
+    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
         // Codex does not expose MCP governance; the trait contract for tools
         // without MCP support is to return Ok(()) without performing any work.
         Ok(())
@@ -261,11 +251,7 @@ mod tests {
         }
     }
 
-    fn adapter(
-        path_result: Option<PathBuf>,
-        npm_result: Option<PathBuf>,
-        version: Option<String>,
-    ) -> CodexAdapter {
+    fn adapter(path_result: Option<PathBuf>, npm_result: Option<PathBuf>, version: Option<String>) -> CodexAdapter {
         CodexAdapter::new(
             Box::new(StubLocator {
                 path_result,
@@ -316,10 +302,7 @@ mod tests {
 
     #[test]
     fn parse_version_handles_codex_cli_prefix() {
-        assert_eq!(
-            parse_codex_version("codex-cli 0.125.0\n").as_deref(),
-            Some("0.125.0")
-        );
+        assert_eq!(parse_codex_version("codex-cli 0.125.0\n").as_deref(), Some("0.125.0"));
     }
 
     #[test]
@@ -343,9 +326,6 @@ mod tests {
 
     #[test]
     fn governance_level_is_l2_enforce() {
-        assert_eq!(
-            CodexAdapter::default().governance_level(),
-            GovernanceLevel::L2Enforce
-        );
+        assert_eq!(CodexAdapter::default().governance_level(), GovernanceLevel::L2Enforce);
     }
 }
