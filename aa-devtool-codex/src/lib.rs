@@ -9,7 +9,7 @@
 
 #![warn(missing_docs)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
@@ -25,6 +25,56 @@ pub trait VersionProbe: Send + Sync {
     /// probe failed for any reason (binary missing, non-zero exit,
     /// unparseable output).
     fn probe_version(&self, bin: &Path) -> Option<String>;
+}
+
+/// Hook a [`CodexAdapter`] uses to discover the Codex binary on the host.
+///
+/// Two strategies are exposed independently so tests can verify the
+/// "PATH succeeds, npm-fallback never consulted" and "PATH fails, npm-
+/// fallback wins" cases without spawning real subprocesses or scrubbing
+/// `$PATH`.
+pub trait BinaryLocator: Send + Sync {
+    /// Look up the Codex binary on `$PATH` (the primary discovery path).
+    /// Returns the absolute install path or `None` if not on `$PATH`.
+    fn locate_via_path(&self) -> Option<PathBuf>;
+
+    /// Look up the Codex binary inside the npm-global install directory
+    /// (the fallback discovery path). Returns the absolute install path
+    /// or `None` when npm is not installed, `npm root -g` fails, or the
+    /// expected `<npm-root>/@openai/codex/bin/codex` file does not
+    /// exist.
+    fn locate_via_npm_global(&self) -> Option<PathBuf>;
+}
+
+/// Production [`BinaryLocator`] consulting `$PATH` (via the `which`
+/// crate) and the npm-global install directory (via `npm root -g`).
+///
+/// The npm fallback is only invoked when the `which` lookup misses,
+/// matching the AAASM-971 AC's "fallback: check npm global install"
+/// contract.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultBinaryLocator;
+
+impl BinaryLocator for DefaultBinaryLocator {
+    fn locate_via_path(&self) -> Option<PathBuf> {
+        which::which(CODEX_BIN).ok()
+    }
+
+    fn locate_via_npm_global(&self) -> Option<PathBuf> {
+        let output = Command::new("npm").args(["root", "-g"]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let root = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        let candidate = PathBuf::from(root)
+            .join(NPM_PACKAGE_NAME)
+            .join(NPM_PACKAGE_BIN_RELATIVE);
+        if candidate.is_file() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
 }
 
 /// Production [`VersionProbe`] backed by [`std::process::Command`]. Runs
