@@ -158,6 +158,7 @@ async fn report_events_ingests_batch() {
             parent_span_id: String::new(),
             detail: None,
             labels: Default::default(),
+            ..Default::default()
         },
         AuditEvent {
             event_id: "evt-2".into(),
@@ -176,6 +177,7 @@ async fn report_events_ingests_batch() {
             parent_span_id: String::new(),
             detail: None,
             labels: Default::default(),
+            ..Default::default()
         },
     ];
 
@@ -228,6 +230,7 @@ async fn stream_events_ingests_client_stream() {
             parent_span_id: String::new(),
             detail: None,
             labels: Default::default(),
+            ..Default::default()
         },
         AuditEvent {
             event_id: "stream-2".into(),
@@ -246,6 +249,7 @@ async fn stream_events_ingests_client_stream() {
             parent_span_id: String::new(),
             detail: None,
             labels: Default::default(),
+            ..Default::default()
         },
         AuditEvent {
             event_id: "stream-3".into(),
@@ -264,6 +268,7 @@ async fn stream_events_ingests_client_stream() {
             parent_span_id: String::new(),
             detail: None,
             labels: Default::default(),
+            ..Default::default()
         },
     ];
 
