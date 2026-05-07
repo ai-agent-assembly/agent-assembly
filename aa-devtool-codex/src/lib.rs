@@ -231,3 +231,121 @@ impl DevToolAdapter for CodexAdapter {
         GovernanceLevel::L2Enforce
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stub locator returning canned PATH / npm-fallback results so
+    /// `detect()` tests don't depend on a real Codex install.
+    struct StubLocator {
+        path_result: Option<PathBuf>,
+        npm_result: Option<PathBuf>,
+    }
+
+    impl BinaryLocator for StubLocator {
+        fn locate_via_path(&self) -> Option<PathBuf> {
+            self.path_result.clone()
+        }
+        fn locate_via_npm_global(&self) -> Option<PathBuf> {
+            self.npm_result.clone()
+        }
+    }
+
+    /// Stub probe returning a canned version string.
+    struct StubProbe(Option<String>);
+
+    impl VersionProbe for StubProbe {
+        fn probe_version(&self, _bin: &Path) -> Option<String> {
+            self.0.clone()
+        }
+    }
+
+    fn adapter(
+        path_result: Option<PathBuf>,
+        npm_result: Option<PathBuf>,
+        version: Option<String>,
+    ) -> CodexAdapter {
+        CodexAdapter::new(
+            Box::new(StubLocator {
+                path_result,
+                npm_result,
+            }),
+            Box::new(StubProbe(version)),
+        )
+    }
+
+    #[test]
+    fn detect_returns_none_when_locator_finds_nothing() {
+        assert!(adapter(None, None, None).detect().is_none());
+    }
+
+    #[test]
+    fn detect_finds_via_path_with_full_devtool_info() {
+        let path = PathBuf::from("/usr/local/bin/codex");
+        let info = adapter(Some(path.clone()), None, Some("0.125.0".into()))
+            .detect()
+            .expect("PATH hit should produce DevToolInfo");
+        assert_eq!(info.kind, DevToolKind::Codex);
+        assert_eq!(info.install_path, path);
+        assert_eq!(info.version.as_deref(), Some("0.125.0"));
+        assert_eq!(info.governance_level, GovernanceLevel::L2Enforce);
+        assert!(info.supports_managed_settings);
+        assert!(!info.supports_mcp);
+    }
+
+    #[test]
+    fn detect_falls_back_to_npm_global_when_path_misses() {
+        let path = PathBuf::from("/opt/npm/global/@openai/codex/bin/codex");
+        let info = adapter(None, Some(path.clone()), Some("0.34.0".into()))
+            .detect()
+            .expect("npm fallback should produce DevToolInfo");
+        assert_eq!(info.install_path, path);
+        assert_eq!(info.version.as_deref(), Some("0.34.0"));
+    }
+
+    #[test]
+    fn detect_handles_unknown_version() {
+        let path = PathBuf::from("/usr/local/bin/codex");
+        let info = adapter(Some(path.clone()), None, None)
+            .detect()
+            .expect("unparseable version is not a detection failure");
+        assert_eq!(info.install_path, path);
+        assert!(info.version.is_none());
+    }
+
+    #[test]
+    fn parse_version_handles_codex_cli_prefix() {
+        assert_eq!(
+            parse_codex_version("codex-cli 0.125.0\n").as_deref(),
+            Some("0.125.0")
+        );
+    }
+
+    #[test]
+    fn parse_version_handles_bare_semver() {
+        assert_eq!(parse_codex_version("0.5.1").as_deref(), Some("0.5.1"));
+    }
+
+    #[test]
+    fn parse_version_handles_arbitrary_prefix() {
+        assert_eq!(
+            parse_codex_version("Codex CLI version 0.34.0").as_deref(),
+            Some("0.34.0")
+        );
+    }
+
+    #[test]
+    fn parse_version_returns_none_for_no_digit_token() {
+        assert!(parse_codex_version("").is_none());
+        assert!(parse_codex_version("not a version").is_none());
+    }
+
+    #[test]
+    fn governance_level_is_l2_enforce() {
+        assert_eq!(
+            CodexAdapter::default().governance_level(),
+            GovernanceLevel::L2Enforce
+        );
+    }
+}
