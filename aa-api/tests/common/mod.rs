@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aa_api::alerts::store::InMemoryAlertStore;
+use aa_devtool::DiscoveryService;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
@@ -138,6 +139,7 @@ spec:
         audit_reader,
         startup_time: Instant::now(),
         active_connections: Arc::new(AtomicI64::new(0)),
+        discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
     }
 }
 

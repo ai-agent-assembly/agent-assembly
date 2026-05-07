@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
+use aa_devtool::DiscoveryService;
+
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::PolicyHistoryStore;
@@ -59,4 +61,6 @@ pub struct AppState {
     pub startup_time: Instant,
     /// Number of currently active WebSocket/SSE connections.
     pub active_connections: Arc<AtomicI64>,
+    /// Dev tool auto-discovery service.
+    pub discovery: Arc<DiscoveryService>,
 }

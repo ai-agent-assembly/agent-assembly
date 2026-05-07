@@ -11,6 +11,7 @@ pub mod devtools;
 pub mod health;
 pub mod logs;
 pub mod policies;
+pub mod tools;
 pub mod traces;
 
 use axum::routing::{get, post};
@@ -52,6 +53,8 @@ pub fn v1_router() -> Router {
             "/devtools/saas/{provider}/events",
             post(devtools::saas_webhook),
         )
+        // Tools
+        .route("/tools", get(tools::list_tools))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.
