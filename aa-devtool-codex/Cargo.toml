@@ -1,0 +1,15 @@
+[package]
+name = "aa-devtool-codex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DevToolAdapter implementation for the OpenAI Codex CLI (AAASM-202 / F75)."
+
+[dependencies]
+aa-core      = { path = "../aa-core", features = ["std", "alloc", "serde"] }
+async-trait  = "0.1"
+which        = "8"
+
+[lints]
+workspace = true
