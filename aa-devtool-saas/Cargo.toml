@@ -1,0 +1,26 @@
+[package]
+name = "aa-devtool-saas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SaaS coding-agent observability adapter (L0–L1) for Agent Assembly dev tool governance"
+publish = false
+
+[dependencies]
+aa-core     = { path = "../aa-core", features = ["std", "serde"] }
+async-trait = "0.1"
+hex         = "0.4"
+hmac        = "0.12"
+http        = "1"
+serde       = { version = "1", features = ["derive"] }
+sha2        = "0.10"
+thiserror   = "2"
+
+[dev-dependencies]
+axum       = { version = "0.8", features = ["ws"] }
+serde_json = "1"
+tokio      = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
