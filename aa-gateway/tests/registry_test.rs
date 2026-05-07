@@ -37,6 +37,8 @@ fn make_record(key: [u8; 16]) -> AgentRecord {
         delegation_reason: None,
         spawned_by_tool: None,
         root_agent_id: None,
+        children: Vec::new(),
+        parent_key: None,
     }
 }
 
@@ -239,6 +241,8 @@ async fn concurrent_registration_of_100_agents() {
                 delegation_reason: None,
                 spawned_by_tool: None,
                 root_agent_id: None,
+                children: Vec::new(),
+                parent_key: None,
             };
             reg.register(record).unwrap();
         }));

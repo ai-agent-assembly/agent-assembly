@@ -138,6 +138,8 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             delegation_reason: req.delegation_reason,
             spawned_by_tool: req.spawned_by_tool,
             root_agent_id,
+            children: Vec::new(),
+            parent_key: None,
         };
 
         self.registry

@@ -114,6 +114,10 @@ pub struct AgentRecord {
     /// `parent.root_agent_id.unwrap_or(parent.agent_id)` so any node can
     /// resolve its root in O(1) without walking the parent chain.
     pub root_agent_id: Option<[u8; 16]>,
+    /// Registry keys of agents directly spawned by this agent.
+    pub children: Vec<[u8; 16]>,
+    /// Registry key of the parent that spawned this agent; `None` for root agents.
+    pub parent_key: Option<[u8; 16]>,
 }
 
 /// Channel sender type for pushing [`ControlCommand`]s to an agent's control stream.
