@@ -127,6 +127,38 @@ pub const NPM_PACKAGE_NAME: &str = "@openai/codex";
 /// relative to `npm root -g`/`@openai/codex`.
 pub const NPM_PACKAGE_BIN_RELATIVE: &str = "bin/codex";
 
-/// Placeholder; the real `CodexAdapter` is added in subsequent commits
-/// in this same Subtask.
-pub struct CodexAdapter;
+/// `DevToolAdapter` for the OpenAI Codex CLI.
+///
+/// Construct via [`CodexAdapter::default`] for production use (uses the
+/// shipped [`DefaultBinaryLocator`] and [`CommandVersionProbe`]); call
+/// [`CodexAdapter::new`] in tests to inject stub implementations of the
+/// two hooks.
+pub struct CodexAdapter {
+    locator: Box<dyn BinaryLocator>,
+    probe: Box<dyn VersionProbe>,
+}
+
+impl CodexAdapter {
+    /// Build an adapter with custom hook implementations. Only useful
+    /// in tests; production code should use [`Self::default`].
+    pub fn new(locator: Box<dyn BinaryLocator>, probe: Box<dyn VersionProbe>) -> Self {
+        Self { locator, probe }
+    }
+}
+
+impl Default for CodexAdapter {
+    fn default() -> Self {
+        Self {
+            locator: Box::new(DefaultBinaryLocator),
+            probe: Box::new(CommandVersionProbe),
+        }
+    }
+}
+
+impl std::fmt::Debug for CodexAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The trait-object hooks aren't `Debug`; surface the type name
+        // instead so logs aren't cluttered with implementation pointers.
+        f.debug_struct("CodexAdapter").finish_non_exhaustive()
+    }
+}
