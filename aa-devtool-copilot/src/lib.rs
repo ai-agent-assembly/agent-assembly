@@ -37,7 +37,7 @@ use aa_core::{
     PolicyDocument,
 };
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Minimum `github.copilot` extension version this adapter supports.
 pub const MIN_COPILOT_VERSION: &str = "1.226.0";
@@ -75,6 +75,9 @@ pub struct CopilotAdapter {
     /// Override for the VS Code user-settings JSON path. When `None` the
     /// adapter resolves the platform default at apply time.
     settings_path: Option<PathBuf>,
+    /// Path to `.vscode/mcp.json` for MCP server discovery. When `None`
+    /// `list_mcp_servers` returns an empty list (workspace path not known).
+    mcp_config_path: Option<PathBuf>,
 }
 
 impl CopilotAdapter {
@@ -83,6 +86,7 @@ impl CopilotAdapter {
         Self {
             extensions_dir: None,
             settings_path: None,
+            mcp_config_path: None,
         }
     }
 
@@ -92,6 +96,7 @@ impl CopilotAdapter {
         Self {
             extensions_dir: Some(extensions_dir.into()),
             settings_path: None,
+            mcp_config_path: None,
         }
     }
 
@@ -104,6 +109,26 @@ impl CopilotAdapter {
         Self {
             extensions_dir: Some(extensions_dir.into()),
             settings_path: Some(settings_path.into()),
+            mcp_config_path: None,
+        }
+    }
+
+    /// Create an adapter with overrides for all three filesystem paths:
+    /// extensions directory, VS Code settings file, and `.vscode/mcp.json`.
+    /// Useful in tests that exercise both [`apply_settings`] and
+    /// [`list_mcp_servers`].
+    ///
+    /// [`apply_settings`]: CopilotAdapter::apply_settings
+    /// [`list_mcp_servers`]: CopilotAdapter::list_mcp_servers
+    pub fn with_all_paths(
+        extensions_dir: impl Into<PathBuf>,
+        settings_path: impl Into<PathBuf>,
+        mcp_config_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            extensions_dir: Some(extensions_dir.into()),
+            settings_path: Some(settings_path.into()),
+            mcp_config_path: Some(mcp_config_path.into()),
         }
     }
 
@@ -119,6 +144,10 @@ impl CopilotAdapter {
             return Some(p.clone());
         }
         default_settings_path()
+    }
+
+    fn resolve_mcp_config_path(&self) -> Option<PathBuf> {
+        self.mcp_config_path.clone()
     }
 
     fn find_copilot_extension(extensions_dir: &Path) -> Option<(PathBuf, String)> {
@@ -171,6 +200,20 @@ struct CopilotVsCodeSettings {
     /// Explicit MCP server:tool deny list derived from policy rules.
     #[serde(rename = "chat.mcp.deny")]
     mcp_deny: Vec<String>,
+}
+
+/// Top-level shape of `.vscode/mcp.json`.
+#[derive(Debug, Deserialize)]
+struct VsCodeMcpConfig {
+    servers: std::collections::HashMap<String, VsCodeMcpEntry>,
+}
+
+/// Per-server entry inside `VsCodeMcpConfig.servers`.
+#[derive(Debug, Deserialize)]
+struct VsCodeMcpEntry {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
 }
 
 fn read_package_version(extension_dir: &Path) -> Option<String> {
@@ -302,14 +345,44 @@ impl DevToolAdapter for CopilotAdapter {
         ))
     }
 
+    /// Read `.vscode/mcp.json` and return one [`McpServerInfo`] per entry in
+    /// the `"servers"` map. Returns an empty list when `mcp_config_path` was
+    /// not set or the file does not exist — VS Code workspaces without an MCP
+    /// config are a normal operating state.
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        // Implemented in AAASM-1006.
-        Ok(vec![])
+        let path = match self.resolve_mcp_config_path() {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let config: VsCodeMcpConfig =
+            serde_json::from_str(&raw).map_err(|e| AdapterError::McpConfigFailed(format!("parse failed: {e}")))?;
+        Ok(config
+            .servers
+            .into_iter()
+            .map(|(name, entry)| McpServerInfo {
+                name,
+                command: entry.command,
+                args: entry.args,
+            })
+            .collect())
     }
 
-    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
-        // Implemented in AAASM-1006.
-        Ok(())
+    /// Write `denied` into `chat.mcp.deny` in the VS Code settings file by
+    /// delegating to [`apply_settings`]. The `allowed` list is not surfaced
+    /// in VS Code settings (Copilot does not support an explicit allow-list
+    /// knob at the tool level).
+    ///
+    /// [`apply_settings`]: Self::apply_settings
+    async fn apply_mcp_governance(&self, _allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
+        let patch = serde_json::to_string_pretty(&serde_json::json!({
+            "chat.mcp.deny": denied
+        }))
+        .map_err(|e| AdapterError::Serde(e.to_string()))?;
+        self.apply_settings(&patch).await
     }
 
     fn governance_level(&self) -> GovernanceLevel {
@@ -525,5 +598,112 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         let deny = v["chat.mcp.deny"].as_array().unwrap();
         assert_eq!(deny.len(), 1, "idempotent apply must not duplicate deny entries");
+    }
+
+    // ---- list_mcp_servers() tests ------------------------------------------
+
+    fn write_mcp_json(dir: &Path, content: &str) -> PathBuf {
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_without_config_path() {
+        let adapter = CopilotAdapter::new();
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_when_file_missing() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = CopilotAdapter::with_all_paths(tmp.path(), tmp.path().join("s.json"), tmp.path().join("no.json"));
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_parses_vscode_mcp_json() {
+        let tmp = TempDir::new().unwrap();
+        let mcp_path = write_mcp_json(
+            tmp.path(),
+            r#"{
+              "servers": {
+                "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] },
+                "github":     { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }
+              }
+            }"#,
+        );
+        let adapter = CopilotAdapter::with_all_paths(tmp.path(), tmp.path().join("s.json"), &mcp_path);
+        let mut servers = adapter.list_mcp_servers().await.unwrap();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "filesystem");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(servers[1].name, "github");
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_entry_with_no_args() {
+        let tmp = TempDir::new().unwrap();
+        let mcp_path = write_mcp_json(
+            tmp.path(),
+            r#"{ "servers": { "minimal": { "command": "/usr/local/bin/mcp-server" } } }"#,
+        );
+        let adapter = CopilotAdapter::with_all_paths(tmp.path(), tmp.path().join("s.json"), &mcp_path);
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].args, Vec::<String>::new());
+    }
+
+    // ---- apply_mcp_governance() tests --------------------------------------
+
+    #[tokio::test]
+    async fn apply_mcp_governance_writes_denied_to_settings() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter
+            .apply_mcp_governance(&[], &["filesystem:write_file".to_string(), "github:push".to_string()])
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let deny = v["chat.mcp.deny"].as_array().unwrap();
+        assert!(deny.contains(&serde_json::json!("filesystem:write_file")));
+        assert!(deny.contains(&serde_json::json!("github:push")));
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_empty_denied_clears_deny_list() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        // Pre-populate with a deny entry.
+        std::fs::write(&settings_file, r#"{"chat.mcp.deny": ["old:entry"]}"#).unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter.apply_mcp_governance(&[], &[]).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let deny = v["chat.mcp.deny"].as_array().unwrap();
+        assert!(deny.is_empty(), "empty denied list must overwrite prior entries");
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_preserves_other_settings() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, r#"{"editor.tabSize": 4}"#).unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter
+            .apply_mcp_governance(&[], &["github:push".to_string()])
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["editor.tabSize"], 4, "unrelated settings must be preserved");
     }
 }
