@@ -108,6 +108,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-devtool-windsurf"
+version = "0.0.1"
+dependencies = [
+ "aa-core",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "aa-ebpf"
 version = "0.0.1"
 dependencies = [
