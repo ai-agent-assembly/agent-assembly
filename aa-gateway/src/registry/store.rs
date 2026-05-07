@@ -134,6 +134,8 @@ pub struct AgentRegistry {
     agents: DashMap<[u8; 16], AgentRecord>,
     /// Per-agent control stream senders. Created when an agent opens a `ControlStream`.
     control_senders: DashMap<[u8; 16], ControlSender>,
+    /// Secondary index mapping team_id → set of agent registry keys.
+    team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
 }
 
 impl AgentRegistry {
@@ -142,19 +144,38 @@ impl AgentRegistry {
         Self {
             agents: DashMap::new(),
             control_senders: DashMap::new(),
+            team_index: DashMap::new(),
         }
     }
 
     /// Insert a new agent record. Returns an error if the ID is already registered.
     pub fn register(&self, record: AgentRecord) -> Result<(), RegistryError> {
         use dashmap::mapref::entry::Entry;
+        // Capture before moving record into the map.
+        let agent_id = record.agent_id;
+        let parent_key = record.parent_key;
+        let team_id = record.team_id.clone();
+
         match self.agents.entry(record.agent_id) {
-            Entry::Occupied(_) => Err(RegistryError::AlreadyRegistered(record.agent_id)),
+            Entry::Occupied(_) => return Err(RegistryError::AlreadyRegistered(record.agent_id)),
             Entry::Vacant(v) => {
                 v.insert(record);
-                Ok(())
             }
         }
+
+        // Child is now inserted; update parent's children list.
+        if let Some(pk) = parent_key {
+            if let Some(mut parent) = self.agents.get_mut(&pk) {
+                parent.children.push(agent_id);
+            }
+        }
+
+        // Maintain team_index.
+        if let Some(tid) = team_id {
+            self.team_index.entry(tid).or_default().insert(agent_id);
+        }
+
+        Ok(())
     }
 
     /// Look up an agent by ID. Returns `None` if not found.
@@ -167,10 +188,26 @@ impl AgentRegistry {
     /// Also removes any associated control stream sender.
     pub fn deregister(&self, agent_id: &[u8; 16]) -> Result<AgentRecord, RegistryError> {
         self.control_senders.remove(agent_id);
-        self.agents
+        let (_, record) = self
+            .agents
             .remove(agent_id)
-            .map(|(_, record)| record)
-            .ok_or(RegistryError::NotFound(*agent_id))
+            .ok_or(RegistryError::NotFound(*agent_id))?;
+
+        // Remove from parent's children list.
+        if let Some(pk) = record.parent_key {
+            if let Some(mut parent) = self.agents.get_mut(&pk) {
+                parent.children.retain(|&k| k != *agent_id);
+            }
+        }
+
+        // Remove from team_index.
+        if let Some(ref tid) = record.team_id {
+            if let Some(set) = self.team_index.get(tid) {
+                set.remove(agent_id);
+            }
+        }
+
+        Ok(record)
     }
 
     /// Update the `last_heartbeat` timestamp for an agent to now.
