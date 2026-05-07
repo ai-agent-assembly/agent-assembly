@@ -7,6 +7,7 @@ pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod costs;
+pub mod devtools;
 pub mod health;
 pub mod logs;
 pub mod policies;
@@ -46,6 +47,11 @@ pub fn v1_router() -> Router {
         .route("/costs", get(costs::get_cost_summary))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
+        // Dev tool webhooks
+        .route(
+            "/devtools/saas/{provider}/events",
+            post(devtools::saas_webhook),
+        )
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.
