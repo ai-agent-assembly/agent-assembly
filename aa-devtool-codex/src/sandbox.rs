@@ -35,6 +35,43 @@ pub enum CodexSandboxMode {
     Ask,
 }
 
+/// Action-pattern prefix that marks a network-domain rule.
+///
+/// Rules whose `action_pattern` starts with `"network:"` carry a domain
+/// (or glob) immediately after the colon. The domain is extracted into
+/// the allow list when `decision` is [`Allow`], or into the block list
+/// when `decision` is [`Deny`].
+///
+/// [`Allow`]: PolicyDecision::Allow
+/// [`Deny`]: PolicyDecision::Deny
+const NETWORK_PREFIX: &str = "network:";
+
+/// Extract network domains from policy rules that should be **allowed**.
+///
+/// Returns every domain (or glob) `D` where a rule with
+/// `action_pattern = "network:<D>"` and `decision = Allow` exists.
+pub fn network_allow_list(policy: &PolicyDocument) -> Vec<String> {
+    policy
+        .rules
+        .iter()
+        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Allow)
+        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
+        .collect()
+}
+
+/// Extract network domains from policy rules that should be **blocked**.
+///
+/// Returns every domain (or glob) `D` where a rule with
+/// `action_pattern = "network:<D>"` and `decision = Deny` exists.
+pub fn network_block_list(policy: &PolicyDocument) -> Vec<String> {
+    policy
+        .rules
+        .iter()
+        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Deny)
+        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
+        .collect()
+}
+
 /// Action-pattern prefix used in [`PolicyRule`]s to express an explicit
 /// Codex sandbox-mode override.
 ///
