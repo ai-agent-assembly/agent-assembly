@@ -7,6 +7,7 @@
 pub mod api_key;
 pub mod config;
 pub mod jwt;
+pub mod policy_auth;
 pub mod rate_limit;
 pub mod scope;
 
