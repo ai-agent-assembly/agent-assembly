@@ -58,7 +58,7 @@ pub use evaluators::{DenyAllEvaluator, PermitAllEvaluator};
 pub use audit::{AuditEntry, AuditEventType, AuditLog, AuditLogError, Lineage};
 
 #[cfg(feature = "alloc")]
-pub use capability::{Capability, CapabilitySet};
+pub use capability::{action_to_capability, merge_capabilities, Capability, CapabilitySet};
 
 #[cfg(feature = "std")]
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};

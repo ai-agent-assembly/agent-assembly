@@ -84,6 +84,61 @@ impl core::fmt::Display for Capability {
     }
 }
 
+/// Merge a parent [`CapabilitySet`] with a child [`CapabilitySet`] using
+/// parent-deny-wins semantics.
+///
+/// Rules:
+/// - `deny` = union of both deny sets; parent deny always wins over child allow.
+/// - `allow`:
+///   - Both empty → empty (no allow-list restriction).
+///   - Parent empty, child non-empty → `child.allow` minus merged deny.
+///   - Parent non-empty, child empty → `parent.allow` minus merged deny.
+///   - Both non-empty → intersection of `parent.allow` and `child.allow`, minus merged deny.
+#[cfg(feature = "alloc")]
+pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> CapabilitySet {
+    // deny = union of both deny sets
+    let deny: BTreeSet<Capability> = parent.deny.union(&child.deny).cloned().collect();
+
+    let allow: BTreeSet<Capability> = match (parent.allow.is_empty(), child.allow.is_empty()) {
+        // Both empty → no allow-list restriction
+        (true, true) => BTreeSet::new(),
+        // Parent empty, child non-empty → use child.allow
+        (true, false) => child.allow.difference(&deny).cloned().collect(),
+        // Parent non-empty, child empty → use parent.allow
+        (false, true) => parent.allow.difference(&deny).cloned().collect(),
+        // Both non-empty → intersection, then subtract deny
+        (false, false) => parent
+            .allow
+            .intersection(&child.allow)
+            .filter(|c| !deny.contains(c))
+            .cloned()
+            .collect(),
+    };
+
+    CapabilitySet { allow, deny }
+}
+
+/// Map a [`crate::GovernanceAction`] to the [`Capability`] it exercises,
+/// or `None` if the action does not map to a known capability.
+#[cfg(feature = "alloc")]
+pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capability> {
+    use crate::policy::FileMode;
+    use crate::GovernanceAction;
+
+    match action {
+        GovernanceAction::ToolCall { name, .. } => Some(Capability::McpTool(name.clone())),
+        GovernanceAction::FileAccess {
+            mode: FileMode::Read, ..
+        } => Some(Capability::FileRead),
+        GovernanceAction::FileAccess {
+            mode: FileMode::Write | FileMode::Append | FileMode::Delete,
+            ..
+        } => Some(Capability::FileWrite),
+        GovernanceAction::NetworkRequest { .. } => Some(Capability::NetworkOutbound),
+        GovernanceAction::ProcessExec { .. } => Some(Capability::TerminalExec),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +254,164 @@ mod tests {
     fn capability_display_round_trips_mcp_tool() {
         let cap = Capability::McpTool("bash".to_string());
         assert_eq!(cap.to_string().parse::<Capability>().unwrap(), cap);
+    }
+
+    // ------------------------------------------------------------------
+    // merge_capabilities tests
+    // ------------------------------------------------------------------
+
+    fn cap_set(allow: &[Capability], deny: &[Capability]) -> CapabilitySet {
+        CapabilitySet {
+            allow: allow.iter().cloned().collect(),
+            deny: deny.iter().cloned().collect(),
+        }
+    }
+
+    #[test]
+    fn merge_empty_parent_with_child_deny() {
+        let parent = CapabilitySet::default();
+        let child = cap_set(&[], &[Capability::FileWrite]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.deny.contains(&Capability::FileWrite));
+        assert!(result.allow.is_empty());
+    }
+
+    #[test]
+    fn merge_parent_deny_wins_over_child_allow() {
+        let parent = cap_set(&[], &[Capability::NetworkOutbound]);
+        let child = cap_set(&[Capability::FileRead, Capability::NetworkOutbound], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.contains(&Capability::FileRead));
+        assert!(!result.allow.contains(&Capability::NetworkOutbound));
+    }
+
+    #[test]
+    fn merge_deny_is_union() {
+        let parent = cap_set(&[], &[Capability::FileWrite]);
+        let child = cap_set(&[], &[Capability::TerminalExec]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.deny.contains(&Capability::FileWrite));
+        assert!(result.deny.contains(&Capability::TerminalExec));
+    }
+
+    #[test]
+    fn merge_both_allow_nonempty_takes_intersection() {
+        let parent = cap_set(&[Capability::FileRead, Capability::FileWrite], &[]);
+        let child = cap_set(&[Capability::FileRead, Capability::NetworkOutbound], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert_eq!(
+            result.allow,
+            [Capability::FileRead].iter().cloned().collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn merge_parent_allow_nonempty_child_allow_empty_uses_parent() {
+        let parent = cap_set(&[Capability::FileRead], &[]);
+        let child = cap_set(&[], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert_eq!(
+            result.allow,
+            [Capability::FileRead].iter().cloned().collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn merge_parent_allow_empty_child_allow_nonempty_uses_child() {
+        let parent = cap_set(&[], &[]);
+        let child = cap_set(&[Capability::FileRead], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert_eq!(
+            result.allow,
+            [Capability::FileRead].iter().cloned().collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn merge_parent_deny_overrides_intersection_allow() {
+        let parent = cap_set(&[Capability::FileRead, Capability::FileWrite], &[Capability::FileRead]);
+        let child = cap_set(&[Capability::FileRead], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(
+            result.allow.is_empty(),
+            "FileRead was denied by parent, should be absent from allow"
+        );
+    }
+
+    #[test]
+    fn merge_both_empty_returns_empty() {
+        let parent = CapabilitySet::default();
+        let child = CapabilitySet::default();
+        let result = super::merge_capabilities(&parent, &child);
+        assert_eq!(result, CapabilitySet::default());
+    }
+
+    // ------------------------------------------------------------------
+    // action_to_capability tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn action_to_capability_tool_call() {
+        let action = crate::GovernanceAction::ToolCall {
+            name: "bash".to_string(),
+            args: "{}".to_string(),
+        };
+        assert_eq!(
+            super::action_to_capability(&action),
+            Some(Capability::McpTool("bash".to_string()))
+        );
+    }
+
+    #[test]
+    fn action_to_capability_file_read() {
+        let action = crate::GovernanceAction::FileAccess {
+            path: "/tmp/f".to_string(),
+            mode: crate::policy::FileMode::Read,
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileRead));
+    }
+
+    #[test]
+    fn action_to_capability_file_write() {
+        let action = crate::GovernanceAction::FileAccess {
+            path: "/tmp/f".to_string(),
+            mode: crate::policy::FileMode::Write,
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileWrite));
+    }
+
+    #[test]
+    fn action_to_capability_file_append_is_file_write() {
+        let action = crate::GovernanceAction::FileAccess {
+            path: "/tmp/f".to_string(),
+            mode: crate::policy::FileMode::Append,
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileWrite));
+    }
+
+    #[test]
+    fn action_to_capability_file_delete_is_file_write() {
+        let action = crate::GovernanceAction::FileAccess {
+            path: "/tmp/f".to_string(),
+            mode: crate::policy::FileMode::Delete,
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileWrite));
+    }
+
+    #[test]
+    fn action_to_capability_network_request() {
+        let action = crate::GovernanceAction::NetworkRequest {
+            url: "https://example.com".to_string(),
+            method: "GET".to_string(),
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::NetworkOutbound));
+    }
+
+    #[test]
+    fn action_to_capability_process_exec() {
+        let action = crate::GovernanceAction::ProcessExec {
+            command: "ls".to_string(),
+        };
+        assert_eq!(super::action_to_capability(&action), Some(Capability::TerminalExec));
     }
 }
