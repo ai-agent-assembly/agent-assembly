@@ -95,6 +95,8 @@ pub struct PolicyDocument {
     pub approval_timeout_secs: u32,
     /// Per-tool policies keyed by tool name.
     pub tools: std::collections::HashMap<String, ToolPolicy>,
+    /// Capability allow/deny restrictions for this policy scope.
+    pub capabilities: Option<aa_core::CapabilitySet>,
 }
 
 #[cfg(test)]
@@ -114,6 +116,7 @@ mod tests {
             data: None,
             approval_timeout_secs: 300,
             tools: std::collections::HashMap::new(),
+            capabilities: None,
         };
         assert!(doc.tools.is_empty());
     }

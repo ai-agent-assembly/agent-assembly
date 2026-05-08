@@ -32,6 +32,7 @@ fn allow_doc(scope: PolicyScope) -> PolicyDocument {
         data: None,
         approval_timeout_secs: 300,
         tools: HashMap::new(),
+        capabilities: None,
     }
 }
 

@@ -1,0 +1,16 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: capability-example
+  version: "1.0.0"
+spec:
+  scope: global
+  capabilities:
+    allow:
+      - file_read
+      - network_outbound
+      - mcp_tool:git
+      - mcp_tool:bash
+    deny:
+      - terminal_exec
+      - file_write

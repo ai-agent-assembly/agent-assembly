@@ -481,7 +481,8 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
-        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7) always run.
+        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7),
+        // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
         let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
@@ -501,6 +502,35 @@ impl PolicyEngine {
                 credential_findings: vec![],
                 deny_action: None,
             };
+        }
+
+        // Cascade capability guard: checks the allow-list intersection case where no single
+        // doc denies the capability but the merged allow-list (after merge_capabilities)
+        // does not contain it. Per-doc stage 3.5 handles intra-doc denials; this guard
+        // handles cross-doc scenarios. The merged set is also used for dev-tool wiring
+        // (AAASM-1046).
+        let merged_caps = Self::collect_merged_capabilities(&cascade);
+        if let Some(cap) = aa_core::action_to_capability(action) {
+            if merged_caps.deny.contains(&cap) {
+                return EvaluationResult {
+                    decision: aa_core::PolicyResult::Deny {
+                        reason: "capability denied by policy".into(),
+                    },
+                    redacted_payload: None,
+                    credential_findings: vec![],
+                    deny_action: None,
+                };
+            }
+            if !merged_caps.allow.is_empty() && !merged_caps.allow.contains(&cap) {
+                return EvaluationResult {
+                    decision: aa_core::PolicyResult::Deny {
+                        reason: "capability not in allow list".into(),
+                    },
+                    redacted_payload: None,
+                    credential_findings: vec![],
+                    deny_action: None,
+                };
+            }
         }
 
         // Stage 4 — Rate limiting: use the most restrictive (minimum) limit_per_hour
@@ -614,6 +644,21 @@ impl PolicyEngine {
             credential_findings,
             deny_action,
         }
+    }
+
+    /// Build the merged `CapabilitySet` for the given cascade by folding
+    /// `merge_capabilities` left-to-right (Global → Org → Team → Agent).
+    ///
+    /// Returns an empty `CapabilitySet` (no restrictions) when no policy in the
+    /// cascade defines a `capabilities` block.
+    pub(crate) fn collect_merged_capabilities(cascade: &[std::sync::Arc<PolicyDocument>]) -> aa_core::CapabilitySet {
+        cascade.iter().fold(aa_core::CapabilitySet::default(), |acc, doc| {
+            if let Some(caps) = &doc.capabilities {
+                aa_core::merge_capabilities(&acc, caps)
+            } else {
+                acc
+            }
+        })
     }
 
     /// Record a spend amount for an agent after an action completes.
@@ -854,6 +899,7 @@ mod tests {
             data: None,
             approval_timeout_secs: 300,
             tools: HashMap::new(),
+            capabilities: None,
         }
     }
 
@@ -1617,6 +1663,127 @@ mod tests {
             engine.evaluate(&ctx, &action).decision,
             PolicyResult::Deny {
                 reason: "daily budget exceeded".into()
+            }
+        );
+    }
+
+    // ── Cascade capability guard tests ────────────────────────────────────────
+
+    fn scoped_doc(scope: crate::policy::scope::PolicyScope, caps: Option<aa_core::CapabilitySet>) -> PolicyDocument {
+        PolicyDocument {
+            name: None,
+            policy_version: None,
+            version: None,
+            scope,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            tools: HashMap::new(),
+            capabilities: caps,
+        }
+    }
+
+    fn cap_set_cascade(allow: &[aa_core::Capability], deny: &[aa_core::Capability]) -> aa_core::CapabilitySet {
+        use std::collections::BTreeSet;
+        aa_core::CapabilitySet {
+            allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
+            deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+        }
+    }
+
+    #[test]
+    fn cascade_capability_deny_from_global_blocks_narrower_allow() {
+        // Global deny = {FileWrite}; Agent allow = {FileRead, FileWrite} — global deny wins.
+        let mut engine = make_engine(empty_doc());
+        let global_caps = cap_set_cascade(&[], &[aa_core::Capability::FileWrite]);
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Global, Some(global_caps)));
+        let agent_id = AgentId::from_bytes([1u8; 16]);
+        let agent_caps = cap_set_cascade(&[aa_core::Capability::FileRead, aa_core::Capability::FileWrite], &[]);
+        engine.load_policy(scoped_doc(
+            crate::policy::scope::PolicyScope::Agent(agent_id),
+            Some(agent_caps),
+        ));
+
+        let ctx = make_ctx();
+        let action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn cascade_capability_merged_allow_list_is_intersection() {
+        // Global allow = {FileRead, FileWrite}; Agent allow = {FileRead}.
+        // After merge: allow is narrowed to {FileRead}. FileWrite should be denied.
+        // Uses Global + Agent scopes because collect_cascade walks those without a registry.
+        let agent_id = AgentId::from_bytes([1u8; 16]);
+        let mut engine = make_engine(empty_doc());
+        let global_caps = cap_set_cascade(&[aa_core::Capability::FileRead, aa_core::Capability::FileWrite], &[]);
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Global, Some(global_caps)));
+        let agent_caps = cap_set_cascade(&[aa_core::Capability::FileRead], &[]);
+        engine.load_policy(scoped_doc(
+            crate::policy::scope::PolicyScope::Agent(agent_id),
+            Some(agent_caps),
+        ));
+
+        let ctx = make_ctx();
+
+        // FileWrite must be denied (not in merged allow list)
+        let write_action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &write_action).decision,
+            PolicyResult::Deny {
+                reason: "capability not in allow list".into()
+            }
+        );
+
+        // FileRead must be allowed (in merged allow list)
+        let read_action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Read,
+        };
+        assert_ne!(
+            engine.evaluate(&ctx, &read_action).decision,
+            PolicyResult::Deny {
+                reason: "capability not in allow list".into()
+            }
+        );
+    }
+
+    #[test]
+    fn cascade_no_capabilities_configured_allows_all_actions() {
+        // No capabilities blocks in any cascade doc → capability guard is no-op.
+        let mut engine = make_engine(empty_doc());
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Global, None));
+        let agent_id = AgentId::from_bytes([1u8; 16]);
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Agent(agent_id), None));
+
+        let ctx = make_ctx();
+        let action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_ne!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+        assert_ne!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "capability not in allow list".into()
             }
         );
     }
