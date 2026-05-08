@@ -13,6 +13,7 @@ use crate::budget::BudgetAlert;
 /// Event type routing keys used in the envelope's `event_type` field.
 pub const EVENT_TYPE_APPROVAL_REQUESTED: &str = "approval.requested";
 pub const EVENT_TYPE_BUDGET_THRESHOLD: &str = "budget.threshold_hit";
+pub const EVENT_TYPE_AGENT_STATUS_CHANGED: &str = "agent.status_changed";
 
 /// Convert a runtime [`ApprovalRequest`] into a JSON envelope for webhook delivery.
 pub fn approval_to_envelope(request: &ApprovalRequest) -> Value {
@@ -32,6 +33,29 @@ pub fn approval_to_envelope(request: &ApprovalRequest) -> Value {
                 "condition_triggered": request.condition_triggered,
                 "submitted_at": request.submitted_at,
                 "timeout_secs": request.timeout_secs,
+            }
+        }
+    })
+}
+
+/// Convert an [`OrphanEffect`] into a JSON envelope for the `agent.status_changed` event.
+pub fn agent_status_changed_to_envelope(
+    effect: &crate::registry::OrphanEffect,
+    reason: &str,
+) -> serde_json::Value {
+    let event_id = uuid::Uuid::now_v7().to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_AGENT_STATUS_CHANGED,
+        "published_at": { "unix_ms": now_ms },
+        "source": "aa-gateway",
+        "payload": {
+            "agent_status_changed": {
+                "agent_id": effect.agent_id_str,
+                "old_status": effect.old_status,
+                "new_status": effect.new_status,
+                "reason": reason,
             }
         }
     })
@@ -145,6 +169,35 @@ mod tests {
         };
 
         let envelope = budget_alert_to_envelope(&alert);
+        let id_str = envelope["event_id"].as_str().unwrap();
+        let parsed = Uuid::parse_str(id_str).expect("valid UUID");
+        assert_eq!(parsed.get_version_num(), 7);
+    }
+
+    #[test]
+    fn agent_status_changed_envelope_has_correct_fields() {
+        let effect = crate::registry::OrphanEffect {
+            agent_key: [3u8; 16],
+            agent_id_str: "test-agent-id".to_string(),
+            action: "suspended",
+            old_status: "Active".to_string(),
+            new_status: "suspended:parent_deregistered".to_string(),
+        };
+
+        let envelope = agent_status_changed_to_envelope(&effect, "parent agent deregistered");
+
+        assert_eq!(envelope["event_type"], "agent.status_changed");
+        assert_eq!(envelope["source"], "aa-gateway");
+        assert_eq!(envelope["payload"]["agent_status_changed"]["agent_id"], "test-agent-id");
+        assert_eq!(envelope["payload"]["agent_status_changed"]["old_status"], "Active");
+        assert_eq!(
+            envelope["payload"]["agent_status_changed"]["new_status"],
+            "suspended:parent_deregistered"
+        );
+        assert_eq!(
+            envelope["payload"]["agent_status_changed"]["reason"],
+            "parent agent deregistered"
+        );
         let id_str = envelope["event_id"].as_str().unwrap();
         let parsed = Uuid::parse_str(id_str).expect("valid UUID");
         assert_eq!(parsed.get_version_num(), 7);

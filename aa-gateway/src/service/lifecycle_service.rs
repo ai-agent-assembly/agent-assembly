@@ -18,7 +18,8 @@ use crate::engine::PolicyEngine;
 use crate::registry::convert::{proto_agent_id_to_key, validate_proto_agent_id};
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
-use crate::registry::{AgentRegistry, AgentStatus, LineageError, RegistryError, SuspendReason};
+use crate::events::publisher::agent_status_changed_to_envelope;
+use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
 
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
@@ -226,9 +227,20 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         validate_token(&self.registry, &agent_key, &req.credential_token)
             .map_err(|_| Status::unauthenticated("invalid credential token"))?;
 
-        self.registry
-            .deregister(&agent_key)
+        let (_, effects) = self
+            .registry
+            .deregister(&agent_key, OrphanMode::Suspend)
             .map_err(|e| Status::not_found(e.to_string()))?;
+
+        for effect in &effects {
+            let envelope = agent_status_changed_to_envelope(effect, "parent agent deregistered");
+            tracing::debug!(
+                agent_id = %effect.agent_id_str,
+                action = %effect.action,
+                %envelope,
+                "orphan effect applied"
+            );
+        }
 
         tracing::info!(agent_id = ?proto_id.agent_id, reason = %req.reason, "agent deregistered");
 

@@ -12,7 +12,8 @@ use tonic::Status;
 use aa_proto::assembly::agent::v1::control_command::Command;
 use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
-use super::{AgentStatus, LineageError, RegistryError};
+use super::{AgentStatus, LineageError, RegistryError, SuspendReason};
+use super::orphan::{OrphanEffect, OrphanMode};
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
@@ -240,10 +241,18 @@ impl AgentRegistry {
         self.agents.get(agent_id).map(|r| r.clone())
     }
 
-    /// Remove an agent from the registry. Returns the removed record.
+    /// Remove an agent from the registry. Returns the removed record and a list of
+    /// [`OrphanEffect`]s describing what happened to each descendant under `mode`.
     ///
     /// Also removes any associated control stream sender.
-    pub fn deregister(&self, agent_id: &[u8; 16]) -> Result<AgentRecord, RegistryError> {
+    pub fn deregister(
+        &self,
+        agent_id: &[u8; 16],
+        mode: OrphanMode,
+    ) -> Result<(AgentRecord, Vec<OrphanEffect>), RegistryError> {
+        // Collect direct children keys BEFORE removing the agent.
+        let child_keys = self.children_of(agent_id);
+
         self.control_senders.remove(agent_id);
         let (_, record) = self.agents.remove(agent_id).ok_or(RegistryError::NotFound(*agent_id))?;
 
@@ -261,7 +270,106 @@ impl AgentRegistry {
             }
         }
 
-        Ok(record)
+        // Apply orphan policy to each direct child recursively.
+        let mut effects = Vec::new();
+        for child_key in child_keys {
+            self.apply_orphan_mode_recursive(child_key, mode, &mut effects);
+        }
+
+        Ok((record, effects))
+    }
+
+    /// Recursively apply `mode` to `child_key` and all its descendants.
+    ///
+    /// DashMap does not allow recursive locking — child keys are always collected
+    /// into a `Vec` before any mutation so there is no re-entrant `get_mut`.
+    fn apply_orphan_mode_recursive(
+        &self,
+        child_key: [u8; 16],
+        mode: OrphanMode,
+        effects: &mut Vec<OrphanEffect>,
+    ) {
+        match mode {
+            OrphanMode::Suspend => {
+                // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
+                let grandchildren = self.children_of(&child_key);
+
+                if let Some(mut entry) = self.agents.get_mut(&child_key) {
+                    let old_status = format!("{:?}", entry.status);
+                    entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "suspended",
+                        old_status,
+                        new_status: "suspended:parent_deregistered".to_string(),
+                    });
+                }
+
+                for gk in grandchildren {
+                    self.apply_orphan_mode_recursive(gk, mode, effects);
+                }
+            }
+
+            OrphanMode::PromoteToRoot => {
+                // Only direct children become new roots; their children keep relative structure.
+                if let Some(mut entry) = self.agents.get_mut(&child_key) {
+                    let old_status = format!("{:?}", entry.status);
+                    entry.parent_key = None;
+                    entry.parent_agent_id = None;
+                    entry.root_agent_id = None;
+                    entry.depth = 0;
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "promoted_to_root",
+                        old_status,
+                        new_status: "active:root".to_string(),
+                    });
+                }
+
+                // Recalculate depth for this subtree now that the promoted child is depth 0.
+                self.recalculate_depth_recursive(child_key, 0);
+            }
+
+            OrphanMode::CascadeDeregister => {
+                // Post-order teardown: recurse into grandchildren first.
+                let grandchildren = self.children_of(&child_key);
+                for gk in grandchildren {
+                    self.apply_orphan_mode_recursive(gk, mode, effects);
+                }
+
+                // Now remove this child.
+                self.control_senders.remove(&child_key);
+                if let Some((_, record)) = self.agents.remove(&child_key) {
+                    if let Some(ref tid) = record.team_id {
+                        if let Some(set) = self.team_index.get(tid) {
+                            set.remove(&child_key);
+                        }
+                    }
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "deregistered",
+                        old_status: format!("{:?}", record.status),
+                        new_status: "deregistered".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Recalculate `depth` for the entire subtree rooted at `parent_key`.
+    ///
+    /// Sets each immediate child's depth to `parent_depth + 1` and recurses.
+    fn recalculate_depth_recursive(&self, parent_key: [u8; 16], parent_depth: u32) {
+        let children = self.children_of(&parent_key);
+        for ck in children {
+            if let Some(mut entry) = self.agents.get_mut(&ck) {
+                entry.depth = parent_depth + 1;
+            }
+            self.recalculate_depth_recursive(ck, parent_depth + 1);
+        }
     }
 
     /// Update the `last_heartbeat` timestamp for an agent to now.
@@ -632,7 +740,7 @@ mod tree_tests {
         assert_eq!(reg.agent_depth(&child_id), Some(1));
 
         // deregister child — root's children cleared
-        reg.deregister(&child_id).unwrap();
+        reg.deregister(&child_id, crate::registry::OrphanMode::Suspend).unwrap();
         assert!(reg.children_of(&root_id).is_empty());
 
         // team_index updated
