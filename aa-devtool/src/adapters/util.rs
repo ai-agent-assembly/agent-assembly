@@ -29,3 +29,18 @@ pub fn probe_version(binary: &std::path::Path) -> Option<String> {
         .find(|l| !l.trim().is_empty())
         .map(|l| l.trim().to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_on_path_returns_none_for_nonexistent_binary() {
+        assert!(find_on_path("aaasm_nonexistent_binary_xyz123").is_none());
+    }
+
+    #[test]
+    fn probe_version_returns_none_for_nonexistent_path() {
+        assert!(probe_version(std::path::Path::new("/this/path/does/not/exist/aaasm_binary")).is_none());
+    }
+}

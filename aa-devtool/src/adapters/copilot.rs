@@ -93,3 +93,58 @@ impl DevToolAdapter for CopilotAdapter {
         GovernanceLevel::L1Observe
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use aa_core::policy::PolicyDocument;
+    use aa_core::GovernanceLevel;
+
+    use super::*;
+
+    #[test]
+    fn governance_level_is_l1observe() {
+        assert_eq!(CopilotAdapter.governance_level(), GovernanceLevel::L1Observe);
+    }
+
+    #[tokio::test]
+    async fn generate_managed_settings_returns_err() {
+        let policy = PolicyDocument { version: 1, name: "test".into(), rules: vec![] };
+        assert!(CopilotAdapter.generate_managed_settings(&policy).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_settings_returns_err() {
+        assert!(CopilotAdapter.apply_settings("{}").await.is_err());
+    }
+
+    #[test]
+    fn build_launch_command_returns_err() {
+        assert!(CopilotAdapter.build_launch_command(&[], "agent-1", None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty() {
+        assert!(CopilotAdapter.list_mcp_servers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_returns_ok() {
+        assert!(CopilotAdapter.apply_mcp_governance(&[], &[]).await.is_ok());
+    }
+
+    #[test]
+    fn read_package_json_version_returns_some_for_valid_json() {
+        let tmp = std::env::temp_dir().join("aaasm_copilot_test_ext");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"version":"1.234.5","name":"github.copilot"}"#).unwrap();
+        let result = read_package_json_version(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(result, Some("1.234.5".to_string()));
+    }
+
+    #[test]
+    fn read_package_json_version_returns_none_for_missing_file() {
+        let path = std::path::Path::new("/nonexistent/path/for/aaasm/test");
+        assert!(read_package_json_version(path).is_none());
+    }
+}

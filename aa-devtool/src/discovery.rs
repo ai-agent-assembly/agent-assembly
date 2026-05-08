@@ -216,6 +216,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discover_with_built_in_adapters_does_not_panic() {
+        // Exercises all four real adapters end-to-end. In CI none of the tools
+        // are installed so the result will be empty, but the call must not panic
+        // and all detect() code paths must be reachable.
+        let svc = DiscoveryService::new();
+        let _ = svc.discover_all().await;
+    }
+
+    #[tokio::test]
     async fn discover_runs_concurrently() {
         use std::time::{Duration, Instant};
 

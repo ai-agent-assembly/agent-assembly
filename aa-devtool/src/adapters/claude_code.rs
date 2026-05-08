@@ -83,3 +83,42 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         GovernanceLevel::L3Native
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use aa_core::policy::PolicyDocument;
+    use aa_core::GovernanceLevel;
+
+    use super::*;
+
+    #[test]
+    fn governance_level_is_l3native() {
+        assert_eq!(ClaudeCodeAdapter.governance_level(), GovernanceLevel::L3Native);
+    }
+
+    #[tokio::test]
+    async fn generate_managed_settings_returns_err() {
+        let policy = PolicyDocument { version: 1, name: "test".into(), rules: vec![] };
+        assert!(ClaudeCodeAdapter.generate_managed_settings(&policy).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_settings_returns_err() {
+        assert!(ClaudeCodeAdapter.apply_settings("{}").await.is_err());
+    }
+
+    #[test]
+    fn build_launch_command_returns_err() {
+        assert!(ClaudeCodeAdapter.build_launch_command(&[], "agent-1", None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty() {
+        assert!(ClaudeCodeAdapter.list_mcp_servers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_returns_ok() {
+        assert!(ClaudeCodeAdapter.apply_mcp_governance(&[], &[]).await.is_ok());
+    }
+}
