@@ -6,15 +6,17 @@
 //! therefore returns [`AdapterError::LaunchFailed`] from
 //! [`build_launch_command`] and operates at **L2 (Enforce)**: it controls MCP
 //! server access, tool-approval prompts, and per-session request limits via
-//! `.vscode/settings.json`.
+//! VS Code `settings.json`.
 //!
 //! ## VS Code settings written by this adapter
 //!
-//! | Key | Value | When applied |
+//! | Key | Value | Derived from |
 //! |---|---|---|
-//! | `chat.mcp.access` | `"prompt"` | Always (L1+ baseline) |
-//! | `chat.agent.maxRequests` | `5` | Always (L2 cap) |
-//! | `chat.mcp.deny` | `["<server>:<tool>", …]` | Per-policy MCP denials |
+//! | `github.copilot.enable` | `{"*": true\|false}` | deny rule `dev_tools.copilot.enable` |
+//! | `chat.tools.autoApprove` | `true\|false` | any `RequireApproval` rule |
+//! | `chat.agent.maxRequests` | `<u32>` (default 25) | rule `dev_tools.copilot.max_requests:<N>` |
+//! | `chat.mcp.requireApproval` | `"always"\|"never"` | MCP tool `RequireApproval` rule |
+//! | `chat.mcp.deny` | `["<server>:<tool>", …]` | MCP tool `Deny` rules |
 //!
 //! ## Version requirements
 //!
@@ -37,21 +39,27 @@ use aa_core::{
     PolicyDocument,
 };
 use async_trait::async_trait;
-use serde::Serialize;
 
 /// Minimum `github.copilot` extension version this adapter supports.
 pub const MIN_COPILOT_VERSION: &str = "1.226.0";
 /// Minimum `github.copilot-chat` extension version this adapter supports.
 pub const MIN_COPILOT_CHAT_VERSION: &str = "0.21.0";
 
-/// Value of `chat.agent.maxRequests` applied when governance level is L2+.
-const L2_MAX_REQUESTS: u32 = 5;
+/// Default value for `chat.agent.maxRequests` when no override rule is present.
+const DEFAULT_MAX_REQUESTS: u32 = 25;
 
 /// Extension name prefix for the core Copilot extension.
 const COPILOT_EXT_PREFIX: &str = "github.copilot-";
 /// Extension name prefix for the Copilot Chat extension (must be excluded
 /// from core-Copilot detection — different extension, same org prefix).
 const COPILOT_CHAT_EXT_PREFIX: &str = "github.copilot-chat-";
+
+/// Action-pattern for a rule that globally disables Copilot.
+const COPILOT_ENABLE_DENY_PATTERN: &str = "dev_tools.copilot.enable";
+
+/// Action-pattern prefix for a rule that overrides `chat.agent.maxRequests`.
+/// Full form: `"dev_tools.copilot.max_requests:<N>"`.
+const MAX_REQUESTS_PREFIX: &str = "dev_tools.copilot.max_requests:";
 
 /// Action-pattern prefix in a [`PolicyRule`] that targets an MCP tool.
 /// Full pattern form: `"mcp_tool:<server>:<tool>"`.
@@ -137,12 +145,7 @@ impl CopilotAdapter {
         None
     }
 
-    /// Extract MCP deny entries from policy rules.
-    ///
-    /// Collects every rule whose `action_pattern` starts with `"mcp_tool:"`
-    /// and whose decision is [`PolicyDecision::Deny`]. The pattern suffix
-    /// (after `"mcp_tool:"`) is used verbatim as the VS Code `chat.mcp.deny`
-    /// entry, which expects `"<server>:<tool>"` notation.
+    /// Collect MCP tool entries that policy denies.
     fn collect_mcp_deny(policy: &PolicyDocument) -> Vec<String> {
         policy
             .rules
@@ -159,19 +162,44 @@ impl Default for CopilotAdapter {
     }
 }
 
-/// VS Code settings document written by [`CopilotAdapter::generate_managed_settings`].
-#[derive(Debug, Serialize)]
-struct CopilotVsCodeSettings {
-    /// Require human approval before any MCP tool call (L1 baseline).
-    #[serde(rename = "chat.mcp.access")]
-    mcp_access: &'static str,
-    /// Cap per-session autonomous requests (L2 enforcement).
-    #[serde(rename = "chat.agent.maxRequests")]
-    max_requests: u32,
-    /// Explicit MCP server:tool deny list derived from policy rules.
-    #[serde(rename = "chat.mcp.deny")]
-    mcp_deny: Vec<String>,
+// ── Policy → VS Code setting derivation helpers ───────────────────────────────
+
+/// `github.copilot.enable["*"]` — `false` when a rule globally denies Copilot.
+fn copilot_enabled(policy: &PolicyDocument) -> bool {
+    !policy
+        .rules
+        .iter()
+        .any(|r| r.action_pattern == COPILOT_ENABLE_DENY_PATTERN && r.decision == PolicyDecision::Deny)
 }
+
+/// `chat.tools.autoApprove` — `false` when any rule requires human approval.
+fn auto_approve(policy: &PolicyDocument) -> bool {
+    !policy.rules.iter().any(|r| r.decision == PolicyDecision::RequireApproval)
+}
+
+/// `chat.agent.maxRequests` — from `dev_tools.copilot.max_requests:<N>` rule,
+/// falling back to [`DEFAULT_MAX_REQUESTS`].
+fn max_requests(policy: &PolicyDocument) -> u32 {
+    policy
+        .rules
+        .iter()
+        .find_map(|r| {
+            let suffix = r.action_pattern.strip_prefix(MAX_REQUESTS_PREFIX)?;
+            suffix.parse::<u32>().ok()
+        })
+        .unwrap_or(DEFAULT_MAX_REQUESTS)
+}
+
+/// `chat.mcp.requireApproval` — `"always"` when any MCP tool rule requires
+/// approval, `"never"` otherwise.
+fn mcp_require_approval(policy: &PolicyDocument) -> &'static str {
+    let needs = policy.rules.iter().any(|r| {
+        r.action_pattern.starts_with(MCP_TOOL_PATTERN_PREFIX) && r.decision == PolicyDecision::RequireApproval
+    });
+    if needs { "always" } else { "never" }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn read_package_version(extension_dir: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(extension_dir.join("package.json")).ok()?;
@@ -235,17 +263,16 @@ impl DevToolAdapter for CopilotAdapter {
 
     /// Translate `policy` into a VS Code settings JSON string.
     ///
-    /// Always emits `chat.mcp.access` and `chat.agent.maxRequests` (this
-    /// adapter operates at L2). Appends entries to `chat.mcp.deny` for every
-    /// policy rule whose `action_pattern` starts with `"mcp_tool:"` and whose
-    /// decision is [`PolicyDecision::Deny`].
+    /// Emits five keys derived from policy rules (see module-level table).
     async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
-        let settings = CopilotVsCodeSettings {
-            mcp_access: "prompt",
-            max_requests: L2_MAX_REQUESTS,
-            mcp_deny: Self::collect_mcp_deny(policy),
-        };
-        serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
+        let value = serde_json::json!({
+            "github.copilot.enable": { "*": copilot_enabled(policy) },
+            "chat.tools.autoApprove": auto_approve(policy),
+            "chat.agent.maxRequests": max_requests(policy),
+            "chat.mcp.requireApproval": mcp_require_approval(policy),
+            "chat.mcp.deny": Self::collect_mcp_deny(policy),
+        });
+        serde_json::to_string_pretty(&value).map_err(|e| AdapterError::Serde(e.to_string()))
     }
 
     /// Merge `settings` (JSON from [`generate_managed_settings`]) into the VS
@@ -338,6 +365,17 @@ mod tests {
         }
     }
 
+    fn policy_with_rule(pattern: &str, decision: PolicyDecision) -> PolicyDocument {
+        PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules: vec![PolicyRule {
+                action_pattern: pattern.to_string(),
+                decision,
+            }],
+        }
+    }
+
     fn policy_with_mcp_deny(patterns: &[&str]) -> PolicyDocument {
         PolicyDocument {
             version: 1,
@@ -352,7 +390,7 @@ mod tests {
         }
     }
 
-    // ---- detect() tests (carried over from AAASM-997) ----------------------
+    // ── detect() tests ────────────────────────────────────────────────────────
 
     #[test]
     fn detects_installed_copilot() {
@@ -412,34 +450,118 @@ mod tests {
         );
     }
 
-    // ---- generate_managed_settings() tests ---------------------------------
+    // ── generate_managed_settings() — AC-required tests ──────────────────────
 
     #[tokio::test]
-    async fn settings_always_include_l1_mcp_access_prompt() {
+    async fn policy_enforce_disables_auto_approve() {
+        let policy = policy_with_rule("fs:write", PolicyDecision::RequireApproval);
         let adapter = CopilotAdapter::new();
-        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["chat.mcp.access"], "prompt");
+        assert_eq!(
+            v["chat.tools.autoApprove"], false,
+            "RequireApproval rule must set autoApprove to false"
+        );
     }
 
     #[tokio::test]
-    async fn settings_always_include_l2_max_requests() {
+    async fn policy_max_requests_propagates() {
+        let policy = policy_with_rule("dev_tools.copilot.max_requests:50", PolicyDecision::Allow);
         let adapter = CopilotAdapter::new();
-        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["chat.agent.maxRequests"], L2_MAX_REQUESTS);
+        assert_eq!(v["chat.agent.maxRequests"], 50u32);
     }
 
     #[tokio::test]
-    async fn settings_empty_deny_list_for_empty_policy() {
+    async fn full_json_snapshot_for_fixture_policy() {
+        // Fixture: deny one MCP tool, require approval for file writes, cap requests at 10.
+        let policy = PolicyDocument {
+            version: 1,
+            name: "fixture".to_string(),
+            rules: vec![
+                PolicyRule {
+                    action_pattern: "dev_tools.copilot.max_requests:10".to_string(),
+                    decision: PolicyDecision::Allow,
+                },
+                PolicyRule {
+                    action_pattern: "fs:write".to_string(),
+                    decision: PolicyDecision::RequireApproval,
+                },
+                PolicyRule {
+                    action_pattern: "mcp_tool:github:push".to_string(),
+                    decision: PolicyDecision::Deny,
+                },
+            ],
+        };
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(v["github.copilot.enable"]["*"], true, "copilot not disabled");
+        assert_eq!(v["chat.tools.autoApprove"], false, "RequireApproval disables autoApprove");
+        assert_eq!(v["chat.agent.maxRequests"], 10u32, "max_requests override");
+        assert_eq!(v["chat.mcp.requireApproval"], "never", "no mcp RequireApproval rule");
+        assert_eq!(v["chat.mcp.deny"], serde_json::json!(["github:push"]));
+    }
+
+    #[tokio::test]
+    async fn apply_settings_preserves_unmanaged_keys() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, r#"{"editor.fontSize": 14}"#).unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["editor.fontSize"], 14, "unmanaged key must be preserved");
+        assert!(v["github.copilot.enable"].is_object(), "managed key written");
+    }
+
+    // ── generate_managed_settings() — additional coverage ────────────────────
+
+    #[tokio::test]
+    async fn default_policy_enables_copilot_and_auto_approve() {
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["github.copilot.enable"]["*"], true);
+        assert_eq!(v["chat.tools.autoApprove"], true);
+        assert_eq!(v["chat.agent.maxRequests"], DEFAULT_MAX_REQUESTS);
+        assert_eq!(v["chat.mcp.requireApproval"], "never");
         assert_eq!(v["chat.mcp.deny"], serde_json::json!([]));
     }
 
     #[tokio::test]
-    async fn settings_mcp_deny_entries_from_policy_rules() {
+    async fn deny_rule_disables_copilot_enable() {
+        let policy = policy_with_rule(COPILOT_ENABLE_DENY_PATTERN, PolicyDecision::Deny);
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["github.copilot.enable"]["*"], false);
+    }
+
+    #[tokio::test]
+    async fn mcp_require_approval_rule_sets_always() {
+        let policy = PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules: vec![PolicyRule {
+                action_pattern: "mcp_tool:filesystem:read_file".to_string(),
+                decision: PolicyDecision::RequireApproval,
+            }],
+        };
+        let adapter = CopilotAdapter::new();
+        let json = adapter.generate_managed_settings(&policy).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["chat.mcp.requireApproval"], "always");
+    }
+
+    #[tokio::test]
+    async fn mcp_deny_entries_from_policy_rules() {
         let policy = policy_with_mcp_deny(&["filesystem:write_file", "github:push"]);
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();
@@ -450,15 +572,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_allow_rules_not_added_to_deny_list() {
-        let policy = PolicyDocument {
-            version: 1,
-            name: "test".to_string(),
-            rules: vec![PolicyRule {
-                action_pattern: "mcp_tool:filesystem:read_file".to_string(),
-                decision: PolicyDecision::Allow,
-            }],
-        };
+    async fn allow_rules_not_added_to_deny_list() {
+        let policy = policy_with_rule("mcp_tool:filesystem:read_file", PolicyDecision::Allow);
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -466,7 +581,7 @@ mod tests {
         assert!(deny.is_empty(), "Allow rules must not appear in deny list");
     }
 
-    // ---- apply_settings() tests --------------------------------------------
+    // ── apply_settings() tests ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn apply_settings_writes_to_settings_path() {
@@ -478,27 +593,8 @@ mod tests {
 
         let written = std::fs::read_to_string(&settings_file).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
-        assert_eq!(v["chat.mcp.access"], "prompt");
-        assert_eq!(v["chat.agent.maxRequests"], L2_MAX_REQUESTS);
-    }
-
-    #[tokio::test]
-    async fn apply_settings_merges_with_existing_settings() {
-        let tmp = TempDir::new().unwrap();
-        let settings_file = tmp.path().join("settings.json");
-        // Pre-populate with unrelated user setting.
-        std::fs::write(&settings_file, r#"{"editor.fontSize": 14, "chat.mcp.access": "off"}"#).unwrap();
-
-        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
-        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
-        adapter.apply_settings(&json).await.unwrap();
-
-        let written = std::fs::read_to_string(&settings_file).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
-        // Governance key overwritten.
-        assert_eq!(v["chat.mcp.access"], "prompt");
-        // User's other setting preserved.
-        assert_eq!(v["editor.fontSize"], 14);
+        assert_eq!(v["github.copilot.enable"]["*"], true);
+        assert_eq!(v["chat.agent.maxRequests"], DEFAULT_MAX_REQUESTS);
     }
 
     #[tokio::test]
