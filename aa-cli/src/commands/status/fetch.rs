@@ -269,6 +269,8 @@ mod tests {
                 reason: "amount".to_string(),
                 status: "pending".to_string(),
                 created_at: "2026-04-30T08:00:00Z".to_string(),
+                team_id: String::new(),
+                routing_status: String::new(),
             },
             ApprovalResponse {
                 id: "ap-2".to_string(),
@@ -277,6 +279,8 @@ mod tests {
                 reason: "test".to_string(),
                 status: "approved".to_string(),
                 created_at: "2026-04-30T07:00:00Z".to_string(),
+                team_id: String::new(),
+                routing_status: String::new(),
             },
         ];
         let summary = build_approvals_summary(&approvals);
@@ -293,6 +297,8 @@ mod tests {
             reason: "done".to_string(),
             status: "approved".to_string(),
             created_at: "2026-04-30T08:00:00Z".to_string(),
+            team_id: String::new(),
+            routing_status: String::new(),
         }];
         let summary = build_approvals_summary(&approvals);
         assert_eq!(summary.pending_count, 0);
