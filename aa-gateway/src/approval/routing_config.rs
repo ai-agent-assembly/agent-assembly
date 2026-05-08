@@ -83,17 +83,10 @@ impl RoutingConfigStore {
 
     /// Atomically write the current state to disk (write-to-temp + rename).
     fn save(&self) -> Result<(), RoutingConfigError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(RoutingConfigError::Io)?;
-        }
         let persisted = PersistedRoutingConfig {
             teams: self.configs.values().cloned().collect(),
         };
-        let json = serde_json::to_string_pretty(&persisted).map_err(RoutingConfigError::Json)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json).map_err(RoutingConfigError::Io)?;
-        std::fs::rename(&tmp, &self.path).map_err(RoutingConfigError::Io)?;
-        Ok(())
+        super::persistence::write_json_atomic(&self.path, &persisted, RoutingConfigError::Io, RoutingConfigError::Json)
     }
 }
 
@@ -107,22 +100,13 @@ pub fn default_routing_config_path() -> PathBuf {
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RoutingConfigError {
+    #[error("routing config I/O error: {0}")]
     Io(std::io::Error),
+    #[error("routing config JSON error: {0}")]
     Json(serde_json::Error),
 }
-
-impl std::fmt::Display for RoutingConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "routing config I/O error: {e}"),
-            Self::Json(e) => write!(f, "routing config JSON error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for RoutingConfigError {}
 
 // ---------------------------------------------------------------------------
 // Tests

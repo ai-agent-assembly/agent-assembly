@@ -185,14 +185,7 @@ fn load_escalations(path: &Path) -> Result<Vec<PersistedEscalation>, EscalationE
 }
 
 fn save_escalations(path: &Path, state: &PersistedEscalations) -> Result<(), EscalationError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(EscalationError::Io)?;
-    }
-    let json = serde_json::to_string_pretty(state).map_err(EscalationError::Json)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &json).map_err(EscalationError::Io)?;
-    std::fs::rename(&tmp, path).map_err(EscalationError::Io)?;
-    Ok(())
+    super::persistence::write_json_atomic(path, state, EscalationError::Io, EscalationError::Json)
 }
 
 fn current_epoch_secs() -> u64 {
@@ -206,22 +199,13 @@ fn current_epoch_secs() -> u64 {
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum EscalationError {
+    #[error("escalation I/O error: {0}")]
     Io(std::io::Error),
+    #[error("escalation JSON error: {0}")]
     Json(serde_json::Error),
 }
-
-impl std::fmt::Display for EscalationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "escalation I/O error: {e}"),
-            Self::Json(e) => write!(f, "escalation JSON error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for EscalationError {}
 
 // ---------------------------------------------------------------------------
 // Tests

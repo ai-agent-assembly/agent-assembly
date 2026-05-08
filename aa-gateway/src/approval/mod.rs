@@ -1,6 +1,7 @@
 //! Team-level approval routing, escalation, and routing configuration.
 
 pub mod escalation;
+mod persistence;
 pub mod router;
 pub mod routing_config;
 
