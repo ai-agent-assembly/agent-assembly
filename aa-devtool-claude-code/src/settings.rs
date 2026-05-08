@@ -78,7 +78,11 @@ mod tests {
     }
 
     fn doc(rules: Vec<PolicyRule>) -> PolicyDocument {
-        PolicyDocument { version: 1, name: "test".to_string(), rules }
+        PolicyDocument {
+            version: 1,
+            name: "test".to_string(),
+            rules,
+        }
     }
 
     #[test]
