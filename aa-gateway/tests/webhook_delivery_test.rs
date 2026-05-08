@@ -61,6 +61,7 @@ async fn approval_event_is_delivered_as_webhook_post() {
         fallback: aa_core::PolicyResult::Deny {
             reason: "timed out".to_string(),
         },
+        team_id: None,
     };
     let expected_agent = req.agent_id.clone();
     let (_id, _fut) = approval_queue.submit(req);

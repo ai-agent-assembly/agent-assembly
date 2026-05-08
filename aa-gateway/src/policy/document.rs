@@ -57,6 +57,15 @@ pub struct DataPolicy {
     pub sensitive_patterns: Vec<String>,
 }
 
+/// Per-policy approval escalation overrides.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalPolicy {
+    /// Override escalation timeout in seconds for this policy.
+    pub timeout_seconds: Option<u32>,
+    /// Override the escalation role / approver group for this policy.
+    pub escalation_role: Option<String>,
+}
+
 /// Validated per-tool policy entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolPolicy {
@@ -93,6 +102,8 @@ pub struct PolicyDocument {
     pub data: Option<DataPolicy>,
     /// Seconds before an approval request times out. Default: 300.
     pub approval_timeout_secs: u32,
+    /// Per-policy approval escalation overrides. `None` means use team routing defaults.
+    pub approval_policy: Option<ApprovalPolicy>,
     /// Per-tool policies keyed by tool name.
     pub tools: std::collections::HashMap<String, ToolPolicy>,
     /// Capability allow/deny restrictions for this policy scope.
@@ -115,6 +126,7 @@ mod tests {
             budget: None,
             data: None,
             approval_timeout_secs: 300,
+            approval_policy: None,
             tools: std::collections::HashMap::new(),
             capabilities: None,
         };

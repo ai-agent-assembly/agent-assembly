@@ -31,6 +31,10 @@ message PendingApproval {
   uint64 submitted_at        = 5;
   // Seconds before the request auto-resolves as timed out.
   uint64 timeout_secs        = 6;
+  // Team identifier of the requesting agent; empty when unaffiliated.
+  string team_id             = 7;
+  // Routing outcome: "routed:<team_id>", "no_team_config", "no_team_id", or "unknown".
+  string routing_status      = 8;
 }
 
 // ── ListPending ──────────────────────────────────────────────────────────────

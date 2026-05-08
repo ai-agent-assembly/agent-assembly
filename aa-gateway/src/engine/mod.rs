@@ -719,6 +719,19 @@ impl PolicyEngine {
         Arc::clone(&self.budget)
     }
 
+    /// Return per-policy approval escalation overrides from the primary policy.
+    ///
+    /// Returns `(escalation_timeout_seconds_override, escalation_role_override)`.
+    /// Both are `None` when the primary policy has no `approval` section or when
+    /// the respective field is absent.
+    pub fn approval_escalation_overrides(&self) -> (Option<u64>, Option<String>) {
+        let doc = self.policy.load();
+        match &doc.approval_policy {
+            Some(ap) => (ap.timeout_seconds.map(u64::from), ap.escalation_role.clone()),
+            None => (None, None),
+        }
+    }
+
     /// Cumulative cascade decision cache hits since engine construction.
     pub fn cache_hits(&self) -> u64 {
         self.decision_cache.cache_hits()
@@ -899,6 +912,7 @@ mod tests {
             budget: None,
             data: None,
             approval_timeout_secs: 300,
+            approval_policy: None,
             tools: HashMap::new(),
             capabilities: None,
         }
@@ -1681,6 +1695,7 @@ mod tests {
             budget: None,
             data: None,
             approval_timeout_secs: 300,
+            approval_policy: None,
             tools: HashMap::new(),
             capabilities: caps,
         }
@@ -1787,5 +1802,27 @@ mod tests {
                 reason: "capability not in allow list".into()
             }
         );
+    }
+
+    // ── approval_escalation_overrides tests ───────────────────────────────────
+
+    #[test]
+    fn approval_escalation_overrides_returns_none_when_no_approval_policy() {
+        let engine = make_engine(empty_doc());
+        assert_eq!(engine.approval_escalation_overrides(), (None, None));
+    }
+
+    #[test]
+    fn approval_escalation_overrides_returns_values_when_approval_policy_set() {
+        use crate::policy::document::ApprovalPolicy;
+        let mut doc = empty_doc();
+        doc.approval_policy = Some(ApprovalPolicy {
+            timeout_seconds: Some(120),
+            escalation_role: Some("org-admin".to_string()),
+        });
+        let engine = make_engine(doc);
+        let (timeout, role) = engine.approval_escalation_overrides();
+        assert_eq!(timeout, Some(120u64));
+        assert_eq!(role, Some("org-admin".to_string()));
     }
 }

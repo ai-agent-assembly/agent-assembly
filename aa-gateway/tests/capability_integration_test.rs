@@ -52,6 +52,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         budget: None,
         data: None,
         approval_timeout_secs: 300,
+        approval_policy: None,
         tools: HashMap::new(),
         capabilities: Some(CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
@@ -71,6 +72,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         budget: None,
         data: None,
         approval_timeout_secs: 300,
+        approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
     }

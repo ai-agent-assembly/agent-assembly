@@ -255,6 +255,12 @@ pub fn approval_decision_to_response(
 /// Convert a [`PendingApprovalRequest`] (from `ApprovalQueue::list()`) into its
 /// proto representation.
 pub fn pending_to_proto(p: &PendingApprovalRequest) -> PendingApproval {
+    let team_id = p.team_id.clone().unwrap_or_default();
+    let routing_status = p.routing_status.clone().unwrap_or_else(|| {
+        p.team_id
+            .as_ref()
+            .map_or_else(|| "no_team_id".to_string(), |tid| format!("routed:{tid}"))
+    });
     PendingApproval {
         request_id: p.request_id.to_string(),
         agent_id: p.agent_id.clone(),
@@ -262,6 +268,8 @@ pub fn pending_to_proto(p: &PendingApprovalRequest) -> PendingApproval {
         condition_triggered: p.condition_triggered.clone(),
         submitted_at: p.submitted_at,
         timeout_secs: p.timeout_secs,
+        team_id,
+        routing_status,
     }
 }
 
@@ -326,4 +334,39 @@ pub fn decide_request_to_core(
     };
 
     Ok((id, decision))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn make_pending(team_id: Option<&str>) -> PendingApprovalRequest {
+        PendingApprovalRequest {
+            request_id: Uuid::new_v4(),
+            agent_id: "agent-1".to_string(),
+            action: "delete_file".to_string(),
+            condition_triggered: "requires_approval".to_string(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 300,
+            team_id: team_id.map(str::to_string),
+            routing_status: None,
+        }
+    }
+
+    #[test]
+    fn pending_to_proto_with_team_id_sets_routed_status() {
+        let p = make_pending(Some("team-x"));
+        let proto = pending_to_proto(&p);
+        assert_eq!(proto.team_id, "team-x");
+        assert_eq!(proto.routing_status, "routed:team-x");
+    }
+
+    #[test]
+    fn pending_to_proto_without_team_id_sets_no_team_id_status() {
+        let p = make_pending(None);
+        let proto = pending_to_proto(&p);
+        assert_eq!(proto.team_id, "");
+        assert_eq!(proto.routing_status, "no_team_id");
+    }
 }

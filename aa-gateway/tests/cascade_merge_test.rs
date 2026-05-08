@@ -21,6 +21,7 @@ fn allow_doc(scope: PolicyScope) -> Arc<PolicyDocument> {
         budget: None,
         data: None,
         approval_timeout_secs: 300,
+        approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
     })
@@ -47,6 +48,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
         budget: None,
         data: None,
         approval_timeout_secs: 300,
+        approval_policy: None,
         tools,
         capabilities: None,
     })
@@ -73,6 +75,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
         budget: None,
         data: None,
         approval_timeout_secs: timeout,
+        approval_policy: None,
         tools,
         capabilities: None,
     })

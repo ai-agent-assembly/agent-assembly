@@ -53,6 +53,8 @@ pub struct ApprovalRequest {
     pub timeout_secs: u64,
     /// Policy decision to apply if the request times out without a human decision.
     pub fallback: aa_core::PolicyResult,
+    /// Team identifier extracted from the agent context; used for routing.
+    pub team_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,13 @@ pub struct PendingApprovalRequest {
     pub submitted_at: u64,
     /// Seconds before the request times out.
     pub timeout_secs: u64,
+    /// Team identifier; `None` when the agent has no team affiliation.
+    pub team_id: Option<String>,
+    /// Current routing status (e.g. `"routed:team-x"`, `"escalated:org-admin"`).
+    ///
+    /// Set to `None` until a routing decision is recorded via
+    /// [`ApprovalQueue::update_routing_status`].
+    pub routing_status: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +148,8 @@ impl std::error::Error for ApprovalError {}
 /// a back-reference).
 pub struct ApprovalQueue {
     pending: DashMap<ApprovalRequestId, (ApprovalRequest, oneshot::Sender<ApprovalDecision>)>,
+    /// Mutable routing-status overrides; updated when escalation fires.
+    routing_statuses: DashMap<ApprovalRequestId, String>,
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
     audit_seq: AtomicU64,
     audit_last_hash: Mutex<[u8; 32]>,
@@ -159,6 +170,7 @@ impl ApprovalQueue {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
+            routing_statuses: DashMap::new(),
             audit_tx: None,
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new([0u8; 32]),
@@ -174,6 +186,7 @@ impl ApprovalQueue {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
+            routing_statuses: DashMap::new(),
             audit_tx: Some(audit_tx),
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new(initial_hash),
@@ -200,6 +213,7 @@ impl ApprovalQueue {
             .iter()
             .map(|entry| {
                 let req = &entry.value().0;
+                let routing_status = self.routing_statuses.get(&req.request_id).map(|s| s.clone());
                 PendingApprovalRequest {
                     request_id: req.request_id,
                     agent_id: req.agent_id.clone(),
@@ -207,9 +221,22 @@ impl ApprovalQueue {
                     condition_triggered: req.condition_triggered.clone(),
                     submitted_at: req.submitted_at,
                     timeout_secs: req.timeout_secs,
+                    team_id: req.team_id.clone(),
+                    routing_status,
                 }
             })
             .collect()
+    }
+
+    /// Record or update the routing status for a pending request.
+    ///
+    /// Used by the escalation handler to transition status from
+    /// `"routed:{team}"` to `"escalated:{approvers}"` when the timer fires.
+    /// Silently ignored when the request is no longer pending.
+    pub fn update_routing_status(&self, id: ApprovalRequestId, status: String) {
+        if self.pending.contains_key(&id) {
+            self.routing_statuses.insert(id, status);
+        }
     }
 
     /// Apply an [`ApprovalDecision`] to the request identified by `id`.
@@ -230,6 +257,7 @@ impl ApprovalQueue {
     /// if the entry was already gone (idempotent — a second call for the same
     /// `id` is a safe no-op).
     fn resolve(&self, id: ApprovalRequestId, decision: ApprovalDecision) -> bool {
+        self.routing_statuses.remove(&id);
         if let Some((_key, (req, tx))) = self.pending.remove(&id) {
             let (event_type_str, decided_by) = match &decision {
                 ApprovalDecision::Approved { by, .. } => ("ApprovalGranted", by.clone()),
@@ -427,6 +455,7 @@ mod tests {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "timed out".to_string(),
             },
+            team_id: None,
         };
         assert_eq!(req.agent_id, "agent-1");
         assert_eq!(req.timeout_secs, 30);
@@ -503,6 +532,8 @@ mod tests {
             condition_triggered: "sensitive-file-access".to_string(),
             submitted_at: 1_700_000_000,
             timeout_secs: 60,
+            team_id: None,
+            routing_status: None,
         };
         assert_eq!(pending.request_id, id);
         assert_eq!(pending.agent_id, "agent-1");
@@ -543,6 +574,7 @@ mod tests {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "timed out".to_string(),
             },
+            team_id: None,
         }
     }
 

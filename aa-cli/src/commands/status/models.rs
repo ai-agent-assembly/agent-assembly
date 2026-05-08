@@ -95,6 +95,12 @@ pub struct ApprovalResponse {
     pub reason: String,
     pub status: String,
     pub created_at: String,
+    /// Team this request was routed to (empty when agent has no team).
+    #[serde(default)]
+    pub team_id: String,
+    /// Human-readable routing status, e.g. `"routed:team-x"` or `"no_team_id"`.
+    #[serde(default)]
+    pub routing_status: String,
 }
 
 /// Computed approvals summary for display.
@@ -252,6 +258,26 @@ mod tests {
         assert_eq!(resp.id, "ap-001");
         assert_eq!(resp.status, "pending");
         assert_eq!(resp.created_at, "2026-04-30T10:00:00Z");
+        // routing fields default to empty when missing from JSON
+        assert!(resp.team_id.is_empty());
+        assert!(resp.routing_status.is_empty());
+    }
+
+    #[test]
+    fn approval_response_deserializes_with_routing_fields() {
+        let json = r#"{
+            "id": "ap-002",
+            "agent_id": "abc123",
+            "action": "dangerous_action",
+            "reason": "requires_approval",
+            "status": "pending",
+            "created_at": "2026-05-01T09:00:00Z",
+            "team_id": "team-x",
+            "routing_status": "routed:team-x"
+        }"#;
+        let resp: ApprovalResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.team_id, "team-x");
+        assert_eq!(resp.routing_status, "routed:team-x");
     }
 
     #[test]
