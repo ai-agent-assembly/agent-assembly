@@ -164,7 +164,10 @@ mod tests {
     fn agent_scope_requires_developer() {
         use aa_core::identity::AgentId;
         assert_eq!(
-            required_role_for(&PolicyScope::Agent(AgentId::from_bytes([0u8; 16])), MutationKind::Create),
+            required_role_for(
+                &PolicyScope::Agent(AgentId::from_bytes([0u8; 16])),
+                MutationKind::Create
+            ),
             CallerRole::Developer
         );
     }
@@ -194,7 +197,12 @@ mod tests {
 
     #[test]
     fn org_admin_satisfies_all_roles() {
-        for req in [CallerRole::OrgAdmin, CallerRole::TeamAdmin, CallerRole::Developer, CallerRole::Viewer] {
+        for req in [
+            CallerRole::OrgAdmin,
+            CallerRole::TeamAdmin,
+            CallerRole::Developer,
+            CallerRole::Viewer,
+        ] {
             assert!(CallerRole::OrgAdmin.satisfies(req), "OrgAdmin should satisfy {req}");
         }
     }
@@ -216,7 +224,12 @@ mod tests {
 
     #[test]
     fn auditor_never_satisfies_any_write_role() {
-        for req in [CallerRole::OrgAdmin, CallerRole::TeamAdmin, CallerRole::Developer, CallerRole::Viewer] {
+        for req in [
+            CallerRole::OrgAdmin,
+            CallerRole::TeamAdmin,
+            CallerRole::Developer,
+            CallerRole::Viewer,
+        ] {
             assert!(!CallerRole::Auditor.satisfies(req), "Auditor must not satisfy {req}");
         }
     }
@@ -226,8 +239,17 @@ mod tests {
     #[test]
     fn scope_kind_from_policy_scope() {
         assert_eq!(PolicyScopeKind::from(&PolicyScope::Global), PolicyScopeKind::Global);
-        assert_eq!(PolicyScopeKind::from(&PolicyScope::Org("x".into())), PolicyScopeKind::Org);
-        assert_eq!(PolicyScopeKind::from(&PolicyScope::Team("y".into())), PolicyScopeKind::Team);
-        assert_eq!(PolicyScopeKind::from(&PolicyScope::Tool("z".into())), PolicyScopeKind::Tool);
+        assert_eq!(
+            PolicyScopeKind::from(&PolicyScope::Org("x".into())),
+            PolicyScopeKind::Org
+        );
+        assert_eq!(
+            PolicyScopeKind::from(&PolicyScope::Team("y".into())),
+            PolicyScopeKind::Team
+        );
+        assert_eq!(
+            PolicyScopeKind::from(&PolicyScope::Tool("z".into())),
+            PolicyScopeKind::Tool
+        );
     }
 }

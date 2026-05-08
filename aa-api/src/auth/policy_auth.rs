@@ -14,10 +14,10 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use aa_gateway::policy::rbac::{CallerRole, MutationKind, PolicyScopeKind, required_role_for};
+use aa_gateway::policy::rbac::{required_role_for, CallerRole, MutationKind, PolicyScopeKind};
 use aa_gateway::policy::scope::PolicyScope;
 
-use crate::auth::{AuthenticatedCaller, AuthError};
+use crate::auth::{AuthError, AuthenticatedCaller};
 use crate::error::ProblemDetail;
 
 /// Maps an API `Scope` onto the coarsest `CallerRole` it implies.
@@ -111,11 +111,7 @@ impl PolicyWriteAuth {
     ///
     /// Returns `Ok(())` when the role satisfies the requirement, or
     /// `Err(PolicyAuthorizationDenied)` when it does not.
-    pub fn check_mutation(
-        &self,
-        scope: &PolicyScope,
-        mutation: MutationKind,
-    ) -> Result<(), PolicyAuthorizationDenied> {
+    pub fn check_mutation(&self, scope: &PolicyScope, mutation: MutationKind) -> Result<(), PolicyAuthorizationDenied> {
         let required = required_role_for(scope, mutation);
         if self.role.satisfies(required) {
             Ok(())
@@ -193,7 +189,9 @@ mod tests {
     #[test]
     fn org_admin_may_create_org_policy() {
         let auth = policy_write_auth(CallerRole::OrgAdmin);
-        assert!(auth.check_mutation(&PolicyScope::Org("acme".into()), MutationKind::Create).is_ok());
+        assert!(auth
+            .check_mutation(&PolicyScope::Org("acme".into()), MutationKind::Create)
+            .is_ok());
     }
 
     #[test]
