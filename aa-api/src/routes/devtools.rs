@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Extension;
 
-use aa_devtool_saas::provider::{SaasProvider, SaasProviderConfig};
+use aa_devtool_saas::provider::SaasProvider;
 use aa_devtool_saas::signature::{self, SignatureError};
 
 use crate::error::ProblemDetail;
@@ -75,7 +75,7 @@ pub async fn saas_webhook(
         return (
             StatusCode::UNAUTHORIZED,
             ProblemDetail::from_status(StatusCode::UNAUTHORIZED)
-                .with_detail("HMAC secret not configured for this provider".into()),
+                .with_detail("HMAC secret not configured for this provider"),
         )
             .into_response();
     };
@@ -88,7 +88,7 @@ pub async fn saas_webhook(
         };
         return (
             StatusCode::UNAUTHORIZED,
-            ProblemDetail::from_status(StatusCode::UNAUTHORIZED).with_detail(detail.into()),
+            ProblemDetail::from_status(StatusCode::UNAUTHORIZED).with_detail(detail),
         )
             .into_response();
     }
