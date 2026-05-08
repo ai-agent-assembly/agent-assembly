@@ -9,6 +9,7 @@ use core::str::FromStr;
 
 /// A discrete action category that policy can allow or deny for an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Capability {
     /// Read access to the filesystem.
     FileRead,
@@ -30,6 +31,7 @@ pub enum Capability {
 
 /// Aggregates allow and deny capability sets for a given policy scope.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CapabilitySet {
     /// Capabilities explicitly allowed.
     pub allow: BTreeSet<Capability>,
@@ -63,6 +65,21 @@ impl FromStr for Capability {
                     Err(alloc::format!("unknown capability: '{s}'"))
                 }
             }
+        }
+    }
+}
+
+impl core::fmt::Display for Capability {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Capability::FileRead => f.write_str("file_read"),
+            Capability::FileWrite => f.write_str("file_write"),
+            Capability::NetworkOutbound => f.write_str("network_outbound"),
+            Capability::NetworkInbound => f.write_str("network_inbound"),
+            Capability::TerminalExec => f.write_str("terminal_exec"),
+            Capability::AgentSpawn => f.write_str("agent_spawn"),
+            Capability::McpTool(name) => write!(f, "mcp_tool:{name}"),
+            Capability::Model(name) => write!(f, "model:{name}"),
         }
     }
 }
@@ -170,5 +187,17 @@ mod tests {
     #[test]
     fn capability_from_str_model_empty_name_returns_err() {
         assert!("model:".parse::<Capability>().is_err());
+    }
+
+    #[test]
+    fn capability_display_round_trips_simple_variant() {
+        let cap = Capability::FileRead;
+        assert_eq!(cap.to_string().parse::<Capability>().unwrap(), cap);
+    }
+
+    #[test]
+    fn capability_display_round_trips_mcp_tool() {
+        let cap = Capability::McpTool("bash".to_string());
+        assert_eq!(cap.to_string().parse::<Capability>().unwrap(), cap);
     }
 }
