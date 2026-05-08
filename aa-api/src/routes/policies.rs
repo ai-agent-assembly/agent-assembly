@@ -6,6 +6,10 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use aa_gateway::policy::rbac::MutationKind;
+use aa_gateway::policy::scope::PolicyScope;
+
+use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -76,31 +80,65 @@ pub async fn list_policies(
 pub struct CreatePolicyRequest {
     /// Raw YAML content of the governance policy.
     pub policy_yaml: String,
+    /// Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
+    ///
+    /// Used for RBAC authorization — the caller must hold the role required
+    /// to mutate policies at this scope. Defaults to `"global"` when absent.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+impl CreatePolicyRequest {
+    /// Parse `scope` into a [`PolicyScope`], defaulting to `Global`.
+    pub fn policy_scope(&self) -> Result<PolicyScope, String> {
+        match &self.scope {
+            None => Ok(PolicyScope::Global),
+            Some(s) => s
+                .parse()
+                .map_err(|e: aa_gateway::policy::error::PolicyParseError| e.to_string()),
+        }
+    }
 }
 
 /// `POST /api/v1/policies` — apply a new governance policy.
 ///
 /// Submit and activate a new governance policy from YAML.
+/// The caller must hold the role required for the target `scope`
+/// (default: `global`, requires `OrgAdmin`).
 #[utoipa::path(
     post,
     path = "/api/v1/policies",
     request_body = CreatePolicyRequest,
     responses(
         (status = 201, description = "Policy created", body = PolicyResponse),
-        (status = 400, description = "Invalid policy YAML")
+        (status = 400, description = "Invalid policy YAML or scope"),
+        (status = 403, description = "Insufficient role for this policy scope")
     ),
     tag = "policies"
 )]
 pub async fn create_policy(
+    policy_auth: PolicyWriteAuth,
     Extension(state): Extension<AppState>,
     Json(body): Json<CreatePolicyRequest>,
-) -> Result<(StatusCode, Json<PolicyResponse>), ProblemDetail> {
+) -> Result<(StatusCode, Json<PolicyResponse>), PolicyCreateError> {
+    let scope = body.policy_scope().map_err(|e| {
+        PolicyCreateError::BadRequest(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid scope: {e}")),
+        )
+    })?;
+
+    policy_auth
+        .check_mutation(&scope, MutationKind::Create)
+        .map_err(PolicyCreateError::Forbidden)?;
+
     let meta = state
         .policy_engine
         .apply_yaml(&body.policy_yaml, Some("api"), state.policy_history.as_ref())
         .await
         .map_err(|e| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid policy: {e:?}"))
+            PolicyCreateError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid policy: {e:?}")),
+            )
         })?;
 
     Ok((
@@ -112,6 +150,22 @@ pub async fn create_policy(
             rule_count: 0,
         }),
     ))
+}
+
+/// Unified error type for `create_policy` so both 400 and 403 paths render correctly.
+#[derive(Debug)]
+pub enum PolicyCreateError {
+    BadRequest(ProblemDetail),
+    Forbidden(PolicyAuthorizationDenied),
+}
+
+impl IntoResponse for PolicyCreateError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::BadRequest(p) => p.into_response(),
+            Self::Forbidden(d) => d.into_response(),
+        }
+    }
 }
 
 /// `GET /api/v1/policies/active` — get the currently active policy.
