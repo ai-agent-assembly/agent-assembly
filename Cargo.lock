@@ -47,6 +47,7 @@ version = "0.0.1"
 dependencies = [
  "aa-core",
  "aa-devtool",
+ "aa-devtool-codex",
  "aa-devtool-windsurf",
  "aa-gateway",
  "anyhow",

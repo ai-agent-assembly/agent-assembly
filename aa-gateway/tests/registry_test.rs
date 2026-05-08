@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use chrono::Utc;
 
 use aa_gateway::registry::store::AgentRecord;
-use aa_gateway::registry::{AgentRegistry, AgentStatus};
+use aa_gateway::registry::{AgentRegistry, AgentStatus, OrphanMode};
 
 /// Build a minimal `AgentRecord` with the given 16-byte key.
 fn make_record(key: [u8; 16]) -> AgentRecord {
@@ -86,7 +86,7 @@ fn deregister_removes_agent() {
     let reg = AgentRegistry::new();
     reg.register(make_record(key(1))).unwrap();
 
-    let removed = reg.deregister(&key(1)).unwrap();
+    let (removed, _effects) = reg.deregister(&key(1), OrphanMode::Suspend).unwrap();
     assert_eq!(removed.name, "test-agent");
     assert!(reg.get(&key(1)).is_none());
 }
@@ -94,7 +94,7 @@ fn deregister_removes_agent() {
 #[test]
 fn deregister_missing_returns_error() {
     let reg = AgentRegistry::new();
-    let err = reg.deregister(&key(1));
+    let err = reg.deregister(&key(1), OrphanMode::Suspend);
     assert!(err.is_err());
     assert!(err.unwrap_err().to_string().contains("not found"));
 }
@@ -188,7 +188,7 @@ async fn deregister_cleans_up_control_sender() {
     reg.register(make_record(key(1))).unwrap();
     let _rx = reg.open_control_stream(&key(1)).unwrap();
 
-    reg.deregister(&key(1)).unwrap();
+    reg.deregister(&key(1), OrphanMode::Suspend).unwrap();
 
     // send_command should fail since sender was removed
     let cmd = ControlCommand {

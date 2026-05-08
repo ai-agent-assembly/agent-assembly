@@ -12,7 +12,8 @@ use tonic::Status;
 use aa_proto::assembly::agent::v1::control_command::Command;
 use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
-use super::{AgentStatus, LineageError, RegistryError};
+use super::orphan::{OrphanEffect, OrphanMode};
+use super::{AgentStatus, LineageError, RegistryError, SuspendReason};
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
@@ -240,10 +241,18 @@ impl AgentRegistry {
         self.agents.get(agent_id).map(|r| r.clone())
     }
 
-    /// Remove an agent from the registry. Returns the removed record.
+    /// Remove an agent from the registry. Returns the removed record and a list of
+    /// [`OrphanEffect`]s describing what happened to each descendant under `mode`.
     ///
     /// Also removes any associated control stream sender.
-    pub fn deregister(&self, agent_id: &[u8; 16]) -> Result<AgentRecord, RegistryError> {
+    pub fn deregister(
+        &self,
+        agent_id: &[u8; 16],
+        mode: OrphanMode,
+    ) -> Result<(AgentRecord, Vec<OrphanEffect>), RegistryError> {
+        // Collect direct children keys BEFORE removing the agent.
+        let child_keys = self.children_of(agent_id);
+
         self.control_senders.remove(agent_id);
         let (_, record) = self.agents.remove(agent_id).ok_or(RegistryError::NotFound(*agent_id))?;
 
@@ -261,7 +270,101 @@ impl AgentRegistry {
             }
         }
 
-        Ok(record)
+        // Apply orphan policy to each direct child recursively.
+        let mut effects = Vec::new();
+        for child_key in child_keys {
+            self.apply_orphan_mode_recursive(child_key, mode, &mut effects);
+        }
+
+        Ok((record, effects))
+    }
+
+    /// Recursively apply `mode` to `child_key` and all its descendants.
+    ///
+    /// DashMap does not allow recursive locking — child keys are always collected
+    /// into a `Vec` before any mutation so there is no re-entrant `get_mut`.
+    fn apply_orphan_mode_recursive(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
+        match mode {
+            OrphanMode::Suspend => {
+                // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
+                let grandchildren = self.children_of(&child_key);
+
+                if let Some(mut entry) = self.agents.get_mut(&child_key) {
+                    let old_status = format!("{:?}", entry.status);
+                    entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "suspended",
+                        old_status,
+                        new_status: "suspended:parent_deregistered".to_string(),
+                    });
+                }
+
+                for gk in grandchildren {
+                    self.apply_orphan_mode_recursive(gk, mode, effects);
+                }
+            }
+
+            OrphanMode::PromoteToRoot => {
+                // Only direct children become new roots; their children keep relative structure.
+                if let Some(mut entry) = self.agents.get_mut(&child_key) {
+                    let old_status = format!("{:?}", entry.status);
+                    entry.parent_key = None;
+                    entry.parent_agent_id = None;
+                    entry.root_agent_id = None;
+                    entry.depth = 0;
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "promoted_to_root",
+                        old_status,
+                        new_status: "active:root".to_string(),
+                    });
+                }
+
+                // Recalculate depth for this subtree now that the promoted child is depth 0.
+                self.recalculate_depth_recursive(child_key, 0);
+            }
+
+            OrphanMode::CascadeDeregister => {
+                // Post-order teardown: recurse into grandchildren first.
+                let grandchildren = self.children_of(&child_key);
+                for gk in grandchildren {
+                    self.apply_orphan_mode_recursive(gk, mode, effects);
+                }
+
+                // Now remove this child.
+                self.control_senders.remove(&child_key);
+                if let Some((_, record)) = self.agents.remove(&child_key) {
+                    if let Some(ref tid) = record.team_id {
+                        if let Some(set) = self.team_index.get(tid) {
+                            set.remove(&child_key);
+                        }
+                    }
+                    effects.push(OrphanEffect {
+                        agent_key: child_key,
+                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                        action: "deregistered",
+                        old_status: format!("{:?}", record.status),
+                        new_status: "deregistered".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Recalculate `depth` for the entire subtree rooted at `parent_key`.
+    ///
+    /// Sets each immediate child's depth to `parent_depth + 1` and recurses.
+    fn recalculate_depth_recursive(&self, parent_key: [u8; 16], parent_depth: u32) {
+        let children = self.children_of(&parent_key);
+        for ck in children {
+            if let Some(mut entry) = self.agents.get_mut(&ck) {
+                entry.depth = parent_depth + 1;
+            }
+            self.recalculate_depth_recursive(ck, parent_depth + 1);
+        }
     }
 
     /// Update the `last_heartbeat` timestamp for an agent to now.
@@ -632,7 +735,7 @@ mod tree_tests {
         assert_eq!(reg.agent_depth(&child_id), Some(1));
 
         // deregister child — root's children cleared
-        reg.deregister(&child_id).unwrap();
+        reg.deregister(&child_id, crate::registry::OrphanMode::Suspend).unwrap();
         assert!(reg.children_of(&root_id).is_empty());
 
         // team_index updated
@@ -976,5 +1079,357 @@ mod cascade_tests {
         reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
 
         assert_eq!(reg.agent_status(&SIBLING).unwrap(), AgentStatus::Active);
+    }
+}
+
+#[cfg(test)]
+mod orphan_mode_tests {
+    use super::*;
+    use crate::registry::{AgentStatus, OrphanMode, SuspendReason};
+
+    fn test_record(id: [u8; 16], parent_key: Option<[u8; 16]>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: format!("agent-{}", id[0]),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+        }
+    }
+
+    fn key(n: u8) -> [u8; 16] {
+        let mut k = [0u8; 16];
+        k[0] = n;
+        k
+    }
+
+    #[test]
+    fn deregister_suspend_mode_suspends_direct_child() {
+        let reg = AgentRegistry::new();
+        let parent = key(1);
+        let child = key(2);
+
+        reg.register(test_record(parent, None, 0)).unwrap();
+        reg.register(test_record(child, Some(parent), 1)).unwrap();
+        // Wire up the parent→child link (register() does this automatically via post-insert).
+
+        let (_, effects) = reg.deregister(&parent, OrphanMode::Suspend).unwrap();
+
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].action, "suspended");
+        assert_eq!(effects[0].agent_key, child);
+
+        let child_record = reg.get(&child).unwrap();
+        assert_eq!(
+            child_record.status,
+            AgentStatus::Suspended(SuspendReason::ParentDeregistered)
+        );
+    }
+
+    #[test]
+    fn deregister_suspend_mode_recurses_to_grandchild() {
+        let reg = AgentRegistry::new();
+        let root = key(1);
+        let child = key(2);
+        let grandchild = key(3);
+
+        reg.register(test_record(root, None, 0)).unwrap();
+        reg.register(test_record(child, Some(root), 1)).unwrap();
+        reg.register(test_record(grandchild, Some(child), 2)).unwrap();
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::Suspend).unwrap();
+
+        // Both child and grandchild should be suspended.
+        assert_eq!(effects.len(), 2);
+        let actions: Vec<&str> = effects.iter().map(|e| e.action).collect();
+        assert!(actions.iter().all(|&a| a == "suspended"));
+
+        assert_eq!(
+            reg.get(&child).unwrap().status,
+            AgentStatus::Suspended(SuspendReason::ParentDeregistered)
+        );
+        assert_eq!(
+            reg.get(&grandchild).unwrap().status,
+            AgentStatus::Suspended(SuspendReason::ParentDeregistered)
+        );
+    }
+
+    #[test]
+    fn deregister_promote_to_root_clears_parent_link() {
+        let reg = AgentRegistry::new();
+        let parent = key(1);
+        let child = key(2);
+
+        reg.register(test_record(parent, None, 0)).unwrap();
+        reg.register(test_record(child, Some(parent), 1)).unwrap();
+
+        let (_, effects) = reg.deregister(&parent, OrphanMode::PromoteToRoot).unwrap();
+
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].action, "promoted_to_root");
+
+        let child_record = reg.get(&child).unwrap();
+        assert!(child_record.parent_key.is_none());
+        assert!(child_record.parent_agent_id.is_none());
+        assert!(child_record.root_agent_id.is_none());
+        assert_eq!(child_record.depth, 0);
+    }
+
+    #[test]
+    fn deregister_promote_to_root_recalculates_grandchild_depth() {
+        let reg = AgentRegistry::new();
+        let root = key(1);
+        let child = key(2);
+        let grandchild = key(3);
+
+        reg.register(test_record(root, None, 0)).unwrap();
+        reg.register(test_record(child, Some(root), 1)).unwrap();
+        reg.register(test_record(grandchild, Some(child), 2)).unwrap();
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::PromoteToRoot).unwrap();
+
+        // Only the direct child is promoted; grandchild depth recalculated.
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].action, "promoted_to_root");
+
+        assert_eq!(reg.get(&child).unwrap().depth, 0);
+        assert_eq!(reg.get(&grandchild).unwrap().depth, 1);
+    }
+
+    #[test]
+    fn deregister_cascade_removes_all_descendants() {
+        let reg = AgentRegistry::new();
+        let root = key(1);
+        let child = key(2);
+        let grandchild = key(3);
+
+        reg.register(test_record(root, None, 0)).unwrap();
+        reg.register(test_record(child, Some(root), 1)).unwrap();
+        reg.register(test_record(grandchild, Some(child), 2)).unwrap();
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::CascadeDeregister).unwrap();
+
+        // Both child and grandchild should be deregistered.
+        assert_eq!(effects.len(), 2);
+        let actions: Vec<&str> = effects.iter().map(|e| e.action).collect();
+        assert!(actions.iter().all(|&a| a == "deregistered"));
+
+        assert!(reg.get(&child).is_none());
+        assert!(reg.get(&grandchild).is_none());
+    }
+
+    #[test]
+    fn deregister_no_children_is_unchanged() {
+        let reg = AgentRegistry::new();
+        let agent = key(1);
+
+        reg.register(test_record(agent, None, 0)).unwrap();
+
+        let (record, effects) = reg.deregister(&agent, OrphanMode::Suspend).unwrap();
+
+        assert_eq!(record.agent_id, agent);
+        assert!(effects.is_empty());
+        assert!(reg.get(&agent).is_none());
+    }
+
+    #[test]
+    fn deregister_already_suspended_child_stays_suspended_under_suspend_mode() {
+        let reg = AgentRegistry::new();
+        let parent = key(1);
+        let child = key(2);
+
+        reg.register(test_record(parent, None, 0)).unwrap();
+        reg.register(test_record(child, Some(parent), 1)).unwrap();
+
+        // Pre-suspend the child for a different reason.
+        reg.suspend_agent(&child, SuspendReason::Manual).unwrap();
+        assert_eq!(
+            reg.get(&child).unwrap().status,
+            AgentStatus::Suspended(SuspendReason::Manual)
+        );
+
+        // Deregistering the parent overwrites with ParentDeregistered.
+        let (_, effects) = reg.deregister(&parent, OrphanMode::Suspend).unwrap();
+
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].action, "suspended");
+        // Status is now ParentDeregistered (overwritten).
+        assert_eq!(
+            reg.get(&child).unwrap().status,
+            AgentStatus::Suspended(SuspendReason::ParentDeregistered)
+        );
+    }
+}
+
+#[cfg(test)]
+mod cross_mode_integration {
+    use super::*;
+    use crate::registry::{AgentStatus, OrphanMode, SuspendReason};
+
+    fn key(n: u8) -> [u8; 16] {
+        let mut k = [0u8; 16];
+        k[0] = n;
+        k
+    }
+
+    fn test_record(id: [u8; 16], parent_key: Option<[u8; 16]>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: format!("agent-{}", id[0]),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+        }
+    }
+
+    /// Build a 3-level balanced tree of 13 agents:
+    ///   root (key 1)
+    ///     ├── child-A (key 2) → grandchildren 5, 6, 7
+    ///     ├── child-B (key 3) → grandchildren 8, 9, 10
+    ///     └── child-C (key 4) → grandchildren 11, 12, 13
+    fn build_balanced_tree() -> AgentRegistry {
+        let reg = AgentRegistry::new();
+        let root = key(1);
+        reg.register(test_record(root, None, 0)).unwrap();
+
+        // Level-1: direct children of root
+        for n in 2u8..=4 {
+            reg.register(test_record(key(n), Some(root), 1)).unwrap();
+        }
+
+        // Level-2: 3 grandchildren per level-1 node
+        //   key(2) → 5,6,7 | key(3) → 8,9,10 | key(4) → 11,12,13
+        let mut gc: u8 = 5;
+        for parent_n in 2u8..=4 {
+            for _ in 0..3 {
+                reg.register(test_record(key(gc), Some(key(parent_n)), 2)).unwrap();
+                gc += 1;
+            }
+        }
+        reg
+    }
+
+    const DESCENDANT_KEYS: [u8; 12] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+    const LEVEL1_KEYS: [u8; 3] = [2, 3, 4];
+    const LEVEL2_KEYS: [u8; 9] = [5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+    #[test]
+    fn balanced_tree_suspend_mode_suspends_all_12_descendants() {
+        let reg = build_balanced_tree();
+        let root = key(1);
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::Suspend).unwrap();
+
+        assert_eq!(effects.len(), 12, "expect one effect per descendant");
+        assert!(
+            effects.iter().all(|e| e.action == "suspended"),
+            "all effects must be 'suspended'"
+        );
+
+        for n in DESCENDANT_KEYS {
+            assert_eq!(
+                reg.get(&key(n)).unwrap().status,
+                AgentStatus::Suspended(SuspendReason::ParentDeregistered),
+                "key {n} must be suspended with ParentDeregistered"
+            );
+        }
+        assert!(reg.get(&root).is_none(), "root must be removed");
+    }
+
+    #[test]
+    fn balanced_tree_promote_to_root_mode_makes_3_new_roots() {
+        let reg = build_balanced_tree();
+        let root = key(1);
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::PromoteToRoot).unwrap();
+
+        // Only direct children are promoted (3 effects).
+        assert_eq!(effects.len(), 3, "expect one effect per direct child");
+        assert!(
+            effects.iter().all(|e| e.action == "promoted_to_root"),
+            "all effects must be 'promoted_to_root'"
+        );
+
+        for n in LEVEL1_KEYS {
+            let record = reg.get(&key(n)).expect("level-1 child must still exist");
+            assert!(record.parent_key.is_none(), "key {n} parent_key must be None");
+            assert!(record.parent_agent_id.is_none(), "key {n} parent_agent_id must be None");
+            assert!(record.root_agent_id.is_none(), "key {n} root_agent_id must be None");
+            assert_eq!(record.depth, 0, "key {n} must be promoted to depth 0");
+        }
+
+        for n in LEVEL2_KEYS {
+            let record = reg.get(&key(n)).expect("level-2 grandchild must still exist");
+            assert_eq!(record.depth, 1, "key {n} must be at depth 1 after promotion");
+        }
+
+        assert!(reg.get(&root).is_none(), "root must be removed");
+    }
+
+    #[test]
+    fn balanced_tree_cascade_deregister_mode_removes_all_12_descendants() {
+        let reg = build_balanced_tree();
+        let root = key(1);
+
+        let (_, effects) = reg.deregister(&root, OrphanMode::CascadeDeregister).unwrap();
+
+        assert_eq!(effects.len(), 12, "expect one effect per descendant");
+        assert!(
+            effects.iter().all(|e| e.action == "deregistered"),
+            "all effects must be 'deregistered'"
+        );
+
+        for n in DESCENDANT_KEYS {
+            assert!(reg.get(&key(n)).is_none(), "key {n} must be removed from registry");
+        }
+        assert!(reg.get(&root).is_none(), "root must be removed");
     }
 }
