@@ -719,6 +719,19 @@ impl PolicyEngine {
         Arc::clone(&self.budget)
     }
 
+    /// Return per-policy approval escalation overrides from the primary policy.
+    ///
+    /// Returns `(escalation_timeout_seconds_override, escalation_role_override)`.
+    /// Both are `None` when the primary policy has no `approval` section or when
+    /// the respective field is absent.
+    pub fn approval_escalation_overrides(&self) -> (Option<u64>, Option<String>) {
+        let doc = self.policy.load();
+        match &doc.approval_policy {
+            Some(ap) => (ap.timeout_seconds.map(u64::from), ap.escalation_role.clone()),
+            None => (None, None),
+        }
+    }
+
     /// Cumulative cascade decision cache hits since engine construction.
     pub fn cache_hits(&self) -> u64 {
         self.decision_cache.cache_hits()
