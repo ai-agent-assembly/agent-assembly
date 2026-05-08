@@ -214,6 +214,7 @@ fn cascade_empty_capabilities_does_not_block_any_action() {
     let agent_id = AgentId::from_bytes([1u8; 16]);
     engine.load_policy(no_cap_doc(PolicyScope::Agent(agent_id)));
 
+    // agent_id matches the policy scope above — make_ctx() also uses [1u8; 16]
     let ctx = make_ctx();
     let action = GovernanceAction::FileAccess {
         path: "/tmp/file.txt".into(),
