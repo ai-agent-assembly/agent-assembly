@@ -64,3 +64,86 @@ pub(crate) fn map_policy_to_settings(policy: &PolicyDocument) -> ClaudeSettings 
         disabled_mcpjson_servers: disabled_mcp,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::{PolicyDecision, PolicyDocument, PolicyRule};
+
+    fn rule(pattern: &str, decision: PolicyDecision) -> PolicyRule {
+        PolicyRule {
+            action_pattern: pattern.to_string(),
+            decision,
+        }
+    }
+
+    fn doc(rules: Vec<PolicyRule>) -> PolicyDocument {
+        PolicyDocument { version: 1, name: "test".to_string(), rules }
+    }
+
+    #[test]
+    fn policy_with_bash_allow_emits_allow_bash() {
+        let policy = doc(vec![rule("Bash", PolicyDecision::Allow)]);
+        let s = map_policy_to_settings(&policy);
+        assert_eq!(s.permissions.allow, vec!["Bash"]);
+        assert!(s.permissions.deny.is_empty());
+    }
+
+    #[test]
+    fn enforce_policy_maps_to_default_mode() {
+        let policy = doc(vec![
+            rule("Bash", PolicyDecision::Allow),
+            rule("Edit", PolicyDecision::Deny),
+        ]);
+        let s = map_policy_to_settings(&policy);
+        assert_eq!(s.permission_mode, "default");
+        assert_eq!(s.permissions.deny, vec!["Edit"]);
+    }
+
+    #[test]
+    fn permissive_policy_maps_to_accept_edits() {
+        let policy = doc(vec![
+            rule("Bash", PolicyDecision::Allow),
+            rule("Read", PolicyDecision::Allow),
+        ]);
+        let s = map_policy_to_settings(&policy);
+        assert_eq!(s.permission_mode, "acceptEdits");
+    }
+
+    #[test]
+    fn mcp_allow_list_emits_enabled_servers() {
+        let policy = doc(vec![
+            rule("mcp:filesystem", PolicyDecision::Allow),
+            rule("mcp:search", PolicyDecision::Deny),
+        ]);
+        let s = map_policy_to_settings(&policy);
+        assert_eq!(s.enabled_mcpjson_servers, vec!["filesystem"]);
+        assert_eq!(s.disabled_mcpjson_servers, vec!["search"]);
+    }
+
+    #[test]
+    fn require_approval_maps_to_plan_mode() {
+        let policy = doc(vec![
+            rule("Bash", PolicyDecision::Allow),
+            rule("Edit", PolicyDecision::RequireApproval),
+        ]);
+        let s = map_policy_to_settings(&policy);
+        assert_eq!(s.permission_mode, "plan");
+        assert_eq!(s.permissions.deny, vec!["Edit"]);
+    }
+
+    #[test]
+    fn snapshot_full_policy_fixture() {
+        let policy = doc(vec![
+            rule("Bash", PolicyDecision::Allow),
+            rule("Read", PolicyDecision::Allow),
+            rule("Edit", PolicyDecision::Deny),
+            rule("WebFetch", PolicyDecision::RequireApproval),
+            rule("mcp:filesystem", PolicyDecision::Allow),
+            rule("mcp:search", PolicyDecision::Deny),
+        ]);
+        let s = map_policy_to_settings(&policy);
+        let json = serde_json::to_string_pretty(&s).unwrap();
+        insta::assert_snapshot!(json);
+    }
+}
