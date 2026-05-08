@@ -12,7 +12,7 @@ use tonic::Status;
 use aa_proto::assembly::agent::v1::control_command::Command;
 use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
-use super::{AgentStatus, RegistryError};
+use super::{AgentStatus, LineageError, RegistryError};
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
@@ -154,6 +154,39 @@ impl AgentRegistry {
             team_index: DashMap::new(),
             registration_lock: Mutex::new(()),
         }
+    }
+
+    /// Validate that registering `agent_id` with `parent_key` does not introduce a cycle
+    /// or exceed `max_depth`. Must be called while holding `registration_lock`.
+    #[allow(dead_code)]
+    pub(crate) fn validate_lineage(
+        &self,
+        agent_id: &[u8; 16],
+        parent_key: &[u8; 16],
+        max_depth: u32,
+    ) -> Result<(), LineageError> {
+        // Depth check.
+        let parent_depth = self.agents.get(parent_key).map(|r| r.depth).unwrap_or(0);
+        let new_depth = parent_depth + 1;
+        if new_depth > max_depth {
+            return Err(LineageError::MaxDepthExceeded {
+                depth: new_depth,
+                max: max_depth,
+            });
+        }
+
+        // Cycle check: walk ancestor chain of parent_key looking for agent_id.
+        let mut cycle = vec![*agent_id, *parent_key];
+        let mut current = self.agents.get(parent_key).and_then(|r| r.parent_key);
+        while let Some(pk) = current {
+            if pk == *agent_id {
+                cycle.push(pk);
+                return Err(LineageError::CircularDelegation { cycle });
+            }
+            cycle.push(pk);
+            current = self.agents.get(&pk).and_then(|r| r.parent_key);
+        }
+        Ok(())
     }
 
     /// Insert a new agent record. Returns an error if the ID is already registered.
