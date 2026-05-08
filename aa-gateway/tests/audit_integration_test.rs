@@ -354,6 +354,8 @@ async fn audit_service_populates_lineage_from_registry() {
             delegation_reason: Some("summarise".into()),
             spawned_by_tool: Some("langgraph".into()),
             root_agent_id: Some(root_bytes),
+            children: vec![],
+            parent_key: None,
         })
         .unwrap();
 
