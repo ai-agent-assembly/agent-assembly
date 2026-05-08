@@ -186,6 +186,7 @@ impl PolicyServiceImpl {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "approval timed out".to_string(),
             },
+            team_id: None,
         }
     }
 

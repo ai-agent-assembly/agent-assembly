@@ -53,6 +53,8 @@ pub struct ApprovalRequest {
     pub timeout_secs: u64,
     /// Policy decision to apply if the request times out without a human decision.
     pub fallback: aa_core::PolicyResult,
+    /// Team identifier extracted from the agent context; used for routing.
+    pub team_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,8 @@ pub struct PendingApprovalRequest {
     pub submitted_at: u64,
     /// Seconds before the request times out.
     pub timeout_secs: u64,
+    /// Team identifier; `None` when the agent has no team affiliation.
+    pub team_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +211,7 @@ impl ApprovalQueue {
                     condition_triggered: req.condition_triggered.clone(),
                     submitted_at: req.submitted_at,
                     timeout_secs: req.timeout_secs,
+                    team_id: req.team_id.clone(),
                 }
             })
             .collect()
@@ -427,6 +432,7 @@ mod tests {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "timed out".to_string(),
             },
+            team_id: None,
         };
         assert_eq!(req.agent_id, "agent-1");
         assert_eq!(req.timeout_secs, 30);
@@ -503,6 +509,7 @@ mod tests {
             condition_triggered: "sensitive-file-access".to_string(),
             submitted_at: 1_700_000_000,
             timeout_secs: 60,
+            team_id: None,
         };
         assert_eq!(pending.request_id, id);
         assert_eq!(pending.agent_id, "agent-1");
@@ -543,6 +550,7 @@ mod tests {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "timed out".to_string(),
             },
+            team_id: None,
         }
     }
 
