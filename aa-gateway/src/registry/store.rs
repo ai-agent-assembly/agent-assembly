@@ -869,7 +869,10 @@ mod cascade_tests {
 
         let events = reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
 
-        assert_eq!(reg.agent_status(&ROOT).unwrap(), AgentStatus::Suspended(SuspendReason::Manual));
+        assert_eq!(
+            reg.agent_status(&ROOT).unwrap(),
+            AgentStatus::Suspended(SuspendReason::Manual)
+        );
         assert_eq!(
             reg.agent_status(&CHILD).unwrap(),
             AgentStatus::Suspended(SuspendReason::ParentSuspended { parent_agent_id: ROOT })
@@ -911,10 +914,7 @@ mod cascade_tests {
 
         assert_eq!(reg.agent_status(&ROOT).unwrap(), AgentStatus::Active);
         // Children remain suspended.
-        assert!(matches!(
-            reg.agent_status(&CHILD).unwrap(),
-            AgentStatus::Suspended(_)
-        ));
+        assert!(matches!(reg.agent_status(&CHILD).unwrap(), AgentStatus::Suspended(_)));
         assert!(matches!(
             reg.agent_status(&GRANDCHILD).unwrap(),
             AgentStatus::Suspended(_)
@@ -940,7 +940,9 @@ mod cascade_tests {
         // Both reasons are tracked.
         let reasons = reg.get_suspend_reasons(&CHILD);
         assert!(reasons.contains(&SuspendReason::BudgetExceeded));
-        assert!(reasons.iter().any(|r| matches!(r, SuspendReason::ParentSuspended { .. })));
+        assert!(reasons
+            .iter()
+            .any(|r| matches!(r, SuspendReason::ParentSuspended { .. })));
     }
 
     #[test]
