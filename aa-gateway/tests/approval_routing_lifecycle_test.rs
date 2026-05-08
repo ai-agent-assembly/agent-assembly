@@ -1,7 +1,8 @@
 //! Integration test for the full team-approval-routing lifecycle.
 //!
 //! Covers AC6: route to team → no action → timer fires → escalate to OrgAdmin → approve;
-//! asserts state transitions and that the correct routing and escalation events are produced.
+//! asserts state transitions, routing-status updates, and that the correct routing and
+//! escalation events are produced.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,6 +58,7 @@ fn router_resolves_team_and_approvers() {
             approvers: vec!["alice".to_string(), "bob".to_string()],
             escalation_timeout_secs: 1800,
             escalation_approvers: vec!["org-admin".to_string()],
+            approval_kind: None,
         },
     );
     let router = ApprovalRouter::new(store);
@@ -94,6 +96,22 @@ fn router_unknown_team_returns_no_team_config() {
     assert_eq!(router.route(&req), RoutingOutcome::NoTeamConfig);
 }
 
+#[test]
+fn routing_config_preserves_approval_kind() {
+    let store = make_routing_store(
+        "approval_kind",
+        TeamRoutingConfig {
+            team_id: "team-beta".to_string(),
+            approvers: vec!["carol".to_string()],
+            escalation_timeout_secs: 600,
+            escalation_approvers: vec!["org-admin".to_string()],
+            approval_kind: Some("tool_call".to_string()),
+        },
+    );
+    let cfg = store.get("team-beta").unwrap();
+    assert_eq!(cfg.approval_kind.as_deref(), Some("tool_call"));
+}
+
 #[tokio::test]
 async fn full_lifecycle_route_escalate_approve() {
     // 1. Routing config: team-x with immediate escalation
@@ -104,6 +122,7 @@ async fn full_lifecycle_route_escalate_approve() {
             approvers: vec!["alice".to_string()],
             escalation_timeout_secs: 0, // fires immediately
             escalation_approvers: vec!["org-admin".to_string()],
+            approval_kind: None,
         },
     );
 
@@ -126,8 +145,16 @@ async fn full_lifecycle_route_escalate_approve() {
     };
 
     // 3. Submit to approval queue
-    let queue = Arc::new(ApprovalQueue::new());
+    let queue = ApprovalQueue::new();
     let (_id, decision_future) = queue.submit(req);
+
+    // Initial routing_status is absent (computed dynamically from team_id).
+    let pending = queue.list();
+    let entry = pending.iter().find(|p| p.request_id == request_id).unwrap();
+    assert!(
+        entry.routing_status.is_none(),
+        "routing_status should be None before escalation"
+    );
 
     // 4. Register with escalation scheduler
     let escalation_path = temp_path("lifecycle_escalation");
@@ -150,6 +177,19 @@ async fn full_lifecycle_route_escalate_approve() {
     assert_eq!(event.team_id, "team-x");
     assert_eq!(event.escalation_approvers, vec!["org-admin"]);
 
+    // 5b. Simulate what spawn_escalation_audit_task does: update routing_status on the queue.
+    let to_role = event.escalation_approvers.join(",");
+    queue.update_routing_status(request_id, format!("escalated:{to_role}"));
+
+    // State transition assertion: routing_status now reflects the escalation.
+    let pending = queue.list();
+    let entry = pending.iter().find(|p| p.request_id == request_id).unwrap();
+    assert_eq!(
+        entry.routing_status.as_deref(),
+        Some("escalated:org-admin"),
+        "routing_status must reflect escalation before decision"
+    );
+
     // 6. Org admin approves
     queue
         .decide(
@@ -170,6 +210,13 @@ async fn full_lifecycle_route_escalate_approve() {
     assert!(
         matches!(decision, ApprovalDecision::Approved { .. }),
         "expected Approved, got {decision:?}"
+    );
+
+    // 8. routing_status is cleaned up after the request is resolved.
+    let pending = queue.list();
+    assert!(
+        pending.iter().all(|p| p.request_id != request_id),
+        "resolved request must not appear in pending list"
     );
 
     let _ = std::fs::remove_file(&escalation_path);

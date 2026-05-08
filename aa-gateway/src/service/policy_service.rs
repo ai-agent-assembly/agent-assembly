@@ -211,7 +211,12 @@ impl PolicyServiceImpl {
 
     /// Build an [`ApprovalRequest`] from a gRPC request, the policy timeout,
     /// and an optional team identifier resolved from the agent registry.
-    fn build_approval_request(req: &CheckActionRequest, timeout_secs: u32, team_id: Option<String>) -> ApprovalRequest {
+    fn build_approval_request(
+        req: &CheckActionRequest,
+        timeout_secs: u32,
+        team_id: Option<String>,
+        request_id: uuid::Uuid,
+    ) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -219,7 +224,7 @@ impl PolicyServiceImpl {
             .as_secs();
 
         ApprovalRequest {
-            request_id: uuid::Uuid::new_v4(),
+            request_id,
             agent_id,
             action: format!("action_type={}", req.action_type),
             condition_triggered: "requires_approval".to_string(),
@@ -272,6 +277,9 @@ impl PolicyServiceImpl {
             })
         });
 
+        // Pre-generate the request ID so it can be included in the ApprovalRouted audit event.
+        let approval_request_id = uuid::Uuid::new_v4();
+
         // Emit ApprovalRouted audit event when a team is identified.
         if let Some(ref tid) = team_id {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
@@ -287,6 +295,7 @@ impl PolicyServiceImpl {
             let payload = serde_json::json!({
                 "team_id": tid,
                 "action_type": req.action_type,
+                "approval_id": approval_request_id.to_string(),
             })
             .to_string();
             let mut last_hash = self.last_hash.lock().await;
@@ -314,7 +323,7 @@ impl PolicyServiceImpl {
             }
         }
 
-        let approval_req = Self::build_approval_request(req, timeout_secs, team_id.clone());
+        let approval_req = Self::build_approval_request(req, timeout_secs, team_id.clone(), approval_request_id);
         let approval_id = approval_req.request_id;
 
         tracing::info!(

@@ -82,6 +82,7 @@ mod tests {
                 approvers: vec!["alice".to_string()],
                 escalation_timeout_secs: 120,
                 escalation_approvers: vec!["manager".to_string()],
+                approval_kind: None,
             })
             .unwrap();
         store

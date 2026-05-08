@@ -18,6 +18,11 @@ pub struct TeamRoutingConfig {
     pub escalation_timeout_secs: u64,
     /// Approver identifiers to notify after escalation.
     pub escalation_approvers: Vec<String>,
+    /// Optional approval kind filter (e.g. `"tool_call"`, `"file_access"`).
+    ///
+    /// When `None` this config applies to all approval kinds for the team.
+    #[serde(default)]
+    pub approval_kind: Option<String>,
 }
 
 /// Top-level container persisted to disk as JSON.
@@ -123,6 +128,7 @@ mod tests {
             approvers: vec!["alice".to_string(), "bob".to_string()],
             escalation_timeout_secs: 300,
             escalation_approvers: vec!["manager".to_string()],
+            approval_kind: None,
         }
     }
 
@@ -201,6 +207,7 @@ mod tests {
             approvers: vec!["carol".to_string()],
             escalation_timeout_secs: 600,
             escalation_approvers: vec![],
+            approval_kind: Some("tool_call".to_string()),
         };
         store.upsert(updated).unwrap();
         let got = store.get("team-d").unwrap();

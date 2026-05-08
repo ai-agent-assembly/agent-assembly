@@ -158,10 +158,12 @@ async fn shutdown_signal() {
     }
 }
 
-/// Spawn a background task that converts escalation events into `ApprovalEscalated` audit entries.
+/// Spawn a background task that converts escalation events into `ApprovalEscalated` audit entries
+/// and updates the routing status on the pending approval queue entry.
 fn spawn_escalation_audit_task(
     scheduler: &Option<Arc<EscalationScheduler>>,
     audit_tx: tokio::sync::mpsc::Sender<AuditEntry>,
+    approval_queue: Arc<ApprovalQueue>,
 ) {
     let Some(sched) = scheduler else { return };
     let mut rx = sched.subscribe();
@@ -176,9 +178,12 @@ fn spawn_escalation_audit_task(
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_nanos() as u64;
+                    let to_role = event.escalation_approvers.join(",");
                     let payload = serde_json::json!({
-                        "request_id": event.request_id.to_string(),
+                        "approval_id": event.request_id.to_string(),
                         "team_id": event.team_id,
+                        "from_role": event.team_id,
+                        "to_role": to_role,
                         "escalation_approvers": event.escalation_approvers,
                     })
                     .to_string();
@@ -195,6 +200,9 @@ fn spawn_escalation_audit_task(
                     );
                     prev_hash = *entry.entry_hash();
                     let _ = audit_tx.try_send(entry);
+                    // Update the pending approval's routing status so dashboard/CLI
+                    // consumers see the escalation reflected immediately.
+                    approval_queue.update_routing_status(event.request_id, format!("escalated:{to_role}"));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "escalation audit subscriber lagged");
@@ -235,7 +243,7 @@ pub async fn serve_tcp(
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone());
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
@@ -288,7 +296,7 @@ pub async fn serve_uds(
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone());
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),

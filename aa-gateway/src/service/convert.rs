@@ -256,11 +256,11 @@ pub fn approval_decision_to_response(
 /// proto representation.
 pub fn pending_to_proto(p: &PendingApprovalRequest) -> PendingApproval {
     let team_id = p.team_id.clone().unwrap_or_default();
-    let routing_status = if let Some(ref tid) = p.team_id {
-        format!("routed:{tid}")
-    } else {
-        "no_team_id".to_string()
-    };
+    let routing_status = p.routing_status.clone().unwrap_or_else(|| {
+        p.team_id
+            .as_ref()
+            .map_or_else(|| "no_team_id".to_string(), |tid| format!("routed:{tid}"))
+    });
     PendingApproval {
         request_id: p.request_id.to_string(),
         agent_id: p.agent_id.clone(),
@@ -350,6 +350,7 @@ mod tests {
             submitted_at: 1_700_000_000,
             timeout_secs: 300,
             team_id: team_id.map(str::to_string),
+            routing_status: None,
         }
     }
 
