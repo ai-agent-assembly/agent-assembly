@@ -17,10 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{
-    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo,
-    PolicyDocument,
-};
+use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
 use async_trait::async_trait;
 
 /// Minimum Claude Code CLI version this adapter supports.
@@ -155,10 +152,7 @@ pub fn extract_semver(s: &str) -> Option<(u64, u64, u64)> {
             continue;
         };
         // Accept patch fields with pre-release suffixes (e.g. `3-rc1`).
-        let patch_s: String = parts[2]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
+        let patch_s: String = parts[2].chars().take_while(|c| c.is_ascii_digit()).collect();
         let Ok(patch) = patch_s.parse::<u64>() else {
             continue;
         };
@@ -222,10 +216,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         })
     }
 
-    async fn generate_managed_settings(
-        &self,
-        _policy: &PolicyDocument,
-    ) -> Result<String, AdapterError> {
+    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
         // Implemented in AAASM-952.
         Err(AdapterError::SettingsGenerationFailed(
             "not yet implemented (AAASM-952)".into(),
@@ -248,9 +239,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         _proxy_addr: Option<&str>,
     ) -> Result<Command, AdapterError> {
         // Implemented in AAASM-959.
-        Err(AdapterError::LaunchFailed(
-            "not yet implemented (AAASM-959)".into(),
-        ))
+        Err(AdapterError::LaunchFailed("not yet implemented (AAASM-959)".into()))
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
@@ -258,11 +247,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         Ok(vec![])
     }
 
-    async fn apply_mcp_governance(
-        &self,
-        _allowed: &[String],
-        _denied: &[String],
-    ) -> Result<(), AdapterError> {
+    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
         // Implemented in AAASM-956.
         Ok(())
     }
@@ -352,17 +337,13 @@ mod tests {
 
     #[test]
     fn detect_returns_none_for_nonexistent_binary_override() {
-        let adapter =
-            ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
         assert!(adapter.detect().is_none());
     }
 
     #[test]
     fn governance_level_is_l2_enforce() {
-        assert_eq!(
-            ClaudeCodeAdapter::new().governance_level(),
-            GovernanceLevel::L2Enforce
-        );
+        assert_eq!(ClaudeCodeAdapter::new().governance_level(), GovernanceLevel::L2Enforce);
     }
 
     #[test]
