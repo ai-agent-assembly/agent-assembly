@@ -61,10 +61,21 @@ impl ApprovalService for ApprovalServiceImpl {
             convert::decide_request_to_core(&req).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         match self.queue.decide(id, decision) {
-            Ok(()) => Ok(Response::new(DecideResponse {
-                success: true,
-                error_message: String::new(),
-            })),
+            Ok(()) => {
+                // Cancel any pending escalation timer for this request now that a
+                // decision has been made — best-effort, log on failure.
+                if let Some(scheduler) = &self.escalation_scheduler {
+                    match scheduler.cancel(id) {
+                        Ok(true) => tracing::debug!(approval_id = %id, "escalation timer cancelled"),
+                        Ok(false) => {} // already fired or never registered
+                        Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel escalation timer"),
+                    }
+                }
+                Ok(Response::new(DecideResponse {
+                    success: true,
+                    error_message: String::new(),
+                }))
+            }
             Err(e) => Ok(Response::new(DecideResponse {
                 success: false,
                 error_message: e.to_string(),

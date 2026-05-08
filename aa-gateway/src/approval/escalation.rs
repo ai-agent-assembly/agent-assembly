@@ -119,7 +119,10 @@ impl EscalationScheduler {
     }
 
     /// Fire overdue escalations; called by the background loop.
-    fn tick(&self) {
+    ///
+    /// Exposed as `pub` so callers can force an immediate check in tests or
+    /// administrative tooling without waiting for the polling interval.
+    pub fn tick(&self) {
         let now = current_epoch_secs();
         let overdue: Vec<PersistedEscalation> = {
             let mut state = self.state.lock().unwrap();
