@@ -733,7 +733,7 @@ mod tests {
     fn capabilities_unknown_key_produces_warning() {
         let yaml = "capabilities:\n  allow: []\n  extra_key: true\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
-        assert!(out.warnings.iter().any(|w| w.field.contains("capabilities.")));
+        assert!(out.warnings.iter().any(|w| w.field == "capabilities.extra_key"));
     }
 
     // ── Full-policy integration ─────────────────────────────────────────────
