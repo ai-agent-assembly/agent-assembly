@@ -99,11 +99,13 @@ impl BudgetState {
     }
 }
 
-/// Alert emitted via broadcast when spend crosses 80% or 95% of the daily limit.
+/// Alert emitted via broadcast when spend crosses 80% or 95% of a daily or monthly limit.
 #[derive(Debug, Clone)]
 pub struct BudgetAlert {
     /// The agent whose spend triggered the alert.
     pub agent_id: aa_core::AgentId,
+    /// Team whose budget triggered the alert, if this is a team-level alert.
+    pub team_id: Option<String>,
     /// Threshold percentage crossed: 80 or 95.
     pub threshold_pct: u8,
     /// Current total spend in USD.
@@ -295,6 +297,7 @@ mod tests {
         let id = AgentId::from_bytes([1u8; 16]);
         let alert = BudgetAlert {
             agent_id: id,
+            team_id: None,
             threshold_pct: 80,
             spent_usd: 8.0,
             limit_usd: 10.0,

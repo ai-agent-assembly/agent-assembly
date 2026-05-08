@@ -622,7 +622,7 @@ impl PolicyEngine {
     /// tracker's `record_raw_spend`, which fires 80%/95% threshold alerts.
     pub fn record_spend(&self, ctx: &aa_core::AgentContext, amount_usd: f64) {
         if let Ok(amount) = rust_decimal::Decimal::try_from(amount_usd) {
-            self.budget.record_raw_spend(ctx.agent_id, amount);
+            self.budget.record_raw_spend(ctx.agent_id, ctx.team_id.as_deref(), amount);
         }
     }
 

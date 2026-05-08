@@ -49,6 +49,8 @@ fn today_in_tz(tz: chrono_tz::Tz) -> chrono::NaiveDate {
 pub struct BudgetTracker {
     /// Per-agent daily spend. `pub(crate)` for test date manipulation.
     pub(crate) per_agent: DashMap<AgentId, BudgetState>,
+    /// Per-team daily/monthly spend rollup. `pub(crate)` for test date manipulation.
+    pub(crate) team_budgets: DashMap<String, BudgetState>,
     pub(crate) global: Mutex<BudgetState>,
     pricing: PricingTable,
     daily_limit_usd: Option<Decimal>,
@@ -68,6 +70,7 @@ impl BudgetTracker {
         let (alert_tx, _) = broadcast::channel(ALERT_CHANNEL_CAPACITY);
         Self {
             per_agent: DashMap::new(),
+            team_budgets: DashMap::new(),
             global: Mutex::new(BudgetState::new_for_date(today_in_tz(timezone))),
             pricing,
             daily_limit_usd,
@@ -90,6 +93,7 @@ impl BudgetTracker {
     ) -> Self {
         Self {
             per_agent: DashMap::new(),
+            team_budgets: DashMap::new(),
             global: Mutex::new(BudgetState::new_for_date(today_in_tz(timezone))),
             pricing,
             daily_limit_usd,
@@ -117,8 +121,13 @@ impl BudgetTracker {
                     .map(|id| (id, e.state))
             })
             .collect();
+        let team_budgets: DashMap<String, BudgetState> = initial
+            .team_budgets
+            .into_iter()
+            .collect();
         Self {
             per_agent,
+            team_budgets,
             global: Mutex::new(initial.global),
             pricing,
             daily_limit_usd,
@@ -150,8 +159,13 @@ impl BudgetTracker {
                     .map(|id| (id, e.state))
             })
             .collect();
+        let team_budgets: DashMap<String, BudgetState> = initial
+            .team_budgets
+            .into_iter()
+            .collect();
         Self {
             per_agent,
+            team_budgets,
             global: Mutex::new(initial.global),
             pricing,
             daily_limit_usd,
@@ -216,27 +230,28 @@ impl BudgetTracker {
     /// rather than raw token counts.
     ///
     /// Fires 80%/95% threshold alerts on the broadcast channel and updates the
-    /// global spend accumulator.
-    pub fn record_raw_spend(&self, agent_id: AgentId, amount_usd: Decimal) {
-        self.record_cost(agent_id, amount_usd);
+    /// global and team spend accumulators.
+    pub fn record_raw_spend(&self, agent_id: AgentId, team_id: Option<&str>, amount_usd: Decimal) {
+        self.record_cost(agent_id, team_id, amount_usd);
     }
 
     /// Record token usage and return the resulting [`BudgetStatus`].
     pub fn record_usage(
         &self,
         agent_id: AgentId,
+        team_id: Option<&str>,
         provider: crate::budget::types::Provider,
         model: crate::budget::types::Model,
         input_tokens: u64,
         output_tokens: u64,
     ) -> BudgetStatus {
         let cost = self.pricing.cost_usd(provider, model, input_tokens, output_tokens);
-        self.record_cost(agent_id, cost)
+        self.record_cost(agent_id, team_id, cost)
     }
 
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
-    fn record_cost(&self, agent_id: AgentId, cost: Decimal) -> BudgetStatus {
+    fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
         let has_monthly = self.monthly_limit_usd.is_some();
 
         self.per_agent
@@ -256,6 +271,26 @@ impl BudgetTracker {
                 }
                 s
             });
+
+        if let Some(tid) = team_id {
+            self.team_budgets
+                .entry(tid.to_string())
+                .and_modify(|s| {
+                    s.maybe_reset(today_in_tz(self.timezone));
+                    s.spent_usd += cost;
+                    if let Some(m) = s.monthly_spent_usd.as_mut() {
+                        *m += cost;
+                    }
+                })
+                .or_insert_with(|| {
+                    let mut s = BudgetState::new_for_date(today_in_tz(self.timezone));
+                    s.spent_usd += cost;
+                    if has_monthly {
+                        s.monthly_spent_usd = Some(cost);
+                    }
+                    s
+                });
+        }
 
         let (spent, monthly_spent) = self
             .per_agent
@@ -277,6 +312,7 @@ impl BudgetTracker {
             if let BudgetStatus::ThresholdAlert { pct } = &m_status {
                 let _ = self.alert_tx.send(BudgetAlert {
                     agent_id,
+                    team_id: None,
                     threshold_pct: *pct,
                     spent_usd: m_spent.to_f64().unwrap_or(0.0),
                     limit_usd: limit.to_f64().unwrap_or(0.0),
@@ -296,6 +332,7 @@ impl BudgetTracker {
             if let BudgetStatus::ThresholdAlert { pct } = &status {
                 let _ = self.alert_tx.send(BudgetAlert {
                     agent_id,
+                    team_id: None,
                     threshold_pct: *pct,
                     spent_usd: spent.to_f64().unwrap_or(0.0),
                     limit_usd: limit.to_f64().unwrap_or(0.0),
@@ -324,8 +361,14 @@ impl BudgetTracker {
                 state: entry.value().clone(),
             })
             .collect();
+        let team_budgets = self
+            .team_budgets
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
         crate::budget::persistence::PersistedBudget {
             per_agent,
+            team_budgets,
             global: self.global_state(),
             timezone: self.timezone,
         }
@@ -434,7 +477,7 @@ mod tests {
     fn record_usage_no_limit_returns_within_budget() {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         let t = new_tracker();
-        let s = t.record_usage(agent(1), Provider::OpenAi, Model::Gpt4o, 100, 100);
+        let s = t.record_usage(agent(1), None, Provider::OpenAi, Model::Gpt4o, 100, 100);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -443,7 +486,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // GPT-4o: 100k input=$0.50 + 40k output=$0.60 = $1.10 > $1.00 limit
         let t = tracker_with_limit("1.00");
-        let s = t.record_usage(agent(2), Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
+        let s = t.record_usage(agent(2), None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -452,7 +495,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // 100k input=$0.50 + 20k output=$0.30 = $0.80 = 80% of $1.00
         let t = tracker_with_limit("1.00");
-        let s = t.record_usage(agent(3), Provider::OpenAi, Model::Gpt4o, 100_000, 20_000);
+        let s = t.record_usage(agent(3), None, Provider::OpenAi, Model::Gpt4o, 100_000, 20_000);
         assert_eq!(s, BudgetStatus::ThresholdAlert { pct: 80 });
     }
 
@@ -461,12 +504,12 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         let t = tracker_with_limit("1.00");
         let id = agent(4);
-        t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
+        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
             s
         });
-        let s = t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -493,6 +536,7 @@ mod tests {
                 agent_id_hex: agent_id_to_hex(&id),
                 state: state.clone(),
             }],
+            team_budgets: Default::default(),
             global: BudgetState::new_today(),
             timezone: chrono_tz::UTC,
         };
@@ -507,7 +551,7 @@ mod tests {
         use crate::budget::types::{Model, Provider};
         let t = new_tracker();
         let id = agent(7);
-        t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
+        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
         let snap = t.snapshot();
         assert_eq!(snap.per_agent.len(), 1);
         assert_eq!(snap.global.spent_usd, snap.per_agent[0].state.spent_usd);
@@ -517,8 +561,8 @@ mod tests {
     fn global_state_accumulates_all_agents() {
         use crate::budget::types::{Model, Provider};
         let t = new_tracker();
-        t.record_usage(agent(5), Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
-        t.record_usage(agent(6), Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
+        t.record_usage(agent(5), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
+        t.record_usage(agent(6), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
         let g = t.global_state();
         let expected: Decimal = "0.010".parse().unwrap();
         assert_eq!(g.spent_usd, expected);
@@ -533,7 +577,7 @@ mod tests {
         let t = BudgetTracker::new(PricingTable::default_table(), Some("1.00".parse().unwrap()), None, tz);
         let id = agent(10);
         // First call — establishes the agent entry
-        t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
+        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
                                                                              // Backdate the agent entry by 1 day in the Tokyo timezone
         let yesterday_tokyo = today_in_tz(tz) - chrono::Duration::days(1);
         t.per_agent.alter(&id, |_, mut s| {
@@ -541,7 +585,7 @@ mod tests {
             s
         });
         // Next call should reset (yesterday < today in Tokyo)
-        let s = t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(
             matches!(s, BudgetStatus::WithinBudget { .. }),
             "Expected reset after Tokyo midnight, got: {:?}",
@@ -563,7 +607,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // Monthly limit $1.00. GPT-4o: 100k input=$0.50 + 40k output=$0.60 = $1.10 > $1.00
         let t = tracker_with_monthly_limit("1.00");
-        let s = t.record_usage(agent(20), Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
+        let s = t.record_usage(agent(20), None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -572,7 +616,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // Monthly limit $10.00. Small usage should be within budget.
         let t = tracker_with_monthly_limit("10.00");
-        let s = t.record_usage(agent(21), Provider::OpenAi, Model::Gpt4o, 1_000, 0);
+        let s = t.record_usage(agent(21), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -583,14 +627,14 @@ mod tests {
         let t = tracker_with_monthly_limit("1.00");
         let id = agent(22);
         // Day 1: $0.50 (100k input)
-        t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100_000, 0);
+        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 0);
         // Backdate the entry by 1 day — daily resets, monthly stays
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
             s
         });
         // Day 2: another $0.60 (40k output) — total monthly $1.10 > $1.00
-        let s = t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 0, 40_000);
+        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 0, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -601,7 +645,7 @@ mod tests {
         let t = tracker_with_monthly_limit("1.00");
         let id = agent(23);
         // Record $0.95
-        t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000);
+        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000);
         // Backdate to last month — both daily and monthly should reset
         let last_month = chrono::Utc::now().date_naive() - chrono::Duration::days(32);
         t.per_agent.alter(&id, |_, mut s| {
@@ -610,7 +654,7 @@ mod tests {
             s
         });
         // New usage should start fresh — well within budget
-        let s = t.record_usage(id, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(
             matches!(s, BudgetStatus::WithinBudget { .. }),
             "Expected within budget after monthly reset, got: {:?}",
@@ -630,7 +674,7 @@ mod tests {
     fn check_daily_returns_true_when_exceeded() {
         let t = tracker_with_limit("1.00");
         let id = agent(31);
-        t.record_raw_spend(id, "1.00".parse().unwrap());
+        t.record_raw_spend(id, None, "1.00".parse().unwrap());
         assert!(t.check_daily(&id, "1.00".parse().unwrap()));
     }
 
@@ -644,7 +688,7 @@ mod tests {
     fn check_monthly_returns_true_when_exceeded() {
         let t = tracker_with_monthly_limit("5.00");
         let id = agent(33);
-        t.record_raw_spend(id, "5.00".parse().unwrap());
+        t.record_raw_spend(id, None, "5.00".parse().unwrap());
         assert!(t.check_monthly(&id, "5.00".parse().unwrap()));
     }
 
@@ -652,8 +696,8 @@ mod tests {
     fn record_raw_spend_accumulates() {
         let t = tracker_with_limit("10.00");
         let id = agent(34);
-        t.record_raw_spend(id, "3.00".parse().unwrap());
-        t.record_raw_spend(id, "4.00".parse().unwrap());
+        t.record_raw_spend(id, None, "3.00".parse().unwrap());
+        t.record_raw_spend(id, None, "4.00".parse().unwrap());
         // 7.00 >= 7.00
         assert!(t.check_daily(&id, "7.00".parse().unwrap()));
         // 7.00 < 8.00
@@ -666,7 +710,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(35);
         // 8.00 / 10.00 = 80%
-        t.record_raw_spend(id, "8.00".parse().unwrap());
+        t.record_raw_spend(id, None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("expected 80% alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.agent_id, id);
@@ -678,7 +722,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(36);
         // 9.50 / 10.00 = 95%
-        t.record_raw_spend(id, "9.50".parse().unwrap());
+        t.record_raw_spend(id, None, "9.50".parse().unwrap());
         let alert = rx.try_recv().expect("expected 95% alert");
         assert_eq!(alert.threshold_pct, 95);
     }
@@ -694,7 +738,7 @@ mod tests {
             tx,
         );
         let id = agent(37);
-        t.record_raw_spend(id, "8.00".parse().unwrap());
+        t.record_raw_spend(id, None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("alert should arrive on external channel");
         assert_eq!(alert.threshold_pct, 80);
     }
@@ -705,7 +749,7 @@ mod tests {
     fn check_daily_exact_limit_is_exceeded() {
         let t = tracker_with_limit("1.00");
         let id = agent(40);
-        t.record_raw_spend(id, "1.00".parse().unwrap());
+        t.record_raw_spend(id, None, "1.00".parse().unwrap());
         // 1.00 >= 1.00 is true (not strictly greater)
         assert!(t.check_daily(&id, "1.00".parse().unwrap()));
     }
@@ -714,7 +758,7 @@ mod tests {
     fn check_daily_resets_on_new_date() {
         let t = tracker_with_limit("1.00");
         let id = agent(41);
-        t.record_raw_spend(id, "0.90".parse().unwrap());
+        t.record_raw_spend(id, None, "0.90".parse().unwrap());
         // Backdate the entry to yesterday
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
@@ -728,8 +772,8 @@ mod tests {
     fn check_monthly_accumulates_raw_spend() {
         let t = tracker_with_monthly_limit("7.00");
         let id = agent(42);
-        t.record_raw_spend(id, "3.00".parse().unwrap());
-        t.record_raw_spend(id, "4.00".parse().unwrap());
+        t.record_raw_spend(id, None, "3.00".parse().unwrap());
+        t.record_raw_spend(id, None, "4.00".parse().unwrap());
         // 7.00 >= 7.00
         assert!(t.check_monthly(&id, "7.00".parse().unwrap()));
         // 7.00 < 8.00
@@ -741,7 +785,7 @@ mod tests {
         use chrono::Datelike;
         let t = tracker_with_monthly_limit("5.00");
         let id = agent(43);
-        t.record_raw_spend(id, "5.00".parse().unwrap());
+        t.record_raw_spend(id, None, "5.00".parse().unwrap());
         // Backdate to last month
         let last_month = chrono::Utc::now().date_naive() - chrono::Duration::days(32);
         t.per_agent.alter(&id, |_, mut s| {
