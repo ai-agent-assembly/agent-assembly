@@ -542,9 +542,18 @@ mod tests {
         let cmd_args: Vec<_> = cmd.get_args().collect();
         assert_eq!(cmd_args, ["--print", "hello"]);
         let envs: std::collections::HashMap<_, _> = cmd.get_envs().collect();
-        assert_eq!(envs[std::ffi::OsStr::new("AA_AGENT_ID")], Some(std::ffi::OsStr::new("agent-1")));
-        assert_eq!(envs[std::ffi::OsStr::new("AA_TEAM_ID")], Some(std::ffi::OsStr::new("team-a")));
-        assert_eq!(envs[std::ffi::OsStr::new("HTTPS_PROXY")], Some(std::ffi::OsStr::new("127.0.0.1:8080")));
+        assert_eq!(
+            envs[std::ffi::OsStr::new("AA_AGENT_ID")],
+            Some(std::ffi::OsStr::new("agent-1"))
+        );
+        assert_eq!(
+            envs[std::ffi::OsStr::new("AA_TEAM_ID")],
+            Some(std::ffi::OsStr::new("team-a"))
+        );
+        assert_eq!(
+            envs[std::ffi::OsStr::new("HTTPS_PROXY")],
+            Some(std::ffi::OsStr::new("127.0.0.1:8080"))
+        );
     }
 
     #[test]
@@ -560,8 +569,7 @@ mod tests {
     async fn list_mcp_servers_returns_empty_when_no_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let adapter =
-            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let adapter = ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
         let servers = adapter.list_mcp_servers().await.unwrap();
         assert!(servers.is_empty());
     }
@@ -586,14 +594,16 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let adapter =
-            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let adapter = ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
         let mut servers = adapter.list_mcp_servers().await.unwrap();
         servers.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].name, "filesystem");
         assert_eq!(servers[0].command, "npx");
-        assert_eq!(servers[0].args, ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]);
+        assert_eq!(
+            servers[0].args,
+            ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        );
         assert_eq!(servers[1].name, "search");
         assert_eq!(servers[1].command, "node");
         assert_eq!(servers[1].args, ["search-server.js"]);

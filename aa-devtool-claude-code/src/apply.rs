@@ -121,10 +121,8 @@ pub(crate) fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, A
     if !path.exists() {
         return Ok(vec![]);
     }
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
-    let v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
     let Some(servers_obj) = v.get("mcpServers").and_then(|s| s.as_object()) else {
         return Ok(vec![]);
     };
@@ -136,7 +134,11 @@ pub(crate) fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, A
             .and_then(|a| a.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        result.push(McpServerInfo { name: name.clone(), command, args });
+        result.push(McpServerInfo {
+            name: name.clone(),
+            command,
+            args,
+        });
     }
     Ok(result)
 }
