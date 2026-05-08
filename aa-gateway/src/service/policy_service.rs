@@ -168,8 +168,13 @@ impl PolicyServiceImpl {
         }
     }
 
-    /// Build an [`ApprovalRequest`] from a gRPC request and the policy timeout.
-    fn build_approval_request(req: &CheckActionRequest, timeout_secs: u32) -> ApprovalRequest {
+    /// Build an [`ApprovalRequest`] from a gRPC request, the policy timeout,
+    /// and an optional team identifier resolved from the agent registry.
+    fn build_approval_request(
+        req: &CheckActionRequest,
+        timeout_secs: u32,
+        team_id: Option<String>,
+    ) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -186,7 +191,7 @@ impl PolicyServiceImpl {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "approval timed out".to_string(),
             },
-            team_id: None,
+            team_id,
         }
     }
 
@@ -220,7 +225,17 @@ impl PolicyServiceImpl {
             }
         };
 
-        let approval_req = Self::build_approval_request(req, timeout_secs);
+        // Resolve the agent's team_id from the registry so the router can
+        // direct the request to the correct approver queue.
+        let team_id = req.agent_id.as_ref().and_then(|proto_agent| {
+            self.registry.as_ref().and_then(|registry| {
+                registry
+                    .get(&crate::registry::convert::proto_agent_id_to_key(proto_agent))
+                    .and_then(|record| record.team_id.clone())
+            })
+        });
+
+        let approval_req = Self::build_approval_request(req, timeout_secs, team_id);
         let approval_id = approval_req.request_id;
 
         tracing::info!(
