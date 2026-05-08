@@ -461,8 +461,16 @@ pub fn draw_inspect_overlay(f: &mut Frame, state: &DashboardState) {
             f.render_widget(block, overlay);
 
             if let Some(ap) = state.pending_approvals.get(state.approval_selected) {
-                let team_display = if ap.team_id.is_empty() { "(none)".to_string() } else { ap.team_id.clone() };
-                let routing_display = if ap.routing_status.is_empty() { "(unknown)".to_string() } else { ap.routing_status.clone() };
+                let team_display = if ap.team_id.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    ap.team_id.clone()
+                };
+                let routing_display = if ap.routing_status.is_empty() {
+                    "(unknown)".to_string()
+                } else {
+                    ap.routing_status.clone()
+                };
                 let lines = vec![
                     Line::from(vec![
                         Span::styled("ID:          ", Style::default().add_modifier(Modifier::BOLD)),

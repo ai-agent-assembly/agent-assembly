@@ -92,9 +92,7 @@ fn router_unknown_team_returns_no_team_config() {
 async fn escalation_fires_immediately_when_timeout_is_zero() {
     let path = temp_path("escalation_zero");
     let (tx, mut rx) = broadcast::channel(16);
-    let scheduler = Arc::new(
-        EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-    );
+    let scheduler = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
 
     let request_id = Uuid::new_v4();
     scheduler
@@ -121,9 +119,7 @@ async fn escalation_fires_immediately_when_timeout_is_zero() {
 async fn escalation_does_not_fire_when_not_yet_overdue() {
     let path = temp_path("not_overdue");
     let (tx, mut rx) = broadcast::channel(16);
-    let scheduler = Arc::new(
-        EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-    );
+    let scheduler = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
 
     let request_id = Uuid::new_v4();
     // 1 hour in the future → not yet overdue
@@ -178,9 +174,7 @@ async fn full_lifecycle_route_escalate_approve() {
 
     // 4. Register with escalation scheduler
     let (tx, mut escalation_rx) = broadcast::channel(16);
-    let scheduler = Arc::new(
-        EscalationScheduler::new(&escalation_path, tx, Duration::from_millis(50)).unwrap(),
-    );
+    let scheduler = Arc::new(EscalationScheduler::new(&escalation_path, tx, Duration::from_millis(50)).unwrap());
     scheduler
         .register(
             request_id,
@@ -227,9 +221,7 @@ async fn full_lifecycle_route_escalate_approve() {
 async fn escalation_cancel_on_decision_removes_pending_entry() {
     let path = temp_path("cancel_on_decide");
     let (tx, _rx) = broadcast::channel(16);
-    let scheduler = Arc::new(
-        EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-    );
+    let scheduler = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
 
     let request_id = Uuid::new_v4();
     // Register with a long timeout so it won't fire on its own.

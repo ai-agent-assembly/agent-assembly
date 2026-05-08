@@ -341,12 +341,7 @@ impl PolicyServiceImpl {
                     }
                 })
                 .unwrap_or_default();
-            if let Err(e) = scheduler.register(
-                approval_id,
-                tid.clone(),
-                escalation_approvers,
-                effective_timeout,
-            ) {
+            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
                 tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
             }
         }

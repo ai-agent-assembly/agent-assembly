@@ -33,7 +33,10 @@ impl ApprovalServiceImpl {
     /// Create a new service backed by the given approval queue and escalation scheduler.
     ///
     /// When a scheduler is provided, `decide()` cancels the pending escalation timer.
-    pub fn new_with_escalation(queue: Arc<ApprovalQueue>, escalation_scheduler: Option<Arc<EscalationScheduler>>) -> Self {
+    pub fn new_with_escalation(
+        queue: Arc<ApprovalQueue>,
+        escalation_scheduler: Option<Arc<EscalationScheduler>>,
+    ) -> Self {
         Self {
             queue,
             escalation_scheduler,
