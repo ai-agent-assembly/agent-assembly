@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use crate::policy::{
     document::{
-        ActionOnExceed, ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy,
-        ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument,
+        SchedulePolicy, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{GovernancePolicyEnvelope, RawPolicyDocument},
@@ -49,6 +49,7 @@ impl PolicyValidator {
         let data = Self::validate_data(raw.data, &mut errors);
         let tools = Self::validate_tools(raw.tools, &mut errors, &mut warnings);
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
+        let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors, &mut warnings);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
             Some(0) => {
@@ -79,6 +80,7 @@ impl PolicyValidator {
                 budget,
                 data,
                 approval_timeout_secs,
+                approval_policy,
                 tools,
                 capabilities,
             },
@@ -385,6 +387,23 @@ impl PolicyValidator {
             );
         }
         tools
+    }
+
+    fn validate_approval_policy(
+        raw: Option<crate::policy::raw::RawApprovalPolicy>,
+        _errors: &mut Vec<ValidationError>,
+        warnings: &mut Vec<ValidationWarning>,
+    ) -> Option<ApprovalPolicy> {
+        let raw = raw?;
+
+        for key in raw.unknown.keys() {
+            warnings.push(ValidationWarning::unknown_key(format!("approval.{}", key)));
+        }
+
+        Some(ApprovalPolicy {
+            timeout_seconds: raw.timeout_seconds,
+            escalation_role: raw.escalation_role,
+        })
     }
 }
 

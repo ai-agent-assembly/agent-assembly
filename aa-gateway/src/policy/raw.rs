@@ -107,6 +107,18 @@ pub struct GovernancePolicyEnvelope {
     pub spec: Option<serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for the `approval` policy section.
+#[derive(Debug, Deserialize)]
+pub struct RawApprovalPolicy {
+    /// Override the escalation timeout (in seconds) for this policy's approvals.
+    pub timeout_seconds: Option<u32>,
+    /// Override the escalation role / approver group for this policy.
+    pub escalation_role: Option<String>,
+    /// Unknown keys captured for warning emission.
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) top-level deserialization target for a policy document.
 #[derive(Debug, Deserialize)]
 pub struct RawPolicyDocument {
@@ -131,6 +143,8 @@ pub struct RawPolicyDocument {
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
+    /// Per-policy approval escalation override.
+    pub approval: Option<RawApprovalPolicy>,
     /// Unknown top-level keys captured for warning emission.
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,

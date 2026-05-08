@@ -35,6 +35,7 @@ fn doc_for_scope(scope: PolicyScope) -> PolicyDocument {
         budget: None,
         data: None,
         approval_timeout_secs: 300,
+        approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
     }
