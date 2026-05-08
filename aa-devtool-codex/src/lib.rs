@@ -147,13 +147,34 @@ pub const NPM_PACKAGE_BIN_RELATIVE: &str = "bin/codex";
 pub struct CodexAdapter {
     locator: Box<dyn BinaryLocator>,
     probe: Box<dyn VersionProbe>,
+    /// Overrides `$HOME` for config-path resolution. `None` → read `$HOME`.
+    /// Set via [`Self::with_home_dir`]; intended for integration tests only.
+    home_dir_override: Option<PathBuf>,
 }
 
 impl CodexAdapter {
     /// Build an adapter with custom hook implementations. Only useful
     /// in tests; production code should use [`Self::default`].
     pub fn new(locator: Box<dyn BinaryLocator>, probe: Box<dyn VersionProbe>) -> Self {
-        Self { locator, probe }
+        Self {
+            locator,
+            probe,
+            home_dir_override: None,
+        }
+    }
+
+    /// Override the home directory used to locate `~/.codex/config.json`.
+    /// Intended for integration tests; production code uses `$HOME`.
+    #[doc(hidden)]
+    pub fn with_home_dir(mut self, path: PathBuf) -> Self {
+        self.home_dir_override = Some(path);
+        self
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        self.home_dir_override
+            .clone()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
     }
 }
 
@@ -162,6 +183,7 @@ impl Default for CodexAdapter {
         Self {
             locator: Box::new(DefaultBinaryLocator),
             probe: Box::new(CommandVersionProbe),
+            home_dir_override: None,
         }
     }
 }
@@ -207,20 +229,76 @@ impl DevToolAdapter for CodexAdapter {
         serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
 
-    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
-        // Writing to ~/.codex/config.toml lands in AAASM-988.
-        unimplemented!("apply_settings — implemented in AAASM-988")
+    async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
+        let home = self.home_dir().ok_or_else(|| {
+            AdapterError::SettingsApplyFailed(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME directory not found",
+            ))
+        })?;
+        let config_path = home.join(".codex").join("config.json");
+
+        // Parse incoming AA-managed settings.
+        let new_val: serde_json::Value =
+            serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
+
+        // Load existing config (if any) so user-managed keys are preserved.
+        let mut merged: serde_json::Map<String, serde_json::Value> = if config_path.exists() {
+            let raw = std::fs::read_to_string(&config_path).map_err(AdapterError::SettingsApplyFailed)?;
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| match v {
+                    serde_json::Value::Object(m) => Some(m),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+
+        // AA-managed keys win; user-managed keys not present in `settings` survive.
+        if let serde_json::Value::Object(new_map) = new_val {
+            merged.extend(new_map);
+        }
+
+        let content = serde_json::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
+
+        // Ensure ~/.codex/ exists.
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).map_err(AdapterError::SettingsApplyFailed)?;
+        }
+
+        // Atomic write: write to a sibling tmp file then rename.
+        let tmp_path = config_path.with_extension("tmp");
+        std::fs::write(&tmp_path, content.as_bytes()).map_err(AdapterError::SettingsApplyFailed)?;
+        std::fs::rename(&tmp_path, &config_path).map_err(AdapterError::SettingsApplyFailed)?;
+
+        Ok(())
     }
 
     fn build_launch_command(
         &self,
-        _tool_args: &[String],
-        _agent_id: &str,
-        _team_id: Option<&str>,
-        _proxy_addr: Option<&str>,
+        tool_args: &[String],
+        agent_id: &str,
+        team_id: Option<&str>,
+        proxy_addr: Option<&str>,
     ) -> Result<Command, AdapterError> {
-        // Launch wiring lands in AAASM-988.
-        unimplemented!("build_launch_command — implemented in AAASM-988")
+        let bin = self
+            .locator
+            .locate_via_path()
+            .or_else(|| self.locator.locate_via_npm_global())
+            .ok_or_else(|| AdapterError::LaunchFailed("codex binary not found on PATH or npm global".into()))?;
+
+        let mut cmd = Command::new(bin);
+        cmd.args(tool_args);
+        cmd.env("AA_AGENT_ID", agent_id);
+        if let Some(tid) = team_id {
+            cmd.env("AA_TEAM_ID", tid);
+        }
+        if let Some(proxy) = proxy_addr {
+            cmd.env("HTTPS_PROXY", proxy);
+        }
+        Ok(cmd)
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
