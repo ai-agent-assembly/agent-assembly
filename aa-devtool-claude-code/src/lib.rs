@@ -14,6 +14,7 @@
 
 #![warn(missing_docs)]
 
+mod apply;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -70,6 +71,7 @@ pub struct ClaudeCodeAdapter {
     /// When set, replaces `$HOME` for all filesystem marker checks.
     home_dir_override: Option<PathBuf>,
     version_probe: Box<dyn VersionProbe>,
+    settings_path_resolver: Box<dyn apply::SettingsPathResolver>,
 }
 
 impl std::fmt::Debug for ClaudeCodeAdapter {
@@ -92,6 +94,7 @@ impl ClaudeCodeAdapter {
             binary_path_override: None,
             home_dir_override: None,
             version_probe: Box::new(CommandVersionProbe),
+            settings_path_resolver: Box::new(apply::DefaultSettingsPathResolver { home_dir: None }),
         }
     }
 
@@ -104,8 +107,9 @@ impl ClaudeCodeAdapter {
     pub fn with_overrides(binary_path: Option<PathBuf>, home_dir: Option<PathBuf>) -> Self {
         Self {
             binary_path_override: binary_path,
-            home_dir_override: home_dir,
+            home_dir_override: home_dir.clone(),
             version_probe: Box::new(CommandVersionProbe),
+            settings_path_resolver: Box::new(apply::DefaultSettingsPathResolver { home_dir }),
         }
     }
 
@@ -114,6 +118,14 @@ impl ClaudeCodeAdapter {
     #[cfg(test)]
     fn with_version_probe(mut self, probe: Box<dyn VersionProbe>) -> Self {
         self.version_probe = probe;
+        self
+    }
+
+    /// Override the settings path resolver. Only used in tests to write to a
+    /// temporary directory instead of the real `~/.claude/settings.json`.
+    #[cfg(test)]
+    fn with_settings_path_resolver(mut self, resolver: Box<dyn apply::SettingsPathResolver>) -> Self {
+        self.settings_path_resolver = resolver;
         self
     }
 
@@ -250,12 +262,9 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         serde_json::to_string_pretty(&s).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
     }
 
-    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
-        // Implemented in AAASM-956.
-        Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "not yet implemented (AAASM-956)",
-        )))
+    async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
+        let path = self.settings_path_resolver.resolve()?;
+        apply::apply_settings_at(&path, settings)
     }
 
     fn build_launch_command(
@@ -274,9 +283,9 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         Ok(vec![])
     }
 
-    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
-        // Implemented in AAASM-956.
-        Ok(())
+    async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
+        let path = self.settings_path_resolver.resolve()?;
+        apply::apply_mcp_governance_at(&path, allowed, denied)
     }
 
     fn governance_level(&self) -> GovernanceLevel {
