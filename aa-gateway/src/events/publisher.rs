@@ -39,10 +39,7 @@ pub fn approval_to_envelope(request: &ApprovalRequest) -> Value {
 }
 
 /// Convert an [`OrphanEffect`] into a JSON envelope for the `agent.status_changed` event.
-pub fn agent_status_changed_to_envelope(
-    effect: &crate::registry::OrphanEffect,
-    reason: &str,
-) -> serde_json::Value {
+pub fn agent_status_changed_to_envelope(effect: &crate::registry::OrphanEffect, reason: &str) -> serde_json::Value {
     let event_id = uuid::Uuid::now_v7().to_string();
     let now_ms = chrono::Utc::now().timestamp_millis();
     json!({

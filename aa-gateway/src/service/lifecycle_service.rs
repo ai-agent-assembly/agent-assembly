@@ -15,10 +15,10 @@ use aa_proto::assembly::agent::v1::{
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 
 use crate::engine::PolicyEngine;
+use crate::events::publisher::agent_status_changed_to_envelope;
 use crate::registry::convert::{proto_agent_id_to_key, validate_proto_agent_id};
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
-use crate::events::publisher::agent_status_changed_to_envelope;
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
 
 /// Default heartbeat interval returned to agents at registration (seconds).
