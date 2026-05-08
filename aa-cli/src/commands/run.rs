@@ -15,6 +15,7 @@ use tokio::signal::unix::SignalKind;
 use aa_core::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument, PolicyRule,
 };
+use aa_devtool_codex::CodexAdapter;
 use aa_devtool_windsurf::WindsurfCascadeAdapter;
 
 use crate::config::ResolvedContext;
@@ -310,7 +311,7 @@ fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
     match tool {
         // Real adapters replace PlaceholderAdapter here once their crates land.
         "claude" => Ok(Box::new(PlaceholderAdapter)),
-        "codex" => Ok(Box::new(PlaceholderAdapter)),
+        "codex" => Ok(Box::new(CodexAdapter::default())),
         "copilot" => Ok(Box::new(PlaceholderAdapter)),
         "windsurf" => Ok(Box::new(WindsurfCascadeAdapter::new())),
         _ => Err(anyhow::anyhow!(
@@ -576,6 +577,17 @@ mod tests {
         for tool in ["claude", "codex", "copilot", "windsurf"] {
             assert!(resolve_adapter(tool).is_ok(), "resolve_adapter({tool}) should succeed");
         }
+    }
+
+    #[test]
+    fn codex_adapter_is_not_placeholder() {
+        let adapter = resolve_adapter("codex").expect("codex must resolve");
+        // CodexAdapter reports L2Enforce; PlaceholderAdapter reports L0Discover.
+        assert_eq!(
+            adapter.governance_level(),
+            GovernanceLevel::L2Enforce,
+            "codex must use CodexAdapter (L2Enforce), not PlaceholderAdapter (L0Discover)"
+        );
     }
 
     // --- build_child_env tests ---
