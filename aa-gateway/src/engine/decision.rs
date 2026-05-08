@@ -101,6 +101,24 @@ pub(crate) fn evaluate_single_doc(
         }
     }
 
+    // Stage 3.5 — Capability check
+    if let Some(caps) = &doc.capabilities {
+        if let Some(cap) = aa_core::action_to_capability(action) {
+            if caps.deny.contains(&cap) {
+                return PolicyDecision::Deny {
+                    reason: "capability denied by policy".into(),
+                    source_scope: doc.scope.clone(),
+                };
+            }
+            if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
+                return PolicyDecision::Deny {
+                    reason: "capability not in allow list".into(),
+                    source_scope: doc.scope.clone(),
+                };
+            }
+        }
+    }
+
     // Stage 5 — Approval condition
     if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
         if let Some(tp) = doc.tools.get(name) {
@@ -159,4 +177,177 @@ pub fn merge_decisions(
     }
 
     running
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::document::PolicyDocument;
+    use crate::policy::scope::PolicyScope;
+    use aa_core::{
+        identity::{AgentId, SessionId},
+        time::Timestamp,
+        AgentContext, Capability, CapabilitySet, FileMode, GovernanceAction, GovernanceLevel,
+    };
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    fn make_ctx() -> AgentContext {
+        AgentContext {
+            agent_id: AgentId::from_bytes([1u8; 16]),
+            session_id: SessionId::from_bytes([2u8; 16]),
+            pid: 1,
+            started_at: Timestamp::from_nanos(0),
+            metadata: BTreeMap::new(),
+            governance_level: GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+        }
+    }
+
+    fn minimal_doc(caps: Option<CapabilitySet>) -> PolicyDocument {
+        PolicyDocument {
+            name: None,
+            policy_version: None,
+            version: None,
+            scope: PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            tools: HashMap::new(),
+            capabilities: caps,
+        }
+    }
+
+    fn cap_set(allow: &[Capability], deny: &[Capability]) -> CapabilitySet {
+        CapabilitySet {
+            allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
+            deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+        }
+    }
+
+    #[test]
+    fn evaluate_single_doc_denies_capability_in_deny_set() {
+        let doc = minimal_doc(Some(cap_set(&[], &[Capability::FileRead])));
+        let ctx = make_ctx();
+        let action = GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: FileMode::Read,
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        assert_eq!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability denied by policy".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_single_doc_denies_capability_not_in_allow_set() {
+        // allow = {FileRead} only — FileWrite should be denied
+        let doc = minimal_doc(Some(cap_set(&[Capability::FileRead], &[])));
+        let ctx = make_ctx();
+        let action = GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: FileMode::Write,
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        assert_eq!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability not in allow list".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_single_doc_allows_capability_in_allow_set() {
+        // allow = {FileRead} — FileRead should pass the capability stage
+        let doc = minimal_doc(Some(cap_set(&[Capability::FileRead], &[])));
+        let ctx = make_ctx();
+        let action = GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: FileMode::Read,
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        assert_ne!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability denied by policy".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+        assert_ne!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability not in allow list".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_single_doc_no_capabilities_field_allows_all() {
+        // No capabilities block → no restriction from stage 3.5
+        let doc = minimal_doc(None);
+        let ctx = make_ctx();
+        let action = GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: FileMode::Write,
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        assert_eq!(result, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn evaluate_single_doc_mcp_tool_denied_by_name() {
+        let doc = minimal_doc(Some(cap_set(&[], &[Capability::McpTool("bash".into())])));
+        let ctx = make_ctx();
+        let action = GovernanceAction::ToolCall {
+            name: "bash".into(),
+            args: "{}".into(),
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        assert_eq!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability denied by policy".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+    }
+
+    #[test]
+    fn evaluate_single_doc_mcp_tool_allowed_by_name() {
+        let doc = minimal_doc(Some(cap_set(&[Capability::McpTool("bash".into())], &[])));
+        let ctx = make_ctx();
+        let action = GovernanceAction::ToolCall {
+            name: "bash".into(),
+            args: "{}".into(),
+        };
+        let result = evaluate_single_doc(&doc, &ctx, &action);
+        // Must not be denied by capability stage
+        assert_ne!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability denied by policy".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+        assert_ne!(
+            result,
+            PolicyDecision::Deny {
+                reason: "capability not in allow list".into(),
+                source_scope: PolicyScope::Global,
+            }
+        );
+    }
 }
