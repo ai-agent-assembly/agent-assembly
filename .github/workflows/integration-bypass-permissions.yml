@@ -1,0 +1,76 @@
+name: Integration — bypass-permissions
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "aa-devtool-claude-code/**"
+      - "aa-proxy/**"
+      - "ci/integration/bypass-permissions/**"
+      - ".github/workflows/integration-bypass-permissions.yml"
+  push:
+    branches: [master]
+    paths:
+      - "aa-devtool-claude-code/**"
+      - "aa-proxy/**"
+      - "ci/integration/bypass-permissions/**"
+      - ".github/workflows/integration-bypass-permissions.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: "aa_proxy=debug"
+
+jobs:
+  bypass-permissions-integration:
+    name: bypass-permissions integration test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build aa-proxy Docker image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: aa-proxy/Dockerfile
+          push: false
+          load: true
+          tags: aa-proxy:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Run only the two non-ignored docker tests.
+      # The #[ignore] tests (deny assertion, audit event) are skipped until
+      # proxy deny capability is implemented.
+      - name: Run bypass-permissions integration tests
+        run: |
+          cargo nextest run \
+            -p aa-devtool-claude-code \
+            --features docker-integration \
+            --test claude_code_bypass_permissions \
+            --test-threads=1 \
+            --no-fail-fast \
+            -- \
+            proxy_intercepts_https_traffic_from_claude_stub \
+            network_isolation_prevents_direct_access_to_stub_upstream
+
+      - name: Tear down compose stack (always)
+        if: always()
+        run: |
+          docker compose \
+            -f ci/integration/bypass-permissions/docker-compose.yml \
+            -p aaasm-bypass-test \
+            down --volumes --remove-orphans || true
