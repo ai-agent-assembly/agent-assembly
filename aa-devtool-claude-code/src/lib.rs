@@ -245,11 +245,10 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         })
     }
 
-    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
-        // Implemented in AAASM-952.
-        Err(AdapterError::SettingsGenerationFailed(
-            "not yet implemented (AAASM-952)".into(),
-        ))
+    async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
+        let s = settings::map_policy_to_settings(policy);
+        serde_json::to_string_pretty(&s)
+            .map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
     }
 
     async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
