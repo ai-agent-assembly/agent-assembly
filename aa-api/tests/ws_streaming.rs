@@ -271,6 +271,7 @@ async fn ws_cli_logs_follow_integration() {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "timeout".to_string(),
             },
+            team_id: None,
         })
         .unwrap();
 
