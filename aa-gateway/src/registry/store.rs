@@ -142,6 +142,10 @@ pub struct AgentRegistry {
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
+    /// All active suspension reasons per agent. Supports multi-reason coexistence:
+    /// an agent suspended for BudgetExceeded retains that reason when also
+    /// suspended via ParentSuspended cascade.
+    suspend_reasons: DashMap<[u8; 16], Vec<super::SuspendReason>>,
 }
 
 impl AgentRegistry {
@@ -152,6 +156,7 @@ impl AgentRegistry {
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
             registration_lock: Mutex::new(()),
+            suspend_reasons: DashMap::new(),
         }
     }
 
@@ -316,13 +321,34 @@ impl AgentRegistry {
     }
 
     /// Suspend an agent with the given reason.
+    ///
+    /// Adds `reason` to the agent's active suspend reasons and sets its status
+    /// to `Suspended(reason)`. If the agent already has suspension reasons,
+    /// the status is updated to reflect the new reason while prior reasons are
+    /// retained in the multi-reason set.
     pub fn suspend_agent(&self, agent_id: &[u8; 16], reason: super::SuspendReason) -> Result<(), RegistryError> {
+        {
+            let mut reasons = self.suspend_reasons.entry(*agent_id).or_default();
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
         let mut entry = self
             .agents
             .get_mut(agent_id)
             .ok_or(RegistryError::NotFound(*agent_id))?;
         entry.status = AgentStatus::Suspended(reason);
         Ok(())
+    }
+
+    /// Return all active suspension reasons for an agent.
+    ///
+    /// Returns an empty `Vec` if the agent has no suspension reasons or is not registered.
+    pub fn get_suspend_reasons(&self, agent_id: &[u8; 16]) -> Vec<super::SuspendReason> {
+        self.suspend_reasons
+            .get(agent_id)
+            .map(|r| r.value().clone())
+            .unwrap_or_default()
     }
 
     /// Suspend an agent and send a [`SuspendCommand`] via the control stream.
@@ -350,7 +376,11 @@ impl AgentRegistry {
     }
 
     /// Resume a suspended agent back to Active status.
+    ///
+    /// Clears all active suspension reasons and sets the agent's status to Active.
+    /// Does not cascade to children — each child must be explicitly resumed.
     pub fn resume_agent(&self, agent_id: &[u8; 16]) -> Result<(), RegistryError> {
+        self.suspend_reasons.remove(agent_id);
         let mut entry = self
             .agents
             .get_mut(agent_id)
