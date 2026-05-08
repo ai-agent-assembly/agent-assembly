@@ -52,7 +52,7 @@ async fn subscribe_budget_receives_published_alert() {
 
     let alert = BudgetAlert {
         agent_id: aa_core::AgentId::from_bytes([1; 16]),
-            team_id: None,
+        team_id: None,
         threshold_pct: 80,
         spent_usd: 8.0,
         limit_usd: 10.0,
