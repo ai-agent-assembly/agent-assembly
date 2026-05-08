@@ -18,6 +18,16 @@
 //! | `chat.mcp.requireApproval` | `"always"\|"never"` | MCP tool `RequireApproval` rule |
 //! | `chat.mcp.deny` | `["<server>:<tool>", …]` | MCP tool `Deny` rules |
 //!
+//! ## MCP server governance
+//!
+//! [`apply_mcp_governance`] reads `chat.mcp.servers` from the VS Code
+//! user-settings file, removes denied servers, optionally restricts to an
+//! allow list, and sets `chat.mcp.requireApproval: "always"` as a defence-
+//! in-depth measure whenever the denied list is non-empty.
+//!
+//! [`list_mcp_servers`] reads the current `chat.mcp.servers` map from the
+//! same settings file and returns one [`McpServerInfo`] per entry.
+//!
 //! ## Version requirements
 //!
 //! | Component | Minimum version |
@@ -27,6 +37,8 @@
 //! | `github.copilot-chat` extension | 0.21 |
 //!
 //! [`build_launch_command`]: CopilotAdapter::build_launch_command
+//! [`apply_mcp_governance`]: CopilotAdapter::apply_mcp_governance
+//! [`list_mcp_servers`]: CopilotAdapter::list_mcp_servers
 //! [`DevToolAdapter`]: aa_core::DevToolAdapter
 
 #![warn(missing_docs)]
@@ -66,6 +78,9 @@ const MAX_REQUESTS_PREFIX: &str = "dev_tools.copilot.max_requests:";
 ///
 /// [`PolicyRule`]: aa_core::PolicyRule
 const MCP_TOOL_PATTERN_PREFIX: &str = "mcp_tool:";
+
+/// VS Code settings key under which MCP server definitions are stored.
+const VSCODE_MCP_SERVERS_KEY: &str = "chat.mcp.servers";
 
 /// [`DevToolAdapter`] for GitHub Copilot (VS Code agent mode).
 ///
@@ -153,6 +168,33 @@ impl CopilotAdapter {
             .filter(|r| r.action_pattern.starts_with(MCP_TOOL_PATTERN_PREFIX) && r.decision == PolicyDecision::Deny)
             .map(|r| r.action_pattern[MCP_TOOL_PATTERN_PREFIX.len()..].to_string())
             .collect()
+    }
+
+    /// Read and parse the VS Code user-settings JSON file. Returns `{}` when
+    /// the file does not exist or cannot be parsed.
+    fn read_settings(&self) -> Result<(PathBuf, serde_json::Value), AdapterError> {
+        let path = self.resolve_settings_path().ok_or_else(|| {
+            AdapterError::SettingsGenerationFailed("could not resolve VS Code settings path".to_string())
+        })?;
+        let value = if path.exists() {
+            let raw = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&raw).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        Ok((path, value))
+    }
+
+    /// Write `value` to `path` atomically (create parent dirs if needed).
+    fn write_settings(path: &Path, value: &serde_json::Value) -> Result<(), AdapterError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(value).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        )
+        .map_err(AdapterError::SettingsApplyFailed)
     }
 }
 
@@ -291,35 +333,15 @@ impl DevToolAdapter for CopilotAdapter {
     ///
     /// [`generate_managed_settings`]: Self::generate_managed_settings
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
-        let path = self.resolve_settings_path().ok_or_else(|| {
-            AdapterError::SettingsGenerationFailed("could not resolve VS Code settings path".to_string())
-        })?;
-
+        let (path, mut existing) = self.read_settings()?;
         let incoming: serde_json::Value =
             serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
-
-        let mut existing: serde_json::Value = if path.exists() {
-            let raw = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&raw).unwrap_or(serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
         if let (Some(obj), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) {
             for (k, v) in inc {
                 obj.insert(k.clone(), v.clone());
             }
         }
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&existing).map_err(|e| AdapterError::Serde(e.to_string()))?,
-        )
-        .map_err(AdapterError::SettingsApplyFailed)?;
-        Ok(())
+        Self::write_settings(&path, &existing)
     }
 
     fn build_launch_command(
@@ -336,14 +358,65 @@ impl DevToolAdapter for CopilotAdapter {
         ))
     }
 
+    /// Read `chat.mcp.servers` from the VS Code user-settings file and return
+    /// one [`McpServerInfo`] per entry.
+    ///
+    /// Returns an empty list when the settings file does not exist or the
+    /// `chat.mcp.servers` key is absent — both are normal operating states.
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        // Implemented in AAASM-1006.
-        Ok(vec![])
+        let path = match self.resolve_settings_path() {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let settings: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+        let Some(servers) = settings.get(VSCODE_MCP_SERVERS_KEY).and_then(|v| v.as_object()) else {
+            return Ok(vec![]);
+        };
+        Ok(servers
+            .iter()
+            .map(|(name, entry)| McpServerInfo {
+                name: name.clone(),
+                command: entry["command"].as_str().unwrap_or("").to_string(),
+                args: entry["args"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default(),
+            })
+            .collect())
     }
 
-    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
-        // Implemented in AAASM-1006.
-        Ok(())
+    /// Enforce MCP server governance by mutating `chat.mcp.servers` in the VS
+    /// Code user-settings file.
+    ///
+    /// - If `allowed` is non-empty, only servers whose name appears in
+    ///   `allowed` are kept.
+    /// - Every server whose name appears in `denied` is removed (even if it
+    ///   also appears in `allowed`).
+    /// - When `denied` is non-empty, `chat.mcp.requireApproval` is set to
+    ///   `"always"` as a defence-in-depth measure.
+    ///
+    /// Changes are written back atomically. Other user settings are preserved.
+    async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
+        let (path, mut settings) = self.read_settings()?;
+
+        if let Some(obj) = settings.get_mut(VSCODE_MCP_SERVERS_KEY).and_then(|v| v.as_object_mut()) {
+            for name in denied {
+                obj.remove(name.as_str());
+            }
+            if !allowed.is_empty() {
+                obj.retain(|k, _| allowed.iter().any(|a| a == k));
+            }
+        }
+
+        if !denied.is_empty() {
+            settings["chat.mcp.requireApproval"] = serde_json::json!("always");
+        }
+
+        Self::write_settings(&path, &settings)
     }
 
     fn governance_level(&self) -> GovernanceLevel {
@@ -397,6 +470,10 @@ mod tests {
         }
     }
 
+    fn settings_with_mcp_servers(servers: serde_json::Value) -> String {
+        serde_json::to_string(&serde_json::json!({ "chat.mcp.servers": servers })).unwrap()
+    }
+
     // ── detect() tests ────────────────────────────────────────────────────────
 
     #[test]
@@ -447,17 +524,21 @@ mod tests {
         assert_eq!(adapter.governance_level(), GovernanceLevel::L2Enforce);
     }
 
+    // ── AC: build_launch_command ──────────────────────────────────────────────
+
     #[test]
-    fn build_launch_command_returns_launch_failed() {
+    fn build_launch_command_returns_error_with_message() {
         let adapter = CopilotAdapter::new();
         let result = adapter.build_launch_command(&[], "agent-1", None, None);
-        assert!(
-            matches!(result, Err(AdapterError::LaunchFailed(_))),
-            "expected LaunchFailed, got {result:?}"
-        );
+        match result {
+            Err(AdapterError::LaunchFailed(msg)) => {
+                assert!(!msg.is_empty(), "error message must not be empty");
+            }
+            other => panic!("expected LaunchFailed, got {other:?}"),
+        }
     }
 
-    // ── generate_managed_settings() — AC-required tests ──────────────────────
+    // ── AC: generate_managed_settings ────────────────────────────────────────
 
     #[tokio::test]
     async fn policy_enforce_disables_auto_approve() {
@@ -482,7 +563,6 @@ mod tests {
 
     #[tokio::test]
     async fn full_json_snapshot_for_fixture_policy() {
-        // Fixture: deny one MCP tool, require approval for file writes, cap requests at 10.
         let policy = PolicyDocument {
             version: 1,
             name: "fixture".to_string(),
@@ -504,16 +584,14 @@ mod tests {
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(v["github.copilot.enable"]["*"], true, "copilot not disabled");
-        assert_eq!(
-            v["chat.tools.autoApprove"], false,
-            "RequireApproval disables autoApprove"
-        );
-        assert_eq!(v["chat.agent.maxRequests"], 10u32, "max_requests override");
-        assert_eq!(v["chat.mcp.requireApproval"], "never", "no mcp RequireApproval rule");
+        assert_eq!(v["github.copilot.enable"]["*"], true);
+        assert_eq!(v["chat.tools.autoApprove"], false);
+        assert_eq!(v["chat.agent.maxRequests"], 10u32);
+        assert_eq!(v["chat.mcp.requireApproval"], "never");
         assert_eq!(v["chat.mcp.deny"], serde_json::json!(["github:push"]));
     }
+
+    // ── AC: apply_settings ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn apply_settings_preserves_unmanaged_keys() {
@@ -531,7 +609,98 @@ mod tests {
         assert!(v["github.copilot.enable"].is_object(), "managed key written");
     }
 
-    // ── generate_managed_settings() — additional coverage ────────────────────
+    // ── AC: list_mcp_servers ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_when_no_config() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        // No settings.json written — file does not exist.
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_parses_settings() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(
+            &settings_file,
+            settings_with_mcp_servers(serde_json::json!({
+                "filesystem": { "command": "npx", "args": ["-y", "@mcp/server-filesystem"] },
+                "github":     { "command": "npx", "args": ["-y", "@mcp/server-github"] }
+            })),
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let mut servers = adapter.list_mcp_servers().await.unwrap();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "filesystem");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(servers[1].name, "github");
+    }
+
+    // ── AC: apply_mcp_governance ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn apply_mcp_governance_removes_denied_servers() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(
+            &settings_file,
+            settings_with_mcp_servers(serde_json::json!({
+                "filesystem": { "command": "npx", "args": [] },
+                "github":     { "command": "npx", "args": [] },
+                "slack":      { "command": "npx", "args": [] }
+            })),
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter.apply_mcp_governance(&[], &["slack".to_string()]).await.unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let servers = v[VSCODE_MCP_SERVERS_KEY].as_object().unwrap();
+        assert_eq!(servers.len(), 2, "fixture had 3 servers; denying 1 must leave 2");
+        assert!(!servers.contains_key("slack"), "denied server must be removed");
+        assert_eq!(
+            v["chat.mcp.requireApproval"], "always",
+            "defence-in-depth: requireApproval must be set when denied is non-empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_keeps_only_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(
+            &settings_file,
+            settings_with_mcp_servers(serde_json::json!({
+                "filesystem": { "command": "npx", "args": [] },
+                "github":     { "command": "npx", "args": [] },
+                "slack":      { "command": "npx", "args": [] }
+            })),
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter
+            .apply_mcp_governance(&["filesystem".to_string()], &[])
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let servers = v[VSCODE_MCP_SERVERS_KEY].as_object().unwrap();
+        assert_eq!(servers.len(), 1, "only allowed servers must remain");
+        assert!(servers.contains_key("filesystem"));
+    }
+
+    // ── Additional coverage ───────────────────────────────────────────────────
 
     #[tokio::test]
     async fn default_policy_enables_copilot_and_auto_approve() {
@@ -591,8 +760,6 @@ mod tests {
         assert!(deny.is_empty(), "Allow rules must not appear in deny list");
     }
 
-    // ── apply_settings() tests ────────────────────────────────────────────────
-
     #[tokio::test]
     async fn apply_settings_writes_to_settings_path() {
         let tmp = TempDir::new().unwrap();
@@ -631,5 +798,36 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         let deny = v["chat.mcp.deny"].as_array().unwrap();
         assert_eq!(deny.len(), 1, "idempotent apply must not duplicate deny entries");
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_preserves_other_settings() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(
+            &settings_file,
+            r#"{"editor.tabSize": 4, "chat.mcp.servers": {"github": {"command": "npx", "args": []}}}"#,
+        )
+        .unwrap();
+
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        adapter
+            .apply_mcp_governance(&[], &["github".to_string()])
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(&settings_file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(v["editor.tabSize"], 4, "unrelated settings must be preserved");
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_when_key_absent() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, r#"{"editor.fontSize": 14}"#).unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
     }
 }

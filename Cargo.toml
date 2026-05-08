@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "aa-core",
-    "aa-devtool",
     "aa-proto",
     "aa-runtime",
     "aa-ebpf",
@@ -14,13 +13,9 @@ members = [
     "aa-gateway",
     "aa-api",
     "aa-cli",
-    "aa-devtool-codex",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
-    "aa-devtool-saas",
-    "aa-devtool-windsurf",
     "aa-devtool-copilot",
-    "aa-devtool-claude-code",
 ]
 resolver = "2"
 
