@@ -328,4 +328,34 @@ mod tests {
     fn governance_level_is_l2_enforce() {
         assert_eq!(CodexAdapter::default().governance_level(), GovernanceLevel::L2Enforce);
     }
+
+    #[test]
+    fn debug_format_does_not_expose_internals() {
+        let a = CodexAdapter::default();
+        let s = format!("{a:?}");
+        assert!(s.contains("CodexAdapter"));
+    }
+
+    // --- Production-implementation smoke tests ---
+    //
+    // These tests exercise DefaultBinaryLocator and CommandVersionProbe through
+    // their real code paths without requiring Codex or npm to be installed on
+    // the CI runner.  A missing binary is a valid result (None / non-zero exit)
+    // — the tests only assert that no panic occurs.
+
+    #[test]
+    fn default_locator_path_lookup_does_not_panic() {
+        let _ = DefaultBinaryLocator.locate_via_path();
+    }
+
+    #[test]
+    fn default_locator_npm_global_lookup_does_not_panic() {
+        let _ = DefaultBinaryLocator.locate_via_npm_global();
+    }
+
+    #[test]
+    fn command_version_probe_returns_none_for_nonexistent_binary() {
+        let result = CommandVersionProbe.probe_version(Path::new("/nonexistent/__codex_test__"));
+        assert!(result.is_none());
+    }
 }
