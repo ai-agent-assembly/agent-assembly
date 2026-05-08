@@ -462,7 +462,10 @@ paths:
       tags:
       - policies
       summary: '`POST /api/v1/policies` — apply a new governance policy.'
-      description: Submit and activate a new governance policy from YAML.
+      description: |-
+        Submit and activate a new governance policy from YAML.
+        The caller must hold the role required for the target `scope`
+        (default: `global`, requires `OrgAdmin`).
       operationId: create_policy
       requestBody:
         content:
@@ -478,7 +481,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PolicyResponse'
         '400':
-          description: Invalid policy YAML
+          description: Invalid policy YAML or scope
+        '403':
+          description: Insufficient role for this policy scope
   /api/v1/policies/active:
     get:
       tags:
@@ -877,6 +882,15 @@ components:
         policy_yaml:
           type: string
           description: Raw YAML content of the governance policy.
+        scope:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
+
+            Used for RBAC authorization — the caller must hold the role required
+            to mutate policies at this scope. Defaults to `"global"` when absent.
     DecideRequest:
       type: object
       description: Request body for approval decide actions.

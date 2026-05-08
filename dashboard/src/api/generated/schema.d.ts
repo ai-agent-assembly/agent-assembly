@@ -269,6 +269,8 @@ export interface paths {
         /**
          * `POST /api/v1/policies` — apply a new governance policy.
          * @description Submit and activate a new governance policy from YAML.
+         *     The caller must hold the role required for the target `scope`
+         *     (default: `global`, requires `OrgAdmin`).
          */
         post: operations["create_policy"];
         delete?: never;
@@ -524,6 +526,13 @@ export interface components {
         CreatePolicyRequest: {
             /** @description Raw YAML content of the governance policy. */
             policy_yaml: string;
+            /**
+             * @description Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
+             *
+             *     Used for RBAC authorization — the caller must hold the role required
+             *     to mutate policies at this scope. Defaults to `"global"` when absent.
+             */
+            scope?: string | null;
         };
         /** @description Request body for approval decide actions. */
         DecideRequest: {
@@ -1244,8 +1253,15 @@ export interface operations {
                     "application/json": components["schemas"]["PolicyResponse"];
                 };
             };
-            /** @description Invalid policy YAML */
+            /** @description Invalid policy YAML or scope */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient role for this policy scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
