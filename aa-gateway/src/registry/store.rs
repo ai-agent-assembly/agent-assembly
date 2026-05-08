@@ -142,6 +142,10 @@ pub struct AgentRegistry {
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
+    /// All active suspension reasons per agent. Supports multi-reason coexistence:
+    /// an agent suspended for BudgetExceeded retains that reason when also
+    /// suspended via ParentSuspended cascade.
+    suspend_reasons: DashMap<[u8; 16], Vec<super::SuspendReason>>,
 }
 
 impl AgentRegistry {
@@ -152,6 +156,7 @@ impl AgentRegistry {
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
             registration_lock: Mutex::new(()),
+            suspend_reasons: DashMap::new(),
         }
     }
 
@@ -316,13 +321,34 @@ impl AgentRegistry {
     }
 
     /// Suspend an agent with the given reason.
+    ///
+    /// Adds `reason` to the agent's active suspend reasons and sets its status
+    /// to `Suspended(reason)`. If the agent already has suspension reasons,
+    /// the status is updated to reflect the new reason while prior reasons are
+    /// retained in the multi-reason set.
     pub fn suspend_agent(&self, agent_id: &[u8; 16], reason: super::SuspendReason) -> Result<(), RegistryError> {
+        {
+            let mut reasons = self.suspend_reasons.entry(*agent_id).or_default();
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
         let mut entry = self
             .agents
             .get_mut(agent_id)
             .ok_or(RegistryError::NotFound(*agent_id))?;
         entry.status = AgentStatus::Suspended(reason);
         Ok(())
+    }
+
+    /// Return all active suspension reasons for an agent.
+    ///
+    /// Returns an empty `Vec` if the agent has no suspension reasons or is not registered.
+    pub fn get_suspend_reasons(&self, agent_id: &[u8; 16]) -> Vec<super::SuspendReason> {
+        self.suspend_reasons
+            .get(agent_id)
+            .map(|r| r.value().clone())
+            .unwrap_or_default()
     }
 
     /// Suspend an agent and send a [`SuspendCommand`] via the control stream.
@@ -350,13 +376,110 @@ impl AgentRegistry {
     }
 
     /// Resume a suspended agent back to Active status.
+    ///
+    /// Clears all active suspension reasons and sets the agent's status to Active.
+    /// Does not cascade to children — each child must be explicitly resumed.
     pub fn resume_agent(&self, agent_id: &[u8; 16]) -> Result<(), RegistryError> {
+        self.suspend_reasons.remove(agent_id);
         let mut entry = self
             .agents
             .get_mut(agent_id)
             .ok_or(RegistryError::NotFound(*agent_id))?;
         entry.status = AgentStatus::Active;
         Ok(())
+    }
+
+    /// Suspend an agent and recursively suspend all its descendants.
+    ///
+    /// The root agent is suspended with `reason`. Each descendant receives
+    /// `SuspendReason::ParentSuspended { parent_agent_id }` where `parent_agent_id`
+    /// is the agent's direct parent — not necessarily the cascade root.
+    ///
+    /// Multi-reason semantics: if a descendant is already suspended for another
+    /// reason (e.g. `BudgetExceeded`), that reason is retained and the
+    /// `ParentSuspended` reason is added alongside it. The agent's primary status
+    /// is NOT overwritten — it remains `Suspended(BudgetExceeded)`.
+    ///
+    /// Returns an [`AgentStatusChanged`](super::AgentStatusChanged) event for
+    /// every agent whose status transitioned from Active to Suspended.
+    pub fn suspend_with_cascade(
+        &self,
+        agent_id: &[u8; 16],
+        reason: super::SuspendReason,
+    ) -> Result<Vec<super::AgentStatusChanged>, RegistryError> {
+        let mut events = Vec::new();
+
+        // Suspend the root agent.
+        if let Some(event) = self.apply_suspend_reason(agent_id, reason)? {
+            events.push(event);
+        }
+
+        // BFS traversal — suspend all descendants.
+        let mut queue: VecDeque<[u8; 16]> = VecDeque::new();
+        for child in self.children_of(agent_id) {
+            queue.push_back(child);
+        }
+
+        while let Some(descendant_id) = queue.pop_front() {
+            // The direct parent of this descendant is its parent_key.
+            let direct_parent = self
+                .agents
+                .get(&descendant_id)
+                .and_then(|r| r.parent_key)
+                .unwrap_or(*agent_id);
+
+            let cascade_reason = super::SuspendReason::ParentSuspended {
+                parent_agent_id: direct_parent,
+            };
+
+            if let Ok(Some(event)) = self.apply_suspend_reason(&descendant_id, cascade_reason) {
+                events.push(event);
+            }
+
+            for grandchild in self.children_of(&descendant_id) {
+                queue.push_back(grandchild);
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Apply a single suspend reason to an agent without overwriting an existing suspension.
+    ///
+    /// Returns `Some(AgentStatusChanged)` if the agent transitioned from Active to
+    /// Suspended (i.e. this was the first reason added). Returns `None` if the agent
+    /// was already suspended or already held this reason.
+    fn apply_suspend_reason(
+        &self,
+        agent_id: &[u8; 16],
+        reason: super::SuspendReason,
+    ) -> Result<Option<super::AgentStatusChanged>, RegistryError> {
+        if !self.agents.contains_key(agent_id) {
+            return Err(RegistryError::NotFound(*agent_id));
+        }
+
+        let was_empty = {
+            let mut reasons = self.suspend_reasons.entry(*agent_id).or_default();
+            if reasons.contains(&reason) {
+                return Ok(None);
+            }
+            let empty = reasons.is_empty();
+            reasons.push(reason);
+            empty
+        };
+
+        if was_empty {
+            if let Some(mut entry) = self.agents.get_mut(agent_id) {
+                entry.status = AgentStatus::Suspended(reason);
+            }
+            Ok(Some(super::AgentStatusChanged {
+                agent_id: *agent_id,
+                new_status: AgentStatus::Suspended(reason),
+                suspend_reason: reason,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Query the current status of an agent.
@@ -683,5 +806,175 @@ mod lineage_tests {
             successes, 1,
             "exactly one of the mutual-parent registrations should succeed"
         );
+    }
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+    use crate::registry::{AgentStatus, SuspendReason};
+
+    const ROOT: [u8; 16] = [1u8; 16];
+    const CHILD: [u8; 16] = [2u8; 16];
+    const GRANDCHILD: [u8; 16] = [3u8; 16];
+    const SIBLING: [u8; 16] = [4u8; 16];
+
+    fn make_record(id: [u8; 16], parent_key: Option<[u8; 16]>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+        }
+    }
+
+    fn build_tree() -> AgentRegistry {
+        let reg = AgentRegistry::new();
+        reg.register(make_record(ROOT, None, 0)).unwrap();
+        reg.register(make_record(CHILD, Some(ROOT), 1)).unwrap();
+        reg.register(make_record(GRANDCHILD, Some(CHILD), 2)).unwrap();
+        reg
+    }
+
+    #[test]
+    fn cascade_suspends_direct_child() {
+        let reg = AgentRegistry::new();
+        reg.register(make_record(ROOT, None, 0)).unwrap();
+        reg.register(make_record(CHILD, Some(ROOT), 1)).unwrap();
+
+        let events = reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        assert_eq!(
+            reg.agent_status(&ROOT).unwrap(),
+            AgentStatus::Suspended(SuspendReason::Manual)
+        );
+        assert_eq!(
+            reg.agent_status(&CHILD).unwrap(),
+            AgentStatus::Suspended(SuspendReason::ParentSuspended { parent_agent_id: ROOT })
+        );
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn cascade_suspends_grandchild() {
+        let reg = build_tree();
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        assert_eq!(
+            reg.agent_status(&GRANDCHILD).unwrap(),
+            AgentStatus::Suspended(SuspendReason::ParentSuspended { parent_agent_id: CHILD })
+        );
+    }
+
+    #[test]
+    fn cascade_events_emitted_for_each_affected_agent() {
+        let reg = build_tree();
+        let events = reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        // root + child + grandchild all transition from Active → Suspended
+        assert_eq!(events.len(), 3);
+        let ids: Vec<_> = events.iter().map(|e| e.agent_id).collect();
+        assert!(ids.contains(&ROOT));
+        assert!(ids.contains(&CHILD));
+        assert!(ids.contains(&GRANDCHILD));
+    }
+
+    #[test]
+    fn resume_does_not_cascade_to_children() {
+        let reg = build_tree();
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        // Explicitly resume only root.
+        reg.resume_agent(&ROOT).unwrap();
+
+        assert_eq!(reg.agent_status(&ROOT).unwrap(), AgentStatus::Active);
+        // Children remain suspended.
+        assert!(matches!(reg.agent_status(&CHILD).unwrap(), AgentStatus::Suspended(_)));
+        assert!(matches!(
+            reg.agent_status(&GRANDCHILD).unwrap(),
+            AgentStatus::Suspended(_)
+        ));
+    }
+
+    #[test]
+    fn multiple_reasons_coexist_child_retains_budget_exceeded() {
+        let reg = build_tree();
+
+        // Child was already suspended for BudgetExceeded before cascade.
+        reg.suspend_agent(&CHILD, SuspendReason::BudgetExceeded).unwrap();
+
+        // Now cascade a parent suspension.
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        // Child's primary status must still reflect BudgetExceeded (it was set first).
+        assert_eq!(
+            reg.agent_status(&CHILD).unwrap(),
+            AgentStatus::Suspended(SuspendReason::BudgetExceeded)
+        );
+
+        // Both reasons are tracked.
+        let reasons = reg.get_suspend_reasons(&CHILD);
+        assert!(reasons.contains(&SuspendReason::BudgetExceeded));
+        assert!(reasons
+            .iter()
+            .any(|r| matches!(r, SuspendReason::ParentSuspended { .. })));
+    }
+
+    #[test]
+    fn cascade_is_idempotent_for_already_suspended_child() {
+        let reg = build_tree();
+
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+        // Cascade again — should not produce duplicate reasons.
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        let root_reasons = reg.get_suspend_reasons(&ROOT);
+        assert_eq!(root_reasons.iter().filter(|&&r| r == SuspendReason::Manual).count(), 1);
+
+        let child_reasons = reg.get_suspend_reasons(&CHILD);
+        assert_eq!(
+            child_reasons
+                .iter()
+                .filter(|r| matches!(r, SuspendReason::ParentSuspended { parent_agent_id: ROOT }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cascade_only_affects_descendants_not_siblings() {
+        let reg = AgentRegistry::new();
+        reg.register(make_record(ROOT, None, 0)).unwrap();
+        reg.register(make_record(CHILD, Some(ROOT), 1)).unwrap();
+        reg.register(make_record(SIBLING, None, 0)).unwrap(); // independent root
+
+        reg.suspend_with_cascade(&ROOT, SuspendReason::Manual).unwrap();
+
+        assert_eq!(reg.agent_status(&SIBLING).unwrap(), AgentStatus::Active);
     }
 }

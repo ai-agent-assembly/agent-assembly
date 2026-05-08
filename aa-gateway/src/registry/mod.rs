@@ -47,6 +47,11 @@ pub enum SuspendReason {
     BudgetExceeded,
     /// Suspended by an operator or external system. Only manually resumable.
     Manual,
+    /// Suspended because a parent agent was suspended. Cleared when the child is explicitly resumed.
+    ParentSuspended {
+        /// The direct parent that caused this cascading suspension.
+        parent_agent_id: [u8; 16],
+    },
 }
 
 /// Runtime status of a registered agent.
@@ -58,4 +63,18 @@ pub enum AgentStatus {
     Suspended(SuspendReason),
     /// Agent has been removed from the registry (clean shutdown or forced removal).
     Deregistered,
+}
+
+/// Event emitted when an agent's suspension status changes.
+///
+/// Returned by [`AgentRegistry::suspend_with_cascade`] for each agent
+/// whose status transitioned from Active to Suspended during the cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentStatusChanged {
+    /// The agent whose status changed.
+    pub agent_id: [u8; 16],
+    /// The new status after the change.
+    pub new_status: AgentStatus,
+    /// The suspension reason that triggered the status change.
+    pub suspend_reason: SuspendReason,
 }
