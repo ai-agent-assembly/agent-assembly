@@ -59,10 +59,12 @@ pub async fn execute_list(discovery: DiscoveryService) -> ExitCode {
 }
 
 fn color_governance_level(level: GovernanceLevel) -> String {
-    // Only colorize when stdout is a TTY.
-    let is_tty = std::io::stdout().is_terminal();
+    format_governance_level(level, std::io::stdout().is_terminal())
+}
+
+pub(crate) fn format_governance_level(level: GovernanceLevel, colorize: bool) -> String {
     let s = level.to_string();
-    if !is_tty {
+    if !colorize {
         return s;
     }
     match level {
@@ -75,12 +77,89 @@ fn color_governance_level(level: GovernanceLevel) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use aa_core::policy::PolicyDocument;
+    use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+    use async_trait::async_trait;
+
     use super::*;
+
+    struct StubClaudeCode;
+
+    #[async_trait]
+    impl DevToolAdapter for StubClaudeCode {
+        fn detect(&self) -> Option<DevToolInfo> {
+            Some(DevToolInfo {
+                kind: DevToolKind::ClaudeCode,
+                version: Some("1.0.0".into()),
+                install_path: PathBuf::from("/stub/claude"),
+                governance_level: GovernanceLevel::L3Native,
+                supports_mcp: false,
+                supports_managed_settings: false,
+            })
+        }
+        async fn generate_managed_settings(&self, _: &PolicyDocument) -> Result<String, AdapterError> {
+            Err(AdapterError::SettingsGenerationFailed("stub".into()))
+        }
+        async fn apply_settings(&self, _: &str) -> Result<(), AdapterError> {
+            Err(AdapterError::SettingsApplyFailed(std::io::Error::other("stub")))
+        }
+        fn build_launch_command(
+            &self,
+            _: &[String],
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
+            Err(AdapterError::LaunchFailed("stub".into()))
+        }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _: &[String], _: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L3Native
+        }
+    }
 
     #[tokio::test]
     async fn prints_friendly_message_when_empty() {
         let svc = DiscoveryService::with_adapters(vec![]);
         let exit = execute_list(svc).await;
         assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[tokio::test]
+    async fn execute_list_prints_table_for_discovered_tools() {
+        let svc = DiscoveryService::with_adapters(vec![Box::new(StubClaudeCode)]);
+        let exit = execute_list(svc).await;
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn dispatch_list_returns_success() {
+        // In CI no tools are installed, so the friendly message is printed.
+        let exit = dispatch(ToolsArgs {
+            subcommand: ToolsSubcommand::List,
+        });
+        assert_eq!(exit, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn format_governance_level_covers_all_levels() {
+        for level in [
+            GovernanceLevel::L0Discover,
+            GovernanceLevel::L1Observe,
+            GovernanceLevel::L2Enforce,
+            GovernanceLevel::L3Native,
+        ] {
+            // colorize = false: the plain-string path
+            assert!(!format_governance_level(level, false).is_empty());
+            // colorize = true: exercises all 4 match arms
+            assert!(!format_governance_level(level, true).is_empty());
+        }
     }
 }
