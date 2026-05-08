@@ -12,17 +12,32 @@ use aa_proto::assembly::approval::v1::{
 };
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::approval::escalation::EscalationScheduler;
 use crate::service::convert;
 
 /// gRPC service implementation wiring approval RPCs to [`ApprovalQueue`].
 pub struct ApprovalServiceImpl {
     queue: Arc<ApprovalQueue>,
+    escalation_scheduler: Option<Arc<EscalationScheduler>>,
 }
 
 impl ApprovalServiceImpl {
     /// Create a new service backed by the given approval queue.
     pub fn new(queue: Arc<ApprovalQueue>) -> Self {
-        Self { queue }
+        Self {
+            queue,
+            escalation_scheduler: None,
+        }
+    }
+
+    /// Create a new service backed by the given approval queue and escalation scheduler.
+    ///
+    /// When a scheduler is provided, `decide()` cancels the pending escalation timer.
+    pub fn new_with_escalation(queue: Arc<ApprovalQueue>, escalation_scheduler: Option<Arc<EscalationScheduler>>) -> Self {
+        Self {
+            queue,
+            escalation_scheduler,
+        }
     }
 }
 

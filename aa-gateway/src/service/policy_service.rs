@@ -15,6 +15,7 @@ use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, Chec
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::approval::escalation::EscalationScheduler;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
@@ -25,6 +26,7 @@ pub struct PolicyServiceImpl {
     engine: Arc<PolicyEngine>,
     registry: Option<Arc<AgentRegistry>>,
     approval_queue: Option<Arc<ApprovalQueue>>,
+    escalation_scheduler: Option<Arc<EscalationScheduler>>,
     audit_tx: mpsc::Sender<AuditEntry>,
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
@@ -47,6 +49,7 @@ impl PolicyServiceImpl {
             engine,
             registry: None,
             approval_queue: None,
+            escalation_scheduler: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -69,6 +72,7 @@ impl PolicyServiceImpl {
             engine,
             registry: Some(registry),
             approval_queue: None,
+            escalation_scheduler: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -93,6 +97,32 @@ impl PolicyServiceImpl {
             engine,
             registry: Some(registry),
             approval_queue: Some(approval_queue),
+            escalation_scheduler: None,
+            audit_tx,
+            audit_drops,
+            seq: AtomicU64::new(0),
+            last_hash: Mutex::new(initial_hash),
+        }
+    }
+
+    /// Create a new service with an agent registry, approval queue, and escalation scheduler.
+    ///
+    /// When a scheduler is provided, approved requests are registered for escalation
+    /// and the `ApprovalRouted` audit event is emitted when a team is identified.
+    pub fn with_registry_approval_and_escalation(
+        engine: Arc<PolicyEngine>,
+        registry: Arc<AgentRegistry>,
+        approval_queue: Arc<ApprovalQueue>,
+        escalation_scheduler: Option<Arc<EscalationScheduler>>,
+        audit_tx: mpsc::Sender<AuditEntry>,
+        audit_drops: Arc<AtomicU64>,
+        initial_hash: [u8; 32],
+    ) -> Self {
+        Self {
+            engine,
+            registry: Some(registry),
+            approval_queue: Some(approval_queue),
+            escalation_scheduler,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
