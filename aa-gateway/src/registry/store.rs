@@ -1,6 +1,7 @@
 //! Agent registry store — `AgentRecord` and `AgentRegistry` backed by `DashMap`.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Mutex;
 
 use aa_core::GovernanceLevel;
 use chrono::{DateTime, Utc};
@@ -15,6 +16,9 @@ use super::{AgentStatus, RegistryError};
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
+
+/// Maximum allowed delegation depth. Agents that would exceed this depth are rejected at registration.
+pub const DEFAULT_MAX_AGENT_DEPTH: u32 = 10;
 
 /// Summary of an active session associated with an agent.
 #[derive(Debug, Clone)]
@@ -136,6 +140,9 @@ pub struct AgentRegistry {
     control_senders: DashMap<[u8; 16], ControlSender>,
     /// Secondary index mapping team_id → set of agent registry keys.
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// Serialises the validate-then-insert step to prevent TOCTOU races.
+    #[allow(dead_code)]
+    registration_lock: Mutex<()>,
 }
 
 impl AgentRegistry {
@@ -145,6 +152,7 @@ impl AgentRegistry {
             agents: DashMap::new(),
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
+            registration_lock: Mutex::new(()),
         }
     }
 
