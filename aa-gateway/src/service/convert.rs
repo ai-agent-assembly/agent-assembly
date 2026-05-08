@@ -255,6 +255,12 @@ pub fn approval_decision_to_response(
 /// Convert a [`PendingApprovalRequest`] (from `ApprovalQueue::list()`) into its
 /// proto representation.
 pub fn pending_to_proto(p: &PendingApprovalRequest) -> PendingApproval {
+    let team_id = p.team_id.clone().unwrap_or_default();
+    let routing_status = if let Some(ref tid) = p.team_id {
+        format!("routed:{tid}")
+    } else {
+        "no_team_id".to_string()
+    };
     PendingApproval {
         request_id: p.request_id.to_string(),
         agent_id: p.agent_id.clone(),
@@ -262,6 +268,8 @@ pub fn pending_to_proto(p: &PendingApprovalRequest) -> PendingApproval {
         condition_triggered: p.condition_triggered.clone(),
         submitted_at: p.submitted_at,
         timeout_secs: p.timeout_secs,
+        team_id,
+        routing_status,
     }
 }
 
