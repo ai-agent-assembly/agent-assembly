@@ -19,6 +19,7 @@ use tokio::sync::broadcast;
 
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::approval::escalation::{EscalationScheduler, EscalationEvent};
 use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer};
 use crate::budget::{BudgetAlert, BudgetTracker};
 
@@ -108,6 +109,32 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     (tracker, budget_path)
 }
 
+/// Spawn the [`EscalationScheduler`] background task and return the event receiver.
+///
+/// Falls back gracefully — if the scheduler cannot be initialised (e.g. the
+/// persistence path is not writable), a warning is logged and `None` is returned
+/// so the rest of the server can still start.
+fn start_escalation_scheduler() -> Option<tokio::sync::broadcast::Receiver<EscalationEvent>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(home)
+        .join(".aa")
+        .join("pending_escalations.json");
+
+    let (tx, rx) = tokio::sync::broadcast::channel(256);
+    match EscalationScheduler::new(path, tx, std::time::Duration::from_secs(30)) {
+        Ok(scheduler) => {
+            let scheduler = Arc::new(scheduler);
+            tokio::spawn(Arc::clone(&scheduler).run());
+            tracing::info!("escalation scheduler started");
+            Some(rx)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to start escalation scheduler — approval escalation disabled");
+            None
+        }
+    }
+}
+
 /// Wait for SIGINT or SIGTERM, then return so the server can shut down gracefully.
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
@@ -153,6 +180,7 @@ pub async fn serve_tcp(
     let engine = PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
         .map_err(|e| format!("failed to load policy: {e:?}"))?;
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
+    let _escalation_rx = start_escalation_scheduler();
     let policy_svc = PolicyServiceImpl::with_registry_and_approval(
         Arc::new(engine),
         Arc::clone(&registry),
@@ -199,6 +227,7 @@ pub async fn serve_uds(
     let engine = PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
         .map_err(|e| format!("failed to load policy: {e:?}"))?;
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
+    let _escalation_rx = start_escalation_scheduler();
     let policy_svc = PolicyServiceImpl::with_registry_and_approval(
         Arc::new(engine),
         Arc::clone(&registry),
