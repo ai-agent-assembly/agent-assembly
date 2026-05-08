@@ -8,6 +8,7 @@ description = "HTTP presentation layer with OpenAPI spec generation for Agent As
 
 [dependencies]
 aa-core = { path = "../aa-core" }
+aa-devtool-saas = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }
 aa-runtime = { path = "../aa-runtime" }
 argon2 = "0.5"

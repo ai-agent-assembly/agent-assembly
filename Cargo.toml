@@ -16,6 +16,7 @@ members = [
     "aa-devtool-codex",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
+    "aa-devtool-saas",
     "aa-devtool-windsurf",
     "aa-devtool-copilot",
     "aa-devtool-claude-code",
