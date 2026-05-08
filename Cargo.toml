@@ -15,7 +15,12 @@ members = [
     "aa-cli",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
+    "aa-devtool",
+    "aa-devtool-claude-code",
+    "aa-devtool-codex",
     "aa-devtool-copilot",
+    "aa-devtool-saas",
+    "aa-devtool-windsurf",
 ]
 resolver = "2"
 
