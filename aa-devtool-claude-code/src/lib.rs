@@ -14,6 +14,8 @@
 
 #![warn(missing_docs)]
 
+mod settings;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
