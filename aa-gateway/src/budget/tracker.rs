@@ -315,22 +315,42 @@ impl BudgetTracker {
                     s
                 });
 
-            // Enforce team monthly limit before agent/global checks.
+            // Check team monthly limit and emit alerts.
             if let Some(team_monthly_limit) = self.team_monthly_limit_usd {
                 if let Some(team_state) = self.team_budgets.get(tid) {
                     if let Some(team_monthly) = team_state.monthly_spent_usd {
-                        if compute_status(team_monthly, team_monthly_limit) == BudgetStatus::LimitExceeded {
+                        let m_status = compute_status(team_monthly, team_monthly_limit);
+                        if m_status == BudgetStatus::LimitExceeded {
                             return BudgetStatus::LimitExceeded;
+                        }
+                        if let BudgetStatus::ThresholdAlert { pct } = &m_status {
+                            let _ = self.alert_tx.send(BudgetAlert {
+                                agent_id,
+                                team_id: Some(tid.to_string()),
+                                threshold_pct: *pct,
+                                spent_usd: team_monthly.to_f64().unwrap_or(0.0),
+                                limit_usd: team_monthly_limit.to_f64().unwrap_or(0.0),
+                            });
                         }
                     }
                 }
             }
 
-            // Enforce team daily limit before agent/global checks.
+            // Check team daily limit and emit alerts.
             if let Some(team_daily_limit) = self.team_daily_limit_usd {
                 if let Some(team_state) = self.team_budgets.get(tid) {
-                    if compute_status(team_state.spent_usd, team_daily_limit) == BudgetStatus::LimitExceeded {
+                    let d_status = compute_status(team_state.spent_usd, team_daily_limit);
+                    if d_status == BudgetStatus::LimitExceeded {
                         return BudgetStatus::LimitExceeded;
+                    }
+                    if let BudgetStatus::ThresholdAlert { pct } = &d_status {
+                        let _ = self.alert_tx.send(BudgetAlert {
+                            agent_id,
+                            team_id: Some(tid.to_string()),
+                            threshold_pct: *pct,
+                            spent_usd: team_state.spent_usd.to_f64().unwrap_or(0.0),
+                            limit_usd: team_daily_limit.to_f64().unwrap_or(0.0),
+                        });
                     }
                 }
             }
@@ -897,5 +917,42 @@ mod tests {
         // No team_id — team limit should not apply
         let status = t.record_raw_spend(id, None, "100.00".parse().unwrap());
         assert!(matches!(status, BudgetStatus::WithinBudget { .. }));
+    }
+
+    // ── Team threshold alerts (AAASM-1012) ─────────────────────────────
+
+    #[test]
+    fn team_daily_80_pct_fires_alert_with_team_id() {
+        let t = tracker_with_team_daily_limit("10.00");
+        let mut rx = t.subscribe_alerts();
+        let id = agent(60);
+        // 8.00 / 10.00 = 80%
+        t.record_raw_spend(id, Some("team-delta"), "8.00".parse().unwrap());
+        let alert = rx.try_recv().expect("expected 80% team alert");
+        assert_eq!(alert.threshold_pct, 80);
+        assert_eq!(alert.team_id.as_deref(), Some("team-delta"));
+    }
+
+    #[test]
+    fn team_daily_95_pct_fires_alert_with_team_id() {
+        let t = tracker_with_team_daily_limit("10.00");
+        let mut rx = t.subscribe_alerts();
+        let id = agent(61);
+        // 9.50 / 10.00 = 95%
+        t.record_raw_spend(id, Some("team-epsilon"), "9.50".parse().unwrap());
+        let alert = rx.try_recv().expect("expected 95% team alert");
+        assert_eq!(alert.threshold_pct, 95);
+        assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
+    }
+
+    #[test]
+    fn team_monthly_80_pct_fires_alert_with_team_id() {
+        let t = tracker_with_team_monthly_limit("10.00");
+        let mut rx = t.subscribe_alerts();
+        let id = agent(62);
+        t.record_raw_spend(id, Some("team-zeta"), "8.00".parse().unwrap());
+        let alert = rx.try_recv().expect("expected 80% monthly team alert");
+        assert_eq!(alert.threshold_pct, 80);
+        assert_eq!(alert.team_id.as_deref(), Some("team-zeta"));
     }
 }
