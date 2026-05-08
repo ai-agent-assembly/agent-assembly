@@ -1047,4 +1047,52 @@ spec:
         let errs = result.unwrap_err();
         assert!(errs.iter().any(|e| e.field == "budget.daily_limit_usd"));
     }
+
+    // ── approval policy validation ─────────────────────────────────────────────
+
+    #[test]
+    fn approval_policy_parses_timeout_and_role() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: escalation-test
+spec:
+  scope: global
+  approval:
+    timeout_seconds: 600
+    escalation_role: org-admin
+"#;
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let ap = out.document.approval_policy.expect("approval_policy must be Some");
+        assert_eq!(ap.timeout_seconds, Some(600));
+        assert_eq!(ap.escalation_role, Some("org-admin".to_string()));
+    }
+
+    #[test]
+    fn approval_policy_absent_yields_none() {
+        let out = PolicyValidator::from_yaml("version: \"1\"\n").unwrap();
+        assert!(out.document.approval_policy.is_none());
+    }
+
+    #[test]
+    fn approval_policy_unknown_key_produces_warning() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: warn-test
+spec:
+  scope: global
+  approval:
+    timeout_seconds: 300
+    unknown_field: surprise
+"#;
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(
+            out.warnings.iter().any(|w| w.field.contains("unknown_field")),
+            "expected warning for unknown approval field, got: {:?}",
+            out.warnings,
+        );
+    }
 }

@@ -245,4 +245,23 @@ mod tests {
         assert_eq!(ids, vec!["t1", "t2"]);
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn default_routing_config_path_ends_with_expected_suffix() {
+        let p = default_routing_config_path();
+        assert!(p.ends_with(".aa/approval_routing.json"), "unexpected path: {p:?}");
+    }
+
+    #[test]
+    fn routing_config_error_display_io() {
+        let e = RoutingConfigError::Io(std::io::Error::other("disk full"));
+        assert!(e.to_string().contains("routing config I/O error"));
+    }
+
+    #[test]
+    fn routing_config_error_display_json() {
+        let raw: Result<PersistedRoutingConfig, _> = serde_json::from_str("not json");
+        let e = RoutingConfigError::Json(raw.unwrap_err());
+        assert!(e.to_string().contains("routing config JSON error"));
+    }
 }

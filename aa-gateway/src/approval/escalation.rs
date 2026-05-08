@@ -314,4 +314,17 @@ mod tests {
         assert!(s2.cancel(id).unwrap());
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn escalation_error_display_io() {
+        let e = EscalationError::Io(std::io::Error::other("disk full"));
+        assert!(e.to_string().contains("escalation I/O error"));
+    }
+
+    #[test]
+    fn escalation_error_display_json() {
+        let raw: Result<PersistedEscalations, _> = serde_json::from_str("not json");
+        let e = EscalationError::Json(raw.unwrap_err());
+        assert!(e.to_string().contains("escalation JSON error"));
+    }
 }

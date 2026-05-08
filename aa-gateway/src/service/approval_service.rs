@@ -112,3 +112,103 @@ impl ApprovalService for ApprovalServiceImpl {
         Ok(Response::new(Box::pin(stream)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+    use uuid::Uuid;
+
+    use aa_core::PolicyResult;
+    use aa_proto::assembly::approval::v1::{ApprovalDecisionType, DecideRequest};
+    use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
+
+    use crate::approval::escalation::EscalationScheduler;
+
+    fn temp_path(suffix: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("approval_svc_test_{}_{}.json", suffix, Uuid::new_v4()));
+        p
+    }
+
+    fn make_scheduler(suffix: &str) -> Arc<EscalationScheduler> {
+        let path = temp_path(suffix);
+        let (tx, _rx) = broadcast::channel::<crate::approval::escalation::EscalationEvent>(4);
+        Arc::new(EscalationScheduler::new(path, tx, Duration::from_millis(50)).unwrap())
+    }
+
+    fn make_approval_request(id: Uuid) -> ApprovalRequest {
+        ApprovalRequest {
+            request_id: id,
+            agent_id: "agent-1".to_string(),
+            action: "tool_call".to_string(),
+            condition_triggered: "requires_approval".to_string(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 300,
+            fallback: PolicyResult::Deny {
+                reason: "timed out".to_string(),
+            },
+            team_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn decide_without_escalation_scheduler_returns_success() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue));
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request(id));
+
+        let req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "alice".to_string(),
+            reason: String::new(),
+        });
+        let resp = service.decide(req).await.unwrap().into_inner();
+        assert!(resp.success);
+    }
+
+    #[tokio::test]
+    async fn decide_with_escalation_scheduler_cancels_timer_on_success() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let scheduler = make_scheduler("cancel_path");
+        let service = ApprovalServiceImpl::new_with_escalation(Arc::clone(&queue), Some(Arc::clone(&scheduler)));
+
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request(id));
+        // Register escalation so cancel has something to remove.
+        scheduler.register(id, "team-z".to_string(), vec![], 3600).unwrap();
+
+        let req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "alice".to_string(),
+            reason: String::new(),
+        });
+        let resp = service.decide(req).await.unwrap().into_inner();
+        assert!(resp.success);
+        // After decide(), the escalation entry must be gone.
+        assert!(
+            !scheduler.cancel(id).unwrap(),
+            "entry should have been removed by decide()"
+        );
+    }
+
+    #[tokio::test]
+    async fn decide_queue_not_found_returns_failure_response() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue));
+
+        let req = tonic::Request::new(DecideRequest {
+            request_id: Uuid::new_v4().to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "alice".to_string(),
+            reason: String::new(),
+        });
+        let resp = service.decide(req).await.unwrap().into_inner();
+        assert!(!resp.success);
+        assert!(!resp.error_message.is_empty());
+    }
+}

@@ -1803,4 +1803,26 @@ mod tests {
             }
         );
     }
+
+    // ── approval_escalation_overrides tests ───────────────────────────────────
+
+    #[test]
+    fn approval_escalation_overrides_returns_none_when_no_approval_policy() {
+        let engine = make_engine(empty_doc());
+        assert_eq!(engine.approval_escalation_overrides(), (None, None));
+    }
+
+    #[test]
+    fn approval_escalation_overrides_returns_values_when_approval_policy_set() {
+        use crate::policy::document::ApprovalPolicy;
+        let mut doc = empty_doc();
+        doc.approval_policy = Some(ApprovalPolicy {
+            timeout_seconds: Some(120),
+            escalation_role: Some("org-admin".to_string()),
+        });
+        let engine = make_engine(doc);
+        let (timeout, role) = engine.approval_escalation_overrides();
+        assert_eq!(timeout, Some(120u64));
+        assert_eq!(role, Some("org-admin".to_string()));
+    }
 }
