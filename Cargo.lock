@@ -92,6 +92,8 @@ version = "0.0.1"
 dependencies = [
  "aa-core",
  "async-trait",
+ "serde",
+ "serde_json",
  "which",
 ]
 
