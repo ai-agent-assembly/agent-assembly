@@ -79,3 +79,27 @@ async fn get_cost_summary_includes_limit_fields() {
     assert!(json["daily_limit_usd"].is_null());
     assert!(json["monthly_limit_usd"].is_null());
 }
+
+#[tokio::test]
+async fn get_cost_summary_includes_per_team_array() {
+    let app = common::test_app();
+
+    let response = app
+        .oneshot(Request::builder().uri("/api/v1/costs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json["per_team"].is_array(),
+        "per_team field should be present and an array"
+    );
+    assert_eq!(
+        json["per_team"].as_array().unwrap().len(),
+        0,
+        "fresh tracker has no per-team data"
+    );
+}

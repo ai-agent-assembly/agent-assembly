@@ -868,6 +868,11 @@ components:
           items:
             $ref: '#/components/schemas/AgentCostEntry'
           description: Per-agent cost breakdown for the current day.
+        per_team:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamCostEntry'
+          description: Per-team cost rollup for the current day.
     CreatePolicyRequest:
       type: object
       description: Request body for creating a new policy.
@@ -1158,6 +1163,28 @@ components:
         previous_status:
           type: string
           description: Agent status before the suspend operation.
+    TeamCostEntry:
+      type: object
+      description: Per-team cost entry within the budget summary.
+      required:
+      - team_id
+      - daily_spend_usd
+      - date
+      properties:
+        daily_spend_usd:
+          type: string
+          description: Daily spend for this team in USD (sum of all member agent spends today).
+        date:
+          type: string
+          description: Calendar date (YYYY-MM-DD) the daily spend applies to.
+        monthly_spend_usd:
+          type:
+          - string
+          - 'null'
+          description: Total spend this month in USD for this team (if monthly tracking is enabled).
+        team_id:
+          type: string
+          description: Team identifier.
     TokenRequest:
       type: object
       description: Request body for `POST /auth/token`.
