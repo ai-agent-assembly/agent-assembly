@@ -31,6 +31,27 @@ pub const MIN_VERSION: &str = "1.0.0";
 /// Name of the Claude Code CLI binary, used for PATH lookup and launch.
 pub const CLAUDE_BIN: &str = "claude";
 
+/// Hook a [`ClaudeCodeAdapter`] uses to read the Claude Code binary's
+/// reported version.
+///
+/// The production implementation runs `<bin> --version` via
+/// [`std::process::Command`]. Tests inject a deterministic stub so they
+/// do not depend on a real Claude Code install or an executable tmpdir.
+trait VersionProbe: Send + Sync {
+    fn probe_version(&self, bin: &Path) -> Option<String>;
+}
+
+/// Production [`VersionProbe`] backed by [`std::process::Command`].
+struct CommandVersionProbe;
+
+impl VersionProbe for CommandVersionProbe {
+    fn probe_version(&self, bin: &Path) -> Option<String> {
+        let out = Command::new(bin).arg("--version").output().ok()?;
+        let raw = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
+        (!raw.is_empty()).then_some(raw)
+    }
+}
+
 /// [`DevToolAdapter`] for the Anthropic Claude Code CLI.
 ///
 /// Construct with [`ClaudeCodeAdapter::new`] for production use. In tests,
@@ -39,7 +60,6 @@ pub const CLAUDE_BIN: &str = "claude";
 /// filesystem or spawns the real `claude` binary.
 ///
 /// [`DevToolAdapter`]: aa_core::DevToolAdapter
-#[derive(Debug, Clone)]
 pub struct ClaudeCodeAdapter {
     /// Optional override for the `claude` binary path. When set, skips the
     /// `which claude` PATH search and uses this path directly.
@@ -47,6 +67,13 @@ pub struct ClaudeCodeAdapter {
     /// Optional override for the home directory used to locate `~/.claude/`.
     /// When set, replaces `$HOME` for all filesystem marker checks.
     home_dir_override: Option<PathBuf>,
+    version_probe: Box<dyn VersionProbe>,
+}
+
+impl std::fmt::Debug for ClaudeCodeAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeCodeAdapter").finish_non_exhaustive()
+    }
 }
 
 impl Default for ClaudeCodeAdapter {
@@ -62,6 +89,7 @@ impl ClaudeCodeAdapter {
         Self {
             binary_path_override: None,
             home_dir_override: None,
+            version_probe: Box::new(CommandVersionProbe),
         }
     }
 
@@ -75,7 +103,16 @@ impl ClaudeCodeAdapter {
         Self {
             binary_path_override: binary_path,
             home_dir_override: home_dir,
+            version_probe: Box::new(CommandVersionProbe),
         }
+    }
+
+    /// Override the version probe. Only used in tests to avoid spawning real
+    /// subprocesses in environments where tmpdir may be noexec.
+    #[cfg(test)]
+    fn with_version_probe(mut self, probe: Box<dyn VersionProbe>) -> Self {
+        self.version_probe = probe;
+        self
     }
 
     fn resolve_binary(&self) -> Option<PathBuf> {
@@ -113,16 +150,6 @@ fn probe_which(bin: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Query a binary's version by running `<bin> --version`.
-///
-/// Returns the raw stdout trimmed of whitespace, or `None` on any subprocess
-/// failure.
-fn probe_version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
-    let raw = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
-    (!raw.is_empty()).then_some(raw)
 }
 
 /// Extract the first `MAJOR.MINOR.PATCH` triple from an arbitrary string.
@@ -192,7 +219,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         let _marker = self.dot_claude_marker();
 
         // 3. Probe version string.
-        let raw = probe_version(&install_path)?;
+        let raw = self.version_probe.probe_version(&install_path)?;
 
         // 4. Minimum-version guard: reject installations too old to support
         //    the settings.json MCP configuration surface.
@@ -260,6 +287,17 @@ impl DevToolAdapter for ClaudeCodeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stub [`VersionProbe`] returning a canned version string so detection
+    /// tests don't depend on spawning a real executable (which fails in CI
+    /// coverage environments where tmpdir may be noexec).
+    struct StubVersionProbe(Option<String>);
+
+    impl VersionProbe for StubVersionProbe {
+        fn probe_version(&self, _bin: &Path) -> Option<String> {
+            self.0.clone()
+        }
+    }
 
     // ── extract_semver ──────────────────────────────────────────────────────
 
@@ -354,27 +392,23 @@ mod tests {
         assert_eq!(a.governance_level(), b.governance_level());
     }
 
-    #[cfg(unix)]
     #[test]
     fn detect_returns_none_for_version_below_minimum() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let stub = tmp.path().join("claude");
-        std::fs::write(&stub, "#!/bin/sh\necho '0.9.9'\n").unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        std::fs::write(&stub, "").unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None)
+            .with_version_probe(Box::new(StubVersionProbe(Some("0.9.9".into()))));
         assert!(adapter.detect().is_none());
     }
 
-    #[cfg(unix)]
     #[test]
     fn detect_returns_some_for_valid_version() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let stub = tmp.path().join("claude");
-        std::fs::write(&stub, "#!/bin/sh\necho '1.9.2'\n").unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        std::fs::write(&stub, "").unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None)
+            .with_version_probe(Box::new(StubVersionProbe(Some("1.9.2".into()))));
         let info = adapter.detect().expect("should detect stub binary");
         assert_eq!(info.kind, DevToolKind::ClaudeCode);
         assert_eq!(info.version.as_deref(), Some("1.9.2"));
@@ -383,17 +417,25 @@ mod tests {
         assert!(info.supports_managed_settings);
     }
 
-    #[cfg(unix)]
     #[test]
     fn detect_normalizes_version_with_prefix() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let stub = tmp.path().join("claude");
-        std::fs::write(&stub, "#!/bin/sh\necho 'claude 2.1.0'\n").unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        std::fs::write(&stub, "").unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None)
+            .with_version_probe(Box::new(StubVersionProbe(Some("claude 2.1.0".into()))));
         let info = adapter.detect().unwrap();
         assert_eq!(info.version.as_deref(), Some("2.1.0"));
+    }
+
+    #[test]
+    fn detect_returns_none_when_probe_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "").unwrap();
+        let adapter =
+            ClaudeCodeAdapter::with_overrides(Some(stub), None).with_version_probe(Box::new(StubVersionProbe(None)));
+        assert!(adapter.detect().is_none());
     }
 
     #[cfg(unix)]
