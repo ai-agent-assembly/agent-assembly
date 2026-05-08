@@ -21,6 +21,23 @@ pub enum RegistryError {
     /// Referenced an agent ID that does not exist in the registry.
     #[error("agent not found: {0:?}")]
     NotFound([u8; 16]),
+    /// A lineage validation check failed during registration.
+    #[error("lineage validation failed: {0}")]
+    Lineage(#[from] LineageError),
+}
+
+/// Error returned when agent lineage validation fails during registration.
+#[derive(Debug, thiserror::Error)]
+pub enum LineageError {
+    /// The new agent would create a cycle in the delegation graph.
+    #[error("circular agent delegation detected: {cycle:?}")]
+    CircularDelegation {
+        /// Cycle path: starts with the new agent_id, traverses ancestors, ends when the new agent_id is found again.
+        cycle: Vec<[u8; 16]>,
+    },
+    /// The new agent would exceed the maximum allowed delegation depth.
+    #[error("max delegation depth exceeded: depth {depth} > max {max}")]
+    MaxDepthExceeded { depth: u32, max: u32 },
 }
 
 /// Reason an agent was suspended — determines whether auto-resume is possible.

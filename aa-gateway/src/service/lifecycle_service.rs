@@ -18,7 +18,7 @@ use crate::engine::PolicyEngine;
 use crate::registry::convert::{proto_agent_id_to_key, validate_proto_agent_id};
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
-use crate::registry::{AgentRegistry, AgentStatus, SuspendReason};
+use crate::registry::{AgentRegistry, AgentStatus, LineageError, RegistryError, SuspendReason};
 
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
@@ -145,9 +145,12 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             parent_key: resolved_parent_key,
         };
 
-        self.registry
-            .register(record)
-            .map_err(|e| Status::already_exists(e.to_string()))?;
+        self.registry.register(record).map_err(|e| match e {
+            RegistryError::AlreadyRegistered(_) => Status::already_exists(e.to_string()),
+            RegistryError::Lineage(LineageError::CircularDelegation { .. })
+            | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. }) => Status::invalid_argument(e.to_string()),
+            _ => Status::internal(e.to_string()),
+        })?;
 
         tracing::info!(agent_id = ?proto_id.agent_id, "agent registered");
 

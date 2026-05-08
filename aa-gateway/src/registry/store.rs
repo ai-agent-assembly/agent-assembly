@@ -1,6 +1,7 @@
 //! Agent registry store — `AgentRecord` and `AgentRegistry` backed by `DashMap`.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Mutex;
 
 use aa_core::GovernanceLevel;
 use chrono::{DateTime, Utc};
@@ -11,10 +12,13 @@ use tonic::Status;
 use aa_proto::assembly::agent::v1::control_command::Command;
 use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
-use super::{AgentStatus, RegistryError};
+use super::{AgentStatus, LineageError, RegistryError};
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
+
+/// Maximum allowed delegation depth. Agents that would exceed this depth are rejected at registration.
+pub const DEFAULT_MAX_AGENT_DEPTH: u32 = 10;
 
 /// Summary of an active session associated with an agent.
 #[derive(Debug, Clone)]
@@ -136,6 +140,8 @@ pub struct AgentRegistry {
     control_senders: DashMap<[u8; 16], ControlSender>,
     /// Secondary index mapping team_id → set of agent registry keys.
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// Serialises the validate-then-insert step to prevent TOCTOU races.
+    registration_lock: Mutex<()>,
 }
 
 impl AgentRegistry {
@@ -145,32 +151,78 @@ impl AgentRegistry {
             agents: DashMap::new(),
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
+            registration_lock: Mutex::new(()),
         }
+    }
+
+    /// Validate that registering `agent_id` with `parent_key` does not introduce a cycle
+    /// or exceed `max_depth`. Must be called while holding `registration_lock`.
+    pub(crate) fn validate_lineage(
+        &self,
+        agent_id: &[u8; 16],
+        parent_key: &[u8; 16],
+        max_depth: u32,
+    ) -> Result<(), LineageError> {
+        // Depth check.
+        let parent_depth = self.agents.get(parent_key).map(|r| r.depth).unwrap_or(0);
+        let new_depth = parent_depth + 1;
+        if new_depth >= max_depth {
+            return Err(LineageError::MaxDepthExceeded {
+                depth: new_depth,
+                max: max_depth,
+            });
+        }
+
+        // Cycle check: check direct self-reference first, then walk ancestor chain.
+        if parent_key == agent_id {
+            return Err(LineageError::CircularDelegation {
+                cycle: vec![*agent_id, *parent_key],
+            });
+        }
+        let mut cycle = vec![*agent_id, *parent_key];
+        let mut current = self.agents.get(parent_key).and_then(|r| r.parent_key);
+        while let Some(pk) = current {
+            if pk == *agent_id {
+                cycle.push(pk);
+                return Err(LineageError::CircularDelegation { cycle });
+            }
+            cycle.push(pk);
+            current = self.agents.get(&pk).and_then(|r| r.parent_key);
+        }
+        Ok(())
     }
 
     /// Insert a new agent record. Returns an error if the ID is already registered.
     pub fn register(&self, record: AgentRecord) -> Result<(), RegistryError> {
         use dashmap::mapref::entry::Entry;
-        // Capture before moving record into the map.
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
 
-        match self.agents.entry(record.agent_id) {
-            Entry::Occupied(_) => return Err(RegistryError::AlreadyRegistered(record.agent_id)),
-            Entry::Vacant(v) => {
-                v.insert(record);
-            }
-        }
+        {
+            // Hold registration_lock across validate+insert to prevent TOCTOU races where
+            // two concurrent registrations could each pass cycle detection independently
+            // but together form a cycle once both are inserted.
+            let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Child is now inserted; update parent's children list.
+            if let Some(pk) = parent_key {
+                self.validate_lineage(&agent_id, &pk, DEFAULT_MAX_AGENT_DEPTH)?;
+            }
+
+            match self.agents.entry(agent_id) {
+                Entry::Occupied(_) => return Err(RegistryError::AlreadyRegistered(agent_id)),
+                Entry::Vacant(v) => {
+                    v.insert(record);
+                }
+            }
+        } // registration_lock released here
+
+        // Post-insert: update parent's children list and team index (safe outside lock).
         if let Some(pk) = parent_key {
             if let Some(mut parent) = self.agents.get_mut(&pk) {
                 parent.children.push(agent_id);
             }
         }
-
-        // Maintain team_index.
         if let Some(tid) = team_id {
             self.team_index.entry(tid).or_default().insert(agent_id);
         }
@@ -497,5 +549,139 @@ mod tree_tests {
         assert_eq!(reg.children_of(&r), vec![c]);
         // children_of child = [grandchild]
         assert_eq!(reg.children_of(&c), vec![g]);
+    }
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn make_record(id: [u8; 16], parent_key: Option<[u8; 16]>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 1,
+            tool_names: vec![],
+            public_key: "test-pubkey".into(),
+            credential_token: "test-token".into(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+        }
+    }
+
+    #[test]
+    fn valid_parent_child_registration_succeeds() {
+        let reg = AgentRegistry::new();
+        let a = [0x01u8; 16];
+        let b = [0x02u8; 16];
+        reg.register(make_record(a, None, 0)).unwrap();
+        reg.register(make_record(b, Some(a), 1)).unwrap();
+        assert_eq!(reg.agents.get(&b).unwrap().depth, 1);
+    }
+
+    #[test]
+    fn direct_cycle_rejected() {
+        let reg = AgentRegistry::new();
+        let a = [0xAAu8; 16];
+        reg.register(make_record(a, None, 0)).unwrap();
+        // A tries to register again with itself as parent — validate_lineage detects cycle.
+        let err = reg.validate_lineage(&a, &a, DEFAULT_MAX_AGENT_DEPTH).unwrap_err();
+        assert!(matches!(err, LineageError::CircularDelegation { .. }));
+    }
+
+    #[test]
+    fn indirect_cycle_rejected() {
+        let reg = AgentRegistry::new();
+        let a = [0x01u8; 16];
+        let b = [0x02u8; 16];
+        let c = [0x03u8; 16];
+        reg.register(make_record(a, None, 0)).unwrap();
+        reg.register(make_record(b, Some(a), 1)).unwrap();
+        reg.register(make_record(c, Some(b), 2)).unwrap();
+        // Try to register A with parent C — forms A→B→C→A cycle.
+        let err = reg.validate_lineage(&a, &c, DEFAULT_MAX_AGENT_DEPTH).unwrap_err();
+        match err {
+            LineageError::CircularDelegation { ref cycle } => {
+                assert!(cycle.contains(&a), "cycle path must contain agent A");
+            }
+            other => panic!("expected CircularDelegation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_depth_exceeded_rejected() {
+        let reg = AgentRegistry::new();
+        // Build a chain of DEFAULT_MAX_AGENT_DEPTH agents (depth 0..DEFAULT_MAX_AGENT_DEPTH-1).
+        let mut prev_id = [0x00u8; 16];
+        prev_id[0] = 0;
+        reg.register(make_record(prev_id, None, 0)).unwrap();
+
+        for i in 1u8..=(DEFAULT_MAX_AGENT_DEPTH as u8) {
+            let mut id = [0x00u8; 16];
+            id[0] = i;
+            let parent = prev_id;
+            if i == DEFAULT_MAX_AGENT_DEPTH as u8 {
+                // This agent would be at depth DEFAULT_MAX_AGENT_DEPTH, exceeding limit.
+                let err = reg.validate_lineage(&id, &parent, DEFAULT_MAX_AGENT_DEPTH).unwrap_err();
+                assert!(
+                    matches!(err, LineageError::MaxDepthExceeded { depth, max } if depth >= max),
+                    "expected MaxDepthExceeded"
+                );
+                break;
+            }
+            reg.register(make_record(id, Some(parent), i as u32)).unwrap();
+            prev_id = id;
+        }
+    }
+
+    #[test]
+    fn toctou_mutual_parent_cycle_rejected() {
+        use std::sync::Arc;
+        let reg = Arc::new(AgentRegistry::new());
+        let a = [0xAAu8; 16];
+        let b = [0xBBu8; 16];
+
+        // Thread 1: register A with parent B
+        // Thread 2: register B with parent A
+        // The registration_lock serialises these. The second thread to run will find
+        // the first agent in the registry with a parent_key pointing back, detecting the cycle.
+        let reg1 = Arc::clone(&reg);
+        let reg2 = Arc::clone(&reg);
+
+        let h1 = std::thread::spawn(move || reg1.register(make_record(a, Some(b), 1)));
+        let h2 = std::thread::spawn(move || reg2.register(make_record(b, Some(a), 1)));
+
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        // With the registration_lock, the second registration must see the first agent's
+        // parent_key and detect the cycle. Exactly one succeeds.
+        let successes = [r1.is_ok(), r2.is_ok()].iter().filter(|&&x| x).count();
+        assert_eq!(
+            successes, 1,
+            "exactly one of the mutual-parent registrations should succeed"
+        );
     }
 }
