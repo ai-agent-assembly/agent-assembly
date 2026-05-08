@@ -25,6 +25,8 @@ cfg_if::cfg_if! {
 pub mod agent;
 #[cfg(feature = "alloc")]
 pub mod audit;
+#[cfg(feature = "alloc")]
+pub mod capability;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
@@ -54,6 +56,9 @@ pub use evaluators::{DenyAllEvaluator, PermitAllEvaluator};
 
 #[cfg(feature = "alloc")]
 pub use audit::{AuditEntry, AuditEventType, AuditLog, AuditLogError, Lineage};
+
+#[cfg(feature = "alloc")]
+pub use capability::{Capability, CapabilitySet};
 
 #[cfg(feature = "std")]
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
