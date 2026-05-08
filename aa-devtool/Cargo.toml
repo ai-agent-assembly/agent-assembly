@@ -1,0 +1,22 @@
+[package]
+name = "aa-devtool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dev tool auto-discovery for Agent Assembly"
+
+[dependencies]
+aa-core = { path = "../aa-core", features = ["std", "serde"] }
+async-trait = "0.1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+dirs = "6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

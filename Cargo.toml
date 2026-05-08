@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aa-core",
+    "aa-devtool",
     "aa-proto",
     "aa-runtime",
     "aa-ebpf",

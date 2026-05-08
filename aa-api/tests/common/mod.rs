@@ -16,6 +16,7 @@ use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
 use aa_api::trace_store::InMemoryTraceStore;
+use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;
@@ -138,6 +139,7 @@ spec:
         audit_reader,
         startup_time: Instant::now(),
         active_connections: Arc::new(AtomicI64::new(0)),
+        discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
     }
 }
 

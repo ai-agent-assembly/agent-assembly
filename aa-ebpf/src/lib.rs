@@ -42,6 +42,7 @@
 //! `maps`, `syscall`) are available on all platforms.
 
 // Cross-platform modules (no aya dependency).
+pub mod agent_discover;
 pub mod alert;
 pub mod error;
 pub mod events;

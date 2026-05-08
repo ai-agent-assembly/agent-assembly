@@ -19,6 +19,7 @@ pub mod logs;
 pub mod policy;
 pub mod run;
 pub mod status;
+pub mod tools;
 pub mod trace;
 pub mod version;
 
@@ -53,6 +54,8 @@ pub enum Commands {
     Dashboard(dashboard::DashboardArgs),
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
+    /// List and manage AI dev tools on this system.
+    Tools(tools::ToolsArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -72,5 +75,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Cost(args) => cost::dispatch(args, ctx, output),
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Run(args) => run::dispatch(args, ctx, output),
+        Commands::Tools(args) => tools::dispatch(args),
     }
 }
