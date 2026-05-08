@@ -4,6 +4,7 @@
 
 pub mod agents;
 pub mod alerts;
+pub mod topology;
 pub mod approvals;
 pub mod auth;
 pub mod costs;
