@@ -269,13 +269,22 @@ impl DevToolAdapter for ClaudeCodeAdapter {
 
     fn build_launch_command(
         &self,
-        _tool_args: &[String],
-        _agent_id: &str,
-        _team_id: Option<&str>,
-        _proxy_addr: Option<&str>,
+        tool_args: &[String],
+        agent_id: &str,
+        team_id: Option<&str>,
+        proxy_addr: Option<&str>,
     ) -> Result<Command, AdapterError> {
-        // Implemented in AAASM-959.
-        Err(AdapterError::LaunchFailed("not yet implemented (AAASM-959)".into()))
+        let bin = self.resolve_binary().ok_or(AdapterError::ToolNotFound)?;
+        let mut cmd = Command::new(bin);
+        cmd.args(tool_args);
+        cmd.env("AA_AGENT_ID", agent_id);
+        if let Some(tid) = team_id {
+            cmd.env("AA_TEAM_ID", tid);
+        }
+        if let Some(px) = proxy_addr {
+            cmd.env("HTTPS_PROXY", px);
+        }
+        Ok(cmd)
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
@@ -500,5 +509,32 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["enabledMcpjsonServers"], serde_json::json!(["filesystem"]));
         assert_eq!(v["disabledMcpjsonServers"], serde_json::json!(["search"]));
+    }
+
+    // ── build_launch_command ────────────────────────────────────────────────
+
+    #[test]
+    fn build_command_appends_args_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "").unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        let args = vec!["--print".to_string(), "hello".to_string()];
+        let cmd = adapter
+            .build_launch_command(&args, "agent-1", Some("team-a"), Some("127.0.0.1:8080"))
+            .unwrap();
+        let cmd_args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(cmd_args, ["--print", "hello"]);
+        let envs: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(envs[std::ffi::OsStr::new("AA_AGENT_ID")], Some(std::ffi::OsStr::new("agent-1")));
+        assert_eq!(envs[std::ffi::OsStr::new("AA_TEAM_ID")], Some(std::ffi::OsStr::new("team-a")));
+        assert_eq!(envs[std::ffi::OsStr::new("HTTPS_PROXY")], Some(std::ffi::OsStr::new("127.0.0.1:8080")));
+    }
+
+    #[test]
+    fn build_command_errors_when_binary_missing() {
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
+        let result = adapter.build_launch_command(&[], "agent-1", None, None);
+        assert!(matches!(result, Err(AdapterError::ToolNotFound)));
     }
 }
