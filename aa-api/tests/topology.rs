@@ -57,7 +57,12 @@ async fn topology_overview_empty_registry_returns_200() {
     let app = common::test_app();
 
     let response = app
-        .oneshot(Request::builder().uri("/api/v1/topology/overview").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -75,13 +80,27 @@ async fn topology_overview_empty_registry_returns_200() {
 async fn topology_overview_with_agents_returns_correct_counts() {
     let state = common::test_state();
     // root in team-a, child in team-a, standalone root
-    state.agent_registry.register(make_agent(0x01, "root-a", 0, Some("team-a"), None)).unwrap();
-    state.agent_registry.register(make_agent(0x02, "child-a", 1, Some("team-a"), Some([0x01; 16]))).unwrap();
-    state.agent_registry.register(make_agent(0x03, "standalone", 0, None, None)).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root-a", 0, Some("team-a"), None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child-a", 1, Some("team-a"), Some([0x01; 16])))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x03, "standalone", 0, None, None))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let response = app
-        .oneshot(Request::builder().uri("/api/v1/topology/overview").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -102,7 +121,10 @@ async fn topology_overview_with_agents_returns_correct_counts() {
 #[tokio::test]
 async fn topology_overview_status_filter_works() {
     let state = common::test_state();
-    state.agent_registry.register(make_agent(0x01, "active-agent", 0, None, None)).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "active-agent", 0, None, None))
+        .unwrap();
     let mut suspended = make_agent(0x02, "suspended-agent", 0, None, None);
     suspended.status = AgentStatus::Suspended(SuspendReason::Manual);
     state.agent_registry.register(suspended).unwrap();
@@ -166,8 +188,14 @@ async fn topology_tree_returns_404_for_unknown_agent() {
 #[tokio::test]
 async fn topology_tree_returns_subtree_for_known_agent() {
     let state = common::test_state();
-    state.agent_registry.register(make_agent(0x01, "root", 0, None, None)).unwrap();
-    state.agent_registry.register(make_agent(0x02, "child", 1, None, Some([0x01; 16]))).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, None, None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child", 1, None, Some([0x01; 16])))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let id = hex_id(0x01);
@@ -213,8 +241,14 @@ async fn topology_team_returns_404_for_unknown_team() {
 #[tokio::test]
 async fn topology_team_returns_members_for_known_team() {
     let state = common::test_state();
-    state.agent_registry.register(make_agent(0x01, "root-a", 0, Some("team-x"), None)).unwrap();
-    state.agent_registry.register(make_agent(0x02, "child-a", 1, Some("team-x"), Some([0x01; 16]))).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root-a", 0, Some("team-x"), None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child-a", 1, Some("team-x"), Some([0x01; 16])))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let response = app
@@ -281,7 +315,10 @@ async fn topology_lineage_returns_404_for_unknown_agent() {
 #[tokio::test]
 async fn topology_lineage_root_agent_has_no_ancestors() {
     let state = common::test_state();
-    state.agent_registry.register(make_agent(0x01, "root", 0, None, None)).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, None, None))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let id = hex_id(0x01);
@@ -311,7 +348,12 @@ async fn topology_stats_empty_registry_returns_zeros() {
     let app = common::test_app();
 
     let response = app
-        .oneshot(Request::builder().uri("/api/v1/topology/stats").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -327,12 +369,23 @@ async fn topology_stats_empty_registry_returns_zeros() {
 #[tokio::test]
 async fn topology_stats_with_agents_returns_correct_counts() {
     let state = common::test_state();
-    state.agent_registry.register(make_agent(0x01, "root", 0, Some("team-a"), None)).unwrap();
-    state.agent_registry.register(make_agent(0x02, "child", 1, Some("team-a"), Some([0x01; 16]))).unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child", 1, Some("team-a"), Some([0x01; 16])))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let response = app
-        .oneshot(Request::builder().uri("/api/v1/topology/stats").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
