@@ -94,6 +94,8 @@ impl core::fmt::Display for Capability {
 ///   - Parent empty, child non-empty → `child.allow` minus merged deny.
 ///   - Parent non-empty, child empty → `parent.allow` minus merged deny.
 ///   - Both non-empty → intersection of `parent.allow` and `child.allow`, minus merged deny.
+///
+/// Requires the `alloc` feature.
 #[cfg(feature = "alloc")]
 pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> CapabilitySet {
     // deny = union of both deny sets
@@ -120,11 +122,16 @@ pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> Capa
 
 /// Map a [`crate::GovernanceAction`] to the [`Capability`] it exercises,
 /// or `None` if the action does not map to a known capability.
+///
+/// Requires the `alloc` feature.
 #[cfg(feature = "alloc")]
 pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capability> {
     use crate::policy::FileMode;
     use crate::GovernanceAction;
 
+    // NOTE: Capability::AgentSpawn, NetworkInbound, and Model variants have no
+    // corresponding GovernanceAction yet. When new action variants land, add
+    // mappings here to avoid silent policy bypasses.
     match action {
         GovernanceAction::ToolCall { name, .. } => Some(Capability::McpTool(name.clone())),
         GovernanceAction::FileAccess {
@@ -336,6 +343,7 @@ mod tests {
             result.allow.is_empty(),
             "FileRead was denied by parent, should be absent from allow"
         );
+        assert!(result.deny.contains(&Capability::FileRead));
     }
 
     #[test]
