@@ -64,6 +64,18 @@ pub struct RawDataPolicy {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for the `capabilities` policy section.
+#[derive(Debug, Deserialize)]
+pub struct RawCapabilitySet {
+    /// Capability strings that are explicitly permitted.
+    pub allow: Option<Vec<String>>,
+    /// Capability strings that are explicitly denied.
+    pub deny: Option<Vec<String>>,
+    /// Unknown keys captured for warning emission.
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `metadata` section
 /// of the governance policy YAML envelope.
 #[derive(Debug, Deserialize)]
@@ -114,6 +126,8 @@ pub struct RawPolicyDocument {
     pub data: Option<RawDataPolicy>,
     /// Per-tool policies keyed by tool name.
     pub tools: Option<HashMap<String, RawToolPolicy>>,
+    /// Per-level capability restrictions.
+    pub capabilities: Option<RawCapabilitySet>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -302,5 +316,30 @@ mod tests {
         let yaml = "allow: true\nconstraint: \"read-only\"\n";
         let raw: RawToolPolicy = serde_yaml::from_str(yaml).unwrap();
         assert!(raw.unknown.contains_key("constraint"));
+    }
+
+    // ── RawCapabilitySet ────────────────────────────────────────────────────
+
+    #[test]
+    fn raw_capabilities_deserializes_allow_and_deny() {
+        let yaml = "capabilities:\n  allow:\n    - file_read\n  deny:\n    - terminal_exec\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        let caps = raw.capabilities.as_ref().unwrap();
+        assert_eq!(caps.allow, Some(vec!["file_read".to_string()]));
+        assert_eq!(caps.deny, Some(vec!["terminal_exec".to_string()]));
+    }
+
+    #[test]
+    fn raw_capabilities_absent_is_none() {
+        let yaml = "{}\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert!(raw.capabilities.is_none());
+    }
+
+    #[test]
+    fn raw_capabilities_captures_unknown_key() {
+        let yaml = "capabilities:\n  allow: []\n  extra_field: true\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert!(raw.capabilities.as_ref().unwrap().unknown.contains_key("extra_field"));
     }
 }

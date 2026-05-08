@@ -854,6 +854,7 @@ mod tests {
             data: None,
             approval_timeout_secs: 300,
             tools: HashMap::new(),
+            capabilities: None,
         }
     }
 

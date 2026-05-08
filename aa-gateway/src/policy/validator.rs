@@ -48,6 +48,7 @@ impl PolicyValidator {
         let budget = Self::validate_budget(raw.budget, &mut errors);
         let data = Self::validate_data(raw.data, &mut errors);
         let tools = Self::validate_tools(raw.tools, &mut errors, &mut warnings);
+        let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
             Some(0) => {
@@ -79,6 +80,7 @@ impl PolicyValidator {
                 data,
                 approval_timeout_secs,
                 tools,
+                capabilities,
             },
             warnings,
         })
@@ -307,6 +309,40 @@ impl PolicyValidator {
         Some(DataPolicy {
             sensitive_patterns: patterns,
         })
+    }
+
+    fn validate_capabilities(
+        raw: Option<crate::policy::raw::RawCapabilitySet>,
+        errors: &mut Vec<ValidationError>,
+        warnings: &mut Vec<ValidationWarning>,
+    ) -> Option<aa_core::CapabilitySet> {
+        let raw = raw?;
+
+        for key in raw.unknown.keys() {
+            warnings.push(ValidationWarning::unknown_key(format!("capabilities.{}", key)));
+        }
+
+        let mut allow = std::collections::BTreeSet::new();
+        for (i, s) in raw.allow.unwrap_or_default().iter().enumerate() {
+            match s.parse::<aa_core::Capability>() {
+                Ok(cap) => {
+                    allow.insert(cap);
+                }
+                Err(msg) => errors.push(ValidationError::new(format!("capabilities.allow[{}]", i), msg)),
+            }
+        }
+
+        let mut deny = std::collections::BTreeSet::new();
+        for (i, s) in raw.deny.unwrap_or_default().iter().enumerate() {
+            match s.parse::<aa_core::Capability>() {
+                Ok(cap) => {
+                    deny.insert(cap);
+                }
+                Err(msg) => errors.push(ValidationError::new(format!("capabilities.deny[{}]", i), msg)),
+            }
+        }
+
+        Some(aa_core::CapabilitySet { allow, deny })
     }
 
     fn validate_tools(
@@ -654,6 +690,50 @@ mod tests {
         assert_eq!(ah.start, "09:00");
         assert_eq!(ah.end, "18:00");
         assert_eq!(ah.timezone, "Asia/Taipei");
+    }
+
+    // ── Capabilities validation ─────────────────────────────────────────────
+
+    #[test]
+    fn capabilities_valid_round_trips() {
+        let yaml = "capabilities:\n  allow:\n    - file_read\n    - mcp_tool:bash\n  deny:\n    - terminal_exec\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let caps = out.document.capabilities.as_ref().unwrap();
+        assert!(caps.allow.contains(&aa_core::Capability::FileRead));
+        assert!(caps.allow.contains(&aa_core::Capability::McpTool("bash".to_string())));
+        assert!(caps.deny.contains(&aa_core::Capability::TerminalExec));
+    }
+
+    #[test]
+    fn capabilities_absent_is_none() {
+        let yaml = "{}\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(out.document.capabilities.is_none());
+    }
+
+    #[test]
+    fn capabilities_unknown_string_is_validation_error() {
+        let yaml = "capabilities:\n  allow:\n    - unknown_thing\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err());
+        let errs = result.unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "capabilities.allow[0]"));
+    }
+
+    #[test]
+    fn capabilities_mcp_tool_no_name_is_error() {
+        let yaml = "capabilities:\n  allow:\n    - \"mcp_tool:\"\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err());
+        let errs = result.unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "capabilities.allow[0]"));
+    }
+
+    #[test]
+    fn capabilities_unknown_key_produces_warning() {
+        let yaml = "capabilities:\n  allow: []\n  extra_key: true\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(out.warnings.iter().any(|w| w.field.contains("capabilities.")));
     }
 
     // ── Full-policy integration ─────────────────────────────────────────────
