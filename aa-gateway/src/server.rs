@@ -158,6 +158,53 @@ async fn shutdown_signal() {
     }
 }
 
+/// Spawn a background task that converts escalation events into `ApprovalEscalated` audit entries.
+fn spawn_escalation_audit_task(
+    scheduler: &Option<Arc<EscalationScheduler>>,
+    audit_tx: tokio::sync::mpsc::Sender<AuditEntry>,
+) {
+    let Some(sched) = scheduler else { return };
+    let mut rx = sched.subscribe();
+    tokio::spawn(async move {
+        let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
+        let mut prev_hash = [0u8; 32];
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    let payload = serde_json::json!({
+                        "request_id": event.request_id.to_string(),
+                        "team_id": event.team_id,
+                        "escalation_approvers": event.escalation_approvers,
+                    })
+                    .to_string();
+                    let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
+                    let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
+                    let entry = AuditEntry::new(
+                        seq,
+                        now,
+                        AuditEventType::ApprovalEscalated,
+                        agent_id,
+                        session_id,
+                        payload,
+                        prev_hash,
+                    );
+                    prev_hash = *entry.entry_hash();
+                    let _ = audit_tx.try_send(entry);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = n, "escalation audit subscriber lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 /// Persist the current budget snapshot to disk. Best-effort — logs on failure.
 fn final_budget_save(tracker: &BudgetTracker, budget_path: &Path) {
     let snapshot = tracker.snapshot();
@@ -188,49 +235,7 @@ pub async fn serve_tcp(
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
 
-    // Spawn a task that writes ApprovalEscalated audit entries for each escalation event.
-    if let Some(ref sched) = escalation_scheduler {
-        let mut rx = sched.subscribe();
-        let audit_tx_esc = audit_tx.clone();
-        tokio::spawn(async move {
-            let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
-            let mut prev_hash = [0u8; 32];
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-                        let payload = serde_json::json!({
-                            "request_id": event.request_id.to_string(),
-                            "team_id": event.team_id,
-                            "escalation_approvers": event.escalation_approvers,
-                        })
-                        .to_string();
-                        let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
-                        let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
-                        let entry = AuditEntry::new(
-                            seq,
-                            now,
-                            AuditEventType::ApprovalEscalated,
-                            agent_id,
-                            session_id,
-                            payload,
-                            prev_hash,
-                        );
-                        prev_hash = *entry.entry_hash();
-                        let _ = audit_tx_esc.try_send(entry);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(skipped = n, "escalation audit subscriber lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone());
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
@@ -283,49 +288,7 @@ pub async fn serve_uds(
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
 
-    // Spawn a task that writes ApprovalEscalated audit entries for each escalation event.
-    if let Some(ref sched) = escalation_scheduler {
-        let mut rx = sched.subscribe();
-        let audit_tx_esc = audit_tx.clone();
-        tokio::spawn(async move {
-            let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
-            let mut prev_hash = [0u8; 32];
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-                        let payload = serde_json::json!({
-                            "request_id": event.request_id.to_string(),
-                            "team_id": event.team_id,
-                            "escalation_approvers": event.escalation_approvers,
-                        })
-                        .to_string();
-                        let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
-                        let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
-                        let entry = AuditEntry::new(
-                            seq,
-                            now,
-                            AuditEventType::ApprovalEscalated,
-                            agent_id,
-                            session_id,
-                            payload,
-                            prev_hash,
-                        );
-                        prev_hash = *entry.entry_hash();
-                        let _ = audit_tx_esc.try_send(entry);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(skipped = n, "escalation audit subscriber lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone());
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
