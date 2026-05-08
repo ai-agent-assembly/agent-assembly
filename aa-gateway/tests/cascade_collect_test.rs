@@ -76,6 +76,8 @@ fn register_agent(registry: &AgentRegistry, agent_id: AgentId, org_id: Option<&s
             delegation_reason: None,
             spawned_by_tool: None,
             root_agent_id: None,
+            children: Vec::new(),
+            parent_key: None,
         })
         .unwrap();
 }

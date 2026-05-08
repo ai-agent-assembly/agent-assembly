@@ -287,6 +287,8 @@ budget:
         delegation_reason: None,
         spawned_by_tool: None,
         root_agent_id: None,
+        children: Vec::new(),
+        parent_key: None,
     };
     registry.register(record).unwrap();
 
@@ -376,6 +378,8 @@ budget:
         delegation_reason: None,
         spawned_by_tool: None,
         root_agent_id: None,
+        children: Vec::new(),
+        parent_key: None,
     };
     registry.register(record).unwrap();
 
@@ -483,6 +487,8 @@ fn level_test_record(
         delegation_reason: None,
         spawned_by_tool: None,
         root_agent_id: None,
+        children: Vec::new(),
+        parent_key: None,
     }
 }
 

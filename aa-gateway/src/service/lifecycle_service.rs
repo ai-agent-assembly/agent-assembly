@@ -91,23 +91,26 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             Some(proto_id.team_id.clone())
         };
 
-        // Compute root_agent_id server-side before building the record.
-        // Root agents: root = self. Sub-agents: inherit parent's root (or parent itself).
+        // Compute root_agent_id, parent_key, and depth server-side before building the record.
+        // Root agents: root = self, depth = 0, parent_key = None.
+        // Sub-agents: inherit parent's root (or parent itself), depth = parent.depth + 1.
         // Fail with INVALID_ARGUMENT if the declared parent is not registered.
-        let root_agent_id: Option<[u8; 16]> = if let Some(ref parent_str) = echo_parent_agent_id {
+        let (root_agent_id, resolved_parent_key, agent_depth) = if let Some(ref parent_str) = echo_parent_agent_id {
             let parent_proto_id = ProtoAgentId {
                 org_id: proto_id.org_id.clone(),
                 team_id: proto_id.team_id.clone(),
                 agent_id: parent_str.clone(),
             };
-            let parent_key = proto_agent_id_to_key(&parent_proto_id);
+            let pk = proto_agent_id_to_key(&parent_proto_id);
             let parent = self
                 .registry
-                .get(&parent_key)
+                .get(&pk)
                 .ok_or_else(|| Status::invalid_argument("parent_agent_id not found in registry"))?;
-            Some(parent.root_agent_id.unwrap_or(parent.agent_id))
+            let root = Some(parent.root_agent_id.unwrap_or(parent.agent_id));
+            let depth = parent.depth + 1;
+            (root, Some(pk), depth)
         } else {
-            Some(agent_key)
+            (Some(agent_key), None, 0u32)
         };
 
         let record = AgentRecord {
@@ -134,10 +137,12 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             governance_level: aa_core::GovernanceLevel::default(),
             parent_agent_id: req.parent_agent_id,
             team_id: echo_team_id.clone(),
-            depth: 0,
+            depth: agent_depth,
             delegation_reason: req.delegation_reason,
             spawned_by_tool: req.spawned_by_tool,
             root_agent_id,
+            children: Vec::new(),
+            parent_key: resolved_parent_key,
         };
 
         self.registry

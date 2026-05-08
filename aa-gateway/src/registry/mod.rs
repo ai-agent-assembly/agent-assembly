@@ -10,7 +10,7 @@ pub mod store;
 pub mod token;
 
 pub use lineage::Lineage;
-pub use store::{ActiveSession, AgentRecord, AgentRegistry, RecentEvent};
+pub use store::{ActiveSession, AgentGraph, AgentRecord, AgentRegistry, RecentEvent};
 
 /// Errors returned by [`AgentRegistry`](store::AgentRegistry) operations.
 #[derive(Debug, thiserror::Error)]
