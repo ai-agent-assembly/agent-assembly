@@ -17,6 +17,7 @@ members = [
     "conformance",
     "examples/aa-devtool-sample-myeditor",
     "aa-devtool-windsurf",
+    "aa-devtool-copilot",
 ]
 resolver = "2"
 
