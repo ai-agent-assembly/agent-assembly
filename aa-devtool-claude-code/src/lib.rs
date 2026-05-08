@@ -14,6 +14,7 @@
 
 #![warn(missing_docs)]
 
+mod apply;
 mod settings;
 
 use std::path::{Path, PathBuf};
@@ -70,6 +71,7 @@ pub struct ClaudeCodeAdapter {
     /// When set, replaces `$HOME` for all filesystem marker checks.
     home_dir_override: Option<PathBuf>,
     version_probe: Box<dyn VersionProbe>,
+    settings_path_resolver: Box<dyn apply::SettingsPathResolver>,
 }
 
 impl std::fmt::Debug for ClaudeCodeAdapter {
@@ -92,6 +94,7 @@ impl ClaudeCodeAdapter {
             binary_path_override: None,
             home_dir_override: None,
             version_probe: Box::new(CommandVersionProbe),
+            settings_path_resolver: Box::new(apply::DefaultSettingsPathResolver { home_dir: None }),
         }
     }
 
@@ -104,8 +107,9 @@ impl ClaudeCodeAdapter {
     pub fn with_overrides(binary_path: Option<PathBuf>, home_dir: Option<PathBuf>) -> Self {
         Self {
             binary_path_override: binary_path,
-            home_dir_override: home_dir,
+            home_dir_override: home_dir.clone(),
             version_probe: Box::new(CommandVersionProbe),
+            settings_path_resolver: Box::new(apply::DefaultSettingsPathResolver { home_dir }),
         }
     }
 
@@ -114,6 +118,14 @@ impl ClaudeCodeAdapter {
     #[cfg(test)]
     fn with_version_probe(mut self, probe: Box<dyn VersionProbe>) -> Self {
         self.version_probe = probe;
+        self
+    }
+
+    /// Override the settings path resolver. Only used in tests to write to a
+    /// temporary directory instead of the real `~/.claude/settings.json`.
+    #[cfg(test)]
+    fn with_settings_path_resolver(mut self, resolver: Box<dyn apply::SettingsPathResolver>) -> Self {
+        self.settings_path_resolver = resolver;
         self
     }
 
@@ -250,33 +262,55 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         serde_json::to_string_pretty(&s).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
     }
 
-    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
-        // Implemented in AAASM-956.
-        Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "not yet implemented (AAASM-956)",
-        )))
+    async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
+        let path = self.settings_path_resolver.resolve()?;
+        apply::apply_settings_at(&path, settings)
     }
 
     fn build_launch_command(
         &self,
-        _tool_args: &[String],
-        _agent_id: &str,
-        _team_id: Option<&str>,
-        _proxy_addr: Option<&str>,
+        tool_args: &[String],
+        agent_id: &str,
+        team_id: Option<&str>,
+        proxy_addr: Option<&str>,
     ) -> Result<Command, AdapterError> {
-        // Implemented in AAASM-959.
-        Err(AdapterError::LaunchFailed("not yet implemented (AAASM-959)".into()))
+        let bin = self.resolve_binary().ok_or(AdapterError::ToolNotFound)?;
+        let mut cmd = Command::new(bin);
+        cmd.args(tool_args);
+        cmd.env("AA_AGENT_ID", agent_id);
+        if let Some(tid) = team_id {
+            cmd.env("AA_TEAM_ID", tid);
+        }
+        if let Some(px) = proxy_addr {
+            cmd.env("HTTPS_PROXY", px);
+        }
+        Ok(cmd)
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        // Implemented in AAASM-959.
-        Ok(vec![])
+        // Primary source: resolved settings.json (global or project-scoped).
+        let settings_path = self.settings_path_resolver.resolve()?;
+        let mut servers = apply::read_mcp_servers_from(&settings_path)?;
+
+        // Secondary source: <cwd>/.claude/.mcp.json when present.
+        if let Ok(cwd) = std::env::current_dir() {
+            let mcp_json = cwd.join(".claude").join(".mcp.json");
+            let extra = apply::read_mcp_servers_from(&mcp_json)?;
+            // Settings-file entries win on name collision.
+            let existing: std::collections::HashSet<String> = servers.iter().map(|s| s.name.clone()).collect();
+            for s in extra {
+                if !existing.contains(&s.name) {
+                    servers.push(s);
+                }
+            }
+        }
+
+        Ok(servers)
     }
 
-    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
-        // Implemented in AAASM-956.
-        Ok(())
+    async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
+        let path = self.settings_path_resolver.resolve()?;
+        apply::apply_mcp_governance_at(&path, allowed, denied)
     }
 
     fn governance_level(&self) -> GovernanceLevel {
@@ -454,5 +488,124 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let adapter = ClaudeCodeAdapter::with_overrides(None, Some(tmp.path().to_path_buf()));
         assert!(adapter.dot_claude_marker().is_none());
+    }
+
+    // ── apply_settings / apply_mcp_governance (adapter wiring) ─────────────
+
+    struct StubSettingsPathResolver(PathBuf);
+
+    impl apply::SettingsPathResolver for StubSettingsPathResolver {
+        fn resolve(&self) -> Result<PathBuf, AdapterError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_settings_writes_to_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path.clone())));
+        let settings = r#"{"permissionMode":"acceptEdits","permissions":{"allow":["Bash"],"deny":[]},"enabledMcpjsonServers":[],"disabledMcpjsonServers":[]}"#;
+        adapter.apply_settings(settings).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["permissionMode"], "acceptEdits");
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_writes_to_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path.clone())));
+        adapter
+            .apply_mcp_governance(&["filesystem".to_string()], &["search".to_string()])
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["enabledMcpjsonServers"], serde_json::json!(["filesystem"]));
+        assert_eq!(v["disabledMcpjsonServers"], serde_json::json!(["search"]));
+    }
+
+    // ── build_launch_command ────────────────────────────────────────────────
+
+    #[test]
+    fn build_command_appends_args_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join("claude");
+        std::fs::write(&stub, "").unwrap();
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(stub), None);
+        let args = vec!["--print".to_string(), "hello".to_string()];
+        let cmd = adapter
+            .build_launch_command(&args, "agent-1", Some("team-a"), Some("127.0.0.1:8080"))
+            .unwrap();
+        let cmd_args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(cmd_args, ["--print", "hello"]);
+        let envs: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(
+            envs[std::ffi::OsStr::new("AA_AGENT_ID")],
+            Some(std::ffi::OsStr::new("agent-1"))
+        );
+        assert_eq!(
+            envs[std::ffi::OsStr::new("AA_TEAM_ID")],
+            Some(std::ffi::OsStr::new("team-a"))
+        );
+        assert_eq!(
+            envs[std::ffi::OsStr::new("HTTPS_PROXY")],
+            Some(std::ffi::OsStr::new("127.0.0.1:8080"))
+        );
+    }
+
+    #[test]
+    fn build_command_errors_when_binary_missing() {
+        let adapter = ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
+        let result = adapter.build_launch_command(&[], "agent-1", None, None);
+        assert!(matches!(result, Err(AdapterError::ToolNotFound)));
+    }
+
+    // ── list_mcp_servers ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_when_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter = ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_parses_global_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                    },
+                    "search": {
+                        "command": "node",
+                        "args": ["search-server.js"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let adapter = ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let mut servers = adapter.list_mcp_servers().await.unwrap();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "filesystem");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(
+            servers[0].args,
+            ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+        );
+        assert_eq!(servers[1].name, "search");
+        assert_eq!(servers[1].command, "node");
+        assert_eq!(servers[1].args, ["search-server.js"]);
     }
 }
