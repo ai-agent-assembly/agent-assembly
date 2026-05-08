@@ -319,4 +319,47 @@ mod tests {
         assert_eq!(info.kind, DevToolKind::GitHubCopilot);
         assert_eq!(info.version, Some("1.226.0".to_string()));
     }
+
+    // Exercises default_candidate_dirs() and the None branch of resolve_candidate_dirs().
+    // nextest runs each test in its own process, so set_var is safe here.
+    #[test]
+    fn detect_uses_home_env_via_default_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let vscode_ext = tmp.path().join(".vscode").join("extensions");
+        std::fs::create_dir_all(&vscode_ext).unwrap();
+        make_extension(&vscode_ext, "github.copilot", "1.226.0");
+        std::env::set_var("HOME", tmp.path());
+        let info = CopilotAdapter::new().detect().expect("found via default dirs");
+        assert_eq!(info.kind, DevToolKind::GitHubCopilot);
+        assert_eq!(info.version, Some("1.226.0".to_string()));
+    }
+
+    // Exercises the `None => continue` branch when package.json is absent.
+    #[test]
+    fn find_copilot_extension_skips_dir_without_package_json() {
+        let tmp = TempDir::new().unwrap();
+        // Looks like a copilot ext dir but has no package.json.
+        std::fs::create_dir_all(tmp.path().join("github.copilot-broken")).unwrap();
+        // A good extension that should still be found.
+        make_extension(tmp.path(), "github.copilot", "1.228.0");
+        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
+        let info = adapter.detect().expect("good extension found despite broken sibling");
+        assert_eq!(info.version, Some("1.228.0".to_string()));
+    }
+
+    // Exercises the `Err(_) => continue` branch when the version string is not valid semver.
+    #[test]
+    fn find_copilot_extension_skips_invalid_semver_version() {
+        let tmp = TempDir::new().unwrap();
+        // Extension with a non-semver version string.
+        let bad = tmp.path().join("github.copilot-nightly");
+        std::fs::create_dir_all(&bad).unwrap();
+        let pkg = serde_json::json!({ "name": "github.copilot", "version": "nightly-build" });
+        std::fs::write(bad.join("package.json"), pkg.to_string()).unwrap();
+        // A good extension with a proper semver version.
+        make_extension(tmp.path(), "github.copilot", "1.228.0");
+        let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
+        let info = adapter.detect().expect("good extension found despite invalid-semver sibling");
+        assert_eq!(info.version, Some("1.228.0".to_string()));
+    }
 }
