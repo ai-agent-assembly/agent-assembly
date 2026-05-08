@@ -108,7 +108,11 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_returns_err() {
-        let policy = PolicyDocument { version: 1, name: "test".into(), rules: vec![] };
+        let policy = PolicyDocument {
+            version: 1,
+            name: "test".into(),
+            rules: vec![],
+        };
         assert!(CopilotAdapter.generate_managed_settings(&policy).await.is_err());
     }
 
@@ -136,7 +140,11 @@ mod tests {
     fn read_package_json_version_returns_some_for_valid_json() {
         let tmp = std::env::temp_dir().join("aaasm_copilot_test_ext");
         std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("package.json"), r#"{"version":"1.234.5","name":"github.copilot"}"#).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"version":"1.234.5","name":"github.copilot"}"#,
+        )
+        .unwrap();
         let result = read_package_json_version(&tmp);
         let _ = std::fs::remove_dir_all(&tmp);
         assert_eq!(result, Some("1.234.5".to_string()));

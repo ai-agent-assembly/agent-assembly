@@ -98,7 +98,11 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_returns_err() {
-        let policy = PolicyDocument { version: 1, name: "test".into(), rules: vec![] };
+        let policy = PolicyDocument {
+            version: 1,
+            name: "test".into(),
+            rules: vec![],
+        };
         assert!(CodexAdapter.generate_managed_settings(&policy).await.is_err());
     }
 

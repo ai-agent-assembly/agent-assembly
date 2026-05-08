@@ -98,7 +98,11 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_returns_err() {
-        let policy = PolicyDocument { version: 1, name: "test".into(), rules: vec![] };
+        let policy = PolicyDocument {
+            version: 1,
+            name: "test".into(),
+            rules: vec![],
+        };
         assert!(ClaudeCodeAdapter.generate_managed_settings(&policy).await.is_err());
     }
 
@@ -109,7 +113,9 @@ mod tests {
 
     #[test]
     fn build_launch_command_returns_err() {
-        assert!(ClaudeCodeAdapter.build_launch_command(&[], "agent-1", None, None).is_err());
+        assert!(ClaudeCodeAdapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .is_err());
     }
 
     #[tokio::test]
