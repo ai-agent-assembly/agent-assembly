@@ -407,6 +407,11 @@ impl BudgetTracker {
         status
     }
 
+    /// Return the current spend state for a specific team, or `None` if the team has no spend.
+    pub fn team_state(&self, team_id: &str) -> Option<BudgetState> {
+        self.team_budgets.get(team_id).map(|s| s.clone())
+    }
+
     /// Return a snapshot of the current global (all-agents combined) budget state.
     pub fn global_state(&self) -> BudgetState {
         self.global
