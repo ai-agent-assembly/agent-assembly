@@ -23,7 +23,7 @@ networks:
 services:
   gateway-mock:
     image: python:3.12-alpine
-    command: >
+    command: |
       python3 -c "
       import json, http.server, threading
 
@@ -61,7 +61,7 @@ services:
     # Listens on port 80 pretending to be example.com.
     # Records every HTTP request it receives so the test can assert that
     # no request leaked through the proxy.
-    command: >
+    command: |
       python3 -c "
       import json, http.server
 

@@ -128,7 +128,9 @@ jobs:
         # testable userspace logic. Excluded from coverage.
         # aa-ffi-python requires Python development headers for linking when
         # --all-features activates extension-module. Excluded from coverage.
-        run: cargo llvm-cov --all-features --workspace --codecov --output-path codecov.xml --exclude aa-ebpf --exclude aa-ffi-python
+        # RUST_TEST_THREADS=1: docker-integration tests bind fixed host ports and share
+        # a Docker project namespace; parallel execution causes container-name conflicts.
+        run: RUST_TEST_THREADS=1 cargo llvm-cov --all-features --workspace --codecov --output-path codecov.xml --exclude aa-ebpf --exclude aa-ffi-python
       - name: Upload to Codecov
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         with:
