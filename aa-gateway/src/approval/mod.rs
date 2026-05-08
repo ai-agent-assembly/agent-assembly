@@ -4,4 +4,4 @@ pub mod escalation;
 pub mod router;
 pub mod routing_config;
 
-pub use routing_config::{RoutingConfigStore, TeamRoutingConfig, default_routing_config_path};
+pub use routing_config::{default_routing_config_path, RoutingConfigStore, TeamRoutingConfig};

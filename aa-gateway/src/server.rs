@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 
 use aa_runtime::approval::ApprovalQueue;
 
-use crate::approval::escalation::{EscalationScheduler, EscalationEvent};
+use crate::approval::escalation::{EscalationEvent, EscalationScheduler};
 use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer};
 use crate::budget::{BudgetAlert, BudgetTracker};
 

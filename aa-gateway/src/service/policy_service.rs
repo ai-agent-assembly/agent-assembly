@@ -170,11 +170,7 @@ impl PolicyServiceImpl {
 
     /// Build an [`ApprovalRequest`] from a gRPC request, the policy timeout,
     /// and an optional team identifier resolved from the agent registry.
-    fn build_approval_request(
-        req: &CheckActionRequest,
-        timeout_secs: u32,
-        team_id: Option<String>,
-    ) -> ApprovalRequest {
+    fn build_approval_request(req: &CheckActionRequest, timeout_secs: u32, team_id: Option<String>) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
