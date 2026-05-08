@@ -278,20 +278,7 @@ mod tests {
             mode: FileMode::Read,
         };
         let result = evaluate_single_doc(&doc, &ctx, &action);
-        assert_ne!(
-            result,
-            PolicyDecision::Deny {
-                reason: "capability denied by policy".into(),
-                source_scope: PolicyScope::Global,
-            }
-        );
-        assert_ne!(
-            result,
-            PolicyDecision::Deny {
-                reason: "capability not in allow list".into(),
-                source_scope: PolicyScope::Global,
-            }
-        );
+        assert_eq!(result, PolicyDecision::Allow);
     }
 
     #[test]
@@ -334,20 +321,6 @@ mod tests {
             args: "{}".into(),
         };
         let result = evaluate_single_doc(&doc, &ctx, &action);
-        // Must not be denied by capability stage
-        assert_ne!(
-            result,
-            PolicyDecision::Deny {
-                reason: "capability denied by policy".into(),
-                source_scope: PolicyScope::Global,
-            }
-        );
-        assert_ne!(
-            result,
-            PolicyDecision::Deny {
-                reason: "capability not in allow list".into(),
-                source_scope: PolicyScope::Global,
-            }
-        );
+        assert_eq!(result, PolicyDecision::Allow);
     }
 }

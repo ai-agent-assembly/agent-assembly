@@ -481,7 +481,8 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
-        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7) always run.
+        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7),
+        // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
         let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
@@ -503,10 +504,11 @@ impl PolicyEngine {
             };
         }
 
-        // Cascade capability guard: re-check the merged capability set.
-        // Per-doc stage 3.5 in evaluate_single_doc() catches intra-doc denials;
-        // this guard catches cross-doc scenarios and exposes the merged set
-        // for dev-tool wiring (AAASM-1046).
+        // Cascade capability guard: checks the allow-list intersection case where no single
+        // doc denies the capability but the merged allow-list (after merge_capabilities)
+        // does not contain it. Per-doc stage 3.5 handles intra-doc denials; this guard
+        // handles cross-doc scenarios. The merged set is also used for dev-tool wiring
+        // (AAASM-1046).
         let merged_caps = Self::collect_merged_capabilities(&cascade);
         if let Some(cap) = aa_core::action_to_capability(action) {
             if merged_caps.deny.contains(&cap) {
@@ -649,7 +651,7 @@ impl PolicyEngine {
     ///
     /// Returns an empty `CapabilitySet` (no restrictions) when no policy in the
     /// cascade defines a `capabilities` block.
-    pub fn collect_merged_capabilities(cascade: &[std::sync::Arc<PolicyDocument>]) -> aa_core::CapabilitySet {
+    pub(crate) fn collect_merged_capabilities(cascade: &[std::sync::Arc<PolicyDocument>]) -> aa_core::CapabilitySet {
         cascade.iter().fold(aa_core::CapabilitySet::default(), |acc, doc| {
             if let Some(caps) = &doc.capabilities {
                 aa_core::merge_capabilities(&acc, caps)
