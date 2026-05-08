@@ -55,6 +55,10 @@ pub struct BudgetTracker {
     pricing: PricingTable,
     daily_limit_usd: Option<Decimal>,
     monthly_limit_usd: Option<Decimal>,
+    /// Per-team daily spend limit. Applied to each team independently.
+    team_daily_limit_usd: Option<Decimal>,
+    /// Per-team monthly spend limit. Applied to each team independently.
+    team_monthly_limit_usd: Option<Decimal>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -75,6 +79,8 @@ impl BudgetTracker {
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             alert_tx,
             timezone,
         }
@@ -98,9 +104,23 @@ impl BudgetTracker {
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             alert_tx,
             timezone,
         }
+    }
+
+    /// Set the per-team daily spend limit in USD. Enforced in `record_cost` for every team.
+    pub fn with_team_daily_limit(mut self, limit: Decimal) -> Self {
+        self.team_daily_limit_usd = Some(limit);
+        self
+    }
+
+    /// Set the per-team monthly spend limit in USD. Enforced in `record_cost` for every team.
+    pub fn with_team_monthly_limit(mut self, limit: Decimal) -> Self {
+        self.team_monthly_limit_usd = Some(limit);
+        self
     }
 
     /// Create a tracker pre-loaded with persisted state (call after `load_from_disk`).
@@ -132,6 +152,8 @@ impl BudgetTracker {
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             alert_tx,
             timezone,
         }
@@ -170,6 +192,8 @@ impl BudgetTracker {
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             alert_tx,
             timezone,
         }
@@ -230,9 +254,9 @@ impl BudgetTracker {
     /// rather than raw token counts.
     ///
     /// Fires 80%/95% threshold alerts on the broadcast channel and updates the
-    /// global and team spend accumulators.
-    pub fn record_raw_spend(&self, agent_id: AgentId, team_id: Option<&str>, amount_usd: Decimal) {
-        self.record_cost(agent_id, team_id, amount_usd);
+    /// global and team spend accumulators. Returns the resulting [`BudgetStatus`].
+    pub fn record_raw_spend(&self, agent_id: AgentId, team_id: Option<&str>, amount_usd: Decimal) -> BudgetStatus {
+        self.record_cost(agent_id, team_id, amount_usd)
     }
 
     /// Record token usage and return the resulting [`BudgetStatus`].
@@ -252,7 +276,7 @@ impl BudgetTracker {
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
     fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
-        let has_monthly = self.monthly_limit_usd.is_some();
+        let has_monthly = self.monthly_limit_usd.is_some() || self.team_monthly_limit_usd.is_some();
 
         self.per_agent
             .entry(agent_id)
@@ -290,6 +314,26 @@ impl BudgetTracker {
                     }
                     s
                 });
+
+            // Enforce team monthly limit before agent/global checks.
+            if let Some(team_monthly_limit) = self.team_monthly_limit_usd {
+                if let Some(team_state) = self.team_budgets.get(tid) {
+                    if let Some(team_monthly) = team_state.monthly_spent_usd {
+                        if compute_status(team_monthly, team_monthly_limit) == BudgetStatus::LimitExceeded {
+                            return BudgetStatus::LimitExceeded;
+                        }
+                    }
+                }
+            }
+
+            // Enforce team daily limit before agent/global checks.
+            if let Some(team_daily_limit) = self.team_daily_limit_usd {
+                if let Some(team_state) = self.team_budgets.get(tid) {
+                    if compute_status(team_state.spent_usd, team_daily_limit) == BudgetStatus::LimitExceeded {
+                        return BudgetStatus::LimitExceeded;
+                    }
+                }
+            }
         }
 
         let (spent, monthly_spent) = self
@@ -795,5 +839,63 @@ mod tests {
         });
         // After month change, monthly spend resets — not exceeded
         assert!(!t.check_monthly(&id, "5.00".parse().unwrap()));
+    }
+
+    // ── Team limit enforcement (AAASM-1007) ────────────────────────────
+
+    fn tracker_with_team_daily_limit(daily: &str) -> BudgetTracker {
+        BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_team_daily_limit(daily.parse().unwrap())
+    }
+
+    fn tracker_with_team_monthly_limit(monthly: &str) -> BudgetTracker {
+        BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_team_monthly_limit(monthly.parse().unwrap())
+    }
+
+    #[test]
+    fn team_daily_limit_exceeded_blocks_agent_in_same_team() {
+        let t = tracker_with_team_daily_limit("5.00");
+        let id = agent(50);
+        // Spend $5.00 — exactly at limit
+        let status = t.record_raw_spend(id, Some("team-alpha"), "5.00".parse().unwrap());
+        assert_eq!(status, BudgetStatus::LimitExceeded);
+    }
+
+    #[test]
+    fn team_daily_limit_not_exceeded_before_threshold() {
+        let t = tracker_with_team_daily_limit("10.00");
+        let id = agent(51);
+        let status = t.record_raw_spend(id, Some("team-alpha"), "3.00".parse().unwrap());
+        assert!(matches!(status, BudgetStatus::WithinBudget { .. }));
+    }
+
+    #[test]
+    fn team_daily_limit_aggregates_across_multiple_agents() {
+        let t = tracker_with_team_daily_limit("5.00");
+        let id_a = agent(52);
+        let id_b = agent(53);
+        // Agent A spends $3.00
+        t.record_raw_spend(id_a, Some("team-beta"), "3.00".parse().unwrap());
+        // Agent B spends $2.00 — pushes team total to $5.00 (exactly at limit)
+        let status = t.record_raw_spend(id_b, Some("team-beta"), "2.00".parse().unwrap());
+        assert_eq!(status, BudgetStatus::LimitExceeded);
+    }
+
+    #[test]
+    fn team_monthly_limit_exceeded_blocks() {
+        let t = tracker_with_team_monthly_limit("10.00");
+        let id = agent(54);
+        let status = t.record_raw_spend(id, Some("team-gamma"), "10.00".parse().unwrap());
+        assert_eq!(status, BudgetStatus::LimitExceeded);
+    }
+
+    #[test]
+    fn team_with_no_team_id_ignores_team_limits() {
+        let t = tracker_with_team_daily_limit("1.00");
+        let id = agent(55);
+        // No team_id — team limit should not apply
+        let status = t.record_raw_spend(id, None, "100.00".parse().unwrap());
+        assert!(matches!(status, BudgetStatus::WithinBudget { .. }));
     }
 }
