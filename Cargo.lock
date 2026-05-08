@@ -7,6 +7,7 @@ name = "aa-api"
 version = "0.0.1"
 dependencies = [
  "aa-core",
+ "aa-devtool",
  "aa-devtool-saas",
  "aa-gateway",
  "aa-runtime",
@@ -44,6 +45,7 @@ name = "aa-cli"
 version = "0.0.1"
 dependencies = [
  "aa-core",
+ "aa-devtool",
  "aa-devtool-windsurf",
  "aa-gateway",
  "anyhow",
@@ -86,6 +88,19 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aa-devtool"
+version = "0.0.1"
+dependencies = [
+ "aa-core",
+ "async-trait",
+ "dirs",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
