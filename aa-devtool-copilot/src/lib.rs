@@ -174,7 +174,10 @@ fn copilot_enabled(policy: &PolicyDocument) -> bool {
 
 /// `chat.tools.autoApprove` — `false` when any rule requires human approval.
 fn auto_approve(policy: &PolicyDocument) -> bool {
-    !policy.rules.iter().any(|r| r.decision == PolicyDecision::RequireApproval)
+    !policy
+        .rules
+        .iter()
+        .any(|r| r.decision == PolicyDecision::RequireApproval)
 }
 
 /// `chat.agent.maxRequests` — from `dev_tools.copilot.max_requests:<N>` rule,
@@ -196,7 +199,11 @@ fn mcp_require_approval(policy: &PolicyDocument) -> &'static str {
     let needs = policy.rules.iter().any(|r| {
         r.action_pattern.starts_with(MCP_TOOL_PATTERN_PREFIX) && r.decision == PolicyDecision::RequireApproval
     });
-    if needs { "always" } else { "never" }
+    if needs {
+        "always"
+    } else {
+        "never"
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -499,7 +506,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(v["github.copilot.enable"]["*"], true, "copilot not disabled");
-        assert_eq!(v["chat.tools.autoApprove"], false, "RequireApproval disables autoApprove");
+        assert_eq!(
+            v["chat.tools.autoApprove"], false,
+            "RequireApproval disables autoApprove"
+        );
         assert_eq!(v["chat.agent.maxRequests"], 10u32, "max_requests override");
         assert_eq!(v["chat.mcp.requireApproval"], "never", "no mcp RequireApproval rule");
         assert_eq!(v["chat.mcp.deny"], serde_json::json!(["github:push"]));
