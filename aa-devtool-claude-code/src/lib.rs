@@ -464,4 +464,41 @@ mod tests {
         let adapter = ClaudeCodeAdapter::with_overrides(None, Some(tmp.path().to_path_buf()));
         assert!(adapter.dot_claude_marker().is_none());
     }
+
+    // ── apply_settings / apply_mcp_governance (adapter wiring) ─────────────
+
+    struct StubSettingsPathResolver(PathBuf);
+
+    impl apply::SettingsPathResolver for StubSettingsPathResolver {
+        fn resolve(&self) -> Result<PathBuf, AdapterError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_settings_writes_to_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path.clone())));
+        let settings = r#"{"permissionMode":"acceptEdits","permissions":{"allow":["Bash"],"deny":[]},"enabledMcpjsonServers":[],"disabledMcpjsonServers":[]}"#;
+        adapter.apply_settings(settings).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["permissionMode"], "acceptEdits");
+    }
+
+    #[tokio::test]
+    async fn apply_mcp_governance_writes_to_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path.clone())));
+        adapter
+            .apply_mcp_governance(&["filesystem".to_string()], &["search".to_string()])
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["enabledMcpjsonServers"], serde_json::json!(["filesystem"]));
+        assert_eq!(v["disabledMcpjsonServers"], serde_json::json!(["search"]));
+    }
 }

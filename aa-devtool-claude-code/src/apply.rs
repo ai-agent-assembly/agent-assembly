@@ -70,8 +70,8 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
     };
 
     // Parse the incoming AA-managed settings.
-    let incoming: serde_json::Value = serde_json::from_str(settings_json)
-        .map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
+    let incoming: serde_json::Value =
+        serde_json::from_str(settings_json).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
 
     // Splice only the managed keys from incoming into the base object.
     if let (Some(base_obj), Some(inc_obj)) = (base.as_object_mut(), incoming.as_object()) {
@@ -101,11 +101,7 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
 /// Replaces `enabledMcpjsonServers` and `disabledMcpjsonServers` with the
 /// supplied slices. All other keys in the existing file are preserved.
 /// Idempotent: running twice with the same arguments produces the same file.
-pub(crate) fn apply_mcp_governance_at(
-    path: &Path,
-    allowed: &[String],
-    denied: &[String],
-) -> Result<(), AdapterError> {
+pub(crate) fn apply_mcp_governance_at(path: &Path, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
     let mcp_json = serde_json::json!({
         "enabledMcpjsonServers": allowed,
         "disabledMcpjsonServers": denied,
