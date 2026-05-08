@@ -141,7 +141,6 @@ pub struct AgentRegistry {
     /// Secondary index mapping team_id → set of agent registry keys.
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
-    #[allow(dead_code)]
     registration_lock: Mutex<()>,
 }
 
@@ -158,7 +157,6 @@ impl AgentRegistry {
 
     /// Validate that registering `agent_id` with `parent_key` does not introduce a cycle
     /// or exceed `max_depth`. Must be called while holding `registration_lock`.
-    #[allow(dead_code)]
     pub(crate) fn validate_lineage(
         &self,
         agent_id: &[u8; 16],
@@ -192,26 +190,34 @@ impl AgentRegistry {
     /// Insert a new agent record. Returns an error if the ID is already registered.
     pub fn register(&self, record: AgentRecord) -> Result<(), RegistryError> {
         use dashmap::mapref::entry::Entry;
-        // Capture before moving record into the map.
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
 
-        match self.agents.entry(record.agent_id) {
-            Entry::Occupied(_) => return Err(RegistryError::AlreadyRegistered(record.agent_id)),
-            Entry::Vacant(v) => {
-                v.insert(record);
-            }
-        }
+        {
+            // Hold registration_lock across validate+insert to prevent TOCTOU races where
+            // two concurrent registrations could each pass cycle detection independently
+            // but together form a cycle once both are inserted.
+            let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Child is now inserted; update parent's children list.
+            if let Some(pk) = parent_key {
+                self.validate_lineage(&agent_id, &pk, DEFAULT_MAX_AGENT_DEPTH)?;
+            }
+
+            match self.agents.entry(agent_id) {
+                Entry::Occupied(_) => return Err(RegistryError::AlreadyRegistered(agent_id)),
+                Entry::Vacant(v) => {
+                    v.insert(record);
+                }
+            }
+        } // registration_lock released here
+
+        // Post-insert: update parent's children list and team index (safe outside lock).
         if let Some(pk) = parent_key {
             if let Some(mut parent) = self.agents.get_mut(&pk) {
                 parent.children.push(agent_id);
             }
         }
-
-        // Maintain team_index.
         if let Some(tid) = team_id {
             self.team_index.entry(tid).or_default().insert(agent_id);
         }
