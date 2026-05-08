@@ -1695,6 +1695,7 @@ mod tests {
             budget: None,
             data: None,
             approval_timeout_secs: 300,
+            approval_policy: None,
             tools: HashMap::new(),
             capabilities: caps,
         }
