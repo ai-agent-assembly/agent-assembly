@@ -8,7 +8,7 @@ use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
-use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, traces};
+use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, topology, traces};
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
 #[derive(OpenApi)]
@@ -34,6 +34,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, trac
         (name = "alerts", description = "Governance alerts"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
+        (name = "topology", description = "Agent topology — tree, team, lineage, and statistics queries"),
     ),
     paths(
         crate::routes::health::health,
@@ -54,6 +55,11 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, trac
         alerts::list_alerts,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
+        topology::get_overview,
+        topology::get_tree,
+        topology::get_team,
+        topology::get_lineage,
+        topology::get_stats,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -79,6 +85,14 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, trac
         auth::TokenRequest,
         auth::TokenResponse,
         crate::auth::scope::Scope,
+        topology::TopologyOverview,
+        topology::TeamSummary,
+        topology::AgentNode,
+        topology::AgentTree,
+        topology::TeamTopology,
+        topology::AgentLineage,
+        topology::LineageStep,
+        topology::TopologyStats,
         GovernanceEvent,
         EventType,
         ViolationPayload,

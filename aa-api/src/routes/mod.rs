@@ -56,6 +56,12 @@ pub fn v1_router() -> Router {
         )
         // Tools
         .route("/tools", get(tools::list_tools))
+        // Topology
+        .route("/topology/overview", get(topology::get_overview))
+        .route("/topology/tree/{root_id}", get(topology::get_tree))
+        .route("/topology/team/{team_id}", get(topology::get_team))
+        .route("/topology/lineage/{agent_id}", get(topology::get_lineage))
+        .route("/topology/stats", get(topology::get_stats))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.
