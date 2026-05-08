@@ -18,7 +18,9 @@ use std::process::Command;
 use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
 use async_trait::async_trait;
 
+mod approval;
 mod sandbox;
+use approval::map_policy_to_approval;
 use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
@@ -194,11 +196,13 @@ impl DevToolAdapter for CodexAdapter {
         let sandbox_mode = map_policy_to_sandbox_mode(policy);
         let allowed_domains = network_allow_list(policy);
         let blocked_domains = network_block_list(policy);
+        let approval_policy = map_policy_to_approval(policy);
 
         let settings = serde_json::json!({
             "sandbox_mode": sandbox_mode,
             "allowed_domains": allowed_domains,
             "blocked_domains": blocked_domains,
+            "approval_policy": approval_policy,
         });
         serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
