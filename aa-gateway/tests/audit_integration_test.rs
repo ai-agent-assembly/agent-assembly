@@ -364,13 +364,13 @@ async fn audit_service_populates_lineage_from_registry() {
     let event = AuditEvent {
         event_id: "evt-001".into(),
         agent_id: Some(proto_agent_id),
-        occurred_at: Some(Timestamp { unix_ms: 1_700_000_000_000 }),
+        occurred_at: Some(Timestamp {
+            unix_ms: 1_700_000_000_000,
+        }),
         ..Default::default()
     };
 
-    let req = tonic::Request::new(ReportEventsRequest {
-        events: vec![event],
-    });
+    let req = tonic::Request::new(ReportEventsRequest { events: vec![event] });
     svc.report_events(req).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -384,8 +384,5 @@ async fn audit_service_populates_lineage_from_registry() {
         "spawned_by_tool from registry"
     );
     assert!(entry.root_agent_id().is_some(), "root_agent_id from registry");
-    assert!(
-        entry.verify_integrity(),
-        "lineage-enriched entry must verify"
-    );
+    assert!(entry.verify_integrity(), "lineage-enriched entry must verify");
 }

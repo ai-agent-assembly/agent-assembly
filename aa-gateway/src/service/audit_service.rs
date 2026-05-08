@@ -124,7 +124,16 @@ impl AuditServiceImpl {
 
         let mut last_hash = self.last_hash.lock().await;
 
-        let entry = AuditEntry::new_with_lineage(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash, lineage);
+        let entry = AuditEntry::new_with_lineage(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            *last_hash,
+            lineage,
+        );
 
         *last_hash = *entry.entry_hash();
         drop(last_hash);
