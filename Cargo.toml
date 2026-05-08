@@ -13,6 +13,7 @@ members = [
     "aa-gateway",
     "aa-api",
     "aa-cli",
+    "aa-devtool-codex",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
 ]

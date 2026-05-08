@@ -87,6 +87,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-devtool-codex"
+version = "0.0.1"
+dependencies = [
+ "aa-core",
+ "async-trait",
+ "which",
+]
+
+[[package]]
 name = "aa-devtool-sample-myeditor"
 version = "0.0.1"
 dependencies = [
