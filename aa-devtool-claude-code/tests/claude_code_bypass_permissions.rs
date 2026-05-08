@@ -211,10 +211,30 @@ mod docker_tests {
     use std::process::{Command, Output};
     use std::time::Duration;
 
-    // Path to the docker-compose file, relative to the workspace root.
-    const COMPOSE_FILE: &str = "ci/integration/bypass-permissions/docker-compose.yml";
+    // Absolute path to the docker-compose file, resolved at compile time from
+    // the crate manifest directory (aa-devtool-claude-code/) one level up to
+    // the workspace root. Using env!("CARGO_MANIFEST_DIR") avoids cwd-relative
+    // path issues: cargo nextest and cargo llvm-cov both set cwd to the crate
+    // directory, not the workspace root.
+    const COMPOSE_FILE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../ci/integration/bypass-permissions/docker-compose.yml"
+    );
     // Project name used to namespace containers so concurrent test runs don't collide.
     const COMPOSE_PROJECT: &str = "aaasm-bypass-test";
+
+    /// Returns true when `docker compose` is available on this runner.
+    ///
+    /// Coverage and SonarQube jobs compile the `docker-integration` feature via
+    /// `--all-features` but have no Docker daemon. This guard lets those tests
+    /// exit cleanly without marking the job as failed.
+    fn docker_available() -> bool {
+        Command::new("docker")
+            .args(["compose", "version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 
     /// Run a docker compose command and return its output.
     fn compose(args: &[&str]) -> Output {
@@ -323,6 +343,10 @@ mod docker_tests {
 
     #[test]
     fn proxy_intercepts_https_traffic_from_claude_stub() {
+        if !docker_available() {
+            eprintln!("docker not available — skipping docker test");
+            return;
+        }
         // Proves: the proxy layer observes all outbound HTTPS from the Claude stub,
         // independent of the --bypassPermissions flag.
         //
@@ -373,6 +397,10 @@ mod docker_tests {
 
     #[test]
     fn network_isolation_prevents_direct_access_to_stub_upstream() {
+        if !docker_available() {
+            eprintln!("docker not available — skipping docker test");
+            return;
+        }
         // Proves: the Docker network topology correctly forces all traffic from
         // claude-stub through aa-proxy. claude-stub cannot reach stub-upstream directly.
         //
@@ -402,6 +430,10 @@ mod docker_tests {
     #[ignore = "requires proxy deny capability: aa-proxy must return 403 when policy denies the request. \
                 Track implementation separately and remove #[ignore] when done."]
     fn stub_upstream_receives_zero_requests_when_policy_denies() {
+        if !docker_available() {
+            eprintln!("docker not available — skipping docker test");
+            return;
+        }
         // Once proxy deny is implemented: policy denies outbound to example.com,
         // so the request is blocked at aa-proxy and never reaches stub-upstream.
         let _guard = ComposeGuard::up();
@@ -420,6 +452,10 @@ mod docker_tests {
     #[ignore = "requires gateway-proxy audit event emission: aa-proxy must POST a policy_violation event \
                 to the gateway when a request is denied. Track implementation separately."]
     fn gateway_receives_policy_violation_audit_event() {
+        if !docker_available() {
+            eprintln!("docker not available — skipping docker test");
+            return;
+        }
         // Once gateway-proxy sync is implemented: gateway-mock must receive a
         // policy_violation event with agent=claude-code and flag=--bypassPermissions.
         let _guard = ComposeGuard::up();
