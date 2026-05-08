@@ -1,0 +1,24 @@
+---
+source: aa-devtool-claude-code/src/settings.rs
+assertion_line: 147
+expression: json
+---
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read"
+    ],
+    "deny": [
+      "Edit",
+      "WebFetch"
+    ]
+  },
+  "permissionMode": "plan",
+  "enabledMcpjsonServers": [
+    "filesystem"
+  ],
+  "disabledMcpjsonServers": [
+    "search"
+  ]
+}
