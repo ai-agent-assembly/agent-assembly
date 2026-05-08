@@ -18,6 +18,7 @@ members = [
     "examples/aa-devtool-sample-myeditor",
     "aa-devtool-windsurf",
     "aa-devtool-copilot",
+    "aa-devtool-claude-code",
 ]
 resolver = "2"
 

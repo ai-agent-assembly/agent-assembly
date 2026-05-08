@@ -100,6 +100,18 @@ impl TracepointManager {
     }
 }
 
+impl Drop for TracepointManager {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if !self._links.is_empty() {
+            tracing::debug!(
+                count = self._links.len(),
+                "TracepointManager dropping, detaching tracepoints"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,17 +136,5 @@ mod tests {
         // This test documents the API contract: detach is a no-op stub.
         // Full lifecycle testing happens in the integration test on Linux.
         let _: fn(&mut TracepointManager) = TracepointManager::detach;
-    }
-}
-
-impl Drop for TracepointManager {
-    fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        if !self._links.is_empty() {
-            tracing::debug!(
-                count = self._links.len(),
-                "TracepointManager dropping, detaching tracepoints"
-            );
-        }
     }
 }
