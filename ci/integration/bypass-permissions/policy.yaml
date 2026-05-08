@@ -1,0 +1,21 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: bypass-permissions-test
+  description: >
+    Deny outbound network access to example.com.
+    Used by the bypass-permissions integration test to prove that
+    AAASM's proxy enforcement layer blocks traffic even when Claude Code
+    is launched with --bypassPermissions.
+spec:
+  scope: global
+  rules:
+    - id: deny-example-com
+      match:
+        actions: ["network_outbound"]
+        resources: ["*.example.com", "example.com"]
+      effect: deny
+      audit: true
+      audit_fields:
+        agent: "claude-code"
+        flag: "--bypassPermissions"

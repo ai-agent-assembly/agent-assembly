@@ -1,0 +1,155 @@
+# bypass-permissions integration test harness
+#
+# Proves that AAASM's proxy enforcement layer blocks outbound traffic even
+# when Claude Code is launched with --bypassPermissions.
+#
+# Services:
+#   aa-proxy       - built from source; enforces the deny policy for example.com
+#   gateway-mock   - lightweight HTTP server recording audit events posted by aa-proxy
+#   stub-upstream  - stands in for example.com; records any HTTP requests it receives
+#   claude-stub    - Alpine + curl acting as Claude Code with --bypassPermissions;
+#                    routes all HTTPS through aa-proxy and attempts curl https://example.com
+#
+# Usage (standalone):
+#   docker compose -f ci/integration/bypass-permissions/docker-compose.yml up --build
+#
+# In CI the test binary (aa-devtool-claude-code, feature docker-integration) drives
+# docker compose programmatically and asserts on the results.
+
+networks:
+  bypass-test-net:
+    driver: bridge
+
+services:
+  gateway-mock:
+    image: python:3.12-alpine
+    command: >
+      python3 -c "
+      import json, http.server, threading
+
+      events = []
+
+      class H(http.server.BaseHTTPRequestHandler):
+          def do_POST(self):
+              l = int(self.headers.get('Content-Length', 0))
+              body = self.rfile.read(l)
+              events.append(json.loads(body))
+              self.send_response(200)
+              self.end_headers()
+          def do_GET(self):
+              self.send_response(200)
+              self.send_header('Content-Type', 'application/json')
+              self.end_headers()
+              self.wfile.write(json.dumps(events).encode())
+          def log_message(self, *a): pass
+
+      http.server.HTTPServer(('0.0.0.0', 9000), H).serve_forever()
+      "
+    networks:
+      - bypass-test-net
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000 || true"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  stub-upstream:
+    image: python:3.12-alpine
+    # Listens on port 80 pretending to be example.com.
+    # Records every HTTP request it receives so the test can assert that
+    # no request leaked through the proxy.
+    command: >
+      python3 -c "
+      import json, http.server
+
+      received = []
+
+      class H(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              received.append({'method': self.command, 'path': self.path})
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b'stub-upstream response')
+          def do_POST(self): self.do_GET()
+          def log_message(self, *a): pass
+
+      class Probe(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.send_header('Content-Type', 'application/json')
+              self.end_headers()
+              self.wfile.write(json.dumps(received).encode())
+          def log_message(self, *a): pass
+
+      import threading, socketserver
+      t = threading.Thread(
+          target=lambda: socketserver.TCPServer(('0.0.0.0', 8181), Probe).serve_forever(),
+          daemon=True)
+      t.start()
+      http.server.HTTPServer(('0.0.0.0', 80), H).serve_forever()
+      "
+    networks:
+      bypass-test-net:
+        aliases:
+          - example.com
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8181 || true"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  aa-proxy:
+    build:
+      context: ../../..
+      dockerfile: aa-proxy/Dockerfile
+    environment:
+      AA_GATEWAY_URL: "http://gateway-mock:9000"
+      AA_POLICY_FILE: "/etc/aa/policy.yaml"
+      AA_LISTEN_ADDR: "0.0.0.0:8080"
+    volumes:
+      - ./policy.yaml:/etc/aa/policy.yaml:ro
+    networks:
+      - bypass-test-net
+    ports:
+      - "8080:8080"
+    depends_on:
+      gateway-mock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ready || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  claude-stub:
+    # Simulates Claude Code launched with --bypassPermissions.
+    # Routes HTTPS traffic through aa-proxy and attempts to reach example.com.
+    # The --bypassPermissions flag bypasses Claude's own checks but AAASM's
+    # proxy enforcement is independent and must still block the request.
+    image: alpine:latest
+    command: >
+      sh -c "
+        apk add --no-cache curl ca-certificates &&
+        echo 'Claude Code stub: attempting curl https://example.com with --bypassPermissions' &&
+        curl -v --proxy http://aa-proxy:8080 --insecure https://example.com 2>&1 || true &&
+        echo 'CLAUDE_STUB_DONE'
+      "
+    environment:
+      # Mirrors the environment aa run claude -- --bypassPermissions would set.
+      AA_AGENT_ID: "claude-code-test"
+      AA_BYPASS_PERMISSIONS: "true"
+      HTTPS_PROXY: "http://aa-proxy:8080"
+    networks:
+      - bypass-test-net
+    depends_on:
+      aa-proxy:
+        condition: service_healthy
+      stub-upstream:
+        condition: service_healthy
