@@ -118,12 +118,20 @@ spec:
 
 // ── Test 2 ────────────────────────────────────────────────────────────────────
 
-/// A Global-scoped policy with `capabilities.deny = {FileWrite}` must deny a
-/// `FileAccess(Write)` action through the full evaluation path.
+/// Two-policy cascade (Global: allow=[file_read]; Team: allow=[file_read], deny=[file_write])
+/// must deny a `FileAccess(Write)` action because `FileWrite` is explicitly denied at the
+/// team scope.
 #[test]
-fn full_cascade_capability_deny_blocks_file_write() {
+fn full_cascade_capability_policy_denies_disallowed_file_write() {
     let mut engine = make_engine();
-    engine.load_policy(cap_doc(PolicyScope::Global, &[], &[Capability::FileWrite]));
+    // Global policy: allow file_read only
+    engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    // Team policy: allow file_read, deny file_write
+    engine.load_policy(cap_doc(
+        PolicyScope::Team("alpha".to_string()),
+        &[Capability::FileRead],
+        &[Capability::FileWrite],
+    ));
 
     let ctx = make_ctx();
     let action = GovernanceAction::FileAccess {
@@ -134,19 +142,27 @@ fn full_cascade_capability_deny_blocks_file_write() {
     let result = engine.evaluate(&ctx, &action).decision;
     assert!(
         matches!(result, PolicyResult::Deny { .. }),
-        "expected Deny for FileWrite denied by capability policy, got {:?}",
+        "expected Deny for FileWrite denied in two-policy cascade, got {:?}",
         result
     );
 }
 
 // ── Test 3 ────────────────────────────────────────────────────────────────────
 
-/// A Global-scoped policy with `capabilities.allow = {FileRead}` must allow a
-/// `FileAccess(Read)` action.
+/// Two-policy cascade (Global: allow=[file_read]; Team: allow=[file_read], deny=[file_write])
+/// must allow a `FileAccess(Read)` action because `FileRead` is in the allow set at both
+/// scopes and is not denied anywhere.
 #[test]
-fn full_cascade_capability_allows_file_read_when_in_allow_set() {
+fn full_cascade_capability_policy_allows_permitted_file_read() {
     let mut engine = make_engine();
+    // Global policy: allow file_read only
     engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    // Team policy: allow file_read, deny file_write
+    engine.load_policy(cap_doc(
+        PolicyScope::Team("alpha".to_string()),
+        &[Capability::FileRead],
+        &[Capability::FileWrite],
+    ));
 
     let ctx = make_ctx();
     let action = GovernanceAction::FileAccess {
@@ -158,7 +174,7 @@ fn full_cascade_capability_allows_file_read_when_in_allow_set() {
     assert_eq!(
         result,
         PolicyResult::Allow,
-        "expected Allow for FileRead in allow set, got {:?}",
+        "expected Allow for FileRead in two-policy cascade allow set, got {:?}",
         result
     );
 }
@@ -269,5 +285,55 @@ fn mcp_tool_capability_denied_blocks_tool_call() {
         matches!(result, PolicyResult::Deny { .. }),
         "expected Deny: McpTool(bash) denied by capability policy, got {:?}",
         result
+    );
+}
+
+// ── Test 8 ────────────────────────────────────────────────────────────────────
+
+/// A `capabilities.allow = {McpTool("git")}` policy (no deny entries) must deny
+/// a `ToolCall` for "bash" (not in allowlist) and allow a `ToolCall` for "git"
+/// (in allowlist).
+#[test]
+fn mcp_tool_capability_allowlist_permits_only_listed_tools() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::McpTool("git".to_string())],
+        &[],
+    ));
+
+    let ctx = make_ctx();
+
+    // bash is NOT in the allowlist → must be denied
+    let bash_result = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::ToolCall {
+                name: "bash".into(),
+                args: "{}".into(),
+            },
+        )
+        .decision;
+    assert!(
+        matches!(bash_result, PolicyResult::Deny { .. }),
+        "expected Deny for bash (not in MCP tool allowlist), got {:?}",
+        bash_result
+    );
+
+    // git IS in the allowlist → must be allowed
+    let git_result = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::ToolCall {
+                name: "git".into(),
+                args: "{}".into(),
+            },
+        )
+        .decision;
+    assert_eq!(
+        git_result,
+        PolicyResult::Allow,
+        "expected Allow for git (in MCP tool allowlist), got {:?}",
+        git_result
     );
 }
