@@ -27,8 +27,7 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
         .map(|i| u8::from_str_radix(&id[i..i + 2], 16))
         .collect::<Result<Vec<u8>, _>>()
         .map_err(|_| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-                .with_detail(format!("Invalid agent ID format: {id}"))
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
         })?;
     bytes.try_into().map_err(|_| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
@@ -152,7 +151,19 @@ pub struct AgentTree {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
     /// Direct children of this agent in the delegation tree.
+    #[schema(schema_with = agent_tree_children_schema)]
     pub children: Vec<AgentTree>,
+}
+
+/// Returns a schema for `Vec<AgentTree>` using a `$ref` to break the recursive cycle.
+///
+/// Without this, utoipa's ToSchema derive recurses infinitely and overflows the stack.
+fn agent_tree_children_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, Ref};
+    ArrayBuilder::new()
+        .items(Ref::from_schema_name("AgentTree"))
+        .build()
+        .into()
 }
 
 /// All agents belonging to a single team.
@@ -194,7 +205,8 @@ pub struct LineageStep {
 
 /// Aggregate topology statistics across all registered agents.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct TopologyStats {    /// Total agents in the registry.
+pub struct TopologyStats {
+    /// Total agents in the registry.
     pub total_agents: usize,
     /// Number of root agents (depth == 0).
     pub root_agent_count: usize,
@@ -235,9 +247,7 @@ fn build_tree(
         registry
             .children_of(agent_id)
             .iter()
-            .filter_map(|child_id| {
-                build_tree(registry, child_id, remaining_depth - 1, status_filter, show_budget)
-            })
+            .filter_map(|child_id| build_tree(registry, child_id, remaining_depth - 1, status_filter, show_budget))
             .collect()
     } else {
         vec![]
@@ -283,7 +293,10 @@ pub async fn get_overview(
     let filtered: Vec<_> = all
         .iter()
         .filter(|r| {
-            params.status.as_deref().map_or(true, |f| matches_status_filter(&r.status, f))
+            params
+                .status
+                .as_deref()
+                .map_or(true, |f| matches_status_filter(&r.status, f))
                 && params.min_depth.map_or(true, |d| r.depth >= d)
         })
         .collect();
@@ -378,8 +391,7 @@ pub async fn get_tree(
         show_budget,
     )
     .ok_or_else(|| {
-        ProblemDetail::from_status(StatusCode::NOT_FOUND)
-            .with_detail(format!("Agent not found: {root_id}"))
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
     })?;
 
     Ok((StatusCode::OK, Json(tree)))
@@ -415,7 +427,10 @@ pub async fn get_team(
         .iter()
         .filter_map(|id| state.agent_registry.get(id))
         .filter(|r| {
-            params.status.as_deref().map_or(true, |f| matches_status_filter(&r.status, f))
+            params
+                .status
+                .as_deref()
+                .map_or(true, |f| matches_status_filter(&r.status, f))
                 && params.min_depth.map_or(true, |d| r.depth >= d)
         })
         .map(|r| AgentNode {
@@ -434,7 +449,14 @@ pub async fn get_team(
     members.sort_by_key(|m| m.depth);
 
     let agent_count = members.len();
-    Ok((StatusCode::OK, Json(TeamTopology { team_id, agent_count, members })))
+    Ok((
+        StatusCode::OK,
+        Json(TeamTopology {
+            team_id,
+            agent_count,
+            members,
+        }),
+    ))
 }
 
 /// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
@@ -458,8 +480,7 @@ pub async fn get_lineage(
     let agent_id = parse_agent_id(&agent_id_str)?;
 
     state.agent_registry.get(&agent_id).ok_or_else(|| {
-        ProblemDetail::from_status(StatusCode::NOT_FOUND)
-            .with_detail(format!("Agent not found: {agent_id_str}"))
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
     })?;
 
     let ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
@@ -478,7 +499,11 @@ pub async fn get_lineage(
     let ancestor_count = ancestors.len();
     Ok((
         StatusCode::OK,
-        Json(AgentLineage { agent_id: agent_id_str, ancestor_count, ancestors }),
+        Json(AgentLineage {
+            agent_id: agent_id_str,
+            ancestor_count,
+            ancestors,
+        }),
     ))
 }
 
@@ -491,9 +516,7 @@ pub async fn get_lineage(
     ),
     tag = "topology"
 )]
-pub async fn get_stats(
-    Extension(state): Extension<AppState>,
-) -> (StatusCode, Json<TopologyStats>) {
+pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
     let all = state.agent_registry.list();
 
     let mut root_agent_count = 0usize;
@@ -549,8 +572,7 @@ mod tests {
     #[test]
     fn format_id_roundtrip() {
         let id: [u8; 16] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
         ];
         let hex = format_id(&id);
         assert_eq!(hex, "0102030405060708090a0b0c0d0e0f10");

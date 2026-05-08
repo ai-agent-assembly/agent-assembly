@@ -4,7 +4,6 @@
 
 pub mod agents;
 pub mod alerts;
-pub mod topology;
 pub mod approvals;
 pub mod auth;
 pub mod costs;
@@ -13,6 +12,7 @@ pub mod health;
 pub mod logs;
 pub mod policies;
 pub mod tools;
+pub mod topology;
 pub mod traces;
 
 use axum::routing::{get, post};
