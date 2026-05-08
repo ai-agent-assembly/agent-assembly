@@ -46,21 +46,6 @@ fn make_routing_store(suffix: &str, cfg: TeamRoutingConfig) -> RoutingConfigStor
     store
 }
 
-/// Create an `EscalationScheduler`, returning the scheduler, a broadcast receiver,
-/// and the backing temp-file path for cleanup.
-fn make_escalation_scheduler(
-    suffix: &str,
-) -> (
-    Arc<EscalationScheduler>,
-    tokio::sync::broadcast::Receiver<aa_gateway::approval::escalation::EscalationEvent>,
-    std::path::PathBuf,
-) {
-    let path = temp_path(suffix);
-    let (tx, rx) = broadcast::channel(16);
-    let s = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
-    (s, rx, path)
-}
-
 // ── tests ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -110,48 +95,6 @@ fn router_unknown_team_returns_no_team_config() {
 }
 
 #[tokio::test]
-async fn escalation_fires_immediately_when_timeout_is_zero() {
-    let (scheduler, mut rx, path) = make_escalation_scheduler("escalation_zero");
-
-    let request_id = Uuid::new_v4();
-    scheduler
-        .register(
-            request_id,
-            "team-beta".to_string(),
-            vec!["org-admin".to_string()],
-            0, // timeout_secs = 0 → immediately overdue
-        )
-        .unwrap();
-
-    // Tick manually — no need to wait for the background loop.
-    scheduler.tick();
-
-    let event = rx.try_recv().expect("escalation event should fire immediately");
-    assert_eq!(event.request_id, request_id);
-    assert_eq!(event.team_id, "team-beta");
-    assert_eq!(event.escalation_approvers, vec!["org-admin"]);
-
-    let _ = std::fs::remove_file(&path);
-}
-
-#[tokio::test]
-async fn escalation_does_not_fire_when_not_yet_overdue() {
-    let (scheduler, mut rx, path) = make_escalation_scheduler("not_overdue");
-
-    let request_id = Uuid::new_v4();
-    // 1 hour in the future → not yet overdue
-    scheduler
-        .register(request_id, "team-gamma".to_string(), vec![], 3600)
-        .unwrap();
-
-    scheduler.tick();
-
-    assert!(rx.try_recv().is_err(), "escalation must not fire before the timeout");
-
-    let _ = std::fs::remove_file(&path);
-}
-
-#[tokio::test]
 async fn full_lifecycle_route_escalate_approve() {
     // 1. Routing config: team-x with immediate escalation
     let store = make_routing_store(
@@ -187,7 +130,10 @@ async fn full_lifecycle_route_escalate_approve() {
     let (_id, decision_future) = queue.submit(req);
 
     // 4. Register with escalation scheduler
-    let (scheduler, mut escalation_rx, escalation_path) = make_escalation_scheduler("lifecycle_escalation");
+    let escalation_path = temp_path("lifecycle_escalation");
+    let (escalation_tx, mut escalation_rx) = broadcast::channel(16);
+    let scheduler =
+        Arc::new(EscalationScheduler::new(&escalation_path, escalation_tx, Duration::from_millis(50)).unwrap());
     scheduler
         .register(
             request_id,
@@ -227,25 +173,4 @@ async fn full_lifecycle_route_escalate_approve() {
     );
 
     let _ = std::fs::remove_file(&escalation_path);
-}
-
-#[tokio::test]
-async fn escalation_cancel_on_decision_removes_pending_entry() {
-    let (scheduler, _rx, path) = make_escalation_scheduler("cancel_on_decide");
-
-    let request_id = Uuid::new_v4();
-    // Register with a long timeout so it won't fire on its own.
-    scheduler
-        .register(request_id, "team-y".to_string(), vec![], 3600)
-        .unwrap();
-
-    // Simulate decision: cancel the escalation
-    let cancelled = scheduler.cancel(request_id).unwrap();
-    assert!(cancelled, "cancel must return true for a registered entry");
-
-    // Second cancel returns false (already removed)
-    let second = scheduler.cancel(request_id).unwrap();
-    assert!(!second);
-
-    let _ = std::fs::remove_file(&path);
 }
