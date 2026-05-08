@@ -43,6 +43,7 @@ name = "aa-cli"
 version = "0.0.1"
 dependencies = [
  "aa-core",
+ "aa-devtool-windsurf",
  "aa-gateway",
  "anyhow",
  "async-trait",
@@ -99,6 +100,18 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-sample-myeditor"
+version = "0.0.1"
+dependencies = [
+ "aa-core",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "aa-devtool-windsurf"
 version = "0.0.1"
 dependencies = [
  "aa-core",

@@ -1,0 +1,21 @@
+[package]
+name = "aa-devtool-windsurf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DevToolAdapter for Windsurf Cascade — admin settings sync, MCP registry control, terminal allow/deny"
+publish = false
+
+[dependencies]
+aa-core      = { path = "../aa-core", features = ["std", "serde"] }
+async-trait  = "0.1"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio    = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
