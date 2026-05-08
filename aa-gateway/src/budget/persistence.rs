@@ -11,6 +11,8 @@ pub struct PersistedAgentEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersistedBudget {
     pub per_agent: Vec<PersistedAgentEntry>,
+    #[serde(default)]
+    pub team_budgets: std::collections::HashMap<String, BudgetState>,
     pub global: BudgetState,
     #[serde(default = "default_timezone")]
     pub timezone: chrono_tz::Tz,
@@ -50,6 +52,7 @@ pub fn load_from_disk(path: &std::path::Path) -> Result<PersistedBudget, Persist
         Ok(json) => serde_json::from_str(&json).map_err(PersistenceError::Json),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PersistedBudget {
             per_agent: vec![],
+            team_budgets: Default::default(),
             global: crate::budget::types::BudgetState::new_today(),
             timezone: default_timezone(),
         }),
@@ -166,6 +169,7 @@ mod tests {
                     s
                 },
             }],
+            team_budgets: Default::default(),
             global: crate::budget::types::BudgetState::new_today(),
             timezone: chrono_tz::UTC,
         };
@@ -182,6 +186,7 @@ mod tests {
             &path,
             &PersistedBudget {
                 per_agent: vec![],
+                team_budgets: Default::default(),
                 global: crate::budget::types::BudgetState::new_today(),
                 timezone: chrono_tz::UTC,
             },
@@ -194,6 +199,7 @@ mod tests {
     fn persisted_budget_holds_entries_and_global() {
         let budget = PersistedBudget {
             per_agent: vec![],
+            team_budgets: Default::default(),
             global: BudgetState::new_today(),
             timezone: chrono_tz::UTC,
         };
@@ -235,6 +241,7 @@ mod tests {
         let path = dir.path().join("budget.json");
         let budget = PersistedBudget {
             per_agent: vec![],
+            team_budgets: Default::default(),
             global: crate::budget::types::BudgetState::new_today(),
             timezone: chrono_tz::Asia::Tokyo,
         };
@@ -270,6 +277,7 @@ mod tests {
                 agent_id_hex: "0102030405060708090a0b0c0d0e0f10".to_string(),
                 state,
             }],
+            team_budgets: Default::default(),
             global: crate::budget::types::BudgetState::new_today(),
             timezone: chrono_tz::UTC,
         };

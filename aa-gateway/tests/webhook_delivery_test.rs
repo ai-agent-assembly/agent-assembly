@@ -107,6 +107,7 @@ async fn budget_alert_is_delivered_as_webhook_post() {
     // Send a budget alert through the broadcast channel.
     let alert = BudgetAlert {
         agent_id: aa_core::AgentId::from_bytes([42; 16]),
+        team_id: None,
         threshold_pct: 95,
         spent_usd: 95.0,
         limit_usd: 100.0,

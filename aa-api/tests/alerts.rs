@@ -56,6 +56,7 @@ async fn list_alerts_returns_alerts_after_recording() {
     // Record an alert directly into the store.
     let alert = BudgetAlert {
         agent_id: AgentId::from_bytes([0xAB; 16]),
+        team_id: None,
         threshold_pct: 80,
         spent_usd: 8.0,
         limit_usd: 10.0,
@@ -98,6 +99,7 @@ async fn list_alerts_via_broadcast_capture() {
     // Send an alert via broadcast.
     let alert = BudgetAlert {
         agent_id: AgentId::from_bytes([0xCD; 16]),
+        team_id: None,
         threshold_pct: 95,
         spent_usd: 9.5,
         limit_usd: 10.0,
@@ -131,6 +133,7 @@ async fn list_alerts_pagination_with_multiple_alerts() {
     for i in 0..5u8 {
         let alert = BudgetAlert {
             agent_id: AgentId::from_bytes([i + 1; 16]),
+            team_id: None,
             threshold_pct: 80 + i,
             spent_usd: 8.0 + f64::from(i),
             limit_usd: 15.0,

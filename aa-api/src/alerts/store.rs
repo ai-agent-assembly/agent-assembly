@@ -76,6 +76,7 @@ mod tests {
     fn test_alert(threshold_pct: u8) -> BudgetAlert {
         BudgetAlert {
             agent_id: AgentId::from_bytes([1u8; 16]),
+            team_id: None,
             threshold_pct,
             spent_usd: 8.0,
             limit_usd: 10.0,

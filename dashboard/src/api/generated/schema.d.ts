@@ -521,6 +521,8 @@ export interface components {
             monthly_spend_usd?: string | null;
             /** @description Per-agent cost breakdown for the current day. */
             per_agent?: components["schemas"]["AgentCostEntry"][];
+            /** @description Per-team cost rollup for the current day. */
+            per_team?: components["schemas"]["TeamCostEntry"][];
         };
         /** @description Request body for creating a new policy. */
         CreatePolicyRequest: {
@@ -708,6 +710,17 @@ export interface components {
             new_status: string;
             /** @description Agent status before the suspend operation. */
             previous_status: string;
+        };
+        /** @description Per-team cost entry within the budget summary. */
+        TeamCostEntry: {
+            /** @description Daily spend for this team in USD (sum of all member agent spends today). */
+            daily_spend_usd: string;
+            /** @description Calendar date (YYYY-MM-DD) the daily spend applies to. */
+            date: string;
+            /** @description Total spend this month in USD for this team (if monthly tracking is enabled). */
+            monthly_spend_usd?: string | null;
+            /** @description Team identifier. */
+            team_id: string;
         };
         /** @description Request body for `POST /auth/token`. */
         TokenRequest: {

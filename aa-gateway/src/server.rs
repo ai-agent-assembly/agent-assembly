@@ -69,6 +69,7 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
         tracing::warn!(error = %e, "failed to load budget state, starting fresh");
         crate::budget::persistence::PersistedBudget {
             per_agent: vec![],
+            team_budgets: Default::default(),
             global: crate::budget::types::BudgetState::new_today(),
             timezone: chrono_tz::UTC,
         }

@@ -120,6 +120,7 @@ mod tests {
     fn budget_alert_envelope_has_correct_fields() {
         let alert = BudgetAlert {
             agent_id: AgentId::from_bytes([1; 16]),
+            team_id: None,
             threshold_pct: 80,
             spent_usd: 80.0,
             limit_usd: 100.0,
@@ -137,6 +138,7 @@ mod tests {
     fn budget_alert_envelope_has_uuid_v7_event_id() {
         let alert = BudgetAlert {
             agent_id: AgentId::from_bytes([2; 16]),
+            team_id: None,
             threshold_pct: 95,
             spent_usd: 95.0,
             limit_usd: 100.0,
