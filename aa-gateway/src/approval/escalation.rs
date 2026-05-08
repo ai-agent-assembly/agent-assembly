@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use aa_core::AuditEventType;
-use aa_runtime::approval::{ApprovalQueue, ApprovalRequestId};
+use aa_runtime::approval::ApprovalRequestId;
 
 // ---------------------------------------------------------------------------
 // PersistedEscalation  (restart-safe state)
@@ -124,11 +123,7 @@ impl EscalationScheduler {
         let now = current_epoch_secs();
         let overdue: Vec<PersistedEscalation> = {
             let mut state = self.state.lock().unwrap();
-            let overdue: Vec<_> = state
-                .values()
-                .filter(|e| e.escalate_at <= now)
-                .cloned()
-                .collect();
+            let overdue: Vec<_> = state.values().filter(|e| e.escalate_at <= now).cloned().collect();
             for e in &overdue {
                 state.remove(&e.request_id);
             }
@@ -178,8 +173,7 @@ impl EscalationScheduler {
 fn load_escalations(path: &Path) -> Result<Vec<PersistedEscalation>, EscalationError> {
     match std::fs::read_to_string(path) {
         Ok(json) => {
-            let p: PersistedEscalations =
-                serde_json::from_str(&json).map_err(EscalationError::Json)?;
+            let p: PersistedEscalations = serde_json::from_str(&json).map_err(EscalationError::Json)?;
             Ok(p.pending)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
@@ -243,9 +237,7 @@ mod tests {
 
     fn make_scheduler() -> (Arc<EscalationScheduler>, broadcast::Receiver<EscalationEvent>) {
         let (tx, rx) = broadcast::channel(16);
-        let s = Arc::new(
-            EscalationScheduler::new(temp_path(), tx, Duration::from_millis(50)).unwrap(),
-        );
+        let s = Arc::new(EscalationScheduler::new(temp_path(), tx, Duration::from_millis(50)).unwrap());
         (s, rx)
     }
 
@@ -269,9 +261,7 @@ mod tests {
     fn register_persists_to_disk() {
         let path = temp_path();
         let (tx, _rx) = broadcast::channel(4);
-        let s = Arc::new(
-            EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-        );
+        let s = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
         let id = Uuid::new_v4();
         s.register(id, "team-b".to_string(), vec![], 600).unwrap();
 
@@ -285,9 +275,7 @@ mod tests {
     async fn overdue_entry_fires_event() {
         let path = temp_path();
         let (tx, mut rx) = broadcast::channel(4);
-        let s = Arc::new(
-            EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-        );
+        let s = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
         let id = Uuid::new_v4();
         // timeout_secs = 0 → immediately overdue
         s.register(id, "team-c".to_string(), vec!["mgr".to_string()], 0)
@@ -313,17 +301,13 @@ mod tests {
     fn reload_restores_registered_entry() {
         let path = temp_path();
         let (tx, _rx) = broadcast::channel(4);
-        let s = Arc::new(
-            EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap(),
-        );
+        let s = Arc::new(EscalationScheduler::new(&path, tx, Duration::from_millis(50)).unwrap());
         let id = Uuid::new_v4();
         s.register(id, "team-e".to_string(), vec![], 120).unwrap();
         drop(s);
 
         let (tx2, _rx2) = broadcast::channel(4);
-        let s2 = Arc::new(
-            EscalationScheduler::new(&path, tx2, Duration::from_millis(50)).unwrap(),
-        );
+        let s2 = Arc::new(EscalationScheduler::new(&path, tx2, Duration::from_millis(50)).unwrap());
         assert!(s2.cancel(id).unwrap());
         let _ = std::fs::remove_file(&path);
     }

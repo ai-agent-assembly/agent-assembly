@@ -1,7 +1,7 @@
 //! Team-level approval routing configuration and its JSON-backed store.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -48,11 +48,7 @@ impl RoutingConfigStore {
             Ok(json) => {
                 let persisted: PersistedRoutingConfig =
                     serde_json::from_str(&json).map_err(RoutingConfigError::Json)?;
-                persisted
-                    .teams
-                    .into_iter()
-                    .map(|c| (c.team_id.clone(), c))
-                    .collect()
+                persisted.teams.into_iter().map(|c| (c.team_id.clone(), c)).collect()
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
             Err(e) => return Err(RoutingConfigError::Io(e)),
@@ -148,10 +144,7 @@ mod tests {
 
     fn temp_path() -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!(
-            "approval_routing_test_{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        p.push(format!("approval_routing_test_{}.json", uuid::Uuid::new_v4()));
         p
     }
 
