@@ -14,6 +14,10 @@
 use aa_core::DevToolAdapter;
 use aa_devtool_claude_code::ClaudeCodeAdapter;
 
+// Serialize all tests in this binary: set_current_dir is process-global state
+// and cargo-llvm-cov runs tests in parallel threads within the same process.
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn full_settings(permission_mode: &str) -> String {
     serde_json::json!({
         "permissions": { "allow": [], "deny": [] },
@@ -32,6 +36,7 @@ fn read_json(path: &std::path::Path) -> serde_json::Value {
 
 #[tokio::test]
 async fn global_only_writes_to_global_path() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap(); // no .claude/ subdir — triggers global scope
     std::env::set_current_dir(other.path()).unwrap();
@@ -47,6 +52,7 @@ async fn global_only_writes_to_global_path() {
 
 #[tokio::test]
 async fn project_present_writes_to_project_path() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join(".claude")).unwrap();
@@ -64,6 +70,7 @@ async fn project_present_writes_to_project_path() {
 
 #[tokio::test]
 async fn project_settings_override_global_at_runtime() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let global_dir = home.path().join(".claude");
     std::fs::create_dir_all(&global_dir).unwrap();
@@ -94,6 +101,7 @@ async fn project_settings_override_global_at_runtime() {
 
 #[tokio::test]
 async fn merge_preserves_user_keys_at_both_levels() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let global_dir = home.path().join(".claude");
     std::fs::create_dir_all(&global_dir).unwrap();
@@ -131,6 +139,7 @@ async fn merge_preserves_user_keys_at_both_levels() {
 
 #[tokio::test]
 async fn mcp_governance_only_touches_active_scope() {
+    let _guard = TEST_MUTEX.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let global_dir = home.path().join(".claude");
     std::fs::create_dir_all(&global_dir).unwrap();
