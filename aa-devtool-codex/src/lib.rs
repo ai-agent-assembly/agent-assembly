@@ -1,11 +1,14 @@
 //! `DevToolAdapter` implementation for the OpenAI Codex CLI.
 //!
-//! Tracks the F75 Story ([AAASM-202]). This Subtask ([AAASM-971]) lands
-//! detection only — `generate_managed_settings`, `apply_settings`, and
-//! `build_launch_command` arrive in subsequent Subtasks.
+//! Tracks the F75 Story ([AAASM-202]).
+//! * Detection — [`AAASM-971`]
+//! * Sandbox-mode mapping — [`AAASM-978`] (this Subtask)
+//! * Approval-policy alignment — `AAASM-983` (subsequent Subtask)
+//! * `apply_settings` / `build_launch_command` — `AAASM-988` (subsequent Subtask)
 //!
 //! [AAASM-202]: https://lightning-dust-mite.atlassian.net/browse/AAASM-202
-//! [AAASM-971]: https://lightning-dust-mite.atlassian.net/browse/AAASM-971
+//! [`AAASM-971`]: https://lightning-dust-mite.atlassian.net/browse/AAASM-971
+//! [`AAASM-978`]: https://lightning-dust-mite.atlassian.net/browse/AAASM-978
 
 #![warn(missing_docs)]
 
@@ -14,6 +17,9 @@ use std::process::Command;
 
 use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
 use async_trait::async_trait;
+
+mod sandbox;
+use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
 /// version.
@@ -184,9 +190,17 @@ impl DevToolAdapter for CodexAdapter {
         })
     }
 
-    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
-        // Sandbox + approval translation lands in AAASM-978 / AAASM-983.
-        unimplemented!("generate_managed_settings — implemented in AAASM-978 / AAASM-983")
+    async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
+        let sandbox_mode = map_policy_to_sandbox_mode(policy);
+        let allowed_domains = network_allow_list(policy);
+        let blocked_domains = network_block_list(policy);
+
+        let settings = serde_json::json!({
+            "sandbox_mode": sandbox_mode,
+            "allowed_domains": allowed_domains,
+            "blocked_domains": blocked_domains,
+        });
+        serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
 
     async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
