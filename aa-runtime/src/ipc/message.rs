@@ -14,6 +14,9 @@ use aa_proto::assembly::policy::v1::CheckActionRequest;
 /// - `2` = EventReport
 /// - `3` = ApprovalResponse
 /// - `4` = Heartbeat
+// AuditEvent grew with AAASM-934 lineage fields; the size disparity between
+// EventReport and the other variants is inherent to the design.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum IpcFrame {
     /// A policy check request — SDK asks the runtime to evaluate an action.

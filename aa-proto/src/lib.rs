@@ -44,6 +44,9 @@ pub mod assembly {
 
     pub mod event {
         pub mod v1 {
+            // AuditEvent grew with AAASM-934 lineage fields; the Payload oneof
+            // variant size disparity is expected in generated code.
+            #![allow(clippy::large_enum_variant)]
             tonic::include_proto!("assembly.event.v1");
         }
     }

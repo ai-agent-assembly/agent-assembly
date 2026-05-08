@@ -160,7 +160,7 @@ pub async fn serve_tcp(
         Arc::clone(&audit_drops),
         initial_hash,
     );
-    let audit_svc = AuditServiceImpl::new(audit_tx, audit_drops, initial_hash);
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new(approval_queue);
 
@@ -206,7 +206,7 @@ pub async fn serve_uds(
         Arc::clone(&audit_drops),
         initial_hash,
     );
-    let audit_svc = AuditServiceImpl::new(audit_tx, audit_drops, initial_hash);
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new(approval_queue);
 

@@ -53,6 +53,25 @@ message AuditEvent {
 
   // Arbitrary labels attached at event creation for downstream query filtering.
   map<string, string> labels = 20;
+
+  // ── Lineage fields (AAASM-934) ──────────────────────────────────────────
+  // All optional. Populated when the emitting agent registered with lineage
+  // context. Absent (default empty) for legacy events and root agents.
+
+  // Root of the delegation chain; equals agent_id for root agents.
+  string root_agent_id    = 21;
+  // The agent that directly spawned this one; empty for root agents.
+  string parent_agent_id  = 22;
+  // Team this agent belongs to; empty if not set.
+  string team_id          = 23;
+  // Session identifier for this agent run.
+  string session_id       = 24;
+  // Human-readable reason the parent delegated to this agent.
+  string delegation_reason = 25;
+  // Tool or framework that triggered the spawn (e.g. "langgraph.subgraph").
+  string spawned_by_tool  = 26;
+  // Delegation depth — 0 for root agents, +1 per level.
+  uint32 depth            = 27;
 }
 
 // ── Detail messages ───────────────────────────────────────────────────────────
