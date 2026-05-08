@@ -105,7 +105,10 @@ pub fn map_policy_to_sandbox_mode(policy: &PolicyDocument) -> CodexSandboxMode {
     if has_deny {
         return CodexSandboxMode::Ask;
     }
-    let has_require_approval = policy.rules.iter().any(|r| r.decision == PolicyDecision::RequireApproval);
+    let has_require_approval = policy
+        .rules
+        .iter()
+        .any(|r| r.decision == PolicyDecision::RequireApproval);
     if has_require_approval {
         return CodexSandboxMode::Suggest;
     }
@@ -127,4 +130,146 @@ fn find_sandbox_override(policy: &PolicyDocument) -> Option<CodexSandboxMode> {
             _ => None,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::policy::{PolicyDecision, PolicyDocument, PolicyRule};
+
+    fn make_policy(rules: Vec<(&str, PolicyDecision)>) -> PolicyDocument {
+        PolicyDocument {
+            version: 1,
+            name: "test".into(),
+            rules: rules
+                .into_iter()
+                .map(|(pat, dec)| PolicyRule {
+                    action_pattern: pat.into(),
+                    decision: dec,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn log_policy_maps_to_full_auto() {
+        let policy = make_policy(vec![("*", PolicyDecision::Allow)]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::FullAuto);
+    }
+
+    #[test]
+    fn alert_policy_maps_to_suggest() {
+        let policy = make_policy(vec![
+            ("fs:read", PolicyDecision::Allow),
+            ("fs:write", PolicyDecision::RequireApproval),
+        ]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::Suggest);
+    }
+
+    #[test]
+    fn enforce_policy_maps_to_ask() {
+        let policy = make_policy(vec![
+            ("fs:read", PolicyDecision::Allow),
+            ("shell:exec", PolicyDecision::Deny),
+        ]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::Ask);
+    }
+
+    #[test]
+    fn deny_takes_precedence_over_require_approval() {
+        let policy = make_policy(vec![
+            ("fs:write", PolicyDecision::RequireApproval),
+            ("shell:exec", PolicyDecision::Deny),
+        ]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::Ask);
+    }
+
+    #[test]
+    fn explicit_override_wins() {
+        let policy = make_policy(vec![
+            ("dev_tools.codex.sandbox_mode:suggest", PolicyDecision::Allow),
+            ("shell:exec", PolicyDecision::Deny),
+        ]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::Suggest);
+    }
+
+    #[test]
+    fn explicit_override_full_auto_wins() {
+        let policy = make_policy(vec![
+            ("dev_tools.codex.sandbox_mode:full-auto", PolicyDecision::Allow),
+            ("shell:exec", PolicyDecision::Deny),
+        ]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::FullAuto);
+    }
+
+    #[test]
+    fn explicit_override_ask_wins() {
+        let policy = make_policy(vec![("dev_tools.codex.sandbox_mode:ask", PolicyDecision::Allow)]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::Ask);
+    }
+
+    #[test]
+    fn network_allow_list_extracted() {
+        let policy = make_policy(vec![
+            ("network:api.openai.com", PolicyDecision::Allow),
+            ("network:evil.example.com", PolicyDecision::Deny),
+            ("network:cdn.example.com", PolicyDecision::Allow),
+            ("fs:read", PolicyDecision::Allow),
+        ]);
+        let mut allow = network_allow_list(&policy);
+        allow.sort();
+        assert_eq!(allow, vec!["api.openai.com", "cdn.example.com"]);
+    }
+
+    #[test]
+    fn network_block_list_extracted() {
+        let policy = make_policy(vec![
+            ("network:api.openai.com", PolicyDecision::Allow),
+            ("network:evil.example.com", PolicyDecision::Deny),
+            ("network:malware.io", PolicyDecision::Deny),
+        ]);
+        let mut block = network_block_list(&policy);
+        block.sort();
+        assert_eq!(block, vec!["evil.example.com", "malware.io"]);
+    }
+
+    #[test]
+    fn empty_policy_maps_to_full_auto() {
+        let policy = make_policy(vec![]);
+        assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::FullAuto);
+    }
+
+    #[test]
+    fn sandbox_mode_serializes_to_wire_format() {
+        assert_eq!(
+            serde_json::to_string(&CodexSandboxMode::FullAuto).unwrap(),
+            r#""full-auto""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CodexSandboxMode::Suggest).unwrap(),
+            r#""suggest""#
+        );
+        assert_eq!(serde_json::to_string(&CodexSandboxMode::Ask).unwrap(), r#""ask""#);
+    }
+
+    #[test]
+    fn generate_managed_settings_snapshot() {
+        let policy = make_policy(vec![
+            ("shell:exec", PolicyDecision::Deny),
+            ("network:api.openai.com", PolicyDecision::Allow),
+            ("network:evil.io", PolicyDecision::Deny),
+        ]);
+        let sandbox_mode = map_policy_to_sandbox_mode(&policy);
+        let allowed = network_allow_list(&policy);
+        let blocked = network_block_list(&policy);
+        let settings = serde_json::json!({
+            "sandbox_mode": sandbox_mode,
+            "allowed_domains": allowed,
+            "blocked_domains": blocked,
+        });
+        let json = serde_json::to_string_pretty(&settings).unwrap();
+        assert!(json.contains(r#""sandbox_mode": "ask""#));
+        assert!(json.contains("api.openai.com"));
+        assert!(json.contains("evil.io"));
+    }
 }
