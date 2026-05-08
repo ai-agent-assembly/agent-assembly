@@ -72,18 +72,7 @@ impl BudgetTracker {
         timezone: chrono_tz::Tz,
     ) -> Self {
         let (alert_tx, _) = broadcast::channel(ALERT_CHANNEL_CAPACITY);
-        Self {
-            per_agent: DashMap::new(),
-            team_budgets: DashMap::new(),
-            global: Mutex::new(BudgetState::new_for_date(today_in_tz(timezone))),
-            pricing,
-            daily_limit_usd,
-            monthly_limit_usd,
-            team_daily_limit_usd: None,
-            team_monthly_limit_usd: None,
-            alert_tx,
-            timezone,
-        }
+        Self::new_with_alert_sender(pricing, daily_limit_usd, monthly_limit_usd, timezone, alert_tx)
     }
 
     /// Create a new tracker that sends alerts on an externally-owned channel.
@@ -130,30 +119,8 @@ impl BudgetTracker {
         monthly_limit_usd: Option<Decimal>,
         initial: crate::budget::persistence::PersistedBudget,
     ) -> Self {
-        let timezone = initial.timezone;
         let (alert_tx, _) = broadcast::channel(ALERT_CHANNEL_CAPACITY);
-        let per_agent: DashMap<AgentId, BudgetState> = initial
-            .per_agent
-            .into_iter()
-            .filter_map(|e| {
-                crate::budget::persistence::hex_to_agent_id(&e.agent_id_hex)
-                    .ok()
-                    .map(|id| (id, e.state))
-            })
-            .collect();
-        let team_budgets: DashMap<String, BudgetState> = initial.team_budgets.into_iter().collect();
-        Self {
-            per_agent,
-            team_budgets,
-            global: Mutex::new(initial.global),
-            pricing,
-            daily_limit_usd,
-            monthly_limit_usd,
-            team_daily_limit_usd: None,
-            team_monthly_limit_usd: None,
-            alert_tx,
-            timezone,
-        }
+        Self::with_state_and_alert_sender(pricing, daily_limit_usd, monthly_limit_usd, initial, alert_tx)
     }
 
     /// Create a tracker pre-loaded with persisted state that sends alerts on an
@@ -267,6 +234,28 @@ impl BudgetTracker {
         self.record_cost(agent_id, team_id, cost)
     }
 
+    /// Compute status for `spent` against `limit`, emit a [`BudgetAlert`] on the broadcast
+    /// channel if at a threshold, and return the resulting [`BudgetStatus`].
+    fn check_limit_and_alert(
+        &self,
+        agent_id: AgentId,
+        team_id: Option<&str>,
+        spent: Decimal,
+        limit: Decimal,
+    ) -> BudgetStatus {
+        let status = compute_status(spent, limit);
+        if let BudgetStatus::ThresholdAlert { pct } = &status {
+            let _ = self.alert_tx.send(BudgetAlert {
+                agent_id,
+                team_id: team_id.map(str::to_string),
+                threshold_pct: *pct,
+                spent_usd: spent.to_f64().unwrap_or(0.0),
+                limit_usd: limit.to_f64().unwrap_or(0.0),
+            });
+        }
+        status
+    }
+
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
     fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
@@ -309,42 +298,25 @@ impl BudgetTracker {
                     s
                 });
 
-            // Check team monthly limit and emit alerts.
+            // Check team monthly limit and emit alert.
             if let Some(team_monthly_limit) = self.team_monthly_limit_usd {
                 if let Some(team_state) = self.team_budgets.get(tid) {
                     if let Some(team_monthly) = team_state.monthly_spent_usd {
-                        let m_status = compute_status(team_monthly, team_monthly_limit);
-                        if m_status == BudgetStatus::LimitExceeded {
+                        let status = self.check_limit_and_alert(agent_id, Some(tid), team_monthly, team_monthly_limit);
+                        if status == BudgetStatus::LimitExceeded {
                             return BudgetStatus::LimitExceeded;
-                        }
-                        if let BudgetStatus::ThresholdAlert { pct } = &m_status {
-                            let _ = self.alert_tx.send(BudgetAlert {
-                                agent_id,
-                                team_id: Some(tid.to_string()),
-                                threshold_pct: *pct,
-                                spent_usd: team_monthly.to_f64().unwrap_or(0.0),
-                                limit_usd: team_monthly_limit.to_f64().unwrap_or(0.0),
-                            });
                         }
                     }
                 }
             }
 
-            // Check team daily limit and emit alerts.
+            // Check team daily limit and emit alert.
             if let Some(team_daily_limit) = self.team_daily_limit_usd {
                 if let Some(team_state) = self.team_budgets.get(tid) {
-                    let d_status = compute_status(team_state.spent_usd, team_daily_limit);
-                    if d_status == BudgetStatus::LimitExceeded {
+                    let status =
+                        self.check_limit_and_alert(agent_id, Some(tid), team_state.spent_usd, team_daily_limit);
+                    if status == BudgetStatus::LimitExceeded {
                         return BudgetStatus::LimitExceeded;
-                    }
-                    if let BudgetStatus::ThresholdAlert { pct } = &d_status {
-                        let _ = self.alert_tx.send(BudgetAlert {
-                            agent_id,
-                            team_id: Some(tid.to_string()),
-                            threshold_pct: *pct,
-                            spent_usd: team_state.spent_usd.to_f64().unwrap_or(0.0),
-                            limit_usd: team_daily_limit.to_f64().unwrap_or(0.0),
-                        });
                     }
                 }
             }
@@ -361,44 +333,21 @@ impl BudgetTracker {
             g.spent_usd += cost;
         }
 
-        // Check monthly limit first — monthly exceeded takes precedence
+        // Check monthly limit first — monthly exceeded takes precedence.
         if let (Some(limit), Some(m_spent)) = (self.monthly_limit_usd, monthly_spent) {
-            let m_status = compute_status(m_spent, limit);
-            if matches!(m_status, BudgetStatus::LimitExceeded) {
+            let status = self.check_limit_and_alert(agent_id, None, m_spent, limit);
+            if matches!(status, BudgetStatus::LimitExceeded) {
                 return BudgetStatus::LimitExceeded;
-            }
-            if let BudgetStatus::ThresholdAlert { pct } = &m_status {
-                let _ = self.alert_tx.send(BudgetAlert {
-                    agent_id,
-                    team_id: None,
-                    threshold_pct: *pct,
-                    spent_usd: m_spent.to_f64().unwrap_or(0.0),
-                    limit_usd: limit.to_f64().unwrap_or(0.0),
-                });
             }
         }
 
-        let status = match self.daily_limit_usd {
+        match self.daily_limit_usd {
             None => BudgetStatus::WithinBudget {
                 spent_usd: spent.to_f64().unwrap_or(0.0),
                 remaining_usd: f64::INFINITY,
             },
-            Some(limit) => compute_status(spent, limit),
-        };
-
-        if let Some(limit) = self.daily_limit_usd {
-            if let BudgetStatus::ThresholdAlert { pct } = &status {
-                let _ = self.alert_tx.send(BudgetAlert {
-                    agent_id,
-                    team_id: None,
-                    threshold_pct: *pct,
-                    spent_usd: spent.to_f64().unwrap_or(0.0),
-                    limit_usd: limit.to_f64().unwrap_or(0.0),
-                });
-            }
+            Some(limit) => self.check_limit_and_alert(agent_id, None, spent, limit),
         }
-
-        status
     }
 
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
