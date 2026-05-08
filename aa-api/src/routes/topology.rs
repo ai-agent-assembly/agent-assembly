@@ -274,6 +274,11 @@ fn build_tree(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/v1/topology/overview` — summary of all teams and root agents.
+///
+/// Returns a count of teams, root agents, and total agents across the registry,
+/// with a per-team breakdown and a list of standalone root agents not assigned
+/// to any team. Supports optional filtering by status, minimum depth, and
+/// governance level visibility.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/overview",
@@ -360,6 +365,10 @@ pub async fn get_overview(
 }
 
 /// `GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.
+///
+/// Recursively walks the delegation tree starting from the given agent, up to
+/// a configurable depth (default 10, maximum 10). Nodes can be filtered by
+/// status. Returns a nested JSON tree with each agent's children inline.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/tree/{root_id}",
@@ -398,6 +407,10 @@ pub async fn get_tree(
 }
 
 /// `GET /api/v1/topology/team/{team_id}` — all agents in a team with depth info.
+///
+/// Returns all agents belonging to the given team, sorted by delegation depth.
+/// Results can be filtered by status and minimum depth. Returns 404 if the
+/// team identifier is not known to the registry.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/team/{team_id}",
@@ -460,6 +473,10 @@ pub async fn get_team(
 }
 
 /// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
+///
+/// Returns the ordered list of ancestors for the given agent, starting from its
+/// direct parent and ending at the root agent (depth 0). Each step includes the
+/// delegation reason and team membership. Returns 404 if the agent is unknown.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/lineage/{agent_id}",
@@ -508,6 +525,11 @@ pub async fn get_lineage(
 }
 
 /// `GET /api/v1/topology/stats` — aggregate topology statistics.
+///
+/// Returns aggregate counts across the entire registry: total agents, root
+/// agents, maximum delegation depth, per-status counts, and per-team agent
+/// counts. This endpoint never returns 404; an empty registry returns all
+/// zero counts.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/stats",

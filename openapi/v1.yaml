@@ -505,6 +505,10 @@ paths:
       tags:
       - topology
       summary: '`GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.'
+      description: |-
+        Returns the ordered list of ancestors for the given agent, starting from its
+        direct parent and ending at the root agent (depth 0). Each step includes the
+        delegation reason and team membership. Returns 404 if the agent is unknown.
       operationId: get_lineage
       parameters:
       - name: agent_id
@@ -529,6 +533,11 @@ paths:
       tags:
       - topology
       summary: '`GET /api/v1/topology/overview` — summary of all teams and root agents.'
+      description: |-
+        Returns a count of teams, root agents, and total agents across the registry,
+        with a per-team breakdown and a list of standalone root agents not assigned
+        to any team. Supports optional filtering by status, minimum depth, and
+        governance level visibility.
       operationId: get_overview
       parameters:
       - name: status
@@ -569,6 +578,11 @@ paths:
       tags:
       - topology
       summary: '`GET /api/v1/topology/stats` — aggregate topology statistics.'
+      description: |-
+        Returns aggregate counts across the entire registry: total agents, root
+        agents, maximum delegation depth, per-status counts, and per-team agent
+        counts. This endpoint never returns 404; an empty registry returns all
+        zero counts.
       operationId: get_stats
       responses:
         '200':
@@ -582,6 +596,10 @@ paths:
       tags:
       - topology
       summary: '`GET /api/v1/topology/team/{team_id}` — all agents in a team with depth info.'
+      description: |-
+        Returns all agents belonging to the given team, sorted by delegation depth.
+        Results can be filtered by status and minimum depth. Returns 404 if the
+        team identifier is not known to the registry.
       operationId: get_team
       parameters:
       - name: team_id
@@ -630,6 +648,10 @@ paths:
       tags:
       - topology
       summary: '`GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.'
+      description: |-
+        Recursively walks the delegation tree starting from the given agent, up to
+        a configurable depth (default 10, maximum 10). Nodes can be filtered by
+        status. Returns a nested JSON tree with each agent's children inline.
       operationId: get_tree
       parameters:
       - name: root_id
