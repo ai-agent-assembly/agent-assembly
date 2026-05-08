@@ -299,6 +299,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topology/lineage/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
+         * @description Returns the ordered list of ancestors for the given agent, starting from its
+         *     direct parent and ending at the root agent (depth 0). Each step includes the
+         *     delegation reason and team membership. Returns 404 if the agent is unknown.
+         */
+        get: operations["get_lineage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology/overview` — summary of all teams and root agents.
+         * @description Returns a count of teams, root agents, and total agents across the registry,
+         *     with a per-team breakdown and a list of standalone root agents not assigned
+         *     to any team. Supports optional filtering by status, minimum depth, and
+         *     governance level visibility.
+         */
+        get: operations["get_overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology/stats` — aggregate topology statistics.
+         * @description Returns aggregate counts across the entire registry: total agents, root
+         *     agents, maximum delegation depth, per-status counts, and per-team agent
+         *     counts. This endpoint never returns 404; an empty registry returns all
+         *     zero counts.
+         */
+        get: operations["get_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/team/{team_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology/team/{team_id}` — all agents in a team with depth info.
+         * @description Returns all agents belonging to the given team, sorted by delegation depth.
+         *     Results can be filtered by status and minimum depth. Returns 404 if the
+         *     team identifier is not known to the registry.
+         */
+        get: operations["get_team"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/tree/{root_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.
+         * @description Recursively walks the delegation tree starting from the given agent, up to
+         *     a configurable depth (default 10, maximum 10). Nodes can be filtered by
+         *     status. Returns a nested JSON tree with each agent's children inline.
+         */
+        get: operations["get_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/traces/{session_id}": {
         parameters: {
             query?: never;
@@ -386,6 +498,33 @@ export interface components {
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
         };
+        /** @description An agent's complete ancestry chain from direct parent up to root. */
+        AgentLineage: {
+            /** @description The subject agent's hex-encoded UUID. */
+            agent_id: string;
+            /** @description Number of ancestors — 0 if the agent is a root. */
+            ancestor_count: number;
+            /** @description Ordered ancestors: index 0 is the direct parent, last element is the root. */
+            ancestors: components["schemas"]["LineageStep"][];
+        };
+        /** @description Minimal agent representation used in list and tree responses. */
+        AgentNode: {
+            /**
+             * Format: int32
+             * @description Delegation depth — 0 for root agents.
+             */
+            depth: number;
+            /** @description Governance level — included only when `show_budget=true`. */
+            governance_level?: string | null;
+            /** @description Hex-encoded agent UUID. */
+            id: string;
+            /** @description Human-readable agent name. */
+            name: string;
+            /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
+            status: string;
+            /** @description Team this agent belongs to, if any. */
+            team_id?: string | null;
+        };
         /** @description JSON representation of an agent returned by the API. */
         AgentResponse: {
             /** @description Currently active sessions for this agent. */
@@ -429,6 +568,29 @@ export interface components {
             tool_names: string[];
             /** @description Semver version string. */
             version: string;
+        };
+        /** @description Recursive tree node representing an agent and all its descendants. */
+        AgentTree: {
+            children: components["schemas"]["AgentTree"][];
+            /** @description Reason this agent was delegated from its parent, if recorded. */
+            delegation_reason?: string | null;
+            /**
+             * Format: int32
+             * @description Delegation depth — 0 for root agents.
+             */
+            depth: number;
+            /** @description Governance level — included only when `show_budget=true`. */
+            governance_level?: string | null;
+            /** @description Hex-encoded agent UUID. */
+            id: string;
+            /** @description Human-readable agent name. */
+            name: string;
+            /** @description Tool that spawned this agent, if known. */
+            spawned_by_tool?: string | null;
+            /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
+            status: string;
+            /** @description Team this agent belongs to, if any. */
+            team_id?: string | null;
         };
         /** @description JSON representation of a governance alert. */
         AlertResponse: {
@@ -610,6 +772,22 @@ export interface components {
             /** @description Gateway version (semver from Cargo.toml). */
             version: string;
         };
+        /** @description One step in an agent's ancestry chain. */
+        LineageStep: {
+            /** @description Reason the next agent in the chain was delegated from this ancestor. */
+            delegation_reason?: string | null;
+            /**
+             * Format: int32
+             * @description Delegation depth of this ancestor.
+             */
+            depth: number;
+            /** @description Hex-encoded UUID of this ancestor. */
+            id: string;
+            /** @description Human-readable name of this ancestor. */
+            name: string;
+            /** @description Team this ancestor belongs to. */
+            team_id?: string | null;
+        };
         /** @description JSON representation of an audit log entry. */
         LogEntry: {
             /** @description Hex-encoded agent ID that produced this log entry. */
@@ -722,6 +900,24 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
+        /** @description High-level statistics for a single team. */
+        TeamSummary: {
+            /** @description Total agents in this team. */
+            agent_count: number;
+            /** @description Root agents (depth == 0) in this team. */
+            root_agent_count: number;
+            /** @description Team identifier. */
+            team_id: string;
+        };
+        /** @description All agents belonging to a single team. */
+        TeamTopology: {
+            /** @description Number of agents in this team (after filtering). */
+            agent_count: number;
+            /** @description Agents in this team. */
+            members: components["schemas"]["AgentNode"][];
+            /** @description Team identifier. */
+            team_id: string;
+        };
         /** @description Request body for `POST /auth/token`. */
         TokenRequest: {
             /**
@@ -741,6 +937,43 @@ export interface components {
             scopes: components["schemas"]["Scope"][];
             /** @description The issued JWT token string. */
             token: string;
+        };
+        /** @description Overview of the entire agent topology across all teams. */
+        TopologyOverview: {
+            /** @description Number of root agents (depth == 0) across all teams. */
+            root_agent_count: number;
+            /** @description Root agents that are not assigned to any team. */
+            standalone_root_agents: components["schemas"]["AgentNode"][];
+            /** @description Number of teams with at least one registered agent. */
+            team_count: number;
+            /** @description Per-team agent count summaries. */
+            teams: components["schemas"]["TeamSummary"][];
+            /** @description Total number of agents in the registry. */
+            total_agent_count: number;
+        };
+        /** @description Aggregate topology statistics across all registered agents. */
+        TopologyStats: {
+            /** @description Agents currently in `Active` status. */
+            active_count: number;
+            /** @description Agents in `Deregistered` status. */
+            deregistered_count: number;
+            /**
+             * Format: int32
+             * @description Maximum observed delegation depth.
+             */
+            max_depth: number;
+            /** @description Number of root agents (depth == 0). */
+            root_agent_count: number;
+            /** @description Agents currently in `Suspended` status. */
+            suspended_count: number;
+            /** @description Number of teams with at least one agent. */
+            team_count: number;
+            /** @description Agent count per team. */
+            team_sizes: {
+                [key: string]: number;
+            };
+            /** @description Total agents in the registry. */
+            total_agents: number;
         };
         /** @description Full trace for one agent session. */
         TraceResponse: {
@@ -1301,6 +1534,171 @@ export interface operations {
                 };
             };
             /** @description No active policy loaded */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_lineage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded UUID of the agent */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent lineage chain */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentLineage"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_overview: {
+        parameters: {
+            query?: {
+                /** @description Filter by agent status: `active`, `suspended`, or `deregistered`. */
+                status?: string | null;
+                /** @description Only include agents at or above this delegation depth. */
+                min_depth?: number | null;
+                /** @description When `true`, include the governance level in each agent node. */
+                show_budget?: boolean | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Topology overview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyOverview"];
+                };
+            };
+        };
+    };
+    get_stats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Topology statistics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyStats"];
+                };
+            };
+        };
+    };
+    get_team: {
+        parameters: {
+            query?: {
+                /** @description Filter by agent status: `active`, `suspended`, or `deregistered`. */
+                status?: string | null;
+                /** @description Only include agents at or above this delegation depth. */
+                min_depth?: number | null;
+                /** @description When `true`, include the governance level in each agent node. */
+                show_budget?: boolean | null;
+            };
+            header?: never;
+            path: {
+                /** @description Team identifier */
+                team_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Team topology */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamTopology"];
+                };
+            };
+            /** @description Team not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_tree: {
+        parameters: {
+            query?: {
+                /** @description Maximum traversal depth from the root (default 10, capped at 10). */
+                depth?: number | null;
+                /** @description Filter tree nodes by status: `active`, `suspended`, or `deregistered`. */
+                status?: string | null;
+                /** @description When `true`, include the governance level in each tree node. */
+                show_budget?: boolean | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded UUID of the starting agent */
+                root_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent subtree */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTree"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
             404: {
                 headers: {
                     [name: string]: unknown;
