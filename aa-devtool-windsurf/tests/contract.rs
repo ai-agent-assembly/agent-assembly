@@ -69,7 +69,9 @@ fn detect_returns_none_when_env_var_explicitly_unset() {
 #[test]
 fn detect_returns_devtoolinfo_when_env_var_set() {
     let _guard = EnvVarGuard::set(WINDSURF_BIN_ENV, "/usr/bin/true");
-    let info = adapter().detect().expect("detect should succeed when WINDSURF_BIN is set");
+    let info = adapter()
+        .detect()
+        .expect("detect should succeed when WINDSURF_BIN is set");
     assert_eq!(info.kind, DevToolKind::WindsurfCascade);
     assert_eq!(info.install_path, std::path::PathBuf::from("/usr/bin/true"));
     assert_eq!(info.governance_level, GovernanceLevel::L2Enforce);
@@ -115,7 +117,10 @@ async fn generate_managed_settings_deny_terminal_exec_yields_empty_allowlist() {
         .and_then(|t| t.get("command_allowlist"))
         .and_then(|v| v.as_array())
         .expect("terminal.command_allowlist must be present");
-    assert!(allowlist.is_empty(), "allowlist must be empty when terminal_exec is denied");
+    assert!(
+        allowlist.is_empty(),
+        "allowlist must be empty when terminal_exec is denied"
+    );
 }
 
 #[tokio::test]
@@ -157,7 +162,10 @@ async fn generate_managed_settings_mcp_tool_deny_adds_to_disabled_servers() {
         .and_then(|v| v.as_array())
         .expect("mcp.disabled_servers must be present");
     let names: Vec<&str> = disabled.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"github"), "disabled_servers must contain 'github', got: {names:?}");
+    assert!(
+        names.contains(&"github"),
+        "disabled_servers must contain 'github', got: {names:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +223,12 @@ fn build_launch_command_errors_when_binary_absent() {
         return;
     }
     let result = adapter().build_launch_command(&[], "agent-1", None, None);
-    if std::process::Command::new("which").arg("windsurf").output().map(|o| o.status.success()).unwrap_or(false) {
+    if std::process::Command::new("which")
+        .arg("windsurf")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         // which found windsurf; skip.
         return;
     }
@@ -230,7 +243,10 @@ fn build_launch_command_errors_when_binary_absent() {
 
 #[tokio::test]
 async fn list_mcp_servers_parses_fixture_into_three_servers() {
-    let servers = adapter_with_fixture().list_mcp_servers().await.expect("list_mcp_servers");
+    let servers = adapter_with_fixture()
+        .list_mcp_servers()
+        .await
+        .expect("list_mcp_servers");
     assert_eq!(servers.len(), 3);
     let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
     // BTreeMap iteration is alphabetical.
@@ -240,16 +256,16 @@ async fn list_mcp_servers_parses_fixture_into_three_servers() {
     let fs = servers.iter().find(|s| s.name == "filesystem").expect("filesystem");
     assert_eq!(fs.command, "windsurf-mcp-fs");
     assert_eq!(fs.args, vec!["--root", "/workspace"]);
-    let search = servers.iter().find(|s| s.name == "internal-search").expect("internal-search");
+    let search = servers
+        .iter()
+        .find(|s| s.name == "internal-search")
+        .expect("internal-search");
     assert!(search.args.is_empty());
 }
 
 #[tokio::test]
 async fn list_mcp_servers_returns_io_error_for_missing_file() {
-    let a = WindsurfCascadeAdapter::with_paths(
-        "/nonexistent/admin.json",
-        "/nonexistent/mcp_settings.json",
-    );
+    let a = WindsurfCascadeAdapter::with_paths("/nonexistent/admin.json", "/nonexistent/mcp_settings.json");
     let err = a.list_mcp_servers().await.expect_err("should fail for missing file");
     assert!(matches!(err, aa_core::AdapterError::Io(_)));
 }
@@ -277,7 +293,9 @@ async fn apply_mcp_governance_sets_disabled_servers() {
 
     let allowed = vec!["filesystem".to_string()];
     let denied = vec!["github".to_string()];
-    a.apply_mcp_governance(&allowed, &denied).await.expect("apply_mcp_governance");
+    a.apply_mcp_governance(&allowed, &denied)
+        .await
+        .expect("apply_mcp_governance");
 
     let content = std::fs::read_to_string(&admin_path).expect("read admin settings");
     let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid json");
@@ -287,7 +305,10 @@ async fn apply_mcp_governance_sets_disabled_servers() {
         .and_then(|v| v.as_array())
         .expect("mcp.disabled_servers");
     let names: Vec<&str> = disabled.iter().filter_map(|v| v.as_str()).collect();
-    assert!(names.contains(&"github"), "github must be in disabled_servers: {names:?}");
+    assert!(
+        names.contains(&"github"),
+        "github must be in disabled_servers: {names:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +350,11 @@ impl EnvVarGuard {
         // SAFETY: env-var mutation is serialized by `lock`; no other
         // thread can observe a torn read while this guard is alive.
         unsafe { std::env::set_var(key, value) };
-        Self { key, prior, _lock: lock }
+        Self {
+            key,
+            prior,
+            _lock: lock,
+        }
     }
 
     fn unset(key: &'static str) -> Self {
@@ -337,7 +362,11 @@ impl EnvVarGuard {
         let prior = std::env::var_os(key);
         // SAFETY: same reasoning as `set`.
         unsafe { std::env::remove_var(key) };
-        Self { key, prior, _lock: lock }
+        Self {
+            key,
+            prior,
+            _lock: lock,
+        }
     }
 }
 

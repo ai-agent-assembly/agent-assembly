@@ -22,7 +22,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument, PolicyDecision};
+use aa_core::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDecision,
+    PolicyDocument,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -42,7 +45,9 @@ pub const WINDSURF_BIN_ENV: &str = "WINDSURF_BIN";
 // ---------------------------------------------------------------------------
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Locate the Windsurf binary.
@@ -81,7 +86,9 @@ fn find_windsurf_binary() -> Option<PathBuf> {
 fn probe_version(binary: &Path) -> Option<String> {
     let output = Command::new(binary).arg("--version").output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let token = stdout.split_whitespace().find(|t| t.contains('.') && t.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    let token = stdout
+        .split_whitespace()
+        .find(|t| t.contains('.') && t.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
     Some(token.to_string())
 }
 
@@ -221,8 +228,13 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
 
     async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
         let mut settings = WindsurfAdminSettings {
-            mcp: WindsurfMcpAdmin { auto_approve: false, disabled_servers: vec![] },
-            terminal: WindsurfTerminalAdmin { command_allowlist: vec![] },
+            mcp: WindsurfMcpAdmin {
+                auto_approve: false,
+                disabled_servers: vec![],
+            },
+            terminal: WindsurfTerminalAdmin {
+                command_allowlist: vec![],
+            },
             policy: WindsurfPolicyAdmin::default(),
         };
 
@@ -251,11 +263,7 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
             }
         }
 
-        settings.terminal.command_allowlist = if terminal_deny_all {
-            vec![]
-        } else {
-            terminal_allowlist
-        };
+        settings.terminal.command_allowlist = if terminal_deny_all { vec![] } else { terminal_allowlist };
 
         serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
@@ -292,8 +300,8 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
         let raw = std::fs::read_to_string(&self.mcp_config_path)?;
-        let parsed: WindsurfMcpSettings = serde_json::from_str(&raw)
-            .map_err(|e| AdapterError::McpConfigFailed(format!("parse failed: {e}")))?;
+        let parsed: WindsurfMcpSettings =
+            serde_json::from_str(&raw).map_err(|e| AdapterError::McpConfigFailed(format!("parse failed: {e}")))?;
         Ok(parsed
             .mcp_servers
             .into_iter()
@@ -337,8 +345,8 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
         if let Some(parent) = self.admin_settings_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let serialized = serde_json::to_string_pretty(&admin)
-            .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+        let serialized =
+            serde_json::to_string_pretty(&admin).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
         std::fs::write(&self.admin_settings_path, serialized)
             .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
         Ok(())
