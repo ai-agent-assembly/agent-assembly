@@ -359,7 +359,9 @@ mod tests {
         // A good extension with a proper semver version.
         make_extension(tmp.path(), "github.copilot", "1.228.0");
         let adapter = CopilotAdapter::with_extensions_dir(tmp.path());
-        let info = adapter.detect().expect("good extension found despite invalid-semver sibling");
+        let info = adapter
+            .detect()
+            .expect("good extension found despite invalid-semver sibling");
         assert_eq!(info.version, Some("1.228.0".to_string()));
     }
 }
