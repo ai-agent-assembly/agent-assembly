@@ -288,8 +288,24 @@ impl DevToolAdapter for ClaudeCodeAdapter {
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        // Implemented in AAASM-959.
-        Ok(vec![])
+        // Primary source: resolved settings.json (global or project-scoped).
+        let settings_path = self.settings_path_resolver.resolve()?;
+        let mut servers = apply::read_mcp_servers_from(&settings_path)?;
+
+        // Secondary source: <cwd>/.claude/.mcp.json when present.
+        if let Ok(cwd) = std::env::current_dir() {
+            let mcp_json = cwd.join(".claude").join(".mcp.json");
+            let extra = apply::read_mcp_servers_from(&mcp_json)?;
+            // Settings-file entries win on name collision.
+            let existing: std::collections::HashSet<String> = servers.iter().map(|s| s.name.clone()).collect();
+            for s in extra {
+                if !existing.contains(&s.name) {
+                    servers.push(s);
+                }
+            }
+        }
+
+        Ok(servers)
     }
 
     async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
@@ -536,5 +552,50 @@ mod tests {
         let adapter = ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
         let result = adapter.build_launch_command(&[], "agent-1", None, None);
         assert!(matches!(result, Err(AdapterError::ToolNotFound)));
+    }
+
+    // ── list_mcp_servers ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_mcp_servers_returns_empty_when_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let servers = adapter.list_mcp_servers().await.unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_servers_parses_global_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "filesystem": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                    },
+                    "search": {
+                        "command": "node",
+                        "args": ["search-server.js"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let adapter =
+            ClaudeCodeAdapter::new().with_settings_path_resolver(Box::new(StubSettingsPathResolver(path)));
+        let mut servers = adapter.list_mcp_servers().await.unwrap();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "filesystem");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(servers[0].args, ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]);
+        assert_eq!(servers[1].name, "search");
+        assert_eq!(servers[1].command, "node");
+        assert_eq!(servers[1].args, ["search-server.js"]);
     }
 }

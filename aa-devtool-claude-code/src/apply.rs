@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use aa_core::AdapterError;
+use aa_core::{AdapterError, McpServerInfo};
 
 /// Injectable path resolver for the settings file location.
 ///
@@ -109,6 +109,36 @@ pub(crate) fn apply_mcp_governance_at(path: &Path, allowed: &[String], denied: &
     let json_str =
         serde_json::to_string_pretty(&mcp_json).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
     apply_settings_at(path, &json_str)
+}
+
+/// Parse `mcpServers` from a Claude Code JSON config file into a `Vec<McpServerInfo>`.
+///
+/// Supports both `settings.json` (which embeds `mcpServers` alongside other
+/// settings keys) and standalone `.mcp.json` files that contain only
+/// `mcpServers`. Returns an empty vec when the file is absent or contains no
+/// `mcpServers` key — that is not an error for Claude Code.
+pub(crate) fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, AdapterError> {
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+    let Some(servers_obj) = v.get("mcpServers").and_then(|s| s.as_object()) else {
+        return Ok(vec![]);
+    };
+    let mut result = Vec::with_capacity(servers_obj.len());
+    for (name, cfg) in servers_obj {
+        let command = cfg.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let args = cfg
+            .get("args")
+            .and_then(|a| a.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        result.push(McpServerInfo { name: name.clone(), command, args });
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
