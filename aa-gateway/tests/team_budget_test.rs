@@ -32,7 +32,9 @@ fn record_usage_accumulates_in_team_budgets() {
     let t = base_tracker();
     let id = agent(1);
     t.record_usage(id, Some("team-a"), Provider::OpenAi, Model::Gpt4o, 1_000, 0);
-    let state = t.team_state("team-a").expect("team-a must have a state after record_usage");
+    let state = t
+        .team_state("team-a")
+        .expect("team-a must have a state after record_usage");
     assert!(state.spent_usd > Decimal::ZERO, "team-a spend must be non-zero");
 }
 
@@ -42,7 +44,9 @@ fn record_raw_spend_accumulates_in_team_budgets() {
     let t = base_tracker();
     let id = agent(2);
     t.record_raw_spend(id, Some("team-b"), Decimal::from_str("7.50").unwrap());
-    let state = t.team_state("team-b").expect("team-b must have a state after record_raw_spend");
+    let state = t
+        .team_state("team-b")
+        .expect("team-b must have a state after record_raw_spend");
     assert_eq!(state.spent_usd, Decimal::from_str("7.50").unwrap());
 }
 
@@ -54,7 +58,10 @@ fn team_limit_blocks_second_agent_when_team_total_exceeded() {
     let agent_b = agent(11);
     // Agent A spends $3.00 — within budget
     let s1 = t.record_raw_spend(agent_a, Some("shared-team"), Decimal::from_str("3.00").unwrap());
-    assert!(matches!(s1, BudgetStatus::WithinBudget { .. }), "agent_a should be within budget");
+    assert!(
+        matches!(s1, BudgetStatus::WithinBudget { .. }),
+        "agent_a should be within budget"
+    );
     // Agent B spends $2.00 — pushes team total to $5.00 (exactly at limit)
     let s2 = t.record_raw_spend(agent_b, Some("shared-team"), Decimal::from_str("2.00").unwrap());
     assert_eq!(s2, BudgetStatus::LimitExceeded, "team limit must block agent_b");
@@ -72,14 +79,8 @@ fn individual_agent_below_team_limit_is_not_blocked() {
 #[test]
 fn budget_alert_fires_at_80_pct_of_team_daily_limit() {
     let (alert_tx, mut alert_rx) = tokio::sync::broadcast::channel::<BudgetAlert>(16);
-    let t = BudgetTracker::new_with_alert_sender(
-        PricingTable::default_table(),
-        None,
-        None,
-        chrono_tz::UTC,
-        alert_tx,
-    )
-    .with_team_daily_limit(Decimal::from_str("10.00").unwrap());
+    let t = BudgetTracker::new_with_alert_sender(PricingTable::default_table(), None, None, chrono_tz::UTC, alert_tx)
+        .with_team_daily_limit(Decimal::from_str("10.00").unwrap());
 
     // 8.00 / 10.00 = 80%
     t.record_raw_spend(agent(20), Some("alert-team"), Decimal::from_str("8.00").unwrap());
@@ -92,14 +93,8 @@ fn budget_alert_fires_at_80_pct_of_team_daily_limit() {
 #[test]
 fn budget_alert_fires_at_95_pct_of_team_daily_limit() {
     let (alert_tx, mut alert_rx) = tokio::sync::broadcast::channel::<BudgetAlert>(16);
-    let t = BudgetTracker::new_with_alert_sender(
-        PricingTable::default_table(),
-        None,
-        None,
-        chrono_tz::UTC,
-        alert_tx,
-    )
-    .with_team_daily_limit(Decimal::from_str("10.00").unwrap());
+    let t = BudgetTracker::new_with_alert_sender(PricingTable::default_table(), None, None, chrono_tz::UTC, alert_tx)
+        .with_team_daily_limit(Decimal::from_str("10.00").unwrap());
 
     // 9.50 / 10.00 = 95%
     t.record_raw_spend(agent(21), Some("alert-team-95"), Decimal::from_str("9.50").unwrap());
@@ -118,7 +113,10 @@ fn team_budget_persists_through_snapshot_round_trip() {
     t.record_raw_spend(agent(30), Some("persist-team"), Decimal::from_str("4.20").unwrap());
 
     let snap = t.snapshot();
-    assert!(snap.team_budgets.contains_key("persist-team"), "snapshot must include team");
+    assert!(
+        snap.team_budgets.contains_key("persist-team"),
+        "snapshot must include team"
+    );
 
     save_to_disk_atomic(&path, &snap).unwrap();
     let loaded = load_from_disk(&path).unwrap();
@@ -149,5 +147,8 @@ fn team_daily_spend_resets_on_date_advance() {
 
     // After date advance, team spend resets — new call should be within budget
     let s = restored.record_raw_spend(agent(33), Some("reset-team"), Decimal::from_str("1.00").unwrap());
-    assert!(matches!(s, BudgetStatus::WithinBudget { .. }), "team spend must reset after date advance");
+    assert!(
+        matches!(s, BudgetStatus::WithinBudget { .. }),
+        "team spend must reset after date advance"
+    );
 }

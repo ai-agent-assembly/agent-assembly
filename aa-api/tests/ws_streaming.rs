@@ -278,6 +278,7 @@ async fn ws_cli_logs_follow_integration() {
     budget_tx
         .send(aa_gateway::budget::types::BudgetAlert {
             agent_id: aa_core::AgentId::from_bytes([0xAA; 16]),
+            team_id: None,
             threshold_pct: 80,
             spent_usd: 8.0,
             limit_usd: 10.0,

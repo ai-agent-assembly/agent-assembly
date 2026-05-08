@@ -141,10 +141,7 @@ impl BudgetTracker {
                     .map(|id| (id, e.state))
             })
             .collect();
-        let team_budgets: DashMap<String, BudgetState> = initial
-            .team_budgets
-            .into_iter()
-            .collect();
+        let team_budgets: DashMap<String, BudgetState> = initial.team_budgets.into_iter().collect();
         Self {
             per_agent,
             team_budgets,
@@ -181,10 +178,7 @@ impl BudgetTracker {
                     .map(|id| (id, e.state))
             })
             .collect();
-        let team_budgets: DashMap<String, BudgetState> = initial
-            .team_budgets
-            .into_iter()
-            .collect();
+        let team_budgets: DashMap<String, BudgetState> = initial.team_budgets.into_iter().collect();
         Self {
             per_agent,
             team_budgets,
@@ -647,7 +641,7 @@ mod tests {
         let id = agent(10);
         // First call — establishes the agent entry
         t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
-                                                                             // Backdate the agent entry by 1 day in the Tokyo timezone
+                                                                                   // Backdate the agent entry by 1 day in the Tokyo timezone
         let yesterday_tokyo = today_in_tz(tz) - chrono::Duration::days(1);
         t.per_agent.alter(&id, |_, mut s| {
             s.date = yesterday_tokyo;
