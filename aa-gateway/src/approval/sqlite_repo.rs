@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 
 use aa_core::ApprovalKind;
 
-use super::repo::{ApprovalRoutingRepo, RepoError};
+use super::repo::{global_default, ApprovalRoutingRepo, RepoError};
 use super::routing_config::TeamRoutingConfig;
 
 // ---------------------------------------------------------------------------
@@ -77,22 +77,23 @@ impl SqliteApprovalRoutingRepo {
 
 #[async_trait]
 impl ApprovalRoutingRepo for SqliteApprovalRoutingRepo {
-    async fn get(
-        &self,
-        team_id: &str,
-        approval_kind: Option<&ApprovalKind>,
-    ) -> Result<Option<TeamRoutingConfig>, RepoError> {
+    async fn get(&self, team_id: &str, approval_kind: Option<&ApprovalKind>) -> Result<TeamRoutingConfig, RepoError> {
         let kind_str = approval_kind.map(ApprovalKind::as_str);
 
-        // Try exact (team_id, approval_kind) match first.
+        // 1. Try exact (team_id, approval_kind) match.
         if let Some(k) = kind_str {
             if let Some(cfg) = fetch_one(&self.pool, team_id, Some(k)).await? {
-                return Ok(Some(cfg));
+                return Ok(cfg);
             }
         }
 
-        // Fall back to team-wide config (approval_kind = '' sentinel).
-        fetch_one(&self.pool, team_id, None).await
+        // 2. Fall back to team-wide config (approval_kind = '' sentinel).
+        if let Some(cfg) = fetch_one(&self.pool, team_id, None).await? {
+            return Ok(cfg);
+        }
+
+        // 3. Global default: 1800 s timeout, OrgAdmin approver.
+        Ok(global_default(team_id, approval_kind.cloned()))
     }
 
     async fn upsert(&self, config: TeamRoutingConfig) -> Result<(), RepoError> {
@@ -157,6 +158,7 @@ impl ApprovalRoutingRepo for SqliteApprovalRoutingRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::repo::{DEFAULT_ESCALATION_ROLE, DEFAULT_ESCALATION_TIMEOUT_SECS};
 
     async fn in_memory_repo() -> SqliteApprovalRoutingRepo {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -178,7 +180,7 @@ mod tests {
         let repo = in_memory_repo().await;
         repo.upsert(cfg("team-a", None)).await.unwrap();
 
-        let got = repo.get("team-a", None).await.unwrap().unwrap();
+        let got = repo.get("team-a", None).await.unwrap();
         assert_eq!(got.team_id, "team-a");
         assert_eq!(got.approval_kind, None);
         assert_eq!(got.approvers, vec!["alice"]);
@@ -189,8 +191,10 @@ mod tests {
         let repo = in_memory_repo().await;
         repo.upsert(cfg("team-b", None)).await.unwrap();
 
-        let got = repo.get("team-b", Some(&ApprovalKind::ToolUse)).await.unwrap().unwrap();
+        // Kind-specific row absent → falls back to team-wide config, not global default.
+        let got = repo.get("team-b", Some(&ApprovalKind::ToolUse)).await.unwrap();
         assert_eq!(got.approval_kind, None);
+        assert_eq!(got.approvers, vec!["alice"]);
     }
 
     #[tokio::test]
@@ -207,18 +211,30 @@ mod tests {
         };
         repo.upsert(override_cfg).await.unwrap();
 
-        let got = repo.get("team-c", Some(&ApprovalKind::ToolUse)).await.unwrap().unwrap();
+        let got = repo.get("team-c", Some(&ApprovalKind::ToolUse)).await.unwrap();
         assert_eq!(got.approvers, vec!["bob"]);
         assert_eq!(got.escalation_timeout_secs, 60);
 
-        let fallback = repo.get("team-c", None).await.unwrap().unwrap();
+        let fallback = repo.get("team-c", None).await.unwrap();
         assert_eq!(fallback.approvers, vec!["alice"]);
     }
 
     #[tokio::test]
-    async fn get_unknown_team_returns_none() {
+    async fn get_unknown_team_returns_global_default() {
         let repo = in_memory_repo().await;
-        assert!(repo.get("ghost", None).await.unwrap().is_none());
+        let got = repo.get("ghost", None).await.unwrap();
+        assert_eq!(got.team_id, "ghost");
+        assert_eq!(got.escalation_timeout_secs, DEFAULT_ESCALATION_TIMEOUT_SECS);
+        assert_eq!(got.approvers, vec![DEFAULT_ESCALATION_ROLE]);
+        assert_eq!(got.escalation_approvers, vec![DEFAULT_ESCALATION_ROLE]);
+    }
+
+    #[tokio::test]
+    async fn get_unknown_team_with_kind_returns_global_default() {
+        let repo = in_memory_repo().await;
+        let got = repo.get("ghost", Some(&ApprovalKind::Spawn)).await.unwrap();
+        assert_eq!(got.escalation_timeout_secs, DEFAULT_ESCALATION_TIMEOUT_SECS);
+        assert_eq!(got.approval_kind, Some(ApprovalKind::Spawn));
     }
 
     #[tokio::test]
@@ -235,7 +251,7 @@ mod tests {
         };
         repo.upsert(updated).await.unwrap();
 
-        let got = repo.get("team-d", None).await.unwrap().unwrap();
+        let got = repo.get("team-d", None).await.unwrap();
         assert_eq!(got.approvers, vec!["carol"]);
         assert_eq!(got.escalation_timeout_secs, 600);
     }
