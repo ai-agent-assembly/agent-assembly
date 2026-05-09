@@ -4,7 +4,29 @@
 //! AAASM-980: append-only rows, `created_at DESC` ordering, and secondary
 //! indexes on `(source_agent_id, edge_type)` and `(target_agent_id, edge_type)`.
 
+pub mod store;
+
+pub use store::InMemoryEdgeStore;
+
 use chrono::{DateTime, Utc};
+
+/// The six valid edge type strings, matching the `EdgeType` enum variants that
+/// AAASM-985 will introduce. Validated on every insert.
+pub const VALID_EDGE_TYPES: &[&str] = &[
+    "delegates_to",
+    "calls",
+    "reads",
+    "writes",
+    "approves",
+    "messages",
+];
+
+/// Error returned when an insert or lookup is given an unrecognised edge type.
+#[derive(Debug, thiserror::Error)]
+pub enum EdgeStoreError {
+    #[error("invalid edge type: {0:?}")]
+    InvalidEdgeType(String),
+}
 
 /// Input used when inserting a new edge into the store.
 #[derive(Debug, Clone)]
