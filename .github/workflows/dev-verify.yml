@@ -1,0 +1,58 @@
+name: dev-verify
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "Makefile"
+      - "scripts/**"
+      - ".github/workflows/dev-verify.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "Makefile"
+      - "scripts/**"
+      - ".github/workflows/dev-verify.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dev-verify:
+    name: dev-verify (smoke tests + gateway health)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone SDK repos as siblings
+        # sdk-repos.txt lists SSH URLs; CI uses HTTPS equivalents.
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          git clone https://github.com/AI-agent-assembly/python-sdk.git "$parent/python-sdk"
+          git clone https://github.com/AI-agent-assembly/node-sdk.git "$parent/node-sdk"
+          git clone https://github.com/AI-agent-assembly/go-sdk.git "$parent/go-sdk"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.22"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Run dev-verify
+        run: make dev-verify
