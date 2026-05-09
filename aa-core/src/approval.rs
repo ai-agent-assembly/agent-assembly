@@ -1,11 +1,11 @@
 //! Approval-related domain types shared across crates.
 
+use alloc::string::String;
+
 /// The category of action that triggered an approval request.
 ///
-/// Used as an optional filter key in [`TeamRoutingConfig`] so different action
-/// types can be routed to different approver lists within the same team.
-///
-/// [`TeamRoutingConfig`]: aa_gateway::approval::TeamRoutingConfig
+/// Used as an optional filter key in team routing configuration so different
+/// action types can be routed to different approver lists within the same team.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -46,7 +46,7 @@ impl core::str::FromStr for ApprovalKind {
             "spawn" => Self::Spawn,
             "tool_use" => Self::ToolUse,
             "budget_increase" => Self::BudgetIncrease,
-            other => Self::Custom(other.to_string()),
+            other => Self::Custom(String::from(other)),
         })
     }
 }
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn custom_kind_preserves_string() {
         let k: ApprovalKind = "file_access".parse().unwrap();
-        assert_eq!(k, ApprovalKind::Custom("file_access".to_string()));
+        assert_eq!(k, ApprovalKind::Custom(String::from("file_access")));
         assert_eq!(k.as_str(), "file_access");
     }
 
