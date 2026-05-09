@@ -500,6 +500,203 @@ paths:
                 $ref: '#/components/schemas/PolicyResponse'
         '404':
           description: No active policy loaded
+  /api/v1/topology/lineage/{agent_id}:
+    get:
+      tags:
+      - topology
+      summary: '`GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.'
+      description: |-
+        Returns the ordered list of ancestors for the given agent, starting from its
+        direct parent and ending at the root agent (depth 0). Each step includes the
+        delegation reason and team membership. Returns 404 if the agent is unknown.
+      operationId: get_lineage
+      parameters:
+      - name: agent_id
+        in: path
+        description: Hex-encoded UUID of the agent
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Agent lineage chain
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentLineage'
+        '400':
+          description: Invalid agent ID format
+        '404':
+          description: Agent not found
+  /api/v1/topology/overview:
+    get:
+      tags:
+      - topology
+      summary: '`GET /api/v1/topology/overview` — summary of all teams and root agents.'
+      description: |-
+        Returns a count of teams, root agents, and total agents across the registry,
+        with a per-team breakdown and a list of standalone root agents not assigned
+        to any team. Supports optional filtering by status, minimum depth, and
+        governance level visibility.
+      operationId: get_overview
+      parameters:
+      - name: status
+        in: query
+        description: 'Filter by agent status: `active`, `suspended`, or `deregistered`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: min_depth
+        in: query
+        description: Only include agents at or above this delegation depth.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      - name: show_budget
+        in: query
+        description: When `true`, include the governance level in each agent node.
+        required: false
+        schema:
+          type:
+          - boolean
+          - 'null'
+      responses:
+        '200':
+          description: Topology overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyOverview'
+  /api/v1/topology/stats:
+    get:
+      tags:
+      - topology
+      summary: '`GET /api/v1/topology/stats` — aggregate topology statistics.'
+      description: |-
+        Returns aggregate counts across the entire registry: total agents, root
+        agents, maximum delegation depth, per-status counts, and per-team agent
+        counts. This endpoint never returns 404; an empty registry returns all
+        zero counts.
+      operationId: get_stats
+      responses:
+        '200':
+          description: Topology statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyStats'
+  /api/v1/topology/team/{team_id}:
+    get:
+      tags:
+      - topology
+      summary: '`GET /api/v1/topology/team/{team_id}` — all agents in a team with depth info.'
+      description: |-
+        Returns all agents belonging to the given team, sorted by delegation depth.
+        Results can be filtered by status and minimum depth. Returns 404 if the
+        team identifier is not known to the registry.
+      operationId: get_team
+      parameters:
+      - name: team_id
+        in: path
+        description: Team identifier
+        required: true
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: 'Filter by agent status: `active`, `suspended`, or `deregistered`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: min_depth
+        in: query
+        description: Only include agents at or above this delegation depth.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      - name: show_budget
+        in: query
+        description: When `true`, include the governance level in each agent node.
+        required: false
+        schema:
+          type:
+          - boolean
+          - 'null'
+      responses:
+        '200':
+          description: Team topology
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamTopology'
+        '404':
+          description: Team not found
+  /api/v1/topology/tree/{root_id}:
+    get:
+      tags:
+      - topology
+      summary: '`GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.'
+      description: |-
+        Recursively walks the delegation tree starting from the given agent, up to
+        a configurable depth (default 10, maximum 10). Nodes can be filtered by
+        status. Returns a nested JSON tree with each agent's children inline.
+      operationId: get_tree
+      parameters:
+      - name: root_id
+        in: path
+        description: Hex-encoded UUID of the starting agent
+        required: true
+        schema:
+          type: string
+      - name: depth
+        in: query
+        description: Maximum traversal depth from the root (default 10, capped at 10).
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      - name: status
+        in: query
+        description: 'Filter tree nodes by status: `active`, `suspended`, or `deregistered`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: show_budget
+        in: query
+        description: When `true`, include the governance level in each tree node.
+        required: false
+        schema:
+          type:
+          - boolean
+          - 'null'
+      responses:
+        '200':
+          description: Agent subtree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentTree'
+        '400':
+          description: Invalid agent ID format
+        '404':
+          description: Agent not found
   /api/v1/traces/{session_id}:
     get:
       tags:
@@ -637,6 +834,59 @@ components:
           - string
           - 'null'
           description: Total spend this month in USD for this agent (if monthly tracking is enabled).
+    AgentLineage:
+      type: object
+      description: An agent's complete ancestry chain from direct parent up to root.
+      required:
+      - agent_id
+      - ancestor_count
+      - ancestors
+      properties:
+        agent_id:
+          type: string
+          description: The subject agent's hex-encoded UUID.
+        ancestor_count:
+          type: integer
+          description: Number of ancestors — 0 if the agent is a root.
+          minimum: 0
+        ancestors:
+          type: array
+          items:
+            $ref: '#/components/schemas/LineageStep'
+          description: 'Ordered ancestors: index 0 is the direct parent, last element is the root.'
+    AgentNode:
+      type: object
+      description: Minimal agent representation used in list and tree responses.
+      required:
+      - id
+      - name
+      - depth
+      - status
+      properties:
+        depth:
+          type: integer
+          format: int32
+          description: Delegation depth — 0 for root agents.
+          minimum: 0
+        governance_level:
+          type:
+          - string
+          - 'null'
+          description: Governance level — included only when `show_budget=true`.
+        id:
+          type: string
+          description: Hex-encoded agent UUID.
+        name:
+          type: string
+          description: Human-readable agent name.
+        status:
+          type: string
+          description: 'Runtime status: `active`, `suspended`, or `deregistered`.'
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team this agent belongs to, if any.
     AgentResponse:
       type: object
       description: JSON representation of an agent returned by the API.
@@ -723,6 +973,54 @@ components:
         version:
           type: string
           description: Semver version string.
+    AgentTree:
+      type: object
+      description: Recursive tree node representing an agent and all its descendants.
+      required:
+      - id
+      - name
+      - depth
+      - status
+      - children
+      properties:
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentTree'
+        delegation_reason:
+          type:
+          - string
+          - 'null'
+          description: Reason this agent was delegated from its parent, if recorded.
+        depth:
+          type: integer
+          format: int32
+          description: Delegation depth — 0 for root agents.
+          minimum: 0
+        governance_level:
+          type:
+          - string
+          - 'null'
+          description: Governance level — included only when `show_budget=true`.
+        id:
+          type: string
+          description: Hex-encoded agent UUID.
+        name:
+          type: string
+          description: Human-readable agent name.
+        spawned_by_tool:
+          type:
+          - string
+          - 'null'
+          description: Tool that spawned this agent, if known.
+        status:
+          type: string
+          description: 'Runtime status: `active`, `suspended`, or `deregistered`.'
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team this agent belongs to, if any.
     AlertResponse:
       type: object
       description: JSON representation of a governance alert.
@@ -1005,6 +1303,35 @@ components:
         version:
           type: string
           description: Gateway version (semver from Cargo.toml).
+    LineageStep:
+      type: object
+      description: One step in an agent's ancestry chain.
+      required:
+      - id
+      - name
+      - depth
+      properties:
+        delegation_reason:
+          type:
+          - string
+          - 'null'
+          description: Reason the next agent in the chain was delegated from this ancestor.
+        depth:
+          type: integer
+          format: int32
+          description: Delegation depth of this ancestor.
+          minimum: 0
+        id:
+          type: string
+          description: Hex-encoded UUID of this ancestor.
+        name:
+          type: string
+          description: Human-readable name of this ancestor.
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team this ancestor belongs to.
     LogEntry:
       type: object
       description: JSON representation of an audit log entry.
@@ -1199,6 +1526,45 @@ components:
         team_id:
           type: string
           description: Team identifier.
+    TeamSummary:
+      type: object
+      description: High-level statistics for a single team.
+      required:
+      - team_id
+      - agent_count
+      - root_agent_count
+      properties:
+        agent_count:
+          type: integer
+          description: Total agents in this team.
+          minimum: 0
+        root_agent_count:
+          type: integer
+          description: Root agents (depth == 0) in this team.
+          minimum: 0
+        team_id:
+          type: string
+          description: Team identifier.
+    TeamTopology:
+      type: object
+      description: All agents belonging to a single team.
+      required:
+      - team_id
+      - agent_count
+      - members
+      properties:
+        agent_count:
+          type: integer
+          description: Number of agents in this team (after filtering).
+          minimum: 0
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentNode'
+          description: Agents in this team.
+        team_id:
+          type: string
+          description: Team identifier.
     TokenRequest:
       type: object
       description: Request body for `POST /auth/token`.
@@ -1233,6 +1599,88 @@ components:
         token:
           type: string
           description: The issued JWT token string.
+    TopologyOverview:
+      type: object
+      description: Overview of the entire agent topology across all teams.
+      required:
+      - team_count
+      - root_agent_count
+      - total_agent_count
+      - teams
+      - standalone_root_agents
+      properties:
+        root_agent_count:
+          type: integer
+          description: Number of root agents (depth == 0) across all teams.
+          minimum: 0
+        standalone_root_agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentNode'
+          description: Root agents that are not assigned to any team.
+        team_count:
+          type: integer
+          description: Number of teams with at least one registered agent.
+          minimum: 0
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamSummary'
+          description: Per-team agent count summaries.
+        total_agent_count:
+          type: integer
+          description: Total number of agents in the registry.
+          minimum: 0
+    TopologyStats:
+      type: object
+      description: Aggregate topology statistics across all registered agents.
+      required:
+      - total_agents
+      - root_agent_count
+      - max_depth
+      - active_count
+      - suspended_count
+      - deregistered_count
+      - team_count
+      - team_sizes
+      properties:
+        active_count:
+          type: integer
+          description: Agents currently in `Active` status.
+          minimum: 0
+        deregistered_count:
+          type: integer
+          description: Agents in `Deregistered` status.
+          minimum: 0
+        max_depth:
+          type: integer
+          format: int32
+          description: Maximum observed delegation depth.
+          minimum: 0
+        root_agent_count:
+          type: integer
+          description: Number of root agents (depth == 0).
+          minimum: 0
+        suspended_count:
+          type: integer
+          description: Agents currently in `Suspended` status.
+          minimum: 0
+        team_count:
+          type: integer
+          description: Number of teams with at least one agent.
+          minimum: 0
+        team_sizes:
+          type: object
+          description: Agent count per team.
+          additionalProperties:
+            type: integer
+            minimum: 0
+          propertyNames:
+            type: string
+        total_agents:
+          type: integer
+          description: Total agents in the registry.
+          minimum: 0
     TraceResponse:
       type: object
       description: Full trace for one agent session.
@@ -1365,3 +1813,5 @@ tags:
   description: Authentication and token issuance
 - name: events
   description: Real-time event streaming via WebSocket
+- name: topology
+  description: Agent topology — tree, team, lineage, and statistics queries

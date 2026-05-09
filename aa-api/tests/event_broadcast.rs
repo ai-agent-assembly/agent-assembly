@@ -37,6 +37,7 @@ async fn subscribe_approvals_receives_published_event() {
         fallback: aa_core::PolicyResult::Deny {
             reason: "test".to_string(),
         },
+        team_id: None,
     };
 
     tx.send(request).unwrap();

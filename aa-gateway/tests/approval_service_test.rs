@@ -49,6 +49,7 @@ fn make_test_request() -> ApprovalRequest {
         fallback: aa_core::PolicyResult::Deny {
             reason: "timed out".to_string(),
         },
+        team_id: None,
     }
 }
 

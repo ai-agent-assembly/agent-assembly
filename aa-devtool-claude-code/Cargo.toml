@@ -19,7 +19,7 @@ docker-integration = []
 axum = "0.8"
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

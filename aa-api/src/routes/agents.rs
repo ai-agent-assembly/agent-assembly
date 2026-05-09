@@ -8,6 +8,8 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use aa_gateway::registry::OrphanMode;
+
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -266,7 +268,7 @@ pub async fn delete_agent(
 
     state
         .agent_registry
-        .deregister(&agent_id)
+        .deregister(&agent_id, OrphanMode::Suspend)
         .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
 
     Ok(StatusCode::NO_CONTENT)

@@ -210,6 +210,8 @@ mod tests {
                 reason: "r".to_string(),
                 status: "pending".to_string(),
                 created_at: "2026-04-30T10:00:00Z".to_string(),
+                team_id: String::new(),
+                routing_status: String::new(),
             },
             crate::commands::status::models::ApprovalResponse {
                 id: "2".to_string(),
@@ -218,6 +220,8 @@ mod tests {
                 reason: "r2".to_string(),
                 status: "pending".to_string(),
                 created_at: "2026-04-30T11:00:00Z".to_string(),
+                team_id: String::new(),
+                routing_status: String::new(),
             },
         ];
         assert_eq!(state.approval_selected, 0);
@@ -241,6 +245,8 @@ mod tests {
             reason: "r".to_string(),
             status: "pending".to_string(),
             created_at: "2026-04-30T10:00:00Z".to_string(),
+            team_id: String::new(),
+            routing_status: String::new(),
         }];
         let action = handle_key(&mut state, make_key(KeyCode::Char('a')));
         assert_eq!(action, InputAction::Approve);
@@ -257,6 +263,8 @@ mod tests {
             reason: "r".to_string(),
             status: "pending".to_string(),
             created_at: "2026-04-30T10:00:00Z".to_string(),
+            team_id: String::new(),
+            routing_status: String::new(),
         }];
         let action = handle_key(&mut state, make_key(KeyCode::Char('r')));
         assert_eq!(action, InputAction::Reject);
@@ -306,6 +314,8 @@ mod tests {
             reason: "r".to_string(),
             status: "pending".to_string(),
             created_at: "2026-04-30T10:00:00Z".to_string(),
+            team_id: String::new(),
+            routing_status: String::new(),
         }];
         let action = handle_key(&mut state, make_key(KeyCode::Enter));
         assert_eq!(action, InputAction::Inspect);

@@ -15,6 +15,8 @@ use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, Chec
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::approval::escalation::EscalationScheduler;
+use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
@@ -25,6 +27,8 @@ pub struct PolicyServiceImpl {
     engine: Arc<PolicyEngine>,
     registry: Option<Arc<AgentRegistry>>,
     approval_queue: Option<Arc<ApprovalQueue>>,
+    escalation_scheduler: Option<Arc<EscalationScheduler>>,
+    routing_store: Option<Arc<RoutingConfigStore>>,
     audit_tx: mpsc::Sender<AuditEntry>,
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
@@ -47,6 +51,8 @@ impl PolicyServiceImpl {
             engine,
             registry: None,
             approval_queue: None,
+            escalation_scheduler: None,
+            routing_store: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -69,6 +75,8 @@ impl PolicyServiceImpl {
             engine,
             registry: Some(registry),
             approval_queue: None,
+            escalation_scheduler: None,
+            routing_store: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -93,6 +101,39 @@ impl PolicyServiceImpl {
             engine,
             registry: Some(registry),
             approval_queue: Some(approval_queue),
+            escalation_scheduler: None,
+            routing_store: None,
+            audit_tx,
+            audit_drops,
+            seq: AtomicU64::new(0),
+            last_hash: Mutex::new(initial_hash),
+        }
+    }
+
+    /// Create a new service with an agent registry, approval queue, escalation scheduler,
+    /// and routing store loaded from the default path.
+    ///
+    /// When a scheduler is provided, approved requests are registered for escalation
+    /// and the `ApprovalRouted` audit event is emitted when a team is identified.
+    pub fn with_registry_approval_and_escalation(
+        engine: Arc<PolicyEngine>,
+        registry: Arc<AgentRegistry>,
+        approval_queue: Arc<ApprovalQueue>,
+        escalation_scheduler: Option<Arc<EscalationScheduler>>,
+        audit_tx: mpsc::Sender<AuditEntry>,
+        audit_drops: Arc<AtomicU64>,
+        initial_hash: [u8; 32],
+    ) -> Self {
+        // Load the default routing config store so we can look up escalation settings.
+        let routing_store = RoutingConfigStore::load(crate::approval::routing_config::default_routing_config_path())
+            .ok()
+            .map(Arc::new);
+        Self {
+            engine,
+            registry: Some(registry),
+            approval_queue: Some(approval_queue),
+            escalation_scheduler,
+            routing_store,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -168,8 +209,14 @@ impl PolicyServiceImpl {
         }
     }
 
-    /// Build an [`ApprovalRequest`] from a gRPC request and the policy timeout.
-    fn build_approval_request(req: &CheckActionRequest, timeout_secs: u32) -> ApprovalRequest {
+    /// Build an [`ApprovalRequest`] from a gRPC request, the policy timeout,
+    /// and an optional team identifier resolved from the agent registry.
+    fn build_approval_request(
+        req: &CheckActionRequest,
+        timeout_secs: u32,
+        team_id: Option<String>,
+        request_id: uuid::Uuid,
+    ) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -177,7 +224,7 @@ impl PolicyServiceImpl {
             .as_secs();
 
         ApprovalRequest {
-            request_id: uuid::Uuid::new_v4(),
+            request_id,
             agent_id,
             action: format!("action_type={}", req.action_type),
             condition_triggered: "requires_approval".to_string(),
@@ -186,6 +233,7 @@ impl PolicyServiceImpl {
             fallback: aa_core::PolicyResult::Deny {
                 reason: "approval timed out".to_string(),
             },
+            team_id,
         }
     }
 
@@ -219,7 +267,63 @@ impl PolicyServiceImpl {
             }
         };
 
-        let approval_req = Self::build_approval_request(req, timeout_secs);
+        // Resolve the agent's team_id from the registry so the router can
+        // direct the request to the correct approver queue.
+        let team_id = req.agent_id.as_ref().and_then(|proto_agent| {
+            self.registry.as_ref().and_then(|registry| {
+                registry
+                    .get(&crate::registry::convert::proto_agent_id_to_key(proto_agent))
+                    .and_then(|record| record.team_id.clone())
+            })
+        });
+
+        // Pre-generate the request ID so it can be included in the ApprovalRouted audit event.
+        let approval_request_id = uuid::Uuid::new_v4();
+
+        // Emit ApprovalRouted audit event when a team is identified.
+        if let Some(ref tid) = team_id {
+            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            let proto_agent = req.agent_id.as_ref();
+            let agent_id = proto_agent
+                .map(|a| AgentId::from_bytes(convert::hash_to_16(&a.agent_id)))
+                .unwrap_or_else(|| AgentId::from_bytes([0u8; 16]));
+            let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
+            let payload = serde_json::json!({
+                "team_id": tid,
+                "action_type": req.action_type,
+                "approval_id": approval_request_id.to_string(),
+            })
+            .to_string();
+            let mut last_hash = self.last_hash.lock().await;
+            let entry = AuditEntry::new(
+                seq,
+                now,
+                AuditEventType::ApprovalRouted,
+                agent_id,
+                session_id,
+                payload,
+                *last_hash,
+            );
+            *last_hash = *entry.entry_hash();
+            drop(last_hash);
+            if let Err(e) = self.audit_tx.try_send(entry) {
+                match e {
+                    mpsc::error::TrySendError::Full(_) => {
+                        tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
+                        self.audit_drops.fetch_add(1, Ordering::Relaxed);
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        tracing::error!("audit channel closed — AuditWriter task has exited");
+                    }
+                }
+            }
+        }
+
+        let approval_req = Self::build_approval_request(req, timeout_secs, team_id.clone(), approval_request_id);
         let approval_id = approval_req.request_id;
 
         tracing::info!(
@@ -229,6 +333,27 @@ impl PolicyServiceImpl {
             timeout_secs,
             "submitting to approval queue"
         );
+
+        // Register with the escalation scheduler if a team is identified.
+        if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
+            let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
+            let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
+            let escalation_approvers = self
+                .routing_store
+                .as_ref()
+                .and_then(|store| store.get(tid))
+                .map(|cfg| {
+                    if let Some(ref role) = role_override {
+                        vec![role.clone()]
+                    } else {
+                        cfg.escalation_approvers.clone()
+                    }
+                })
+                .unwrap_or_default();
+            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
+                tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+            }
+        }
 
         let (_id, future) = queue.submit(approval_req);
 

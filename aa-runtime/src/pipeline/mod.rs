@@ -296,6 +296,7 @@ async fn handle_policy_query(
                 fallback: aa_core::PolicyResult::Deny {
                     reason: "approval timed out".to_string(),
                 },
+                team_id: None,
             };
             let (rid, fut) = approval_queue.submit(approval_req);
 

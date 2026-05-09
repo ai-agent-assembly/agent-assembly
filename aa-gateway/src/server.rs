@@ -10,7 +10,7 @@ use crate::audit::AuditWriter;
 use crate::engine::PolicyEngine;
 use crate::registry::AgentRegistry;
 use crate::service::{AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl};
-use aa_core::AuditEntry;
+use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;
 use aa_proto::assembly::audit::v1::audit_service_server::AuditServiceServer;
@@ -19,6 +19,7 @@ use tokio::sync::broadcast;
 
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::approval::escalation::EscalationScheduler;
 use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer};
 use crate::budget::{BudgetAlert, BudgetTracker};
 
@@ -108,6 +109,36 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     (tracker, budget_path)
 }
 
+/// Spawn the [`EscalationScheduler`] background task and return the `Arc<EscalationScheduler>`.
+///
+/// The `run()` task is spawned internally. The returned `Arc` can be shared
+/// with `PolicyServiceImpl` (to register escalations) and `ApprovalServiceImpl`
+/// (to cancel them on decision).
+///
+/// Falls back gracefully — if the scheduler cannot be initialised (e.g. the
+/// persistence path is not writable), a warning is logged and `None` is returned
+/// so the rest of the server can still start.
+fn start_escalation_scheduler() -> Option<Arc<EscalationScheduler>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(home)
+        .join(".aa")
+        .join("pending_escalations.json");
+
+    let (tx, _rx) = tokio::sync::broadcast::channel(256);
+    match EscalationScheduler::new(path, tx, std::time::Duration::from_secs(30)) {
+        Ok(scheduler) => {
+            let scheduler = Arc::new(scheduler);
+            tokio::spawn(Arc::clone(&scheduler).run());
+            tracing::info!("escalation scheduler started");
+            Some(scheduler)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to start escalation scheduler — approval escalation disabled");
+            None
+        }
+    }
+}
+
 /// Wait for SIGINT or SIGTERM, then return so the server can shut down gracefully.
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
@@ -125,6 +156,61 @@ async fn shutdown_signal() {
         ctrl_c.await.ok();
         tracing::info!("received SIGINT, shutting down");
     }
+}
+
+/// Spawn a background task that converts escalation events into `ApprovalEscalated` audit entries
+/// and updates the routing status on the pending approval queue entry.
+fn spawn_escalation_audit_task(
+    scheduler: &Option<Arc<EscalationScheduler>>,
+    audit_tx: tokio::sync::mpsc::Sender<AuditEntry>,
+    approval_queue: Arc<ApprovalQueue>,
+) {
+    let Some(sched) = scheduler else { return };
+    let mut rx = sched.subscribe();
+    tokio::spawn(async move {
+        let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
+        let mut prev_hash = [0u8; 32];
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    let to_role = event.escalation_approvers.join(",");
+                    let payload = serde_json::json!({
+                        "approval_id": event.request_id.to_string(),
+                        "team_id": event.team_id,
+                        "from_role": event.team_id,
+                        "to_role": to_role,
+                        "escalation_approvers": event.escalation_approvers,
+                    })
+                    .to_string();
+                    let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
+                    let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
+                    let entry = AuditEntry::new(
+                        seq,
+                        now,
+                        AuditEventType::ApprovalEscalated,
+                        agent_id,
+                        session_id,
+                        payload,
+                        prev_hash,
+                    );
+                    prev_hash = *entry.entry_hash();
+                    let _ = audit_tx.try_send(entry);
+                    // Update the pending approval's routing status so dashboard/CLI
+                    // consumers see the escalation reflected immediately.
+                    approval_queue.update_routing_status(event.request_id, format!("escalated:{to_role}"));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = n, "escalation audit subscriber lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Persist the current budget snapshot to disk. Best-effort — logs on failure.
@@ -150,20 +236,27 @@ pub async fn serve_tcp(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
-    let engine = PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
-        .map_err(|e| format!("failed to load policy: {e:?}"))?;
+    let engine = Arc::new(
+        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+            .map_err(|e| format!("failed to load policy: {e:?}"))?,
+    );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
-    let policy_svc = PolicyServiceImpl::with_registry_and_approval(
-        Arc::new(engine),
+    let escalation_scheduler = start_escalation_scheduler();
+
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+
+    let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
+        Arc::clone(&engine),
         Arc::clone(&registry),
         Arc::clone(&approval_queue),
+        escalation_scheduler.clone(),
         audit_tx.clone(),
         Arc::clone(&audit_drops),
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
-    let approval_svc = ApprovalServiceImpl::new(approval_queue);
+    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
     let addr = listen_addr.parse()?;
     tracing::info!(%addr, "starting gRPC server on TCP");
@@ -196,20 +289,27 @@ pub async fn serve_uds(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
-    let engine = PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
-        .map_err(|e| format!("failed to load policy: {e:?}"))?;
+    let engine = Arc::new(
+        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+            .map_err(|e| format!("failed to load policy: {e:?}"))?,
+    );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
-    let policy_svc = PolicyServiceImpl::with_registry_and_approval(
-        Arc::new(engine),
+    let escalation_scheduler = start_escalation_scheduler();
+
+    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+
+    let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
+        Arc::clone(&engine),
         Arc::clone(&registry),
         Arc::clone(&approval_queue),
+        escalation_scheduler.clone(),
         audit_tx.clone(),
         Arc::clone(&audit_drops),
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
-    let approval_svc = ApprovalServiceImpl::new(approval_queue);
+    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
     tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS");
 

@@ -41,6 +41,10 @@ pub enum AuditEventType {
     BudgetLimitExceeded = 7,
     /// A pending human approval request expired before a decision was made.
     ApprovalTimedOut = 8,
+    /// An approval request was routed to a team-specific approver queue.
+    ApprovalRouted = 9,
+    /// An approval request was escalated after the initial approver did not respond.
+    ApprovalEscalated = 10,
 }
 
 impl AuditEventType {
@@ -58,6 +62,8 @@ impl AuditEventType {
             Self::BudgetLimitApproached => "BudgetLimitApproached",
             Self::BudgetLimitExceeded => "BudgetLimitExceeded",
             Self::ApprovalTimedOut => "ApprovalTimedOut",
+            Self::ApprovalRouted => "ApprovalRouted",
+            Self::ApprovalEscalated => "ApprovalEscalated",
         }
     }
 }
@@ -712,10 +718,12 @@ mod tests {
         assert_eq!(AuditEventType::BudgetLimitApproached.as_str(), "BudgetLimitApproached");
         assert_eq!(AuditEventType::BudgetLimitExceeded.as_str(), "BudgetLimitExceeded");
         assert_eq!(AuditEventType::ApprovalTimedOut.as_str(), "ApprovalTimedOut");
+        assert_eq!(AuditEventType::ApprovalRouted.as_str(), "ApprovalRouted");
+        assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
     }
 
     #[test]
-    fn event_type_discriminants_are_0_through_8() {
+    fn event_type_discriminants_are_0_through_10() {
         assert_eq!(AuditEventType::ToolCallIntercepted as u32, 0);
         assert_eq!(AuditEventType::PolicyViolation as u32, 1);
         assert_eq!(AuditEventType::CredentialLeakBlocked as u32, 2);
@@ -725,6 +733,8 @@ mod tests {
         assert_eq!(AuditEventType::BudgetLimitApproached as u32, 6);
         assert_eq!(AuditEventType::BudgetLimitExceeded as u32, 7);
         assert_eq!(AuditEventType::ApprovalTimedOut as u32, 8);
+        assert_eq!(AuditEventType::ApprovalRouted as u32, 9);
+        assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
     }
 
     #[test]
@@ -739,6 +749,8 @@ mod tests {
             AuditEventType::BudgetLimitApproached,
             AuditEventType::BudgetLimitExceeded,
             AuditEventType::ApprovalTimedOut,
+            AuditEventType::ApprovalRouted,
+            AuditEventType::ApprovalEscalated,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {

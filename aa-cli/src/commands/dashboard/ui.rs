@@ -229,9 +229,14 @@ fn draw_approvals_panel(f: &mut Frame, area: Rect, state: &DashboardState) {
                 TimeoutColor::Green => Color::Green,
             };
 
+            let routing_label = if !ap.routing_status.is_empty() {
+                format!(" [{}]", ap.routing_status)
+            } else {
+                String::new()
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{countdown:<8} "), Style::default().fg(countdown_color)),
-                Span::raw(format!("{} — {} ({})", ap.agent_id, ap.action, ap.reason)),
+                Span::raw(format!("{} — {}{}", ap.agent_id, ap.action, routing_label)),
             ]))
             .style(style)
         })
@@ -456,6 +461,16 @@ pub fn draw_inspect_overlay(f: &mut Frame, state: &DashboardState) {
             f.render_widget(block, overlay);
 
             if let Some(ap) = state.pending_approvals.get(state.approval_selected) {
+                let team_display = if ap.team_id.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    ap.team_id.clone()
+                };
+                let routing_display = if ap.routing_status.is_empty() {
+                    "(unknown)".to_string()
+                } else {
+                    ap.routing_status.clone()
+                };
                 let lines = vec![
                     Line::from(vec![
                         Span::styled("ID:          ", Style::default().add_modifier(Modifier::BOLD)),
@@ -476,6 +491,14 @@ pub fn draw_inspect_overlay(f: &mut Frame, state: &DashboardState) {
                     Line::from(vec![
                         Span::styled("Status:      ", Style::default().add_modifier(Modifier::BOLD)),
                         Span::raw(&ap.status),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Team:        ", Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(team_display, Style::default().fg(Color::Cyan)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Routing:     ", Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(routing_display, Style::default().fg(Color::Yellow)),
                     ]),
                     Line::from(vec![
                         Span::styled("Created:     ", Style::default().add_modifier(Modifier::BOLD)),

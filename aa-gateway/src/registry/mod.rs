@@ -6,10 +6,12 @@
 
 pub mod convert;
 pub mod lineage;
+pub mod orphan;
 pub mod store;
 pub mod token;
 
 pub use lineage::Lineage;
+pub use orphan::{OrphanEffect, OrphanMode};
 pub use store::{ActiveSession, AgentGraph, AgentRecord, AgentRegistry, RecentEvent};
 
 /// Errors returned by [`AgentRegistry`](store::AgentRegistry) operations.
@@ -52,6 +54,8 @@ pub enum SuspendReason {
         /// The direct parent that caused this cascading suspension.
         parent_agent_id: [u8; 16],
     },
+    /// Suspended because the parent agent deregistered. Manually resumable.
+    ParentDeregistered,
 }
 
 /// Runtime status of a registered agent.
