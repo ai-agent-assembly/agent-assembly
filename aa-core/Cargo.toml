@@ -9,14 +9,16 @@ description = "Pure domain logic for Agent Assembly — no_std compatible"
 [dependencies]
 aho-corasick = { version = "1", optional = true }
 async-trait  = { version = "0.1", optional = true }
-cfg-if = "1"
-serde  = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
-sha2   = { version = "0.11", default-features = false, optional = true }
-thiserror = { version = "2", optional = true }
+cfg-if       = "1"
+chrono       = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+serde        = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json   = { version = "1", optional = true }
+sha2         = { version = "0.11", default-features = false, optional = true }
+thiserror    = { version = "2", optional = true }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "serde?/std"]
+std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:serde_json", "serde?/std"]
 alloc      = ["dep:sha2"]
 serde      = ["dep:serde"]
 test-utils = []
