@@ -6,6 +6,11 @@ SHELL := /bin/bash
         dev-verify smoke-python smoke-node smoke-go gateway-health \
         demo-record
 
+## dev-setup: Bootstrap the full local development environment (install tools, clone SDKs, install hooks, build)
+dev-setup: install-tools clone-sdks install-hooks build-workspace
+	@echo ""
+	@echo "dev-setup complete. Run 'make dev-verify' to validate."
+
 ## clone-sdks: Clone (or pull) SDK polyrepos listed in scripts/sdk-repos.txt into sibling dirs
 clone-sdks:
 	@while IFS= read -r url || [ -n "$$url" ]; do \
