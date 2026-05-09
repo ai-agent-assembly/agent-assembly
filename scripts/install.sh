@@ -124,3 +124,16 @@ _check_tool "python3" "python3" "3.11" "python3 --version" || _hint_python3
 _check_tool "node"    "node"    "20"   "node --version"    || _hint_node
 _check_tool "go"      "go"      "1.22" "go version"        || _hint_go
 _check_tool "docker"  "docker"  "24"   "docker --version"  || _hint_docker
+
+# --- Summary ----------------------------------------------------------------
+echo ""
+TOTAL=$((PASS + FAIL))
+if [ "$FAIL" -eq 0 ]; then
+  if [ "$QUIET" -eq 0 ]; then
+    echo "OK: $PASS/$TOTAL toolchains satisfied"
+  fi
+  exit 0
+else
+  echo "ERROR: $FAIL/$TOTAL toolchains missing or out of date — see hints above"
+  exit 1
+fi
