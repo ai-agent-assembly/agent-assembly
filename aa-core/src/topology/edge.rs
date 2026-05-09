@@ -163,6 +163,52 @@ pub trait EdgeRepo: Send + Sync {
     ) -> Vec<Edge>;
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::convert::TryFrom;
+
+    #[test]
+    fn all_six_variants_parse_from_wire_strings() {
+        let cases = [
+            ("delegates_to", EdgeType::DelegatesTo),
+            ("calls", EdgeType::Calls),
+            ("reads", EdgeType::Reads),
+            ("writes", EdgeType::Writes),
+            ("approves", EdgeType::Approves),
+            ("messages", EdgeType::Messages),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(EdgeType::try_from(s).unwrap(), expected, "parsing {s:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_string_returns_error() {
+        assert!(EdgeType::try_from("follows").is_err());
+        assert!(EdgeType::try_from("").is_err());
+    }
+
+    #[test]
+    fn as_str_round_trips() {
+        for &variant in EdgeType::ALL {
+            assert_eq!(EdgeType::try_from(variant.as_str()).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn display_matches_as_str() {
+        for &variant in EdgeType::ALL {
+            assert_eq!(format!("{variant}"), variant.as_str());
+        }
+    }
+
+    #[test]
+    fn all_contains_all_six_variants() {
+        assert_eq!(EdgeType::ALL.len(), 6);
+    }
+}
+
 /// Test-only [`EdgeRepo`] that stores edges in memory with no secondary indexes.
 ///
 /// Use this as a test double in unit tests that depend on [`EdgeRepo`] but
