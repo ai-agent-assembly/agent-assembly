@@ -11,6 +11,8 @@ use super::routing_config::TeamRoutingConfig;
 pub enum RepoError {
     #[error("approval routing repo database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("approval routing repo migration error: {0}")]
+    Migration(#[from] sqlx::migrate::MigrateError),
     #[error("approval routing repo serialisation error: {0}")]
     Json(#[from] serde_json::Error),
 }
