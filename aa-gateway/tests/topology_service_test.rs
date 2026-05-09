@@ -306,19 +306,64 @@ async fn get_lineage_sub_agent_includes_parent_chain() {
     assert_eq!(resp.ancestors[1].depth, 0);
 }
 
-// ── GetTeamMembers stub test ───────────────────────────────────────────────
+// ── GetTeamMembers tests ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn get_team_members_returns_unimplemented() {
+async fn get_team_members_empty_team_id_returns_invalid_argument() {
     let (addr, _registry) = start_server().await;
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
-    let status = client
+    let err = client
+        .get_team_members(GetTeamMembersRequest { team_id: String::new() })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn get_team_members_not_found_for_unknown_team() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
         .get_team_members(GetTeamMembersRequest {
-            team_id: "team-alpha".into(),
+            team_id: "no-such-team".into(),
         })
         .await
         .unwrap_err();
 
-    assert_eq!(status.code(), Code::Unimplemented);
+    assert_eq!(err.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn get_team_members_returns_agents_sorted_by_depth() {
+    let (addr, registry) = start_server().await;
+
+    let root_id: [u8; 16] = [0xa0; 16];
+    let child_id: [u8; 16] = [0xa1; 16];
+
+    // Register root first (depth 0) then child (depth 1), both in "alpha-team".
+    registry
+        .register(make_record(root_id, "alpha-root", 0, None, Some("alpha-team")))
+        .unwrap();
+
+    let mut child_record = make_record(child_id, "alpha-child", 1, Some(root_id), Some("alpha-team"));
+    child_record.root_agent_id = Some(root_id);
+    registry.register(child_record).unwrap();
+
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let resp = client
+        .get_team_members(GetTeamMembersRequest {
+            team_id: "alpha-team".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(resp.members.len(), 2);
+    // Members are sorted by depth: root first, child second.
+    assert_eq!(resp.members[0].depth, 0);
+    assert_eq!(resp.members[0].team_id, "alpha-team");
+    assert_eq!(resp.members[1].depth, 1);
 }

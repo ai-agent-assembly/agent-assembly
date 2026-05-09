@@ -140,7 +140,10 @@ impl TopologyService for TopologyServiceImpl {
 
         let member_ids = self.registry.team_members(&req.team_id);
         if member_ids.is_empty() {
-            return Err(Status::not_found(format!("team not found or has no agents: {}", req.team_id)));
+            return Err(Status::not_found(format!(
+                "team not found or has no agents: {}",
+                req.team_id
+            )));
         }
 
         let mut members: Vec<TopologyAgent> = member_ids
