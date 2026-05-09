@@ -34,6 +34,7 @@ pub mod policy;
 #[cfg(feature = "std")]
 pub mod scanner;
 pub mod time;
+pub mod topology;
 
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
@@ -62,3 +63,7 @@ pub use capability::{action_to_capability, merge_capabilities, Capability, Capab
 
 #[cfg(feature = "std")]
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
+
+pub use topology::EdgeType;
+#[cfg(feature = "alloc")]
+pub use topology::UnknownEdgeType;
