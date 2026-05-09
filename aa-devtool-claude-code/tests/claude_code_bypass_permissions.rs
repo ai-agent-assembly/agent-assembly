@@ -245,8 +245,7 @@ mod docker_tests {
             .expect("docker compose must be available in PATH")
     }
 
-    /// Wait until a container's healthcheck reports healthy, or panic after
-    /// `timeout` seconds.
+    /// Wait until a container's Docker healthcheck reports "healthy", or panic.
     fn wait_healthy(service: &str, timeout_secs: u64) {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         loop {
@@ -270,7 +269,25 @@ mod docker_tests {
         }
     }
 
-    /// Bring up the docker-compose stack and wait for all services to be healthy.
+    /// Wait until aa-proxy accepts a TCP connection on the host-mapped port.
+    ///
+    /// aa-proxy is built on distroless/static which has no shell or wget, so
+    /// CMD-SHELL healthchecks cannot run inside that container. Instead we poll
+    /// TCP connectivity from the host via the published port mapping.
+    fn wait_proxy_tcp(timeout_secs: u64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            if std::net::TcpStream::connect("127.0.0.1:8080").is_ok() {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("aa-proxy did not accept TCP connections on 127.0.0.1:8080 within {timeout_secs}s");
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// Bring up the docker-compose stack and wait for all services to be ready.
     ///
     /// Returns a guard that runs `docker compose down` on drop, ensuring cleanup
     /// even if the test panics.
@@ -279,15 +296,17 @@ mod docker_tests {
     impl ComposeGuard {
         fn up() -> Self {
             // Pull/build images if needed, then start in detached mode.
+            // --wait makes compose block until services with healthchecks are healthy.
             let out = compose(&["up", "--build", "--detach", "--wait"]);
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 panic!("docker compose up failed:\n{stderr}");
             }
-            // Even with --wait, give healthchecks a moment to converge.
             wait_healthy("gateway-mock", 30);
             wait_healthy("stub-upstream", 30);
-            wait_healthy("aa-proxy", 60);
+            // aa-proxy is distroless — no CMD-SHELL healthcheck possible.
+            // Poll TCP readiness via the host-mapped port instead.
+            wait_proxy_tcp(60);
             Self
         }
     }

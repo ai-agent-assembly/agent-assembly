@@ -124,13 +124,17 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@3f7f2bd74f95d407a45d96b106f26d4f6c238fab # cargo-llvm-cov
       - name: Generate coverage report
-        # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
-        # testable userspace logic. Excluded from coverage.
-        # aa-ffi-python requires Python development headers for linking when
-        # --all-features activates extension-module. Excluded from coverage.
-        # RUST_TEST_THREADS=1: docker-integration tests bind fixed host ports and share
-        # a Docker project namespace; parallel execution causes container-name conflicts.
-        run: RUST_TEST_THREADS=1 cargo llvm-cov --all-features --workspace --codecov --output-path codecov.xml --exclude aa-ebpf --exclude aa-ffi-python
+        # aa-ebpf requires nightly and has no testable userspace logic — excluded.
+        # aa-ffi-python requires Python dev headers for linking — excluded.
+        # aa-devtool-claude-code is run separately (step 2) without docker-integration:
+        # the docker-integration feature builds aa-proxy from scratch inside Docker
+        # and doesn't add instrumented coverage. Running it under --all-features would
+        # add 8+ minutes of Docker build time with zero coverage benefit.
+        run: |
+          cargo llvm-cov --no-report --all-features --workspace \
+            --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code
+          cargo llvm-cov --no-report -p aa-devtool-claude-code
+          cargo llvm-cov --no-run --codecov --output-path codecov.xml
       - name: Upload to Codecov
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
         with:

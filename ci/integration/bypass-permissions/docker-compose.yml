@@ -121,12 +121,9 @@ services:
     depends_on:
       gateway-mock:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ready || exit 1"]
-      interval: 3s
-      timeout: 2s
-      retries: 15
-      start_period: 5s
+    # aa-proxy is distroless (gcr.io/distroless/static:nonroot) — no shell, no wget.
+    # CMD-SHELL healthchecks cannot run. TCP readiness is checked by the test via
+    # the host-mapped port 8080 using std::net::TcpStream::connect.
 
   claude-stub:
     # Simulates Claude Code launched with --bypassPermissions.
@@ -150,6 +147,6 @@ services:
       - bypass-test-net
     depends_on:
       aa-proxy:
-        condition: service_healthy
+        condition: service_started
       stub-upstream:
         condition: service_healthy

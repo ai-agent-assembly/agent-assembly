@@ -49,9 +49,14 @@ jobs:
       - name: Generate coverage report (LCOV for SonarCloud)
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python development headers for linking — excluded.
-        # RUST_TEST_THREADS=1: docker-integration tests bind fixed host ports; parallel
-        # execution causes container-name and port conflicts.
-        run: RUST_TEST_THREADS=1 cargo llvm-cov --all-features --workspace --exclude aa-ebpf --exclude aa-ffi-python --lcov --output-path lcov.info
+        # aa-devtool-claude-code is run separately without docker-integration:
+        # the docker-integration feature triggers an 8+ minute Docker build with no
+        # instrumented coverage benefit.
+        run: |
+          cargo llvm-cov --no-report --all-features --workspace \
+            --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code
+          cargo llvm-cov --no-report -p aa-devtool-claude-code
+          cargo llvm-cov --no-run --lcov --output-path lcov.info
 
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@59db25f34e16620e48ab4bb9e4a5dce155cb5432 # v8.0.0
