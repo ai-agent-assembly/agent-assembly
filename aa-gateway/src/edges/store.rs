@@ -36,7 +36,7 @@ impl EdgeData {
 /// All writes are `O(1)`. Reads over secondary indexes are `O(result_size)`.
 /// The `limit` parameter on every list method is silently capped at 1 000 to
 /// bound response size, matching the intent of the DB index design.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InMemoryEdgeStore {
     data: Arc<RwLock<EdgeData>>,
 }
@@ -142,5 +142,11 @@ impl InMemoryEdgeStore {
             .take(limit)
             .cloned()
             .collect()
+    }
+}
+
+impl Default for InMemoryEdgeStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
