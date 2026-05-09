@@ -6,6 +6,21 @@ SHELL := /bin/bash
         dev-verify smoke-python smoke-node smoke-go gateway-health \
         demo-record
 
+## clone-sdks: Clone (or pull) SDK polyrepos listed in scripts/sdk-repos.txt into sibling dirs
+clone-sdks:
+	@while IFS= read -r url || [ -n "$$url" ]; do \
+		[ -z "$$url" ] && continue; \
+		repo=$$(basename "$$url" .git); \
+		dest="$$(dirname $$(pwd))/$$repo"; \
+		if [ -d "$$dest/.git" ]; then \
+			echo "  Updating $$repo ..."; \
+			git -C "$$dest" pull --ff-only; \
+		else \
+			echo "  Cloning $$repo ..."; \
+			git clone "$$url" "$$dest"; \
+		fi; \
+	done < scripts/sdk-repos.txt
+
 ## install-tools: Check required toolchains via scripts/install.sh
 install-tools:
 	@bash scripts/install.sh
