@@ -295,9 +295,11 @@ mod docker_tests {
 
     impl ComposeGuard {
         fn up() -> Self {
-            // Pull/build images if needed, then start in detached mode.
-            // --wait makes compose block until services with healthchecks are healthy.
-            let out = compose(&["up", "--build", "--detach", "--wait"]);
+            // Pull/build images and start all services detached.
+            // Do NOT use --wait: claude-stub is a one-shot container that exits with
+            // code 0 after running curl; --wait treats any service exit as failure.
+            // Service readiness is verified by the custom wait_* helpers below.
+            let out = compose(&["up", "--build", "--detach"]);
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 panic!("docker compose up failed:\n{stderr}");
