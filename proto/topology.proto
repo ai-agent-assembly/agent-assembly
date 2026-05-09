@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package assembly.topology.v1;
+
+// TopologyService provides read-only tree and lineage queries for registered agents.
+//
+// Consumed by: SDK shims and operator tooling to inspect live agent graphs.
+//              aa-gateway/src/service/topology_service.rs (server side)
+service TopologyService {
+  // GetAgentTree returns the sub-tree rooted at the given agent, up to max_depth levels.
+  rpc GetAgentTree(GetAgentTreeRequest) returns (GetAgentTreeResponse);
+
+  // GetLineage returns the ancestor chain from the given agent up to the root agent.
+  rpc GetLineage(GetLineageRequest) returns (GetLineageResponse);
+
+  // GetTeamMembers returns all agents registered under the given team_id.
+  rpc GetTeamMembers(GetTeamMembersRequest) returns (GetTeamMembersResponse);
+}
+
+// ── Shared message types ──────────────────────────────────────────────────────
+
+// TopologyAgent is a single node in an agent graph.
+message TopologyAgent {
+  // Hex-encoded agent UUID (32 hex chars = 16 bytes).
+  string id = 1;
+  // Human-readable agent name supplied at registration.
+  string name = 2;
+  // Delegation depth: 0 for root agents, N for N-th level sub-agents.
+  uint32 depth = 3;
+  // Runtime status string (e.g. "Active", "Suspended", "Deregistered").
+  string status = 4;
+  // Team identifier the agent belongs to. Empty string if none.
+  string team_id = 5;
+  // Free-form reason provided when the agent was spawned by a parent.
+  string delegation_reason = 6;
+  // Name of the tool call that caused this agent to be spawned (if any).
+  string spawned_by_tool = 7;
+  // next: 8
+}
+
+// ── GetAgentTree ──────────────────────────────────────────────────────────────
+
+message GetAgentTreeRequest {
+  // Hex-encoded agent UUID of the root of the requested sub-tree.
+  string agent_id = 1;
+  // Maximum number of levels to descend. 0 means unlimited.
+  uint32 max_depth = 2;
+  // next: 3
+}
+
+// TreeNode wraps a TopologyAgent with its recursive children.
+message TreeNode {
+  TopologyAgent agent = 1;
+  repeated TreeNode children = 2;
+  // next: 3
+}
+
+message GetAgentTreeResponse {
+  TreeNode root = 1;
+  // next: 2
+}
+
+// ── GetLineage ────────────────────────────────────────────────────────────────
+
+message GetLineageRequest {
+  // Hex-encoded agent UUID whose ancestor chain is requested.
+  string agent_id = 1;
+  // next: 2
+}
+
+message GetLineageResponse {
+  // Ordered from the given agent up to the root: ancestors[0] is the agent itself,
+  // ancestors[last] is the root agent.
+  repeated TopologyAgent ancestors = 1;
+  // next: 2
+}
+
+// ── GetTeamMembers ────────────────────────────────────────────────────────────
+
+message GetTeamMembersRequest {
+  // Team identifier whose member agents are requested.
+  string team_id = 1;
+  // next: 2
+}
+
+message GetTeamMembersResponse {
+  repeated TopologyAgent members = 1;
+  // next: 2
+}
