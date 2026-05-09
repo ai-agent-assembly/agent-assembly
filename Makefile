@@ -32,8 +32,11 @@ test:
 
 ## smoke-python: Run Python SDK smoke tests against the sibling python-sdk directory
 smoke-python:
-	@printf "[1/4] python smoke ... "; \
-	sdk="$$(dirname $$(pwd))/python-sdk"; \
+	@sdk="$$(dirname $$(pwd))/python-sdk"; \
+	if [ ! -d "$$sdk/tests/smoke" ]; then \
+		echo "[1/4] python smoke ... SKIP (tests/smoke/ not found in python-sdk)"; exit 0; \
+	fi; \
+	printf "[1/4] python smoke ... "; \
 	t0=$$(date +%s); \
 	if (cd "$$sdk" && pytest tests/smoke/ -q) >/tmp/aa-smoke-python.log 2>&1; then \
 		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
@@ -56,8 +59,11 @@ smoke-node:
 
 ## smoke-go: Run Go SDK smoke tests against the sibling go-sdk directory
 smoke-go:
-	@printf "[3/4] go smoke     ... "; \
-	sdk="$$(dirname $$(pwd))/go-sdk"; \
+	@sdk="$$(dirname $$(pwd))/go-sdk"; \
+	if [ ! -d "$$sdk/internal/smoke" ]; then \
+		echo "[3/4] go smoke     ... SKIP (internal/smoke/ not found in go-sdk)"; exit 0; \
+	fi; \
+	printf "[3/4] go smoke     ... "; \
 	t0=$$(date +%s); \
 	if (cd "$$sdk" && go test ./internal/smoke/...) >/tmp/aa-smoke-go.log 2>&1; then \
 		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
