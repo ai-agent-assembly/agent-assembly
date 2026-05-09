@@ -80,3 +80,85 @@ impl core::convert::TryFrom<&str> for EdgeType {
         }
     }
 }
+
+/// Input for recording a new directed edge between two agents.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+pub struct NewEdge {
+    /// Raw UUID bytes of the agent that originates the relationship.
+    pub source_agent_id: [u8; 16],
+    /// Raw UUID bytes of the agent that is the target of the relationship.
+    pub target_agent_id: [u8; 16],
+    /// The kind of relationship.
+    pub edge_type: EdgeType,
+    /// Optional structured metadata (e.g. graph name, reason, key names).
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// A recorded directed edge between two agents in the topology graph.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+pub struct Edge {
+    /// Auto-assigned monotonically increasing identifier.
+    pub id: i64,
+    /// Raw UUID bytes of the agent that originates the relationship.
+    pub source_agent_id: [u8; 16],
+    /// Raw UUID bytes of the agent that is the target of the relationship.
+    pub target_agent_id: [u8; 16],
+    /// The kind of relationship.
+    pub edge_type: EdgeType,
+    /// When this edge was recorded.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Optional structured metadata attached at emission time.
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Error returned by [`EdgeRepo`] operations.
+#[cfg(feature = "std")]
+#[derive(Debug, thiserror::Error)]
+pub enum EdgeRepoError {
+    /// The requested operation cannot be completed in the backing store.
+    #[error("edge store error: {0}")]
+    Store(String),
+}
+
+/// Async repository abstraction for the agent-graph edge store.
+///
+/// Implementations are provided by `InMemoryEdgeRepo` (tests and single-node
+/// deployments) and will be backed by a persistent store in production.
+/// All list methods return results ordered newest-first and silently cap
+/// `limit` at 1 000.
+#[cfg(feature = "std")]
+#[async_trait::async_trait]
+pub trait EdgeRepo: Send + Sync {
+    /// Record a new directed edge. Returns the auto-assigned `id`.
+    async fn insert(&self, edge: NewEdge) -> Result<i64, EdgeRepoError>;
+
+    /// Return up to `limit` outgoing edges from `source`, newest first.
+    ///
+    /// If `edge_type` is `Some`, only edges of that type are returned.
+    async fn list_outgoing(
+        &self,
+        source: [u8; 16],
+        edge_type: Option<EdgeType>,
+        limit: usize,
+    ) -> Vec<Edge>;
+
+    /// Return up to `limit` incoming edges to `target`, newest first.
+    ///
+    /// If `edge_type` is `Some`, only edges of that type are returned.
+    async fn list_incoming(
+        &self,
+        target: [u8; 16],
+        edge_type: Option<EdgeType>,
+        limit: usize,
+    ) -> Vec<Edge>;
+
+    /// Return up to `limit` edges of `edge_type` with `created_at >= since`, newest first.
+    async fn list_by_type(
+        &self,
+        edge_type: EdgeType,
+        since: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> Vec<Edge>;
+}

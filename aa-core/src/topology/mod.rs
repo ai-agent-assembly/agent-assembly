@@ -6,3 +6,6 @@ pub use edge::EdgeType;
 
 #[cfg(feature = "alloc")]
 pub use edge::UnknownEdgeType;
+
+#[cfg(feature = "std")]
+pub use edge::{Edge, EdgeRepo, EdgeRepoError, NewEdge};

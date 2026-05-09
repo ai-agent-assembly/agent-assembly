@@ -67,3 +67,5 @@ pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResu
 pub use topology::EdgeType;
 #[cfg(feature = "alloc")]
 pub use topology::UnknownEdgeType;
+#[cfg(feature = "std")]
+pub use topology::{Edge, EdgeRepo, EdgeRepoError, NewEdge};
