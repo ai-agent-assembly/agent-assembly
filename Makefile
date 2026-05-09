@@ -47,7 +47,7 @@ smoke-node:
 	@printf "[2/4] node smoke   ... "; \
 	sdk="$$(dirname $$(pwd))/node-sdk"; \
 	t0=$$(date +%s); \
-	if (cd "$$sdk" && npm test --workspace smoke) >/tmp/aa-smoke-node.log 2>&1; then \
+	if (cd "$$sdk" && pnpm test) >/tmp/aa-smoke-node.log 2>&1; then \
 		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
 	else \
 		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
