@@ -9,6 +9,7 @@ pub mod approval;
 pub mod audit;
 pub mod audit_reader;
 pub mod budget;
+pub mod edges;
 pub mod engine;
 pub mod events;
 pub mod policy;
