@@ -17,6 +17,8 @@ use crate::registry::AgentRegistry;
 /// All RPCs are currently unimplemented stubs — handlers are wired in subsequent
 /// subtasks (AAASM-1029, AAASM-1030).
 pub struct TopologyServiceImpl {
+    // Suppressed: field is read by RPC handlers added in AAASM-1029 and AAASM-1030.
+    #[allow(dead_code)]
     registry: Arc<AgentRegistry>,
 }
 
