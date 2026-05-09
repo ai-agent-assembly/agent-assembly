@@ -30,6 +30,78 @@ clone-sdks:
 test:
 	@cargo nextest run --workspace --exclude aa-ebpf
 
+## smoke-python: Run Python SDK smoke tests against the sibling python-sdk directory
+smoke-python:
+	@sdk="$$(dirname $$(pwd))/python-sdk"; \
+	if [ ! -d "$$sdk/tests/smoke" ]; then \
+		echo "[1/4] python smoke ... SKIP (tests/smoke/ not found in python-sdk)"; exit 0; \
+	fi; \
+	printf "[1/4] python smoke ... "; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && pytest tests/smoke/ -q) >/tmp/aa-smoke-python.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-python.log >&2; exit 1; \
+	fi
+
+## smoke-node: Run Node SDK smoke tests against the sibling node-sdk directory
+smoke-node:
+	@printf "[2/4] node smoke   ... "; \
+	sdk="$$(dirname $$(pwd))/node-sdk"; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && pnpm test) >/tmp/aa-smoke-node.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-node.log >&2; exit 1; \
+	fi
+
+## smoke-go: Run Go SDK smoke tests against the sibling go-sdk directory
+smoke-go:
+	@sdk="$$(dirname $$(pwd))/go-sdk"; \
+	if [ ! -d "$$sdk/internal/smoke" ]; then \
+		echo "[3/4] go smoke     ... SKIP (internal/smoke/ not found in go-sdk)"; exit 0; \
+	fi; \
+	printf "[3/4] go smoke     ... "; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && go test ./internal/smoke/...) >/tmp/aa-smoke-go.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-go.log >&2; exit 1; \
+	fi
+
+## dev-verify: Smoke-test all SDKs in parallel then check gateway health; reports total time
+dev-verify:
+	@date +%s > /tmp/.aa-devverify-t0
+	@echo "dev-verify: running SDK smoke tests in parallel ..."
+	@$(MAKE) -j 3 --no-print-directory smoke-python smoke-node smoke-go
+	@$(MAKE) --no-print-directory gateway-health
+	@t0=$$(cat /tmp/.aa-devverify-t0 2>/dev/null || date +%s); \
+	  t1=$$(date +%s); elapsed=$$(( t1 - t0 )); \
+	  rm -f /tmp/.aa-devverify-t0; \
+	  echo ""; echo "dev-verify passed ($${elapsed}s total)"; \
+	  if [ "$$elapsed" -gt 30 ]; then echo "WARNING: $${elapsed}s exceeds 30s target"; fi
+
+## gateway-health: Check gateway /v1/health; starts aa-runtime via docker compose if not running (skipped in CI)
+gateway-health:
+	@if [ "$${CI:-}" = "true" ]; then \
+		echo "[4/4] gateway health ... SKIP (CI environment — gateway not started)"; exit 0; \
+	fi; \
+	if ! curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
+		echo "[4/4] gateway health ... not running; starting via docker compose ..."; \
+		docker compose -f examples/docker-compose/docker-compose.yml up -d aa-runtime; \
+		echo "  waiting 10s for readiness ..."; \
+		sleep 10; \
+	fi; \
+	t0=$$(date +%s); \
+	if curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
+		t1=$$(date +%s); echo "[4/4] gateway health ... OK ($$(( t1 - t0 ))s)"; \
+	else \
+		echo "[4/4] gateway health ... FAIL"; exit 1; \
+	fi
+
 ## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
 build-workspace:
 	@cargo build --workspace --exclude aa-ebpf
