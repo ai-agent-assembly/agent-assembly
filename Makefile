@@ -84,11 +84,14 @@ dev-verify:
 	  echo ""; echo "dev-verify passed ($${elapsed}s total)"; \
 	  if [ "$$elapsed" -gt 30 ]; then echo "WARNING: $${elapsed}s exceeds 30s target"; fi
 
-## gateway-health: Check gateway /v1/health; starts via docker compose if not running
+## gateway-health: Check gateway /v1/health; starts aa-runtime via docker compose if not running (skipped in CI)
 gateway-health:
-	@if ! curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
+	@if [ "$${CI:-}" = "true" ]; then \
+		echo "[4/4] gateway health ... SKIP (CI environment — gateway not started)"; exit 0; \
+	fi; \
+	if ! curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
 		echo "[4/4] gateway health ... not running; starting via docker compose ..."; \
-		docker compose -f examples/docker-compose/docker-compose.yml up -d gateway; \
+		docker compose -f examples/docker-compose/docker-compose.yml up -d aa-runtime; \
 		echo "  waiting 10s for readiness ..."; \
 		sleep 10; \
 	fi; \
