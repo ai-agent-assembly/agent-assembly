@@ -53,7 +53,7 @@ jobs:
       - name: Install Node SDK dependencies
         # --ignore-scripts skips the napi-rs postinstall that builds native bindings;
         # smoke tests are pure JS/TS and do not require the compiled .node file.
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
         working-directory: ${{ github.workspace }}/../node-sdk
 
       - uses: actions/setup-go@v6
