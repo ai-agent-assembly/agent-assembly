@@ -6,6 +6,19 @@
 
 use chrono::{DateTime, Utc};
 
+/// Input used when inserting a new edge into the store.
+#[derive(Debug, Clone)]
+pub struct NewEdge {
+    /// Raw UUID bytes of the originating agent.
+    pub source_agent_id: [u8; 16],
+    /// Raw UUID bytes of the target agent.
+    pub target_agent_id: [u8; 16],
+    /// Relationship kind — must be one of the six `VALID_EDGE_TYPES` strings.
+    pub edge_type: String,
+    /// Optional structured metadata (e.g. graph name, reason, key names).
+    pub metadata: Option<serde_json::Value>,
+}
+
 /// A recorded edge between two agents in the topology graph.
 #[derive(Debug, Clone)]
 pub struct EdgeRecord {
