@@ -85,6 +85,7 @@ dependencies = [
  "aho-corasick",
  "async-trait",
  "cfg-if",
+ "chrono",
  "criterion",
  "serde",
  "serde_json",
