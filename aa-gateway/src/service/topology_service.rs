@@ -98,9 +98,7 @@ impl TopologyService for TopologyServiceImpl {
         let root_node = build_tree_node(&self.registry, &agent_id, req.max_depth, unlimited)
             .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
 
-        Ok(Response::new(GetAgentTreeResponse {
-            root: Some(root_node),
-        }))
+        Ok(Response::new(GetAgentTreeResponse { root: Some(root_node) }))
     }
 
     async fn get_lineage(&self, request: Request<GetLineageRequest>) -> Result<Response<GetLineageResponse>, Status> {
