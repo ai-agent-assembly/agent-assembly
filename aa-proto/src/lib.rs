@@ -15,6 +15,7 @@
 //! assembly::audit::v1    — async audit trail (path ③)
 //! assembly::event::v1    — internal event bus envelope (paths ⑤ ⑥)
 //! assembly::approval::v1 — human-in-the-loop approval queue
+//! assembly::topology::v1 — agent tree, lineage, and team-member queries
 //! ```
 
 pub mod assembly {
@@ -54,6 +55,12 @@ pub mod assembly {
     pub mod approval {
         pub mod v1 {
             tonic::include_proto!("assembly.approval.v1");
+        }
+    }
+
+    pub mod topology {
+        pub mod v1 {
+            tonic::include_proto!("assembly.topology.v1");
         }
     }
 }
