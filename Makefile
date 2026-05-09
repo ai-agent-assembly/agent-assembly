@@ -30,6 +30,42 @@ clone-sdks:
 test:
 	@cargo nextest run --workspace --exclude aa-ebpf
 
+## smoke-python: Run Python SDK smoke tests against the sibling python-sdk directory
+smoke-python:
+	@printf "[1/4] python smoke ... "; \
+	sdk="$$(dirname $$(pwd))/python-sdk"; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && pytest tests/smoke/ -q) >/tmp/aa-smoke-python.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-python.log >&2; exit 1; \
+	fi
+
+## smoke-node: Run Node SDK smoke tests against the sibling node-sdk directory
+smoke-node:
+	@printf "[2/4] node smoke   ... "; \
+	sdk="$$(dirname $$(pwd))/node-sdk"; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && npm test --workspace smoke) >/tmp/aa-smoke-node.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-node.log >&2; exit 1; \
+	fi
+
+## smoke-go: Run Go SDK smoke tests against the sibling go-sdk directory
+smoke-go:
+	@printf "[3/4] go smoke     ... "; \
+	sdk="$$(dirname $$(pwd))/go-sdk"; \
+	t0=$$(date +%s); \
+	if (cd "$$sdk" && go test ./internal/smoke/...) >/tmp/aa-smoke-go.log 2>&1; then \
+		t1=$$(date +%s); echo "OK ($$(( t1 - t0 ))s)"; \
+	else \
+		t1=$$(date +%s); echo "FAIL ($$(( t1 - t0 ))s)"; \
+		cat /tmp/aa-smoke-go.log >&2; exit 1; \
+	fi
+
 ## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
 build-workspace:
 	@cargo build --workspace --exclude aa-ebpf
