@@ -151,7 +151,7 @@ impl TopologyService for TopologyServiceImpl {
             .filter_map(|id| self.registry.get(id))
             .map(|r| record_to_topology_agent(&r))
             .collect();
-        members.sort_by_key(|m| m.depth);
+        members.sort_by(|a, b| a.id.cmp(&b.id));
 
         Ok(Response::new(GetTeamMembersResponse { members }))
     }
