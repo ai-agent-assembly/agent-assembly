@@ -1,19 +1,20 @@
 //! Integration tests for `InMemoryEdgeRepo` (AAASM-985).
 
+use aa_core::identity::AgentId;
 use aa_core::topology::{EdgeRepo, EdgeType, NewEdge};
 use aa_gateway::edges::InMemoryEdgeRepo;
 use chrono::Utc;
 
-fn agent(n: u8) -> [u8; 16] {
-    let mut id = [0u8; 16];
-    id[0] = n;
-    id
+fn agent(n: u8) -> AgentId {
+    let mut bytes = [0u8; 16];
+    bytes[0] = n;
+    AgentId::from_bytes(bytes)
 }
 
 fn edge(src: u8, tgt: u8, edge_type: EdgeType) -> NewEdge {
     NewEdge {
-        source_agent_id: agent(src),
-        target_agent_id: agent(tgt),
+        source: agent(src),
+        target: agent(tgt),
         edge_type,
         metadata: None,
     }
@@ -36,7 +37,7 @@ async fn list_outgoing_returns_newest_first() {
     repo.insert(edge(1, 3, EdgeType::Calls)).await.unwrap();
     repo.insert(edge(1, 4, EdgeType::Calls)).await.unwrap();
 
-    let results = repo.list_outgoing(agent(1), None, 10).await;
+    let results = repo.list_outgoing(agent(1), None, 10).await.unwrap();
     assert_eq!(results.len(), 3);
     assert!(results[0].id > results[1].id, "newest should be first");
     assert!(results[1].id > results[2].id);
@@ -49,11 +50,11 @@ async fn list_outgoing_filtered_by_edge_type() {
     repo.insert(edge(1, 3, EdgeType::Reads)).await.unwrap();
     repo.insert(edge(1, 4, EdgeType::Calls)).await.unwrap();
 
-    let calls = repo.list_outgoing(agent(1), Some(EdgeType::Calls), 10).await;
+    let calls = repo.list_outgoing(agent(1), Some(EdgeType::Calls), 10).await.unwrap();
     assert_eq!(calls.len(), 2);
     assert!(calls.iter().all(|e| e.edge_type == EdgeType::Calls));
 
-    let reads = repo.list_outgoing(agent(1), Some(EdgeType::Reads), 10).await;
+    let reads = repo.list_outgoing(agent(1), Some(EdgeType::Reads), 10).await.unwrap();
     assert_eq!(reads.len(), 1);
 }
 
@@ -64,9 +65,9 @@ async fn list_incoming_returns_only_edges_to_target() {
     repo.insert(edge(2, 3, EdgeType::Calls)).await.unwrap();
     repo.insert(edge(1, 4, EdgeType::Calls)).await.unwrap();
 
-    let incoming = repo.list_incoming(agent(3), None, 10).await;
+    let incoming = repo.list_incoming(agent(3), None, 10).await.unwrap();
     assert_eq!(incoming.len(), 2);
-    assert!(incoming.iter().all(|e| e.target_agent_id == agent(3)));
+    assert!(incoming.iter().all(|e| e.target == agent(3)));
 }
 
 #[tokio::test]
@@ -75,9 +76,9 @@ async fn list_incoming_filtered_by_edge_type() {
     repo.insert(edge(1, 3, EdgeType::Calls)).await.unwrap();
     repo.insert(edge(2, 3, EdgeType::DelegatesTo)).await.unwrap();
 
-    let calls = repo.list_incoming(agent(3), Some(EdgeType::Calls), 10).await;
+    let calls = repo.list_incoming(agent(3), Some(EdgeType::Calls), 10).await.unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].source_agent_id, agent(1));
+    assert_eq!(calls[0].source, agent(1));
 }
 
 #[tokio::test]
@@ -88,11 +89,11 @@ async fn list_by_type_filters_by_type_and_since() {
     repo.insert(edge(2, 3, EdgeType::Approves)).await.unwrap();
     repo.insert(edge(3, 4, EdgeType::Messages)).await.unwrap();
 
-    let messages = repo.list_by_type(EdgeType::Messages, before, 10).await;
+    let messages = repo.list_by_type(EdgeType::Messages, before, 10).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert!(messages.iter().all(|e| e.edge_type == EdgeType::Messages));
 
-    let approves = repo.list_by_type(EdgeType::Approves, before, 10).await;
+    let approves = repo.list_by_type(EdgeType::Approves, before, 10).await.unwrap();
     assert_eq!(approves.len(), 1);
 }
 
@@ -105,39 +106,40 @@ async fn list_by_type_since_excludes_older_records() {
 
     let all = repo
         .list_by_type(EdgeType::Calls, chrono::DateTime::UNIX_EPOCH, 10)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(all.len(), 2);
 
-    let recent = repo.list_by_type(EdgeType::Calls, after_first, 10).await;
+    let recent = repo.list_by_type(EdgeType::Calls, after_first, 10).await.unwrap();
     assert_eq!(recent.len(), 1);
 }
 
 #[tokio::test]
 async fn limit_is_capped_at_1000() {
     let repo = InMemoryEdgeRepo::new();
-    for i in 0..1100u16 {
+    for _ in 0..1100u16 {
         repo.insert(NewEdge {
-            source_agent_id: agent(1),
-            target_agent_id: agent(2),
+            source: agent(1),
+            target: agent(2),
             edge_type: EdgeType::Calls,
             metadata: None,
         })
         .await
         .unwrap();
-        let _ = i;
     }
-    let results = repo.list_outgoing(agent(1), None, usize::MAX).await;
+    let results = repo.list_outgoing(agent(1), None, u32::MAX).await.unwrap();
     assert_eq!(results.len(), 1000);
 }
 
 #[tokio::test]
 async fn empty_repo_returns_empty_vecs() {
     let repo = InMemoryEdgeRepo::new();
-    assert!(repo.list_outgoing(agent(1), None, 10).await.is_empty());
-    assert!(repo.list_incoming(agent(1), None, 10).await.is_empty());
+    assert!(repo.list_outgoing(agent(1), None, 10).await.unwrap().is_empty());
+    assert!(repo.list_incoming(agent(1), None, 10).await.unwrap().is_empty());
     assert!(repo
         .list_by_type(EdgeType::Calls, chrono::DateTime::UNIX_EPOCH, 10)
         .await
+        .unwrap()
         .is_empty());
 }
 
@@ -147,6 +149,6 @@ async fn all_six_edge_types_are_accepted() {
     for &et in EdgeType::ALL {
         repo.insert(edge(1, 2, et)).await.unwrap();
     }
-    let all = repo.list_outgoing(agent(1), None, 10).await;
+    let all = repo.list_outgoing(agent(1), None, 10).await.unwrap();
     assert_eq!(all.len(), 6);
 }
