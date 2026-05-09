@@ -66,6 +66,18 @@ smoke-go:
 		cat /tmp/aa-smoke-go.log >&2; exit 1; \
 	fi
 
+## dev-verify: Smoke-test all SDKs in parallel then check gateway health; reports total time
+dev-verify:
+	@date +%s > /tmp/.aa-devverify-t0
+	@echo "dev-verify: running SDK smoke tests in parallel ..."
+	@$(MAKE) -j 3 --no-print-directory smoke-python smoke-node smoke-go
+	@$(MAKE) --no-print-directory gateway-health
+	@t0=$$(cat /tmp/.aa-devverify-t0 2>/dev/null || date +%s); \
+	  t1=$$(date +%s); elapsed=$$(( t1 - t0 )); \
+	  rm -f /tmp/.aa-devverify-t0; \
+	  echo ""; echo "dev-verify passed ($${elapsed}s total)"; \
+	  if [ "$$elapsed" -gt 30 ]; then echo "WARNING: $${elapsed}s exceeds 30s target"; fi
+
 ## gateway-health: Check gateway /v1/health; starts via docker compose if not running
 gateway-health:
 	@if ! curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
