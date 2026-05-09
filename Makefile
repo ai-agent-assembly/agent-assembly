@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 .PHONY: help dev-setup install-tools clone-sdks install-hooks build-workspace \
-        dev-verify smoke-python smoke-node smoke-go gateway-health \
+        test dev-verify smoke-python smoke-node smoke-go gateway-health \
         demo-record
 
 ## dev-setup: Bootstrap the full local development environment (install tools, clone SDKs, install hooks, build)
@@ -25,6 +25,10 @@ clone-sdks:
 			git clone "$$url" "$$dest"; \
 		fi; \
 	done < scripts/sdk-repos.txt
+
+## test: Run the full test suite across all workspace crates
+test:
+	@cargo nextest run --workspace --exclude aa-ebpf
 
 ## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
 build-workspace:
