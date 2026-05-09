@@ -208,6 +208,31 @@ async fn get_agent_tree_max_depth_limits_traversal() {
     assert!(root_node.children[0].children.is_empty());
 }
 
+#[tokio::test]
+async fn get_agent_tree_returns_failed_precondition_for_non_root_agent() {
+    let (addr, registry) = start_server().await;
+
+    let root_id: [u8; 16] = [0x10; 16];
+    let child_id: [u8; 16] = [0x11; 16];
+
+    registry.register(make_record(root_id, "root", 0, None, None)).unwrap();
+
+    let mut child_record = make_record(child_id, "child", 1, Some(root_id), None);
+    child_record.root_agent_id = Some(root_id);
+    registry.register(child_record).unwrap();
+
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let err = client
+        .get_agent_tree(GetAgentTreeRequest {
+            agent_id: hex_id(&child_id),
+            max_depth: 0,
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::FailedPrecondition);
+}
+
 // ── GetLineage tests ───────────────────────────────────────────────────────
 
 #[tokio::test]

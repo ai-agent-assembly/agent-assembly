@@ -89,9 +89,16 @@ impl TopologyService for TopologyServiceImpl {
         let req = request.into_inner();
         let agent_id = parse_agent_id(&req.agent_id)?;
 
-        // Verify the root agent exists before building the tree.
-        if self.registry.get(&agent_id).is_none() {
-            return Err(Status::not_found(format!("agent not found: {}", req.agent_id)));
+        let record = self
+            .registry
+            .get(&agent_id)
+            .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
+
+        if record.parent_key.is_some() {
+            return Err(Status::failed_precondition(format!(
+                "agent {} is not a root agent",
+                req.agent_id
+            )));
         }
 
         let unlimited = req.max_depth == 0;
