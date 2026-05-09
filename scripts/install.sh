@@ -68,13 +68,59 @@ _check_tool() {
   fi
 }
 
+# --- Install hint functions -------------------------------------------------
+_hint_rustc() {
+  echo ""
+  echo "  ► rustc / cargo  (install via rustup):"
+  echo "    macOS/Linux : curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  echo "    URL         : https://rustup.rs"
+  echo ""
+}
+
+_hint_python3() {
+  echo ""
+  echo "  ► python3 >= 3.11:"
+  echo "    macOS       : brew install python@3.11"
+  echo "    Linux (deb) : sudo apt-get install -y python3.11"
+  echo "    Linux (rpm) : sudo dnf install -y python3.11"
+  echo "    URL         : https://www.python.org/downloads/"
+  echo ""
+}
+
+_hint_node() {
+  echo ""
+  echo "  ► node >= 20:"
+  echo "    macOS       : brew install node@20"
+  echo "    Linux       : curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs"
+  echo "    URL         : https://nodejs.org/en/download/"
+  echo ""
+}
+
+_hint_go() {
+  echo ""
+  echo "  ► go >= 1.22:"
+  echo "    macOS       : brew install go"
+  echo "    Linux       : sudo apt-get install -y golang-1.22"
+  echo "    URL         : https://go.dev/dl/"
+  echo ""
+}
+
+_hint_docker() {
+  echo ""
+  echo "  ► docker >= 24:"
+  echo "    macOS       : brew install --cask docker"
+  echo "    Linux       : sudo apt-get install -y docker.io"
+  echo "    URL         : https://docs.docker.com/get-docker/"
+  echo ""
+}
+
 # --- Toolchain checks -------------------------------------------------------
 echo "Checking required toolchains..."
 echo ""
 
-_check_tool "rustc"   "rustc"   "1.75" "rustc --version"   || true
-_check_tool "cargo"   "cargo"   "0"    "cargo --version"   || true
-_check_tool "python3" "python3" "3.11" "python3 --version" || true
-_check_tool "node"    "node"    "20"   "node --version"    || true
-_check_tool "go"      "go"      "1.22" "go version"        || true
-_check_tool "docker"  "docker"  "24"   "docker --version"  || true
+_check_tool "rustc"   "rustc"   "1.75" "rustc --version"   || _hint_rustc
+_check_tool "cargo"   "cargo"   "0"    "cargo --version"   || _hint_rustc
+_check_tool "python3" "python3" "3.11" "python3 --version" || _hint_python3
+_check_tool "node"    "node"    "20"   "node --version"    || _hint_node
+_check_tool "go"      "go"      "1.22" "go version"        || _hint_go
+_check_tool "docker"  "docker"  "24"   "docker --version"  || _hint_docker
