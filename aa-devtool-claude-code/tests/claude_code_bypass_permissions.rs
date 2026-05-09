@@ -352,6 +352,34 @@ mod docker_tests {
         serde_json::from_str(&body).unwrap_or_default()
     }
 
+    /// Wait until the claude-stub container reaches "running" state.
+    ///
+    /// The container's main command starts with `apk add curl`, which takes time.
+    /// For tests that exec into the container with commands that don't depend on curl
+    /// being installed (e.g. wget from busybox), waiting for "running" is sufficient.
+    fn wait_claude_stub_running(timeout_secs: u64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            let out = Command::new("docker")
+                .args([
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}",
+                    &format!("{COMPOSE_PROJECT}-claude-stub-1"),
+                ])
+                .output()
+                .unwrap();
+            let status = String::from_utf8_lossy(&out.stdout);
+            if status.trim() == "running" {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("claude-stub did not reach running state within {timeout_secs}s; last: {status}");
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     /// Wait until claude-stub prints its sentinel log line.
     ///
     /// claude-stub runs curl then prints "CLAUDE_STUB_DONE" and then sleeps forever
@@ -365,15 +393,12 @@ mod docker_tests {
                 .args(["logs", &format!("{COMPOSE_PROJECT}-claude-stub-1")])
                 .output()
                 .unwrap();
-            let combined = String::from_utf8_lossy(&logs.stdout).to_string()
-                + &String::from_utf8_lossy(&logs.stderr);
+            let combined = String::from_utf8_lossy(&logs.stdout).to_string() + &String::from_utf8_lossy(&logs.stderr);
             if combined.contains("CLAUDE_STUB_DONE") {
                 return;
             }
             if std::time::Instant::now() >= deadline {
-                panic!(
-                    "claude-stub did not print CLAUDE_STUB_DONE within {timeout_secs}s;\nlogs:\n{combined}"
-                );
+                panic!("claude-stub did not print CLAUDE_STUB_DONE within {timeout_secs}s;\nlogs:\n{combined}");
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -415,8 +440,8 @@ mod docker_tests {
             .args(["logs", &format!("{COMPOSE_PROJECT}-aa-proxy-1")])
             .output()
             .unwrap();
-        let log_text = String::from_utf8_lossy(&proxy_logs.stdout).to_string()
-            + &String::from_utf8_lossy(&proxy_logs.stderr);
+        let log_text =
+            String::from_utf8_lossy(&proxy_logs.stdout).to_string() + &String::from_utf8_lossy(&proxy_logs.stderr);
 
         // The proxy logs "accepted connection" for every TCP connection it handles.
         // This proves the proxy received and processed the claude-stub's CONNECT request.
@@ -440,24 +465,21 @@ mod docker_tests {
         // would fail because the network path doesn't exist.
         let _guard = ComposeGuard::up();
 
-        // Wait for claude-stub to finish its initial curl and print the sentinel.
-        // This guarantees curl is installed in the container before exec runs.
-        wait_claude_stub_done(60);
+        // Wait for claude-stub to enter the running state. We use wget (busybox,
+        // always available in Alpine) so we don't need to wait for apk to install curl.
+        wait_claude_stub_running(30);
 
-        // Attempt a direct curl from claude-stub to stub-upstream on port 80,
-        // bypassing the proxy entirely (no --proxy flag).
-        let out = exec_in_claude_stub("curl -sf --connect-timeout 3 http://stub-upstream:80 2>&1; echo EXIT:$?");
+        // Attempt a direct HTTP request from claude-stub to stub-upstream on port 80,
+        // bypassing the proxy entirely. wget is always available in Alpine (busybox).
+        let out = exec_in_claude_stub("wget -T 3 -q -O /dev/null http://stub-upstream:80 2>&1; echo EXIT:$?");
         let output = String::from_utf8_lossy(&out.stdout);
 
-        // On a correctly isolated network, the direct connection must fail.
-        // Exit code 6 = could not resolve host, 7 = connection refused, 28 = timeout.
-        // Any non-zero exit proves the direct path is blocked.
+        // On a correctly isolated network stub-upstream is on backend-net, not proxy-net,
+        // so its hostname is not resolvable from claude-stub and wget exits non-zero.
+        // EXIT:0 means wget succeeded — that would be a network-isolation failure.
         assert!(
-            output.contains("EXIT:6")
-                || output.contains("EXIT:7")
-                || output.contains("EXIT:28")
-                || output.contains("EXIT:35"),
-            "direct access to stub-upstream must be blocked by network isolation;\ngot: {output}"
+            !output.contains("EXIT:0"),
+            "direct access to stub-upstream must be blocked by network isolation; wget must not succeed;\ngot: {output}"
         );
     }
 
