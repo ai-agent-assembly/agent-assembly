@@ -1,0 +1,3 @@
+git@github.com:AI-agent-assembly/python-sdk.git
+git@github.com:AI-agent-assembly/node-sdk.git
+git@github.com:AI-agent-assembly/go-sdk.git
