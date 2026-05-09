@@ -4,8 +4,10 @@
 //! AAASM-980: append-only rows, `created_at DESC` ordering, and secondary
 //! indexes on `(source_agent_id, edge_type)` and `(target_agent_id, edge_type)`.
 
+pub mod repo;
 pub mod store;
 
+pub use repo::InMemoryEdgeRepo;
 pub use store::InMemoryEdgeStore;
 
 use chrono::{DateTime, Utc};
