@@ -9,12 +9,13 @@ use tonic::transport::Server;
 use crate::audit::AuditWriter;
 use crate::engine::PolicyEngine;
 use crate::registry::AgentRegistry;
-use crate::service::{AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl};
+use crate::service::{AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, TopologyServiceImpl};
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;
 use aa_proto::assembly::audit::v1::audit_service_server::AuditServiceServer;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
+use aa_proto::assembly::topology::v1::topology_service_server::TopologyServiceServer;
 use tokio::sync::broadcast;
 
 use aa_runtime::approval::ApprovalQueue;
@@ -255,6 +256,7 @@ pub async fn serve_tcp(
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
@@ -266,6 +268,7 @@ pub async fn serve_tcp(
         .add_service(AuditServiceServer::new(audit_svc))
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
+        .add_service(TopologyServiceServer::new(topology_svc))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 
@@ -308,6 +311,7 @@ pub async fn serve_uds(
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
@@ -325,6 +329,7 @@ pub async fn serve_uds(
         .add_service(AuditServiceServer::new(audit_svc))
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
+        .add_service(TopologyServiceServer::new(topology_svc))
         .serve_with_incoming_shutdown(incoming, shutdown_signal())
         .await?;
 
