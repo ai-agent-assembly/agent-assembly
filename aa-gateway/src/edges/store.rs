@@ -66,14 +66,8 @@ impl InMemoryEdgeStore {
             .entry((edge.target_agent_id, edge.edge_type.clone()))
             .or_default()
             .push(idx);
-        data.by_source
-            .entry(edge.source_agent_id)
-            .or_default()
-            .push(idx);
-        data.by_target
-            .entry(edge.target_agent_id)
-            .or_default()
-            .push(idx);
+        data.by_source.entry(edge.source_agent_id).or_default().push(idx);
+        data.by_target.entry(edge.target_agent_id).or_default().push(idx);
 
         data.records.push(EdgeRecord {
             id,
@@ -87,12 +81,7 @@ impl InMemoryEdgeStore {
     }
 
     /// Return up to `limit` outgoing edges from `source`, newest first.
-    pub fn list_outgoing(
-        &self,
-        source: [u8; 16],
-        edge_type: Option<&str>,
-        limit: usize,
-    ) -> Vec<EdgeRecord> {
+    pub fn list_outgoing(&self, source: [u8; 16], edge_type: Option<&str>, limit: usize) -> Vec<EdgeRecord> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge store lock poisoned");
         let idxs: &[usize] = match edge_type {
@@ -103,16 +92,15 @@ impl InMemoryEdgeStore {
                 .unwrap_or_default(),
             None => data.by_source.get(&source).map(Vec::as_slice).unwrap_or_default(),
         };
-        idxs.iter().rev().take(limit).map(|&i| data.records[i].clone()).collect()
+        idxs.iter()
+            .rev()
+            .take(limit)
+            .map(|&i| data.records[i].clone())
+            .collect()
     }
 
     /// Return up to `limit` incoming edges to `target`, newest first.
-    pub fn list_incoming(
-        &self,
-        target: [u8; 16],
-        edge_type: Option<&str>,
-        limit: usize,
-    ) -> Vec<EdgeRecord> {
+    pub fn list_incoming(&self, target: [u8; 16], edge_type: Option<&str>, limit: usize) -> Vec<EdgeRecord> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge store lock poisoned");
         let idxs: &[usize] = match edge_type {
@@ -123,16 +111,15 @@ impl InMemoryEdgeStore {
                 .unwrap_or_default(),
             None => data.by_target.get(&target).map(Vec::as_slice).unwrap_or_default(),
         };
-        idxs.iter().rev().take(limit).map(|&i| data.records[i].clone()).collect()
+        idxs.iter()
+            .rev()
+            .take(limit)
+            .map(|&i| data.records[i].clone())
+            .collect()
     }
 
     /// Return up to `limit` edges of `edge_type` with `created_at >= since`, newest first.
-    pub fn list_by_type(
-        &self,
-        edge_type: &str,
-        since: DateTime<Utc>,
-        limit: usize,
-    ) -> Vec<EdgeRecord> {
+    pub fn list_by_type(&self, edge_type: &str, since: DateTime<Utc>, limit: usize) -> Vec<EdgeRecord> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge store lock poisoned");
         data.records

@@ -12,14 +12,7 @@ use chrono::{DateTime, Utc};
 
 /// The six valid edge type strings, matching the `EdgeType` enum variants that
 /// AAASM-985 will introduce. Validated on every insert.
-pub const VALID_EDGE_TYPES: &[&str] = &[
-    "delegates_to",
-    "calls",
-    "reads",
-    "writes",
-    "approves",
-    "messages",
-];
+pub const VALID_EDGE_TYPES: &[&str] = &["delegates_to", "calls", "reads", "writes", "approves", "messages"];
 
 /// Error returned when an insert or lookup is given an unrecognised edge type.
 #[derive(Debug, thiserror::Error)]
