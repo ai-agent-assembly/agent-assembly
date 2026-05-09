@@ -52,9 +52,12 @@ jobs:
         # aa-devtool-claude-code is run separately without docker-integration:
         # the docker-integration feature triggers an 8+ minute Docker build with no
         # instrumented coverage benefit.
+        # sustained_load_p99_under_5ms is a timing-sensitive latency test that fails
+        # under llvm-cov instrumentation overhead — skipped in coverage runs only.
         run: |
           cargo llvm-cov --no-report --all-features --workspace \
-            --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code
+            --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
+            -- --skip sustained_load_p99_under_5ms
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --lcov --output-path lcov.info
 
