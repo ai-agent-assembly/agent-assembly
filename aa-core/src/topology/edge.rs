@@ -137,30 +137,97 @@ pub trait EdgeRepo: Send + Sync {
     /// Return up to `limit` outgoing edges from `source`, newest first.
     ///
     /// If `edge_type` is `Some`, only edges of that type are returned.
-    async fn list_outgoing(
-        &self,
-        source: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge>;
+    async fn list_outgoing(&self, source: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge>;
 
     /// Return up to `limit` incoming edges to `target`, newest first.
     ///
     /// If `edge_type` is `Some`, only edges of that type are returned.
-    async fn list_incoming(
-        &self,
-        target: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge>;
+    async fn list_incoming(&self, target: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge>;
 
     /// Return up to `limit` edges of `edge_type` with `created_at >= since`, newest first.
-    async fn list_by_type(
-        &self,
-        edge_type: EdgeType,
-        since: chrono::DateTime<chrono::Utc>,
-        limit: usize,
-    ) -> Vec<Edge>;
+    async fn list_by_type(&self, edge_type: EdgeType, since: chrono::DateTime<chrono::Utc>, limit: usize) -> Vec<Edge>;
+}
+
+/// Test-only [`EdgeRepo`] that stores edges in memory with no secondary indexes.
+///
+/// Use this as a test double in unit tests that depend on [`EdgeRepo`] but
+/// whose assertion target is not the edge storage logic itself.
+/// Gated on the `test-utils` feature.
+#[cfg(all(feature = "std", feature = "test-utils"))]
+pub struct MockEdgeRepo {
+    inner: std::sync::Mutex<Vec<Edge>>,
+    next_id: std::sync::atomic::AtomicI64,
+}
+
+#[cfg(all(feature = "std", feature = "test-utils"))]
+impl MockEdgeRepo {
+    /// Create an empty `MockEdgeRepo`.
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(Vec::new()),
+            next_id: std::sync::atomic::AtomicI64::new(1),
+        }
+    }
+
+    /// Return a snapshot of all recorded edges in insertion order.
+    pub fn snapshot(&self) -> Vec<Edge> {
+        self.inner.lock().expect("mock lock poisoned").clone()
+    }
+}
+
+#[cfg(all(feature = "std", feature = "test-utils"))]
+impl Default for MockEdgeRepo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "std", feature = "test-utils"))]
+#[async_trait::async_trait]
+impl EdgeRepo for MockEdgeRepo {
+    async fn insert(&self, edge: NewEdge) -> Result<i64, EdgeRepoError> {
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let record = Edge {
+            id,
+            source_agent_id: edge.source_agent_id,
+            target_agent_id: edge.target_agent_id,
+            edge_type: edge.edge_type,
+            created_at: chrono::Utc::now(),
+            metadata: edge.metadata,
+        };
+        self.inner.lock().expect("mock lock poisoned").push(record);
+        Ok(id)
+    }
+
+    async fn list_outgoing(&self, source: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
+        let data = self.inner.lock().expect("mock lock poisoned");
+        data.iter()
+            .filter(|e| e.source_agent_id == source && edge_type.map_or(true, |et| e.edge_type == et))
+            .rev()
+            .take(limit.min(1000))
+            .cloned()
+            .collect()
+    }
+
+    async fn list_incoming(&self, target: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
+        let data = self.inner.lock().expect("mock lock poisoned");
+        data.iter()
+            .filter(|e| e.target_agent_id == target && edge_type.map_or(true, |et| e.edge_type == et))
+            .rev()
+            .take(limit.min(1000))
+            .cloned()
+            .collect()
+    }
+
+    async fn list_by_type(&self, edge_type: EdgeType, since: chrono::DateTime<chrono::Utc>, limit: usize) -> Vec<Edge> {
+        let data = self.inner.lock().expect("mock lock poisoned");
+        data.iter()
+            .filter(|e| e.edge_type == edge_type && e.created_at >= since)
+            .rev()
+            .take(limit.min(1000))
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -206,108 +273,5 @@ mod tests {
     #[test]
     fn all_contains_all_six_variants() {
         assert_eq!(EdgeType::ALL.len(), 6);
-    }
-}
-
-/// Test-only [`EdgeRepo`] that stores edges in memory with no secondary indexes.
-///
-/// Use this as a test double in unit tests that depend on [`EdgeRepo`] but
-/// whose assertion target is not the edge storage logic itself.
-/// Gated on the `test-utils` feature.
-#[cfg(all(feature = "std", feature = "test-utils"))]
-pub struct MockEdgeRepo {
-    inner: std::sync::Mutex<Vec<Edge>>,
-    next_id: std::sync::atomic::AtomicI64,
-}
-
-#[cfg(all(feature = "std", feature = "test-utils"))]
-impl MockEdgeRepo {
-    /// Create an empty `MockEdgeRepo`.
-    pub fn new() -> Self {
-        Self {
-            inner: std::sync::Mutex::new(Vec::new()),
-            next_id: std::sync::atomic::AtomicI64::new(1),
-        }
-    }
-
-    /// Return a snapshot of all recorded edges in insertion order.
-    pub fn snapshot(&self) -> Vec<Edge> {
-        self.inner.lock().expect("mock lock poisoned").clone()
-    }
-}
-
-#[cfg(all(feature = "std", feature = "test-utils"))]
-impl Default for MockEdgeRepo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(all(feature = "std", feature = "test-utils"))]
-#[async_trait::async_trait]
-impl EdgeRepo for MockEdgeRepo {
-    async fn insert(&self, edge: NewEdge) -> Result<i64, EdgeRepoError> {
-        let id = self
-            .next_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let record = Edge {
-            id,
-            source_agent_id: edge.source_agent_id,
-            target_agent_id: edge.target_agent_id,
-            edge_type: edge.edge_type,
-            created_at: chrono::Utc::now(),
-            metadata: edge.metadata,
-        };
-        self.inner.lock().expect("mock lock poisoned").push(record);
-        Ok(id)
-    }
-
-    async fn list_outgoing(
-        &self,
-        source: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge> {
-        let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
-            .filter(|e| {
-                e.source_agent_id == source && edge_type.map_or(true, |et| e.edge_type == et)
-            })
-            .rev()
-            .take(limit.min(1000))
-            .cloned()
-            .collect()
-    }
-
-    async fn list_incoming(
-        &self,
-        target: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge> {
-        let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
-            .filter(|e| {
-                e.target_agent_id == target && edge_type.map_or(true, |et| e.edge_type == et)
-            })
-            .rev()
-            .take(limit.min(1000))
-            .cloned()
-            .collect()
-    }
-
-    async fn list_by_type(
-        &self,
-        edge_type: EdgeType,
-        since: chrono::DateTime<chrono::Utc>,
-        limit: usize,
-    ) -> Vec<Edge> {
-        let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
-            .filter(|e| e.edge_type == edge_type && e.created_at >= since)
-            .rev()
-            .take(limit.min(1000))
-            .cloned()
-            .collect()
     }
 }

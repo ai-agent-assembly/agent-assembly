@@ -65,9 +65,9 @@ pub use capability::{action_to_capability, merge_capabilities, Capability, Capab
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
 
 pub use topology::EdgeType;
+#[cfg(all(feature = "std", feature = "test-utils"))]
+pub use topology::MockEdgeRepo;
 #[cfg(feature = "alloc")]
 pub use topology::UnknownEdgeType;
 #[cfg(feature = "std")]
 pub use topology::{Edge, EdgeRepo, EdgeRepoError, NewEdge};
-#[cfg(all(feature = "std", feature = "test-utils"))]
-pub use topology::MockEdgeRepo;

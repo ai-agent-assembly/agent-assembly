@@ -85,12 +85,7 @@ impl EdgeRepo for InMemoryEdgeRepo {
         Ok(id)
     }
 
-    async fn list_outgoing(
-        &self,
-        source: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge> {
+    async fn list_outgoing(&self, source: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge repo lock poisoned");
         let idxs: &[usize] = match edge_type {
@@ -101,15 +96,14 @@ impl EdgeRepo for InMemoryEdgeRepo {
                 .unwrap_or_default(),
             None => data.by_source.get(&source).map(Vec::as_slice).unwrap_or_default(),
         };
-        idxs.iter().rev().take(limit).map(|&i| data.records[i].clone()).collect()
+        idxs.iter()
+            .rev()
+            .take(limit)
+            .map(|&i| data.records[i].clone())
+            .collect()
     }
 
-    async fn list_incoming(
-        &self,
-        target: [u8; 16],
-        edge_type: Option<EdgeType>,
-        limit: usize,
-    ) -> Vec<Edge> {
+    async fn list_incoming(&self, target: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge repo lock poisoned");
         let idxs: &[usize] = match edge_type {
@@ -120,15 +114,14 @@ impl EdgeRepo for InMemoryEdgeRepo {
                 .unwrap_or_default(),
             None => data.by_target.get(&target).map(Vec::as_slice).unwrap_or_default(),
         };
-        idxs.iter().rev().take(limit).map(|&i| data.records[i].clone()).collect()
+        idxs.iter()
+            .rev()
+            .take(limit)
+            .map(|&i| data.records[i].clone())
+            .collect()
     }
 
-    async fn list_by_type(
-        &self,
-        edge_type: EdgeType,
-        since: DateTime<Utc>,
-        limit: usize,
-    ) -> Vec<Edge> {
+    async fn list_by_type(&self, edge_type: EdgeType, since: DateTime<Utc>, limit: usize) -> Vec<Edge> {
         let limit = limit.min(1000);
         let data = self.data.read().expect("edge repo lock poisoned");
         data.records
