@@ -9,7 +9,9 @@ use tonic::transport::Server;
 use crate::audit::AuditWriter;
 use crate::engine::PolicyEngine;
 use crate::registry::AgentRegistry;
-use crate::service::{AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, TopologyServiceImpl};
+use crate::service::{
+    AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, TopologyServiceImpl,
+};
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;

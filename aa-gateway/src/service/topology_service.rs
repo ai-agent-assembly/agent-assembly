@@ -6,8 +6,8 @@ use tonic::{Request, Response, Status};
 
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyService;
 use aa_proto::assembly::topology::v1::{
-    GetAgentTreeRequest, GetAgentTreeResponse, GetLineageRequest, GetLineageResponse,
-    GetTeamMembersRequest, GetTeamMembersResponse,
+    GetAgentTreeRequest, GetAgentTreeResponse, GetLineageRequest, GetLineageResponse, GetTeamMembersRequest,
+    GetTeamMembersResponse,
 };
 
 use crate::registry::AgentRegistry;
@@ -37,10 +37,7 @@ impl TopologyService for TopologyServiceImpl {
         Err(Status::unimplemented("GetAgentTree not yet implemented"))
     }
 
-    async fn get_lineage(
-        &self,
-        _request: Request<GetLineageRequest>,
-    ) -> Result<Response<GetLineageResponse>, Status> {
+    async fn get_lineage(&self, _request: Request<GetLineageRequest>) -> Result<Response<GetLineageResponse>, Status> {
         Err(Status::unimplemented("GetLineage not yet implemented"))
     }
 

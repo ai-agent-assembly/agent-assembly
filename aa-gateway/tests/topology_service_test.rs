@@ -37,9 +37,7 @@ async fn start_server() -> (SocketAddr, Arc<AgentRegistry>) {
 #[tokio::test]
 async fn get_agent_tree_returns_unimplemented() {
     let (addr, _registry) = start_server().await;
-    let mut client = TopologyServiceClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let status = client
         .get_agent_tree(GetAgentTreeRequest {
@@ -55,9 +53,7 @@ async fn get_agent_tree_returns_unimplemented() {
 #[tokio::test]
 async fn get_lineage_returns_unimplemented() {
     let (addr, _registry) = start_server().await;
-    let mut client = TopologyServiceClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let status = client
         .get_lineage(GetLineageRequest {
@@ -72,9 +68,7 @@ async fn get_lineage_returns_unimplemented() {
 #[tokio::test]
 async fn get_team_members_returns_unimplemented() {
     let (addr, _registry) = start_server().await;
-    let mut client = TopologyServiceClient::connect(format!("http://{addr}"))
-        .await
-        .unwrap();
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let status = client
         .get_team_members(GetTeamMembersRequest {
