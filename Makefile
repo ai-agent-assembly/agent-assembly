@@ -114,6 +114,16 @@ install-hooks:
 install-tools:
 	@bash scripts/install.sh
 
+## demo-record: Re-record the quickstart asciinema cast (overwrites docs/quickstart.cast)
+demo-record:
+	@command -v asciinema >/dev/null 2>&1 || { \
+		echo "asciinema not found. Install: brew install asciinema (macOS) or pip install asciinema (Linux)"; exit 1; \
+	}
+	@mkdir -p docs
+	@echo "Recording quickstart cast. Run 'make dev-setup && make dev-verify' inside the shell, then exit."
+	@asciinema rec --idle-time-limit=2 --title "agent-assembly quickstart" --cols 220 --rows 50 docs/quickstart.cast
+	@echo "Cast saved to docs/quickstart.cast"
+
 ## help: Show this help message
 help:
 	@echo "Usage: make <target>"

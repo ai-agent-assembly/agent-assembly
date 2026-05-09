@@ -58,27 +58,73 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 - [Lefthook](https://github.com/evilmartians/lefthook) for git hooks
 - **Linux only**: `pkg-config` and `libssl-dev` (or `openssl-devel` on RHEL-family) for native TLS in `aa-proxy`; eBPF crates additionally require a recent kernel with BTF and a nightly Rust toolchain (see `aa-ebpf/README.md`)
 
-## Getting Started
+## Quickstart
+
+<!-- docs-site: <asciinema-player src="quickstart.cast" cols="220" rows="50" preload="true"></asciinema-player> -->
+
+> **Demo recording:** `asciinema play docs/quickstart.cast`
+
+Get from a fresh clone to a verified local environment in under 10 minutes.
+
+### 1. Clone the repository
 
 ```bash
-# Clone
 git clone https://github.com/AI-agent-assembly/agent-assembly.git
 cd agent-assembly
-
-# Install git hooks
-lefthook install
-
-# Build all crates except aa-ebpf (eBPF crate requires a nightly toolchain;
-# CI excludes it the same way and validates it in a dedicated job).
-cargo build --workspace --exclude aa-ebpf
-
-# Run tests
-cargo nextest run --workspace --exclude aa-ebpf
 ```
 
-## Quickstart — sidecar + test agent
+### 2. Bootstrap the development environment
 
-Run `aa-runtime` as a sidecar against a placeholder agent using the [`examples/docker-compose`](examples/docker-compose/) stack:
+```bash
+make dev-setup
+```
+
+Installs required toolchains, clones the SDK polyrepos as siblings, installs
+git hooks, and builds the workspace. Expected output (abbreviated):
+
+```text
+  Cloning python-sdk ...
+  Cloning node-sdk ...
+  Cloning go-sdk ...
+pre-commit installed at .git/hooks/pre-commit
+   Compiling aa-core v0.0.1 ...
+    Finished `dev` profile target(s) in 167s
+
+dev-setup complete. Run 'make dev-verify' to validate.
+```
+
+### 3. Verify the installation
+
+```bash
+make dev-verify
+```
+
+Runs smoke tests across all SDK repos in parallel then checks gateway health.
+Expected output:
+
+```text
+dev-verify: running SDK smoke tests in parallel ...
+[1/4] python smoke ... OK (2s)
+[2/4] node smoke   ... OK (18s)
+[3/4] go smoke     ... SKIP (internal/smoke/ not found in go-sdk)
+[4/4] gateway health ... OK (1s)
+
+dev-verify passed (22s total)
+```
+
+> **Timing:** ~4 minutes on a 2024 MacBook Pro M3 (first run; subsequent runs
+> skip already-installed tools).
+
+### Next steps
+
+- [SDK documentation](docs/sdk/README.md) — Python, Node.js, and Go SDK guides
+- [Architecture Overview](docs/src/architecture.md) — three-layer interception model
+- [Policy examples](policy-examples/) — reference governance policies
+
+## Running with Docker Compose
+
+Run `aa-runtime` as a sidecar against a placeholder agent using the
+[`examples/docker-compose`](examples/docker-compose/) stack:
 
 ```bash
 # 1. Build the workspace (first time only)
@@ -94,17 +140,20 @@ The sidecar exposes:
 - The agent IPC socket at `/tmp/aa-runtime-my-agent-001.sock`
 - Readiness probe at `http://localhost:8080/ready`
 
-To run only the governance gateway (without Docker), point it at one of the bundled YAML policies:
+To run only the governance gateway (without Docker), point it at one of the
+bundled YAML policies:
 
 ```bash
-# Start the gateway gRPC server with a sample policy file.
 # Listens on 127.0.0.1:50051 by default; SDK shims and aa-proxy connect over gRPC.
 cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
 ```
 
-`policy-examples/{low,medium,high}-risk.yaml` are reference policies — pick one or write your own following the same schema.
+`policy-examples/{low,medium,high}-risk.yaml` are reference policies — pick one
+or write your own following the same schema.
 
-Replace the `agent-stub` service in `examples/docker-compose/docker-compose.yml` with your own SDK-based agent image once `python-sdk`, `node-sdk`, or `go-sdk` is wired into your project.
+Replace the `agent-stub` service in
+`examples/docker-compose/docker-compose.yml` with your own SDK-based agent
+image once `python-sdk`, `node-sdk`, or `go-sdk` is wired into your project.
 
 ## Repository Layout
 
