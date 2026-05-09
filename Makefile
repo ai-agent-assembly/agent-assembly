@@ -21,6 +21,10 @@ clone-sdks:
 		fi; \
 	done < scripts/sdk-repos.txt
 
+## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
+build-workspace:
+	@cargo build --workspace --exclude aa-ebpf
+
 ## install-hooks: Install git pre-commit hooks via pre-commit
 install-hooks:
 	@pre-commit install
