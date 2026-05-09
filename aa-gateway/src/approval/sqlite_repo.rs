@@ -8,6 +8,57 @@ use aa_core::ApprovalKind;
 use super::repo::{ApprovalRoutingRepo, RepoError};
 use super::routing_config::TeamRoutingConfig;
 
+// ---------------------------------------------------------------------------
+// Internal helpers  (must appear before impl blocks that call them)
+// ---------------------------------------------------------------------------
+
+/// Map a DB `approval_kind` string back to `Option<ApprovalKind>`.
+/// The empty string `""` is the sentinel for "team-wide fallback" (None).
+fn kind_from_db(s: &str) -> Option<ApprovalKind> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.parse().expect("ApprovalKind::from_str is infallible"))
+    }
+}
+
+/// Fetch a single row matching `(team_id, approval_kind)`.
+///
+/// `approval_kind = None` resolves to the team-wide fallback (stored as `''`).
+async fn fetch_one(
+    pool: &SqlitePool,
+    team_id: &str,
+    approval_kind: Option<&str>,
+) -> Result<Option<TeamRoutingConfig>, RepoError> {
+    let kind_db = approval_kind.unwrap_or("");
+    let row = sqlx::query!(
+        r#"
+        SELECT team_id, approval_kind, approvers, escalation_timeout_secs, escalation_approvers
+        FROM approval_routing_config
+        WHERE team_id = ? AND approval_kind = ?
+        "#,
+        team_id,
+        kind_db,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|r| {
+        Ok(TeamRoutingConfig {
+            team_id: r.team_id,
+            approval_kind: kind_from_db(&r.approval_kind),
+            approvers: serde_json::from_str(&r.approvers)?,
+            escalation_timeout_secs: r.escalation_timeout_secs as u64,
+            escalation_approvers: serde_json::from_str(&r.escalation_approvers)?,
+        })
+    })
+    .transpose()
+}
+
+// ---------------------------------------------------------------------------
+// SqliteApprovalRoutingRepo
+// ---------------------------------------------------------------------------
+
 /// SQLite-backed store for team-level approval routing configuration.
 ///
 /// Runs all pending migrations on [`new`][Self::new] so the table is always
@@ -48,11 +99,7 @@ impl ApprovalRoutingRepo for SqliteApprovalRoutingRepo {
         let approvers = serde_json::to_string(&config.approvers)?;
         let escalation_approvers = serde_json::to_string(&config.escalation_approvers)?;
         // Map None → "" sentinel (SQLite doesn't treat NULLs as equal in PRIMARY KEY).
-        let kind_str = config
-            .approval_kind
-            .as_ref()
-            .map(ApprovalKind::as_str)
-            .unwrap_or("");
+        let kind_str = config.approval_kind.as_ref().map(ApprovalKind::as_str).unwrap_or("");
         let escalation_timeout = config.escalation_timeout_secs as i64;
 
         sqlx::query!(
@@ -142,7 +189,6 @@ mod tests {
         let repo = in_memory_repo().await;
         repo.upsert(cfg("team-b", None)).await.unwrap();
 
-        // Querying with a specific kind falls back to the team-wide config.
         let got = repo.get("team-b", Some(&ApprovalKind::ToolUse)).await.unwrap().unwrap();
         assert_eq!(got.approval_kind, None);
     }
@@ -165,7 +211,6 @@ mod tests {
         assert_eq!(got.approvers, vec!["bob"]);
         assert_eq!(got.escalation_timeout_secs, 60);
 
-        // Team-wide fallback is unaffected.
         let fallback = repo.get("team-c", None).await.unwrap().unwrap();
         assert_eq!(fallback.approvers, vec!["alice"]);
     }
@@ -213,51 +258,4 @@ mod tests {
         let configs = repo.list_for_team("nobody").await.unwrap();
         assert!(configs.is_empty());
     }
-}
-
-// ---------------------------------------------------------------------------
-// Internal helper
-// ---------------------------------------------------------------------------
-
-/// Map a DB `approval_kind` string back to `Option<ApprovalKind>`.
-/// The empty string `""` is the sentinel for "team-wide fallback" (None).
-fn kind_from_db(s: &str) -> Option<ApprovalKind> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.parse().expect("ApprovalKind::from_str is infallible"))
-    }
-}
-
-/// Fetch a single row matching `(team_id, approval_kind)`.
-///
-/// `approval_kind = None` resolves to the team-wide fallback (stored as `''`).
-async fn fetch_one(
-    pool: &SqlitePool,
-    team_id: &str,
-    approval_kind: Option<&str>,
-) -> Result<Option<TeamRoutingConfig>, RepoError> {
-    let kind_db = approval_kind.unwrap_or("");
-    let row = sqlx::query!(
-        r#"
-        SELECT team_id, approval_kind, approvers, escalation_timeout_secs, escalation_approvers
-        FROM approval_routing_config
-        WHERE team_id = ? AND approval_kind = ?
-        "#,
-        team_id,
-        kind_db,
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    row.map(|r| {
-        Ok(TeamRoutingConfig {
-            team_id: r.team_id,
-            approval_kind: kind_from_db(&r.approval_kind),
-            approvers: serde_json::from_str(&r.approvers)?,
-            escalation_timeout_secs: r.escalation_timeout_secs as u64,
-            escalation_approvers: serde_json::from_str(&r.escalation_approvers)?,
-        })
-    })
-    .transpose()
 }
