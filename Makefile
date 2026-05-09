@@ -21,6 +21,10 @@ clone-sdks:
 		fi; \
 	done < scripts/sdk-repos.txt
 
+## install-hooks: Install git pre-commit hooks via pre-commit
+install-hooks:
+	@pre-commit install
+
 ## install-tools: Check required toolchains via scripts/install.sh
 install-tools:
 	@bash scripts/install.sh
