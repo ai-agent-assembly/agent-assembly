@@ -69,3 +69,5 @@ pub use topology::EdgeType;
 pub use topology::UnknownEdgeType;
 #[cfg(feature = "std")]
 pub use topology::{Edge, EdgeRepo, EdgeRepoError, NewEdge};
+#[cfg(all(feature = "std", feature = "test-utils"))]
+pub use topology::MockEdgeRepo;

@@ -9,3 +9,6 @@ pub use edge::UnknownEdgeType;
 
 #[cfg(feature = "std")]
 pub use edge::{Edge, EdgeRepo, EdgeRepoError, NewEdge};
+
+#[cfg(all(feature = "std", feature = "test-utils"))]
+pub use edge::MockEdgeRepo;
