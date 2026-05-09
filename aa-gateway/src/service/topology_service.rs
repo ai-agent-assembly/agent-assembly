@@ -130,8 +130,29 @@ impl TopologyService for TopologyServiceImpl {
 
     async fn get_team_members(
         &self,
-        _request: Request<GetTeamMembersRequest>,
+        request: Request<GetTeamMembersRequest>,
     ) -> Result<Response<GetTeamMembersResponse>, Status> {
-        Err(Status::unimplemented("GetTeamMembers not yet implemented"))
+        let req = request.into_inner();
+
+        if req.team_id.is_empty() {
+            return Err(Status::invalid_argument("team_id must not be empty"));
+        }
+
+        let member_ids = self.registry.team_members(&req.team_id);
+        if member_ids.is_empty() {
+            return Err(Status::not_found(format!(
+                "team not found or has no agents: {}",
+                req.team_id
+            )));
+        }
+
+        let mut members: Vec<TopologyAgent> = member_ids
+            .iter()
+            .filter_map(|id| self.registry.get(id))
+            .map(|r| record_to_topology_agent(&r))
+            .collect();
+        members.sort_by(|a, b| a.id.cmp(&b.id));
+
+        Ok(Response::new(GetTeamMembersResponse { members }))
     }
 }

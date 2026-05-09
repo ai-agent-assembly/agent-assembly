@@ -306,19 +306,159 @@ async fn get_lineage_sub_agent_includes_parent_chain() {
     assert_eq!(resp.ancestors[1].depth, 0);
 }
 
-// ── GetTeamMembers stub test ───────────────────────────────────────────────
+// ── GetTeamMembers tests ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn get_team_members_returns_unimplemented() {
+async fn get_team_members_empty_team_id_returns_invalid_argument() {
     let (addr, _registry) = start_server().await;
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
-    let status = client
+    let err = client
+        .get_team_members(GetTeamMembersRequest { team_id: String::new() })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn get_team_members_not_found_for_unknown_team() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
         .get_team_members(GetTeamMembersRequest {
-            team_id: "team-alpha".into(),
+            team_id: "no-such-team".into(),
         })
         .await
         .unwrap_err();
 
-    assert_eq!(status.code(), Code::Unimplemented);
+    assert_eq!(err.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn get_team_members_returns_agents_sorted_by_agent_id() {
+    let (addr, registry) = start_server().await;
+
+    // 0xa0... < 0xa1... lexicographically, so root sorts before child.
+    let root_id: [u8; 16] = [0xa0; 16];
+    let child_id: [u8; 16] = [0xa1; 16];
+
+    registry
+        .register(make_record(root_id, "alpha-root", 0, None, Some("alpha-team")))
+        .unwrap();
+
+    let mut child_record = make_record(child_id, "alpha-child", 1, Some(root_id), Some("alpha-team"));
+    child_record.root_agent_id = Some(root_id);
+    registry.register(child_record).unwrap();
+
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let resp = client
+        .get_team_members(GetTeamMembersRequest {
+            team_id: "alpha-team".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(resp.members.len(), 2);
+    assert_eq!(resp.members[0].team_id, "alpha-team");
+    // Sorted by agent_id string: a0a0... < a1a1..., so root agent comes first.
+    assert_eq!(resp.members[0].id, hex_id(&root_id));
+    assert_eq!(resp.members[1].id, hex_id(&child_id));
+}
+
+// ── Integration test ───────────────────────────────────────────────────────
+
+/// Seeds a 3-level, 2-team registry and calls all three topology RPCs in one
+/// test to assert cross-RPC consistency.
+///
+/// Fixture:
+///   root  (depth 0, team-one)
+///   └── child      (depth 1, team-one)
+///       └── grandchild (depth 2, team-two)
+#[tokio::test]
+async fn topology_all_rpcs_3level_2team_fixture() {
+    let (addr, registry) = start_server().await;
+
+    // IDs chosen so that b0... < b1... < b2... for deterministic sort checks.
+    let root_id: [u8; 16] = [0xb0; 16];
+    let child_id: [u8; 16] = [0xb1; 16];
+    let grandchild_id: [u8; 16] = [0xb2; 16];
+
+    registry
+        .register(make_record(root_id, "root", 0, None, Some("team-one")))
+        .unwrap();
+
+    let mut child_record = make_record(child_id, "child", 1, Some(root_id), Some("team-one"));
+    child_record.root_agent_id = Some(root_id);
+    registry.register(child_record).unwrap();
+
+    let mut grandchild_record = make_record(grandchild_id, "grandchild", 2, Some(child_id), Some("team-two"));
+    grandchild_record.root_agent_id = Some(root_id);
+    registry.register(grandchild_record).unwrap();
+
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    // ── GetAgentTree ──────────────────────────────────────────────────────
+    let tree_resp = client
+        .get_agent_tree(GetAgentTreeRequest {
+            agent_id: hex_id(&root_id),
+            max_depth: 0,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let root_node = tree_resp.root.expect("root node missing");
+    assert_eq!(root_node.agent.as_ref().unwrap().id, hex_id(&root_id));
+    assert_eq!(root_node.children.len(), 1);
+    let child_node = &root_node.children[0];
+    assert_eq!(child_node.agent.as_ref().unwrap().id, hex_id(&child_id));
+    assert_eq!(child_node.children.len(), 1);
+    let grandchild_node = &child_node.children[0];
+    assert_eq!(grandchild_node.agent.as_ref().unwrap().id, hex_id(&grandchild_id));
+    assert!(grandchild_node.children.is_empty());
+
+    // ── GetLineage ────────────────────────────────────────────────────────
+    let lineage_resp = client
+        .get_lineage(GetLineageRequest {
+            agent_id: hex_id(&grandchild_id),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // ancestors[0] = grandchild, [1] = child, [2] = root
+    assert_eq!(lineage_resp.ancestors.len(), 3);
+    assert_eq!(lineage_resp.ancestors[0].id, hex_id(&grandchild_id));
+    assert_eq!(lineage_resp.ancestors[1].id, hex_id(&child_id));
+    assert_eq!(lineage_resp.ancestors[2].id, hex_id(&root_id));
+
+    // ── GetTeamMembers("team-one") ────────────────────────────────────────
+    let team_one_resp = client
+        .get_team_members(GetTeamMembersRequest {
+            team_id: "team-one".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // root (b0...) and child (b1...) — sorted by agent_id
+    assert_eq!(team_one_resp.members.len(), 2);
+    assert_eq!(team_one_resp.members[0].id, hex_id(&root_id));
+    assert_eq!(team_one_resp.members[1].id, hex_id(&child_id));
+
+    // ── GetTeamMembers("team-two") ────────────────────────────────────────
+    let team_two_resp = client
+        .get_team_members(GetTeamMembersRequest {
+            team_id: "team-two".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(team_two_resp.members.len(), 1);
+    assert_eq!(team_two_resp.members[0].id, hex_id(&grandchild_id));
+    assert_eq!(team_two_resp.members[0].team_id, "team-two");
 }
