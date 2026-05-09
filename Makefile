@@ -6,6 +6,10 @@ SHELL := /bin/bash
         dev-verify smoke-python smoke-node smoke-go gateway-health \
         demo-record
 
+## install-tools: Check required toolchains via scripts/install.sh
+install-tools:
+	@bash scripts/install.sh
+
 ## help: Show this help message
 help:
 	@echo "Usage: make <target>"
