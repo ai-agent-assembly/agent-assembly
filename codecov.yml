@@ -17,6 +17,7 @@ coverage:
 # never observes them and they would otherwise drag patch coverage to 0%.
 ignore:
   - "conformance/src/bin/"
+  - "aa-proxy/src/main.rs"
 
 comment:
   layout: "reach,diff,flags,tree"
