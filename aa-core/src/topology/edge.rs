@@ -81,14 +81,23 @@ impl core::convert::TryFrom<&str> for EdgeType {
     }
 }
 
+#[cfg(feature = "std")]
+impl std::str::FromStr for EdgeType {
+    type Err = UnknownEdgeType;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        EdgeType::try_from(s)
+    }
+}
+
 /// Input for recording a new directed edge between two agents.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct NewEdge {
-    /// Raw UUID bytes of the agent that originates the relationship.
-    pub source_agent_id: [u8; 16],
-    /// Raw UUID bytes of the agent that is the target of the relationship.
-    pub target_agent_id: [u8; 16],
+    /// The agent that originates the relationship.
+    pub source: crate::identity::AgentId,
+    /// The agent that is the target of the relationship.
+    pub target: crate::identity::AgentId,
     /// The kind of relationship.
     pub edge_type: EdgeType,
     /// Optional structured metadata (e.g. graph name, reason, key names).
@@ -101,10 +110,10 @@ pub struct NewEdge {
 pub struct Edge {
     /// Auto-assigned monotonically increasing identifier.
     pub id: i64,
-    /// Raw UUID bytes of the agent that originates the relationship.
-    pub source_agent_id: [u8; 16],
-    /// Raw UUID bytes of the agent that is the target of the relationship.
-    pub target_agent_id: [u8; 16],
+    /// The agent that originates the relationship.
+    pub source: crate::identity::AgentId,
+    /// The agent that is the target of the relationship.
+    pub target: crate::identity::AgentId,
     /// The kind of relationship.
     pub edge_type: EdgeType,
     /// When this edge was recorded.
@@ -137,15 +146,34 @@ pub trait EdgeRepo: Send + Sync {
     /// Return up to `limit` outgoing edges from `source`, newest first.
     ///
     /// If `edge_type` is `Some`, only edges of that type are returned.
-    async fn list_outgoing(&self, source: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge>;
+    /// `limit` is silently capped at 1 000 by implementations.
+    async fn list_outgoing(
+        &self,
+        source: crate::identity::AgentId,
+        edge_type: Option<EdgeType>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError>;
 
     /// Return up to `limit` incoming edges to `target`, newest first.
     ///
     /// If `edge_type` is `Some`, only edges of that type are returned.
-    async fn list_incoming(&self, target: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge>;
+    /// `limit` is silently capped at 1 000 by implementations.
+    async fn list_incoming(
+        &self,
+        target: crate::identity::AgentId,
+        edge_type: Option<EdgeType>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError>;
 
     /// Return up to `limit` edges of `edge_type` with `created_at >= since`, newest first.
-    async fn list_by_type(&self, edge_type: EdgeType, since: chrono::DateTime<chrono::Utc>, limit: usize) -> Vec<Edge>;
+    ///
+    /// `limit` is silently capped at 1 000 by implementations.
+    async fn list_by_type(
+        &self,
+        edge_type: EdgeType,
+        since: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError>;
 }
 
 /// Test-only [`EdgeRepo`] that stores edges in memory with no secondary indexes.
@@ -189,8 +217,8 @@ impl EdgeRepo for MockEdgeRepo {
         let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let record = Edge {
             id,
-            source_agent_id: edge.source_agent_id,
-            target_agent_id: edge.target_agent_id,
+            source: edge.source,
+            target: edge.target,
             edge_type: edge.edge_type,
             created_at: chrono::Utc::now(),
             metadata: edge.metadata,
@@ -199,34 +227,52 @@ impl EdgeRepo for MockEdgeRepo {
         Ok(id)
     }
 
-    async fn list_outgoing(&self, source: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
+    async fn list_outgoing(
+        &self,
+        source: crate::identity::AgentId,
+        edge_type: Option<EdgeType>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError> {
         let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
-            .filter(|e| e.source_agent_id == source && edge_type.map_or(true, |et| e.edge_type == et))
+        Ok(data
+            .iter()
+            .filter(|e| e.source == source && edge_type.map_or(true, |et| e.edge_type == et))
             .rev()
-            .take(limit.min(1000))
+            .take((limit as usize).min(1000))
             .cloned()
-            .collect()
+            .collect())
     }
 
-    async fn list_incoming(&self, target: [u8; 16], edge_type: Option<EdgeType>, limit: usize) -> Vec<Edge> {
+    async fn list_incoming(
+        &self,
+        target: crate::identity::AgentId,
+        edge_type: Option<EdgeType>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError> {
         let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
-            .filter(|e| e.target_agent_id == target && edge_type.map_or(true, |et| e.edge_type == et))
+        Ok(data
+            .iter()
+            .filter(|e| e.target == target && edge_type.map_or(true, |et| e.edge_type == et))
             .rev()
-            .take(limit.min(1000))
+            .take((limit as usize).min(1000))
             .cloned()
-            .collect()
+            .collect())
     }
 
-    async fn list_by_type(&self, edge_type: EdgeType, since: chrono::DateTime<chrono::Utc>, limit: usize) -> Vec<Edge> {
+    async fn list_by_type(
+        &self,
+        edge_type: EdgeType,
+        since: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> Result<Vec<Edge>, EdgeRepoError> {
         let data = self.inner.lock().expect("mock lock poisoned");
-        data.iter()
+        Ok(data
+            .iter()
             .filter(|e| e.edge_type == edge_type && e.created_at >= since)
             .rev()
-            .take(limit.min(1000))
+            .take((limit as usize).min(1000))
             .cloned()
-            .collect()
+            .collect())
     }
 }
 
@@ -260,6 +306,21 @@ mod tests {
     fn as_str_round_trips() {
         for &variant in EdgeType::ALL {
             assert_eq!(EdgeType::try_from(variant.as_str()).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn from_str_parses_all_six_variants() {
+        use std::str::FromStr;
+        for &variant in EdgeType::ALL {
+            assert_eq!(EdgeType::from_str(variant.as_str()).unwrap(), variant);
+        }
+    }
+
+    #[test]
+    fn str_parse_parses_all_six_variants() {
+        for &variant in EdgeType::ALL {
+            assert_eq!(variant.as_str().parse::<EdgeType>().unwrap(), variant);
         }
     }
 
