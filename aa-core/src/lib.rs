@@ -24,6 +24,8 @@ cfg_if::cfg_if! {
 
 pub mod agent;
 #[cfg(feature = "alloc")]
+pub mod approval;
+#[cfg(feature = "alloc")]
 pub mod audit;
 #[cfg(feature = "alloc")]
 pub mod capability;
@@ -41,6 +43,8 @@ pub use policy::{FileMode, PolicyDecision, PolicyError};
 
 #[cfg(feature = "alloc")]
 pub use agent::{AgentContext, AgentContextBuilder};
+#[cfg(feature = "alloc")]
+pub use approval::ApprovalKind;
 #[cfg(feature = "alloc")]
 pub use dev_tool::DevToolKind;
 #[cfg(feature = "alloc")]

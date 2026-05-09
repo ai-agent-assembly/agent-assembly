@@ -39,6 +39,7 @@ clap         = { version = "4", features = ["derive"] }
 moka         = { version = "0.12", features = ["sync"] }
 ahash        = "0.8"
 metrics      = "0.24"
+sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
 
 [dev-dependencies]
 criterion    = { version = "0.8", features = ["async_tokio"] }

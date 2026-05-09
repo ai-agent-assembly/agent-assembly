@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO approval_routing_config\n                (team_id, approval_kind, approvers, escalation_timeout_secs, escalation_approvers)\n            VALUES (?, ?, ?, ?, ?)\n            ON CONFLICT(team_id, approval_kind) DO UPDATE SET\n                approvers                = excluded.approvers,\n                escalation_timeout_secs  = excluded.escalation_timeout_secs,\n                escalation_approvers     = excluded.escalation_approvers\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "a316833acd3cdc8c7a281719ad43657676665a1616533ca73ef69e4286b73f34"
+}

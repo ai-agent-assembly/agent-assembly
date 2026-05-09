@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        SELECT team_id, approval_kind, approvers, escalation_timeout_secs, escalation_approvers\n        FROM approval_routing_config\n        WHERE team_id = ? AND approval_kind = ?\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "team_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "approval_kind",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "approvers",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "escalation_timeout_secs",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "escalation_approvers",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c32bb00a54c0a8aa68e629bd7fe3cc732202684fc47186fe966a3a305dc46609"
+}

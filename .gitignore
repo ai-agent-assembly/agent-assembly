@@ -35,3 +35,4 @@ codecov.xml
 # Node / dashboard
 node_modules/
 dashboard/dist/
+*.db

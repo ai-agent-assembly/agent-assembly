@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use aa_core::PolicyResult;
+use aa_core::{ApprovalKind, PolicyResult};
 use aa_gateway::approval::escalation::EscalationScheduler;
 use aa_gateway::approval::router::{ApprovalRouter, RoutingOutcome};
 use aa_gateway::approval::routing_config::{RoutingConfigStore, TeamRoutingConfig};
@@ -105,11 +105,11 @@ fn routing_config_preserves_approval_kind() {
             approvers: vec!["carol".to_string()],
             escalation_timeout_secs: 600,
             escalation_approvers: vec!["org-admin".to_string()],
-            approval_kind: Some("tool_call".to_string()),
+            approval_kind: Some(ApprovalKind::ToolUse),
         },
     );
     let cfg = store.get("team-beta").unwrap();
-    assert_eq!(cfg.approval_kind.as_deref(), Some("tool_call"));
+    assert_eq!(cfg.approval_kind, Some(ApprovalKind::ToolUse));
 }
 
 #[tokio::test]
