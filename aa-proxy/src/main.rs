@@ -5,6 +5,12 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // rustls 0.23+ requires an explicit crypto provider at startup.
+    // The `ring` feature is enabled in Cargo.toml; install it before any TLS operation.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

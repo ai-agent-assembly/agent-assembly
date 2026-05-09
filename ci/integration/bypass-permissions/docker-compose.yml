@@ -10,6 +10,15 @@
 #   claude-stub    - Alpine + curl acting as Claude Code with --bypassPermissions;
 #                    routes all HTTPS through aa-proxy and attempts curl https://example.com
 #
+# Network topology (two isolated bridge networks):
+#
+#   proxy-net:   claude-stub  ↔  aa-proxy
+#   backend-net: aa-proxy     ↔  stub-upstream  ↔  gateway-mock
+#
+# This enforces that claude-stub can only reach stub-upstream via aa-proxy:
+#   - claude-stub → curl http://stub-upstream (direct, no proxy) → FAILS (different network)
+#   - claude-stub → curl https://example.com via HTTPS_PROXY=aa-proxy → aa-proxy routes it
+#
 # Usage (standalone):
 #   docker compose -f ci/integration/bypass-permissions/docker-compose.yml up --build
 #
@@ -17,7 +26,9 @@
 # docker compose programmatically and asserts on the results.
 
 networks:
-  bypass-test-net:
+  proxy-net:
+    driver: bridge
+  backend-net:
     driver: bridge
 
 services:
@@ -46,7 +57,7 @@ services:
       http.server.HTTPServer(('0.0.0.0', 9000), H).serve_forever()
       "
     networks:
-      - bypass-test-net
+      - backend-net
     ports:
       - "9000:9000"
     healthcheck:
@@ -92,7 +103,7 @@ services:
       http.server.HTTPServer(('0.0.0.0', 80), H).serve_forever()
       "
     networks:
-      bypass-test-net:
+      backend-net:
         aliases:
           - example.com
     ports:
@@ -112,10 +123,13 @@ services:
       AA_GATEWAY_URL: "http://gateway-mock:9000"
       AA_POLICY_FILE: "/etc/aa/policy.yaml"
       AA_LISTEN_ADDR: "0.0.0.0:8080"
+      # Enable debug logs so the test can assert on "accepted connection" and "CONNECT".
+      RUST_LOG: "aa_proxy=debug"
     volumes:
       - ./policy.yaml:/etc/aa/policy.yaml:ro
     networks:
-      - bypass-test-net
+      - proxy-net
+      - backend-net
     ports:
       - "8080:8080"
     depends_on:
@@ -136,7 +150,8 @@ services:
         apk add --no-cache curl ca-certificates &&
         echo 'Claude Code stub: attempting curl https://example.com with --bypassPermissions' &&
         curl -v --proxy http://aa-proxy:8080 --insecure https://example.com 2>&1 || true &&
-        echo 'CLAUDE_STUB_DONE'
+        echo 'CLAUDE_STUB_DONE' &&
+        sleep infinity
       "
     environment:
       # Mirrors the environment aa run claude -- --bypassPermissions would set.
@@ -144,7 +159,7 @@ services:
       AA_BYPASS_PERMISSIONS: "true"
       HTTPS_PROXY: "http://aa-proxy:8080"
     networks:
-      - bypass-test-net
+      - proxy-net
     depends_on:
       aa-proxy:
         condition: service_started

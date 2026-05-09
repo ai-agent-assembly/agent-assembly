@@ -296,8 +296,8 @@ mod docker_tests {
     impl ComposeGuard {
         fn up() -> Self {
             // Pull/build images and start all services detached.
-            // Do NOT use --wait: claude-stub is a one-shot container that exits with
-            // code 0 after running curl; --wait treats any service exit as failure.
+            // Do NOT use --wait: it requires all services to pass healthchecks; aa-proxy
+            // is distroless and cannot run CMD-SHELL healthchecks.
             // Service readiness is verified by the custom wait_* helpers below.
             let out = compose(&["up", "--build", "--detach"]);
             if !out.status.success() {
@@ -352,6 +352,33 @@ mod docker_tests {
         serde_json::from_str(&body).unwrap_or_default()
     }
 
+    /// Wait until claude-stub prints its sentinel log line.
+    ///
+    /// claude-stub runs curl then prints "CLAUDE_STUB_DONE" and then sleeps forever
+    /// (keeping the container alive so `exec_in_claude_stub` can run). Waiting for
+    /// this sentinel guarantees that curl is installed and the initial request has
+    /// completed before any assertion reads logs or runs exec.
+    fn wait_claude_stub_done(timeout_secs: u64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            let logs = Command::new("docker")
+                .args(["logs", &format!("{COMPOSE_PROJECT}-claude-stub-1")])
+                .output()
+                .unwrap();
+            let combined = String::from_utf8_lossy(&logs.stdout).to_string()
+                + &String::from_utf8_lossy(&logs.stderr);
+            if combined.contains("CLAUDE_STUB_DONE") {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "claude-stub did not print CLAUDE_STUB_DONE within {timeout_secs}s;\nlogs:\n{combined}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     /// Execute a shell command inside the `claude-stub` container.
     fn exec_in_claude_stub(cmd: &str) -> Output {
         Command::new("docker")
@@ -378,35 +405,18 @@ mod docker_tests {
         let _guard = ComposeGuard::up();
 
         // Wait for claude-stub to finish its curl attempt.
-        // The container runs curl on start and then exits.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let out = Command::new("docker")
-                .args([
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    &format!("{COMPOSE_PROJECT}-claude-stub-1"),
-                ])
-                .output()
-                .unwrap();
-            let status = String::from_utf8_lossy(&out.stdout);
-            if status.trim() == "exited" {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!("claude-stub did not exit within 30s");
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
+        // The container stays alive (sleep infinity) so we wait for the sentinel log line
+        // rather than polling for container exit.
+        wait_claude_stub_done(60);
 
         // The proxy should have logged something — check proxy container logs for
         // evidence that the CONNECT tunnel was established (proxy observed the attempt).
-        let logs = Command::new("docker")
+        let proxy_logs = Command::new("docker")
             .args(["logs", &format!("{COMPOSE_PROJECT}-aa-proxy-1")])
             .output()
             .unwrap();
-        let log_text = String::from_utf8_lossy(&logs.stdout).to_string() + &String::from_utf8_lossy(&logs.stderr);
+        let log_text = String::from_utf8_lossy(&proxy_logs.stdout).to_string()
+            + &String::from_utf8_lossy(&proxy_logs.stderr);
 
         // The proxy logs "accepted connection" for every TCP connection it handles.
         // This proves the proxy received and processed the claude-stub's CONNECT request.
@@ -429,6 +439,10 @@ mod docker_tests {
         // even if Claude tried to bypass the proxy (ignoring HTTPS_PROXY), it
         // would fail because the network path doesn't exist.
         let _guard = ComposeGuard::up();
+
+        // Wait for claude-stub to finish its initial curl and print the sentinel.
+        // This guarantees curl is installed in the container before exec runs.
+        wait_claude_stub_done(60);
 
         // Attempt a direct curl from claude-stub to stub-upstream on port 80,
         // bypassing the proxy entirely (no --proxy flag).
