@@ -9,8 +9,9 @@ CREATE TABLE IF NOT EXISTS approval_routing_config (
     -- Team identifier matching AgentContext.team_id.
     team_id             TEXT    NOT NULL,
     -- Optional approval kind filter (e.g. 'tool_use', 'spawn').
-    -- NULL means "apply to all kinds for this team".
-    approval_kind       TEXT,
+    -- Empty string '' means "apply to all kinds for this team" (team-wide fallback).
+    -- SQLite PRIMARY KEY does not treat NULLs as equal so we use '' as sentinel.
+    approval_kind       TEXT    NOT NULL DEFAULT '',
     -- JSON array of approver identifiers (e.g. user IDs, role names).
     approvers           TEXT    NOT NULL DEFAULT '[]',
     -- Seconds to wait before escalating to escalation_approvers.
