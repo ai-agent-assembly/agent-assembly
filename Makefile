@@ -66,6 +66,21 @@ smoke-go:
 		cat /tmp/aa-smoke-go.log >&2; exit 1; \
 	fi
 
+## gateway-health: Check gateway /v1/health; starts via docker compose if not running
+gateway-health:
+	@if ! curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
+		echo "[4/4] gateway health ... not running; starting via docker compose ..."; \
+		docker compose -f examples/docker-compose/docker-compose.yml up -d gateway; \
+		echo "  waiting 10s for readiness ..."; \
+		sleep 10; \
+	fi; \
+	t0=$$(date +%s); \
+	if curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then \
+		t1=$$(date +%s); echo "[4/4] gateway health ... OK ($$(( t1 - t0 ))s)"; \
+	else \
+		echo "[4/4] gateway health ... FAIL"; exit 1; \
+	fi
+
 ## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
 build-workspace:
 	@cargo build --workspace --exclude aa-ebpf
