@@ -289,6 +289,33 @@ async fn topology_tree_returns_subtree_for_known_agent() {
     assert_eq!(json["status"], "active");
 }
 
+#[tokio::test]
+async fn topology_tree_returns_422_for_non_root_agent() {
+    let state = common::test_state();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, None, None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child", 1, None, Some([0x01; 16])))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let id = hex_id(0x02); // child at depth 1 — not a root
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/topology/tree/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
 // ---------------------------------------------------------------------------
 // Team
 // ---------------------------------------------------------------------------
