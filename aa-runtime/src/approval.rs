@@ -55,6 +55,16 @@ pub struct ApprovalRequest {
     pub fallback: aa_core::PolicyResult,
     /// Team identifier extracted from the agent context; used for routing.
     pub team_id: Option<String>,
+    /// Per-policy escalation timeout override in seconds.
+    ///
+    /// When set, overrides the team-level `escalation_timeout_secs` for the
+    /// escalation window.  `None` defers to the team config.
+    pub timeout_override_secs: Option<u64>,
+    /// Per-policy escalation role override.
+    ///
+    /// When set, overrides the team-level `escalation_approvers` list.
+    /// `None` defers to the team config.
+    pub escalation_role_override: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +466,8 @@ mod tests {
                 reason: "timed out".to_string(),
             },
             team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
         };
         assert_eq!(req.agent_id, "agent-1");
         assert_eq!(req.timeout_secs, 30);
@@ -575,6 +587,8 @@ mod tests {
                 reason: "timed out".to_string(),
             },
             team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
         }
     }
 
