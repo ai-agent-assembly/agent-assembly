@@ -8,6 +8,7 @@ pub mod approvals;
 pub mod auth;
 pub mod costs;
 pub mod devtools;
+pub mod edges;
 pub mod health;
 pub mod logs;
 pub mod policies;
@@ -62,6 +63,10 @@ pub fn v1_router() -> Router {
         .route("/topology/team/{team_id}", get(topology::get_team))
         .route("/topology/lineage/{agent_id}", get(topology::get_lineage))
         .route("/topology/stats", get(topology::get_stats))
+        // Edges (mesh topology edge store)
+        .route("/topology/edges", post(edges::report_edge))
+        .route("/agents/{id}/edges", get(edges::list_agent_edges))
+        .route("/agents/{id}/graph", get(edges::get_agent_graph))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.

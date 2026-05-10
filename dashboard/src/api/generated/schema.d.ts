@@ -48,6 +48,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List directed edges for an agent.
+         * @description Returns edges ordered newest-first.  `direction` defaults to `outgoing`.
+         *     `limit` defaults to 100 and is capped at 1000.  `before` filters to edges
+         *     recorded before the given ISO 8601 timestamp.
+         */
+        get: operations["list_agent_edges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Return the topology subgraph reachable from an agent.
+         * @description Performs BFS outward from `id` up to `depth` hops (default 2, max 5).
+         *     Returns all unique nodes reachable and the edges between them, with
+         *     `is_cross_team` computed via a batched registry lookup.
+         */
+        get: operations["get_agent_graph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/resume": {
         parameters: {
             query?: never;
@@ -293,6 +337,27 @@ export interface paths {
         get: operations["get_active_policy"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a new directed topology edge.
+         * @description Used by SDK emitters (Python, Node.js, Go) to push observed
+         *     agent-to-agent interactions into the gateway edge store.
+         */
+        post: operations["report_edge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -789,6 +854,35 @@ export interface components {
             /** @description Optional reason for the decision. */
             reason?: string | null;
         };
+        /** @description Paginated list of directed edges for an agent. */
+        EdgeListResponse: {
+            /** @description The queried agent ID. */
+            agent_id: string;
+            /** @description Total number of edges returned. */
+            count: number;
+            /** @description The list of matching edges, newest first. */
+            edges: components["schemas"]["EdgeResponse"][];
+        };
+        /** @description A single directed edge between two agents. */
+        EdgeResponse: {
+            /** @description ISO 8601 timestamp when the edge was recorded. */
+            created_at: string;
+            /** @description Edge semantic type (snake_case). */
+            edge_type: string;
+            /**
+             * Format: int64
+             * @description Auto-assigned edge identifier.
+             */
+            id: number;
+            /** @description Whether the edge crosses team boundaries. */
+            is_cross_team: boolean;
+            /** @description Optional freeform metadata attached at emission time. */
+            metadata?: unknown;
+            /** @description Hex-encoded source agent ID. */
+            source_agent_id: string;
+            /** @description Hex-encoded target agent ID. */
+            target_agent_id: string;
+        };
         /**
          * @description Discriminated union of all possible `GovernanceEvent.payload` shapes.
          *
@@ -831,6 +925,20 @@ export interface components {
             payload: components["schemas"]["EventPayload"];
             /** @description Timestamp when the event was received by the API layer (ISO 8601). */
             timestamp: string;
+        };
+        /** @description A node in the topology subgraph. */
+        GraphNode: {
+            /** @description Hex-encoded agent ID. */
+            id: string;
+        };
+        /** @description Subgraph reachable from an agent within a depth bound. */
+        GraphResponse: {
+            /** @description All edges between nodes in this subgraph. */
+            edges: components["schemas"]["EdgeResponse"][];
+            /** @description All unique agent nodes reachable within `depth` hops. */
+            nodes: components["schemas"]["GraphNode"][];
+            /** @description Root agent ID used for the BFS. */
+            root_agent_id: string;
         };
         /** @description Response body for the health endpoint. */
         HealthResponse: {
@@ -955,6 +1063,25 @@ export interface components {
             session_id: string;
             /** @description ISO 8601 timestamp when the trace session started. */
             timestamp: string;
+        };
+        /** @description Request body for recording a new directed edge. */
+        ReportEdgeRequest: {
+            /** @description Edge semantic type (e.g. `"messages"`, `"delegates_to"`). */
+            edge_type: string;
+            /** @description Optional metadata JSON string. */
+            metadata_json?: string | null;
+            /** @description Hex-encoded source agent ID. */
+            source_agent_id: string;
+            /** @description Hex-encoded target agent ID. */
+            target_agent_id: string;
+        };
+        /** @description Response after recording a new edge. */
+        ReportEdgeResponse: {
+            /**
+             * Format: int64
+             * @description Auto-assigned edge identifier.
+             */
+            id: number;
         };
         /** @description Response from `POST /api/v1/agents/:id/resume`. */
         ResumeResponse: {
@@ -1310,6 +1437,115 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    list_agent_edges: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Filter by edge type (snake_case). Omit for all types.
+                 * @example messages
+                 */
+                type?: string | null;
+                /**
+                 * @description Direction of edges relative to the agent. Defaults to `outgoing`.
+                 * @example outgoing
+                 */
+                direction?: string | null;
+                /**
+                 * @description Maximum number of results. Defaults to 100, capped at 1000.
+                 * @example 100
+                 */
+                limit?: number | null;
+                /**
+                 * @description Return only edges recorded before this ISO 8601 timestamp.
+                 * @example 2026-01-01T00:00:00Z
+                 */
+                before?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Edge list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EdgeListResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    get_agent_graph: {
+        parameters: {
+            query?: {
+                /**
+                 * @description BFS depth from the root agent. Defaults to 2, capped at 5.
+                 * @example 2
+                 */
+                depth?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded root agent ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subgraph */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
@@ -1716,6 +1952,48 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    report_edge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportEdgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Edge recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportEdgeResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
