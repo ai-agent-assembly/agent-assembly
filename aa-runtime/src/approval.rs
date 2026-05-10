@@ -68,6 +68,34 @@ pub struct ApprovalRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Routing metadata types
+// ---------------------------------------------------------------------------
+
+/// One step in the routing history of an approval request.
+#[derive(Debug, Clone)]
+pub struct RoutingHistoryEntry {
+    /// Unix epoch timestamp (seconds) when this routing action occurred.
+    pub at: u64,
+    /// Whether this step was an initial routing or an escalation.
+    /// Values: `"routed"` or `"escalated"`.
+    pub action: String,
+    /// Role that previously held the request, if any (absent on first routing).
+    pub from_role: Option<String>,
+    /// Role the request was routed or escalated to.
+    pub to_role: String,
+}
+
+/// Full structured routing metadata stored per pending approval.
+#[derive(Debug, Clone, Default)]
+struct RoutingMeta {
+    status: String,
+    target_role: Option<String>,
+    routed_at: Option<u64>,
+    escalate_at: Option<u64>,
+    history: Vec<RoutingHistoryEntry>,
+}
+
+// ---------------------------------------------------------------------------
 // PendingApprovalRequest  (safe, outward-facing view — no channel or fallback)
 // ---------------------------------------------------------------------------
 
@@ -91,11 +119,19 @@ pub struct PendingApprovalRequest {
     pub timeout_secs: u64,
     /// Team identifier; `None` when the agent has no team affiliation.
     pub team_id: Option<String>,
-    /// Current routing status (e.g. `"routed:team-x"`, `"escalated:org-admin"`).
+    /// Current routing status string (e.g. `"routed_to_team_admin"`, `"escalated_to_org_admin"`).
     ///
     /// Set to `None` until a routing decision is recorded via
-    /// [`ApprovalQueue::update_routing_status`].
+    /// [`ApprovalQueue::update_routing_status`] or [`ApprovalQueue::record_routing`].
     pub routing_status: Option<String>,
+    /// Role the request is currently routed to (e.g. `"TeamAdmin"`, `"OrgAdmin"`).
+    pub target_role: Option<String>,
+    /// Unix timestamp (seconds) when the initial routing decision was recorded.
+    pub routed_at: Option<u64>,
+    /// Unix timestamp (seconds) at which escalation is scheduled to fire.
+    pub escalate_at: Option<u64>,
+    /// Full routing history: one entry per routing or escalation event.
+    pub routing_history: Vec<RoutingHistoryEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +194,8 @@ impl std::error::Error for ApprovalError {}
 /// a back-reference).
 pub struct ApprovalQueue {
     pending: DashMap<ApprovalRequestId, (ApprovalRequest, oneshot::Sender<ApprovalDecision>)>,
-    /// Mutable routing-status overrides; updated when escalation fires.
-    routing_statuses: DashMap<ApprovalRequestId, String>,
+    /// Structured routing metadata; updated on initial routing and escalation.
+    routing_meta: DashMap<ApprovalRequestId, RoutingMeta>,
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
     audit_seq: AtomicU64,
     audit_last_hash: Mutex<[u8; 32]>,
@@ -180,7 +216,7 @@ impl ApprovalQueue {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
-            routing_statuses: DashMap::new(),
+            routing_meta: DashMap::new(),
             audit_tx: None,
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new([0u8; 32]),
@@ -196,7 +232,7 @@ impl ApprovalQueue {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
-            routing_statuses: DashMap::new(),
+            routing_meta: DashMap::new(),
             audit_tx: Some(audit_tx),
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new(initial_hash),
@@ -223,7 +259,7 @@ impl ApprovalQueue {
             .iter()
             .map(|entry| {
                 let req = &entry.value().0;
-                let routing_status = self.routing_statuses.get(&req.request_id).map(|s| s.clone());
+                let meta = self.routing_meta.get(&req.request_id);
                 PendingApprovalRequest {
                     request_id: req.request_id,
                     agent_id: req.agent_id.clone(),
@@ -232,25 +268,78 @@ impl ApprovalQueue {
                     submitted_at: req.submitted_at,
                     timeout_secs: req.timeout_secs,
                     team_id: req.team_id.clone(),
-                    routing_status,
+                    routing_status: meta.as_ref().map(|m| m.status.clone()),
+                    target_role: meta.as_ref().and_then(|m| m.target_role.clone()),
+                    routed_at: meta.as_ref().and_then(|m| m.routed_at),
+                    escalate_at: meta.as_ref().and_then(|m| m.escalate_at),
+                    routing_history: meta.as_ref().map(|m| m.history.clone()).unwrap_or_default(),
                 }
             })
             .collect()
     }
 
+    /// Record full structured routing metadata for a pending request.
+    ///
+    /// Appends a [`RoutingHistoryEntry`] when provided. Returns `true` if the
+    /// request was still pending; `false` if already resolved (no-op).
+    pub fn record_routing(
+        &self,
+        id: ApprovalRequestId,
+        status: String,
+        target_role: Option<String>,
+        routed_at: Option<u64>,
+        escalate_at: Option<u64>,
+        history_entry: Option<RoutingHistoryEntry>,
+    ) -> bool {
+        if !self.pending.contains_key(&id) {
+            return false;
+        }
+        self.routing_meta
+            .entry(id)
+            .and_modify(|m| {
+                m.status = status.clone();
+                if target_role.is_some() {
+                    m.target_role = target_role.clone();
+                }
+                if routed_at.is_some() {
+                    m.routed_at = routed_at;
+                }
+                if escalate_at.is_some() {
+                    m.escalate_at = escalate_at;
+                }
+                if let Some(ref e) = history_entry {
+                    m.history.push(e.clone());
+                }
+            })
+            .or_insert_with(|| RoutingMeta {
+                status,
+                target_role,
+                routed_at,
+                escalate_at,
+                history: history_entry.into_iter().collect(),
+            });
+        true
+    }
+
     /// Record or update the routing status for a pending request.
     ///
-    /// Used by the escalation handler to transition status from
-    /// `"routed:{team}"` to `"escalated:{approvers}"` when the timer fires.
+    /// This is a thin wrapper around [`record_routing`](Self::record_routing)
+    /// for callers that only have a status string (e.g. escalation handlers).
     /// Returns `true` if the request was still pending and the status was
     /// recorded, `false` if the request was already resolved (no-op).
     pub fn update_routing_status(&self, id: ApprovalRequestId, status: String) -> bool {
-        if self.pending.contains_key(&id) {
-            self.routing_statuses.insert(id, status);
-            true
-        } else {
-            false
-        }
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let action = if status.starts_with("escalated") { "escalated" } else { "routed" };
+        let entry = RoutingHistoryEntry {
+            at: now,
+            action: action.to_string(),
+            from_role: self.routing_meta.get(&id).and_then(|m| m.target_role.clone()),
+            to_role: status.clone(),
+        };
+        self.record_routing(id, status, None, None, None, Some(entry))
     }
 
     /// Apply an [`ApprovalDecision`] to the request identified by `id`.
@@ -271,7 +360,7 @@ impl ApprovalQueue {
     /// if the entry was already gone (idempotent — a second call for the same
     /// `id` is a safe no-op).
     fn resolve(&self, id: ApprovalRequestId, decision: ApprovalDecision) -> bool {
-        self.routing_statuses.remove(&id);
+        self.routing_meta.remove(&id);
         if let Some((_key, (req, tx))) = self.pending.remove(&id) {
             let (event_type_str, decided_by) = match &decision {
                 ApprovalDecision::Approved { by, .. } => ("ApprovalGranted", by.clone()),
@@ -550,6 +639,10 @@ mod tests {
             timeout_secs: 60,
             team_id: None,
             routing_status: None,
+            target_role: None,
+            routed_at: None,
+            escalate_at: None,
+            routing_history: vec![],
         };
         assert_eq!(pending.request_id, id);
         assert_eq!(pending.agent_id, "agent-1");
