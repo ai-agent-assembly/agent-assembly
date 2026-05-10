@@ -151,23 +151,29 @@ async fn topology_overview_status_filter_works() {
 /// - alpha: root-a (depth 0), a1..a4 (depth 1), a5..a6 (depth 2)  → 7 agents
 /// - beta:  root-b (depth 0), b1..b3 (depth 1)                     → 4 agents
 /// - root-s: standalone root (no team)                              → 1 agent
+///
 /// Total: 12 agents, 3 roots
 fn large_fixture_state() -> aa_api::state::AppState {
     let state = common::test_state();
     let reg = &state.agent_registry;
 
     // alpha team
-    reg.register(make_agent(0xA0, "root-a", 0, Some("alpha"), None)).unwrap();
+    reg.register(make_agent(0xA0, "root-a", 0, Some("alpha"), None))
+        .unwrap();
     for (byte, name) in [(0xA1, "a1"), (0xA2, "a2"), (0xA3, "a3"), (0xA4, "a4")] {
-        reg.register(make_agent(byte, name, 1, Some("alpha"), Some([0xA0; 16]))).unwrap();
+        reg.register(make_agent(byte, name, 1, Some("alpha"), Some([0xA0; 16])))
+            .unwrap();
     }
-    reg.register(make_agent(0xA5, "a5", 2, Some("alpha"), Some([0xA1; 16]))).unwrap();
-    reg.register(make_agent(0xA6, "a6", 2, Some("alpha"), Some([0xA1; 16]))).unwrap();
+    reg.register(make_agent(0xA5, "a5", 2, Some("alpha"), Some([0xA1; 16])))
+        .unwrap();
+    reg.register(make_agent(0xA6, "a6", 2, Some("alpha"), Some([0xA1; 16])))
+        .unwrap();
 
     // beta team
     reg.register(make_agent(0xB0, "root-b", 0, Some("beta"), None)).unwrap();
     for (byte, name) in [(0xB1, "b1"), (0xB2, "b2"), (0xB3, "b3")] {
-        reg.register(make_agent(byte, name, 1, Some("beta"), Some([0xB0; 16]))).unwrap();
+        reg.register(make_agent(byte, name, 1, Some("beta"), Some([0xB0; 16])))
+            .unwrap();
     }
 
     // standalone root
