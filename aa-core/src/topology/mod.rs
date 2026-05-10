@@ -1,5 +1,6 @@
 //! Agent-graph mesh topology types and repository trait (AAASM-985).
 
+#[cfg(feature = "std")]
 pub mod cycle;
 pub mod edge;
 

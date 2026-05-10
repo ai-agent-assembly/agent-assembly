@@ -30,8 +30,7 @@ fn parse_agent_id(id: &str) -> Result<AgentId, ProblemDetail> {
         .map(|i| u8::from_str_radix(&id[i..i + 2], 16))
         .collect::<Result<Vec<u8>, _>>()
         .map_err(|_| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-                .with_detail(format!("Invalid agent ID format: {id}"))
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
         })?;
     let arr: [u8; 16] = bytes.try_into().map_err(|_| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
@@ -46,8 +45,9 @@ fn format_id(id: &AgentId) -> String {
 
 fn parse_edge_type(s: &str) -> Result<EdgeType, ProblemDetail> {
     EdgeType::try_from(s).map_err(|_| {
-        ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-            .with_detail(format!("Unknown edge_type: {s}. Valid values: delegates_to, calls, reads, writes, approves, messages"))
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+            "Unknown edge_type: {s}. Valid values: delegates_to, calls, reads, writes, approves, messages"
+        ))
     })
 }
 
@@ -105,10 +105,7 @@ fn compute_cross_team(edges: &[Edge], state: &AppState) -> Vec<bool> {
     let team_map: HashMap<AgentId, Option<String>> = ids
         .into_iter()
         .map(|id| {
-            let team = state
-                .agent_registry
-                .get(id.as_bytes())
-                .and_then(|r| r.team_id.clone());
+            let team = state.agent_registry.get(id.as_bytes()).and_then(|r| r.team_id.clone());
             (id, team)
         })
         .collect();
@@ -189,11 +186,15 @@ pub async fn report_edge(
 
     let id = state
         .edge_repo
-        .insert(NewEdge { source, target, edge_type, metadata })
+        .insert(NewEdge {
+            source,
+            target,
+            edge_type,
+            metadata,
+        })
         .await
         .map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-                .with_detail(format!("Edge store error: {e}"))
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
         })?;
 
     Ok((StatusCode::CREATED, Json(ReportEdgeResponse { id })))
@@ -257,11 +258,7 @@ pub async fn list_agent_edges(
 ) -> Result<(StatusCode, Json<EdgeListResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
 
-    let edge_type: Option<EdgeType> = params
-        .r#type
-        .as_deref()
-        .map(parse_edge_type)
-        .transpose()?;
+    let edge_type: Option<EdgeType> = params.r#type.as_deref().map(parse_edge_type).transpose()?;
 
     let direction = params.direction.as_deref().unwrap_or("outgoing");
     let limit = params.limit.unwrap_or(100).min(1000);
@@ -278,18 +275,11 @@ pub async fn list_agent_edges(
         .transpose()?;
 
     let raw_edges = match direction {
-        "incoming" => state
-            .edge_repo
-            .list_incoming(agent_id, edge_type, limit)
-            .await,
-        _ => state
-            .edge_repo
-            .list_outgoing(agent_id, edge_type, limit)
-            .await,
+        "incoming" => state.edge_repo.list_incoming(agent_id, edge_type, limit).await,
+        _ => state.edge_repo.list_outgoing(agent_id, edge_type, limit).await,
     }
     .map_err(|e| {
-        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-            .with_detail(format!("Edge store error: {e}"))
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
     })?;
 
     // Apply optional `before` cursor (best-effort for in-memory store)
@@ -309,7 +299,11 @@ pub async fn list_agent_edges(
     let count = edges.len();
     Ok((
         StatusCode::OK,
-        Json(EdgeListResponse { agent_id: id, edges, count }),
+        Json(EdgeListResponse {
+            agent_id: id,
+            edges,
+            count,
+        }),
     ))
 }
 
@@ -380,14 +374,9 @@ pub async fn get_agent_graph(
         if d >= depth {
             continue;
         }
-        let outgoing = state
-            .edge_repo
-            .list_outgoing(node, None, 1000)
-            .await
-            .map_err(|e| {
-                ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .with_detail(format!("Edge store error: {e}"))
-            })?;
+        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        })?;
         for edge in outgoing {
             if visited.insert(edge.target) {
                 queue.push_back((edge.target, d + 1));
@@ -398,14 +387,9 @@ pub async fn get_agent_graph(
     // Batch-fetch all edges where source is in the visited set
     let mut all_edges: Vec<Edge> = Vec::new();
     for &node in &visited {
-        let outgoing = state
-            .edge_repo
-            .list_outgoing(node, None, 1000)
-            .await
-            .map_err(|e| {
-                ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .with_detail(format!("Edge store error: {e}"))
-            })?;
+        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        })?;
         // Keep only edges whose target is also in the subgraph
         for edge in outgoing {
             if visited.contains(&edge.target) {
@@ -423,7 +407,9 @@ pub async fn get_agent_graph(
 
     let nodes: Vec<GraphNode> = visited
         .into_iter()
-        .map(|node_id| GraphNode { id: format_id(&node_id) })
+        .map(|node_id| GraphNode {
+            id: format_id(&node_id),
+        })
         .collect();
 
     Ok((

@@ -176,10 +176,7 @@ mod tests {
         let ids: Vec<u8> = result.iter().map(|id| id.as_bytes()[0]).collect();
         // All cycle members must be from {a, b, c}
         for id in &ids {
-            assert!(
-                [1u8, 2, 3].contains(id),
-                "unexpected node {id} in cycle result"
-            );
+            assert!([1u8, 2, 3].contains(id), "unexpected node {id} in cycle result");
         }
     }
 }

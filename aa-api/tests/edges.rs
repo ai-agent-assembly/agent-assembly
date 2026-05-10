@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use aa_api::server::build_app;
-use aa_core::topology::NewEdge;
 use aa_core::identity::AgentId;
+use aa_core::topology::NewEdge;
 
 // ---------------------------------------------------------------------------
 // Helpers
