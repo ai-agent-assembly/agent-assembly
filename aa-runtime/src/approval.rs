@@ -242,10 +242,14 @@ impl ApprovalQueue {
     ///
     /// Used by the escalation handler to transition status from
     /// `"routed:{team}"` to `"escalated:{approvers}"` when the timer fires.
-    /// Silently ignored when the request is no longer pending.
-    pub fn update_routing_status(&self, id: ApprovalRequestId, status: String) {
+    /// Returns `true` if the request was still pending and the status was
+    /// recorded, `false` if the request was already resolved (no-op).
+    pub fn update_routing_status(&self, id: ApprovalRequestId, status: String) -> bool {
         if self.pending.contains_key(&id) {
             self.routing_statuses.insert(id, status);
+            true
+        } else {
+            false
         }
     }
 
