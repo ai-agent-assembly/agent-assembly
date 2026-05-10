@@ -56,7 +56,7 @@ exports[`ApprovalsPage > matches layout snapshot 1`] = `
               <span
                 class="badge badge--blue"
               >
-                routed to team admin
+                Routed to Team Admins of team-alpha
               </span>
             </span>
           </td>
