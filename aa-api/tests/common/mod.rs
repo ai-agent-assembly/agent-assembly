@@ -145,6 +145,9 @@ spec:
         topology_overview_cache: moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(1))
             .build(),
+        topology_tree_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
     }
 }
 
