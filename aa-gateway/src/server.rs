@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tonic::transport::Server;
 
 use crate::audit::AuditWriter;
+use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
 use crate::registry::AgentRegistry;
 use crate::service::{
@@ -258,7 +259,7 @@ pub async fn serve_tcp(
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
@@ -313,7 +314,7 @@ pub async fn serve_uds(
         initial_hash,
     );
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
 
