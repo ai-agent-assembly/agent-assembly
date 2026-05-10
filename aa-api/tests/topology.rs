@@ -146,6 +146,72 @@ async fn topology_overview_status_filter_works() {
     assert_eq!(json["total_agent_count"], 1);
 }
 
+/// Build a state pre-populated with a realistic fixture:
+/// - 2 teams (alpha, beta), 1 standalone root
+/// - alpha: root-a (depth 0), a1..a4 (depth 1), a5..a6 (depth 2)  → 7 agents
+/// - beta:  root-b (depth 0), b1..b3 (depth 1)                     → 4 agents
+/// - root-s: standalone root (no team)                              → 1 agent
+/// Total: 12 agents, 3 roots
+fn large_fixture_state() -> aa_api::state::AppState {
+    let state = common::test_state();
+    let reg = &state.agent_registry;
+
+    // alpha team
+    reg.register(make_agent(0xA0, "root-a", 0, Some("alpha"), None)).unwrap();
+    for (byte, name) in [(0xA1, "a1"), (0xA2, "a2"), (0xA3, "a3"), (0xA4, "a4")] {
+        reg.register(make_agent(byte, name, 1, Some("alpha"), Some([0xA0; 16]))).unwrap();
+    }
+    reg.register(make_agent(0xA5, "a5", 2, Some("alpha"), Some([0xA1; 16]))).unwrap();
+    reg.register(make_agent(0xA6, "a6", 2, Some("alpha"), Some([0xA1; 16]))).unwrap();
+
+    // beta team
+    reg.register(make_agent(0xB0, "root-b", 0, Some("beta"), None)).unwrap();
+    for (byte, name) in [(0xB1, "b1"), (0xB2, "b2"), (0xB3, "b3")] {
+        reg.register(make_agent(byte, name, 1, Some("beta"), Some([0xB0; 16]))).unwrap();
+    }
+
+    // standalone root
+    reg.register(make_agent(0xC0, "root-s", 0, None, None)).unwrap();
+
+    state
+}
+
+#[tokio::test]
+async fn topology_overview_large_fixture_counts_correctly() {
+    let state = large_fixture_state();
+    let app = aa_api::server::build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["total_agent_count"], 12);
+    assert_eq!(json["root_agent_count"], 3);
+    assert_eq!(json["team_count"], 2);
+
+    let teams = json["teams"].as_array().unwrap();
+    assert_eq!(teams.len(), 2);
+    // teams are sorted alphabetically: alpha first, beta second
+    assert_eq!(teams[0]["team_id"], "alpha");
+    assert_eq!(teams[0]["agent_count"], 7);
+    assert_eq!(teams[1]["team_id"], "beta");
+    assert_eq!(teams[1]["agent_count"], 4);
+
+    let standalone = json["standalone_root_agents"].as_array().unwrap();
+    assert_eq!(standalone.len(), 1);
+    assert_eq!(standalone[0]["name"], "root-s");
+}
+
 // ---------------------------------------------------------------------------
 // Tree
 // ---------------------------------------------------------------------------
