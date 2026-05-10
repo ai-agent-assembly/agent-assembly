@@ -4,16 +4,19 @@ import './Tooltip.css'
 interface TooltipProps {
   content: string
   children: ReactNode
+  /** Force the tooltip open regardless of hover state (for stories and tests). */
+  open?: boolean
 }
 
-export function Tooltip({ content, children }: TooltipProps) {
-  const [visible, setVisible] = useState(false)
+export function Tooltip({ content, children, open = false }: TooltipProps) {
+  const [hovered, setHovered] = useState(false)
+  const visible = open || hovered
 
   return (
     <span
       className="tooltip-wrapper"
-      onMouseEnter={() => setVisible(true)}
-      onMouseLeave={() => setVisible(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {children}
       {visible && (
