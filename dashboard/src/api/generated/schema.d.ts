@@ -419,10 +419,9 @@ export interface paths {
         };
         /**
          * `GET /api/v1/topology/stats` — aggregate topology statistics.
-         * @description Returns aggregate counts across the entire registry: total agents, root
-         *     agents, maximum delegation depth, per-status counts, and per-team agent
-         *     counts. This endpoint never returns 404; an empty registry returns all
-         *     zero counts.
+         * @description Returns aggregate counts and histograms across the entire registry.
+         *     Includes depth distribution, team-size distribution, child-count distribution,
+         *     orphan count, and average children per parent. Never returns 404.
          */
         get: operations["get_stats"];
         put?: never;
@@ -1240,16 +1239,37 @@ export interface components {
          *       "suspended_count": 2,
          *       "deregistered_count": 1,
          *       "team_count": 2,
-         *       "team_sizes": { "team-alpha": 8, "team-beta": 4 }
+         *       "team_sizes": { "team-alpha": 8, "team-beta": 4 },
+         *       "depth_histogram": { "0": 3, "1": 7, "2": 5 },
+         *       "team_size_histogram": { "4": 1, "8": 1 },
+         *       "spawn_count_histogram": { "0": 8, "2": 4, "4": 1 },
+         *       "orphan_count": 2,
+         *       "avg_children_per_parent": 2.5
          *     }
          *     ```
          * @example {
          *       "active_count": 12,
+         *       "avg_children_per_parent": 2.5,
+         *       "depth_histogram": {
+         *         "0": 3,
+         *         "1": 7,
+         *         "2": 5
+         *       },
          *       "deregistered_count": 1,
          *       "max_depth": 4,
+         *       "orphan_count": 2,
          *       "root_agent_count": 3,
+         *       "spawn_count_histogram": {
+         *         "0": 8,
+         *         "2": 4,
+         *         "4": 1
+         *       },
          *       "suspended_count": 2,
          *       "team_count": 2,
+         *       "team_size_histogram": {
+         *         "4": 1,
+         *         "8": 1
+         *       },
          *       "team_sizes": {
          *         "team-alpha": 8,
          *         "team-beta": 4
@@ -1260,6 +1280,15 @@ export interface components {
         TopologyStats: {
             /** @description Agents currently in `Active` status. */
             active_count: number;
+            /**
+             * Format: double
+             * @description Average number of children across all agents that have at least one child.
+             */
+            avg_children_per_parent: number;
+            /** @description Agent count per depth level (depth → count). */
+            depth_histogram: {
+                [key: string]: number;
+            };
             /** @description Agents in `Deregistered` status. */
             deregistered_count: number;
             /**
@@ -1267,13 +1296,23 @@ export interface components {
              * @description Maximum observed delegation depth.
              */
             max_depth: number;
+            /** @description Agents that have no team assignment and are not root agents (depth > 0). */
+            orphan_count: number;
             /** @description Number of root agents (depth == 0). */
             root_agent_count: number;
+            /** @description Number of agents per child-count bucket (child_count → agent_count). */
+            spawn_count_histogram: {
+                [key: string]: number;
+            };
             /** @description Agents currently in `Suspended` status. */
             suspended_count: number;
             /** @description Number of teams with at least one agent. */
             team_count: number;
-            /** @description Agent count per team. */
+            /** @description Number of teams per team-size bucket (team_size → team_count). */
+            team_size_histogram: {
+                [key: string]: number;
+            };
+            /** @description Agent count per team (team_id → count). */
             team_sizes: {
                 [key: string]: number;
             };

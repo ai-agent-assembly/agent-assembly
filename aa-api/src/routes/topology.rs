@@ -457,10 +457,7 @@ pub async fn get_lineage(
     ),
     tag = "topology"
 )]
-pub async fn get_stats(
-    _auth: RequireRead,
-    Extension(state): Extension<AppState>,
-) -> (StatusCode, Json<TopologyStats>) {
+pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
     if let Some(cached) = state.topology_stats_cache.get("stats").await {
         return (StatusCode::OK, Json((*cached).clone()));
     }

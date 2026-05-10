@@ -735,10 +735,9 @@ paths:
       - topology
       summary: '`GET /api/v1/topology/stats` — aggregate topology statistics.'
       description: |-
-        Returns aggregate counts across the entire registry: total agents, root
-        agents, maximum delegation depth, per-status counts, and per-team agent
-        counts. This endpoint never returns 404; an empty registry returns all
-        zero counts.
+        Returns aggregate counts and histograms across the entire registry.
+        Includes depth distribution, team-size distribution, child-count distribution,
+        orphan count, and average children per parent. Never returns 404.
       operationId: get_stats
       responses:
         '200':
@@ -2044,7 +2043,12 @@ components:
           "suspended_count": 2,
           "deregistered_count": 1,
           "team_count": 2,
-          "team_sizes": { "team-alpha": 8, "team-beta": 4 }
+          "team_sizes": { "team-alpha": 8, "team-beta": 4 },
+          "depth_histogram": { "0": 3, "1": 7, "2": 5 },
+          "team_size_histogram": { "4": 1, "8": 1 },
+          "spawn_count_histogram": { "0": 8, "2": 4, "4": 1 },
+          "orphan_count": 2,
+          "avg_children_per_parent": 2.5
         }
         ```
       required:
@@ -2056,11 +2060,31 @@ components:
       - deregistered_count
       - team_count
       - team_sizes
+      - depth_histogram
+      - team_size_histogram
+      - spawn_count_histogram
+      - orphan_count
+      - avg_children_per_parent
       properties:
         active_count:
           type: integer
           description: Agents currently in `Active` status.
           minimum: 0
+        avg_children_per_parent:
+          type: number
+          format: double
+          description: Average number of children across all agents that have at least one child.
+        depth_histogram:
+          type: object
+          description: Agent count per depth level (depth → count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: integer
+            format: int32
+            minimum: 0
         deregistered_count:
           type: integer
           description: Agents in `Deregistered` status.
@@ -2070,10 +2094,25 @@ components:
           format: int32
           description: Maximum observed delegation depth.
           minimum: 0
+        orphan_count:
+          type: integer
+          description: Agents that have no team assignment and are not root agents (depth > 0).
+          minimum: 0
         root_agent_count:
           type: integer
           description: Number of root agents (depth == 0).
           minimum: 0
+        spawn_count_histogram:
+          type: object
+          description: Number of agents per child-count bucket (child_count → agent_count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: integer
+            format: int32
+            minimum: 0
         suspended_count:
           type: integer
           description: Agents currently in `Suspended` status.
@@ -2082,9 +2121,20 @@ components:
           type: integer
           description: Number of teams with at least one agent.
           minimum: 0
+        team_size_histogram:
+          type: object
+          description: Number of teams per team-size bucket (team_size → team_count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: integer
+            format: int32
+            minimum: 0
         team_sizes:
           type: object
-          description: Agent count per team.
+          description: Agent count per team (team_id → count).
           additionalProperties:
             type: integer
             minimum: 0
@@ -2096,11 +2146,24 @@ components:
           minimum: 0
       example:
         active_count: 12
+        avg_children_per_parent: 2.5
+        depth_histogram:
+          '0': 3
+          '1': 7
+          '2': 5
         deregistered_count: 1
         max_depth: 4
+        orphan_count: 2
         root_agent_count: 3
+        spawn_count_histogram:
+          '0': 8
+          '2': 4
+          '4': 1
         suspended_count: 2
         team_count: 2
+        team_size_histogram:
+          '4': 1
+          '8': 1
         team_sizes:
           team-alpha: 8
           team-beta: 4
