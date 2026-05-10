@@ -1,0 +1,71 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ApprovalsPage > matches layout snapshot 1`] = `
+<div>
+  <main
+    class="approvals-page"
+  >
+    <h1>
+      Pending Approvals
+    </h1>
+    <table
+      class="approvals-table"
+    >
+      <thead>
+        <tr>
+          <th>
+            ID
+          </th>
+          <th>
+            Agent
+          </th>
+          <th>
+            Action
+          </th>
+          <th>
+            Reason
+          </th>
+          <th>
+            Routing
+          </th>
+          <th>
+            Created
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td
+            class="approvals-table__id"
+          >
+            a1b2c3d4-e5f6-7890-abcd-ef1234567890
+          </td>
+          <td>
+            agent-001
+          </td>
+          <td>
+            send_email
+          </td>
+          <td>
+            external comms policy
+          </td>
+          <td>
+            <span
+              class="tooltip-wrapper"
+            >
+              <span
+                class="badge badge--blue"
+              >
+                routed to team admin
+              </span>
+            </span>
+          </td>
+          <td>
+            2026-05-10T00:00:00Z
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+</div>
+`;

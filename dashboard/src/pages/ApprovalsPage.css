@@ -1,0 +1,50 @@
+.approvals-page {
+  padding: 24px;
+  font-family: system-ui, sans-serif;
+}
+
+.approvals-page h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.approvals-state {
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+
+.approvals-state--error {
+  color: #b91c1c;
+}
+
+.approvals-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.approvals-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid #e5e7eb;
+  color: #374151;
+  font-weight: 600;
+}
+
+.approvals-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #111827;
+  vertical-align: middle;
+}
+
+.approvals-table__id {
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.approvals-table__unrouted {
+  color: #9ca3af;
+}
