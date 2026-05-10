@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod alerts;
 pub mod approvals;
+pub mod audit;
 pub mod auth;
 pub mod capability;
 pub mod costs;
@@ -87,6 +88,8 @@ pub fn v1_router() -> Router {
         .route("/ops/{id}/pause", post(ops::pause_op))
         .route("/ops/{id}/resume", post(ops::resume_op))
         .route("/ops/{id}/terminate", post(ops::terminate_op))
+        // Audit aggregations
+        .route("/audit/violations-by-lineage", get(audit::get_violations_by_lineage))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.

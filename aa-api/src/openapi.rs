@@ -14,7 +14,7 @@ use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alerts, approvals, auth, capability, costs, edges, iam, logs, ops, policies, topology, traces,
+    agents, alerts, approvals, audit, auth, capability, costs, edges, iam, logs, ops, policies, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -45,6 +45,7 @@ use crate::routes::{
         (name = "ops", description = "Per-operation lifecycle actions (pause / resume / terminate)"),
         (name = "capability", description = "Dashboard Capability Matrix — agent × resource × verb × decision view"),
         (name = "iam", description = "Identity & Access — API key list / generate / revoke / rotate"),
+        (name = "audit", description = "Audit log aggregations — violation heatmaps and lineage analytics"),
     ),
     paths(
         crate::routes::health::health,
@@ -88,6 +89,7 @@ use crate::routes::{
         iam::generate_api_key,
         iam::revoke_api_key,
         iam::rotate_api_key,
+        audit::get_violations_by_lineage,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -136,6 +138,8 @@ use crate::routes::{
         edges::GraphNode,
         edges::GraphResponse,
         ops::OpActionAck,
+        audit::ViolationNode,
+        audit::ViolationsByLineageResponse,
         GovernanceEvent,
         EventType,
         ViolationPayload,
