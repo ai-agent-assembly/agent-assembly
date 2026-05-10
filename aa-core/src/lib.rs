@@ -74,4 +74,4 @@ pub use topology::MockEdgeRepo;
 #[cfg(feature = "alloc")]
 pub use topology::UnknownEdgeType;
 #[cfg(feature = "std")]
-pub use topology::{Edge, EdgeRepo, EdgeRepoError, NewEdge};
+pub use topology::{Edge, EdgeRepo, EdgeRepoError, NewEdge, cycle_detect};
