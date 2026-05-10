@@ -28,6 +28,14 @@ pub struct ApprovalResponse {
     pub status: String,
     /// ISO 8601 timestamp when the request was created.
     pub created_at: String,
+    /// Routing status set by the approval router: e.g. "routed_to_team_admin",
+    /// "routed_to_org_admin", or "escalated_to_<role>". Absent until the router
+    /// has processed the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_status: Option<String>,
+    /// Team the approval was routed to, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
 }
 
 /// `GET /api/v1/approvals` — list pending approval requests.
@@ -62,6 +70,8 @@ pub async fn list_approvals(
             created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default(),
+            routing_status: p.routing_status,
+            team_id: p.team_id,
         })
         .collect();
 
@@ -115,6 +125,8 @@ pub async fn approve_action(
             reason: String::new(),
             status: "approved".to_string(),
             created_at: String::new(),
+            routing_status: None,
+            team_id: None,
         }),
     ))
 }
@@ -158,6 +170,8 @@ pub async fn reject_action(
             reason: String::new(),
             status: "rejected".to_string(),
             created_at: String::new(),
+            routing_status: None,
+            team_id: None,
         }),
     ))
 }
