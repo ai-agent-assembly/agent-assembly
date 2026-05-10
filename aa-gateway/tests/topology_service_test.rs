@@ -4,12 +4,15 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::registry::store::AgentRecord;
 use aa_gateway::registry::{AgentRegistry, AgentStatus};
 use aa_gateway::service::TopologyServiceImpl;
 use aa_proto::assembly::topology::v1::topology_service_client::TopologyServiceClient;
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyServiceServer;
-use aa_proto::assembly::topology::v1::{GetAgentTreeRequest, GetLineageRequest, GetTeamMembersRequest};
+use aa_proto::assembly::topology::v1::{
+    GetAgentTreeRequest, GetLineageRequest, GetTeamMembersRequest, ReportEdgeRequest,
+};
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 use tonic::Code;
@@ -18,7 +21,8 @@ use tonic::Code;
 
 async fn start_server() -> (SocketAddr, Arc<AgentRegistry>) {
     let registry = Arc::new(AgentRegistry::new());
-    let service = TopologyServiceImpl::new(Arc::clone(&registry));
+    let edge_repo = InMemoryEdgeRepo::new();
+    let service = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -461,4 +465,156 @@ async fn topology_all_rpcs_3level_2team_fixture() {
     assert_eq!(team_two_resp.members.len(), 1);
     assert_eq!(team_two_resp.members[0].id, hex_id(&grandchild_id));
     assert_eq!(team_two_resp.members[0].team_id, "team-two");
+}
+
+// ── ReportEdge tests ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn report_edge_returns_monotonically_increasing_ids() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let src = hex_id(&[0xc0; 16]);
+    let tgt = hex_id(&[0xc1; 16]);
+
+    let id1 = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: src.clone(),
+            target_agent_id: tgt.clone(),
+            edge_type: "calls".into(),
+            metadata_json: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+
+    let id2 = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: src,
+            target_agent_id: tgt,
+            edge_type: "reads".into(),
+            metadata_json: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+
+    assert!(id2 > id1, "expected id2 ({id2}) > id1 ({id1})");
+}
+
+#[tokio::test]
+async fn report_edge_invalid_source_hex_returns_invalid_argument() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: "not-hex!!".into(),
+            target_agent_id: hex_id(&[0xd0; 16]),
+            edge_type: "calls".into(),
+            metadata_json: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn report_edge_invalid_target_hex_returns_invalid_argument() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: hex_id(&[0xd1; 16]),
+            target_agent_id: "bad-id".into(),
+            edge_type: "calls".into(),
+            metadata_json: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn report_edge_unknown_edge_type_returns_invalid_argument() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: hex_id(&[0xe0; 16]),
+            target_agent_id: hex_id(&[0xe1; 16]),
+            edge_type: "not_a_valid_type".into(),
+            metadata_json: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn report_edge_invalid_metadata_json_returns_invalid_argument() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let err = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: hex_id(&[0xf0; 16]),
+            target_agent_id: hex_id(&[0xf1; 16]),
+            edge_type: "calls".into(),
+            metadata_json: "{not valid json".into(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn report_edge_accepts_valid_metadata_json() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let resp = client
+        .report_edge(ReportEdgeRequest {
+            source_agent_id: hex_id(&[0x01; 16]),
+            target_agent_id: hex_id(&[0x02; 16]),
+            edge_type: "writes".into(),
+            metadata_json: r#"{"graph":"orders","key":"user_id"}"#.into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(resp.id > 0);
+}
+
+#[tokio::test]
+async fn report_edge_accepts_all_six_edge_types() {
+    let (addr, _registry) = start_server().await;
+    let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let src = hex_id(&[0x10; 16]);
+    let tgt = hex_id(&[0x11; 16]);
+
+    for edge_type in &["delegates_to", "calls", "reads", "writes", "approves", "messages"] {
+        let resp = client
+            .report_edge(ReportEdgeRequest {
+                source_agent_id: src.clone(),
+                target_agent_id: tgt.clone(),
+                edge_type: edge_type.to_string(),
+                metadata_json: String::new(),
+            })
+            .await
+            .unwrap_or_else(|e| panic!("edge_type {edge_type} failed: {e}"))
+            .into_inner();
+
+        assert!(resp.id > 0, "expected positive id for edge_type {edge_type}");
+    }
 }

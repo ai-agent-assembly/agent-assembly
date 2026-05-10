@@ -15,6 +15,9 @@ service TopologyService {
 
   // GetTeamMembers returns all agents registered under the given team_id.
   rpc GetTeamMembers(GetTeamMembersRequest) returns (GetTeamMembersResponse);
+
+  // ReportEdge records a directed edge between two agents in the mesh topology.
+  rpc ReportEdge(ReportEdgeRequest) returns (ReportEdgeResponse);
 }
 
 // ── Shared message types ──────────────────────────────────────────────────────
@@ -85,5 +88,25 @@ message GetTeamMembersRequest {
 
 message GetTeamMembersResponse {
   repeated TopologyAgent members = 1;
+  // next: 2
+}
+
+// ── ReportEdge ────────────────────────────────────────────────────────────────
+
+message ReportEdgeRequest {
+  // Hex-encoded agent UUID of the originating agent.
+  string source_agent_id = 1;
+  // Hex-encoded agent UUID of the target agent.
+  string target_agent_id = 2;
+  // Relationship kind — one of: delegates_to, calls, reads, writes, approves, messages.
+  string edge_type = 3;
+  // Optional JSON-encoded metadata object. Empty string means no metadata.
+  string metadata_json = 4;
+  // next: 5
+}
+
+message ReportEdgeResponse {
+  // Auto-assigned monotonically increasing edge identifier.
+  int64 id = 1;
   // next: 2
 }
