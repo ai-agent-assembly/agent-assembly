@@ -216,6 +216,8 @@ impl PolicyServiceImpl {
         timeout_secs: u32,
         team_id: Option<String>,
         request_id: uuid::Uuid,
+        timeout_override_secs: Option<u64>,
+        escalation_role_override: Option<String>,
     ) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
@@ -234,6 +236,8 @@ impl PolicyServiceImpl {
                 reason: "approval timed out".to_string(),
             },
             team_id,
+            timeout_override_secs,
+            escalation_role_override,
         }
     }
 
@@ -323,7 +327,15 @@ impl PolicyServiceImpl {
             }
         }
 
-        let approval_req = Self::build_approval_request(req, timeout_secs, team_id.clone(), approval_request_id);
+        let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
+        let approval_req = Self::build_approval_request(
+            req,
+            timeout_secs,
+            team_id.clone(),
+            approval_request_id,
+            timeout_override,
+            role_override.clone(),
+        );
         let approval_id = approval_req.request_id;
 
         tracing::info!(
@@ -336,7 +348,6 @@ impl PolicyServiceImpl {
 
         // Register with the escalation scheduler if a team is identified.
         if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
-            let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
             let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
             let escalation_approvers = self
                 .routing_store
