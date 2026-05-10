@@ -146,6 +146,129 @@ async fn topology_overview_status_filter_works() {
     assert_eq!(json["total_agent_count"], 1);
 }
 
+#[tokio::test]
+async fn topology_overview_min_depth_filter_excludes_shallow_agents() {
+    let state = common::test_state();
+    // depth 0 root + depth 1 child in the same team
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child", 1, Some("team-a"), Some([0x01; 16])))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview?min_depth=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // Only the depth-1 child passes the filter; the depth-0 root is excluded.
+    assert_eq!(json["total_agent_count"], 1);
+}
+
+#[tokio::test]
+async fn topology_team_min_depth_filter_excludes_root_member() {
+    let state = common::test_state();
+    // root (depth 0) + two children (depth 1) all in "team-x"
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-x"), None))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x02, "child-a", 1, Some("team-x"), Some([0x01; 16])))
+        .unwrap();
+    state
+        .agent_registry
+        .register(make_agent(0x03, "child-b", 1, Some("team-x"), Some([0x01; 16])))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/team/team-x?min_depth=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // Only the two depth-1 children pass; the depth-0 root is excluded.
+    assert_eq!(json["agent_count"], 2);
+    let members = json["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|m| m["depth"].as_u64().unwrap() >= 1));
+}
+
+#[tokio::test]
+async fn topology_overview_show_budget_populates_governance_level() {
+    // Use a standalone root (no team) so it appears in standalone_root_agents,
+    // which is where get_overview conditionally sets governance_level.
+    let state = common::test_state();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "standalone-root", 0, None, None))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+
+    // Without show_budget: governance_level is skipped by serde (None → omitted).
+    let resp_no_budget = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp_no_budget.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let agent_no_budget = &json["standalone_root_agents"][0];
+    assert!(
+        agent_no_budget["governance_level"].is_null(),
+        "governance_level should be absent without ?show_budget=true"
+    );
+
+    // With show_budget=true: governance_level must be a non-null string.
+    let resp_with_budget = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview?show_budget=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp_with_budget.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let agent_with_budget = &json["standalone_root_agents"][0];
+    assert!(
+        agent_with_budget["governance_level"].is_string(),
+        "governance_level should be a string with ?show_budget=true"
+    );
+}
+
 /// Build a state pre-populated with a realistic fixture:
 /// - 2 teams (alpha, beta), 1 standalone root
 /// - alpha: root-a (depth 0), a1..a4 (depth 1), a5..a6 (depth 2)  → 7 agents
