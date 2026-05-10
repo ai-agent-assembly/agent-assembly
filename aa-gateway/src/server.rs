@@ -258,7 +258,22 @@ fn spawn_escalation_audit_task(
                     let _ = audit_tx.try_send(entry);
                     // Update the pending approval's routing status so dashboard/CLI
                     // consumers see the escalation reflected immediately.
-                    approval_queue.update_routing_status(event.request_id, format!("escalated:{to_role}"));
+                    let escalation_ts = now / 1_000_000_000; // ns → s
+                    let escalation_status = format!("escalated:{to_role}");
+                    let history_entry = aa_runtime::approval::RoutingHistoryEntry {
+                        at: escalation_ts,
+                        action: "escalated".to_string(),
+                        from_role: None,
+                        to_role: to_role.clone(),
+                    };
+                    approval_queue.record_routing(
+                        event.request_id,
+                        escalation_status,
+                        Some(to_role),
+                        None,
+                        None,
+                        Some(history_entry),
+                    );
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "escalation audit subscriber lagged");
