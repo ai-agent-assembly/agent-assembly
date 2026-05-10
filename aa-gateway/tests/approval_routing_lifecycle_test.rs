@@ -179,12 +179,15 @@ async fn full_lifecycle_route_escalate_approve() {
     let queue = ApprovalQueue::new();
     let (_id, decision_future) = queue.submit(req);
 
-    // Initial routing_status is absent.
+    // AC2: production code calls update_routing_status("routed_to_team_admin") after submit.
+    queue.update_routing_status(request_id, "routed_to_team_admin".to_string());
+
     let pending = queue.list();
     let entry = pending.iter().find(|p| p.request_id == request_id).unwrap();
-    assert!(
-        entry.routing_status.is_none(),
-        "routing_status should be None before escalation"
+    assert_eq!(
+        entry.routing_status.as_deref(),
+        Some("routed_to_team_admin"),
+        "routing_status must be set to routed_to_team_admin immediately after routing"
     );
 
     // 4. Register with escalation scheduler
