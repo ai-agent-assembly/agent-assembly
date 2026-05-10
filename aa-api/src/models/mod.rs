@@ -2,6 +2,7 @@
 
 pub mod event;
 pub mod event_type;
+pub mod topology;
 pub mod trace;
 pub mod ws_payloads;
 

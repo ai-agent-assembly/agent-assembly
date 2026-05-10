@@ -9,12 +9,16 @@ use std::collections::HashMap;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 use aa_gateway::registry::{AgentRegistry, AgentStatus};
 
 use crate::error::ProblemDetail;
+use crate::models::topology::{format_id, status_str};
+pub use crate::models::topology::{
+    AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyOverview, TopologyStats,
+};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -33,18 +37,6 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
             .with_detail(format!("Agent ID must be 32 hex characters: {id}"))
     })
-}
-
-fn format_id(id: &[u8; 16]) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn status_str(status: &AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Active => "active",
-        AgentStatus::Suspended(_) => "suspended",
-        AgentStatus::Deregistered => "deregistered",
-    }
 }
 
 fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
@@ -80,148 +72,6 @@ pub struct TreeParams {
     pub status: Option<String>,
     /// When `true`, include the governance level in each tree node.
     pub show_budget: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-/// Overview of the entire agent topology across all teams.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TopologyOverview {
-    /// Number of teams with at least one registered agent.
-    pub team_count: usize,
-    /// Number of root agents (depth == 0) across all teams.
-    pub root_agent_count: usize,
-    /// Total number of agents in the registry.
-    pub total_agent_count: usize,
-    /// Per-team agent count summaries.
-    pub teams: Vec<TeamSummary>,
-    /// Root agents that are not assigned to any team.
-    pub standalone_root_agents: Vec<AgentNode>,
-}
-
-/// High-level statistics for a single team.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TeamSummary {
-    /// Team identifier.
-    pub team_id: String,
-    /// Total agents in this team.
-    pub agent_count: usize,
-    /// Root agents (depth == 0) in this team.
-    pub root_agent_count: usize,
-}
-
-/// Minimal agent representation used in list and tree responses.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentNode {
-    /// Hex-encoded agent UUID.
-    pub id: String,
-    /// Human-readable agent name.
-    pub name: String,
-    /// Delegation depth — 0 for root agents.
-    pub depth: u32,
-    /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
-    /// Team this agent belongs to, if any.
-    pub team_id: Option<String>,
-    /// Governance level — included only when `show_budget=true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub governance_level: Option<String>,
-}
-
-/// Recursive tree node representing an agent and all its descendants.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentTree {
-    /// Hex-encoded agent UUID.
-    pub id: String,
-    /// Human-readable agent name.
-    pub name: String,
-    /// Delegation depth — 0 for root agents.
-    pub depth: u32,
-    /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
-    /// Team this agent belongs to, if any.
-    pub team_id: Option<String>,
-    /// Reason this agent was delegated from its parent, if recorded.
-    pub delegation_reason: Option<String>,
-    /// Tool that spawned this agent, if known.
-    pub spawned_by_tool: Option<String>,
-    /// Governance level — included only when `show_budget=true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub governance_level: Option<String>,
-    /// Direct children of this agent in the delegation tree.
-    #[schema(schema_with = agent_tree_children_schema)]
-    pub children: Vec<AgentTree>,
-}
-
-/// Returns a schema for `Vec<AgentTree>` using a `$ref` to break the recursive cycle.
-///
-/// Without this, utoipa's ToSchema derive recurses infinitely and overflows the stack.
-fn agent_tree_children_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-    use utoipa::openapi::schema::{ArrayBuilder, Ref};
-    ArrayBuilder::new()
-        .items(Ref::from_schema_name("AgentTree"))
-        .build()
-        .into()
-}
-
-/// All agents belonging to a single team.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TeamTopology {
-    /// Team identifier.
-    pub team_id: String,
-    /// Number of agents in this team (after filtering).
-    pub agent_count: usize,
-    /// Agents in this team.
-    pub members: Vec<AgentNode>,
-}
-
-/// An agent's complete ancestry chain from direct parent up to root.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentLineage {
-    /// The subject agent's hex-encoded UUID.
-    pub agent_id: String,
-    /// Number of ancestors — 0 if the agent is a root.
-    pub ancestor_count: usize,
-    /// Ordered ancestors: index 0 is the direct parent, last element is the root.
-    pub ancestors: Vec<LineageStep>,
-}
-
-/// One step in an agent's ancestry chain.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LineageStep {
-    /// Hex-encoded UUID of this ancestor.
-    pub id: String,
-    /// Human-readable name of this ancestor.
-    pub name: String,
-    /// Delegation depth of this ancestor.
-    pub depth: u32,
-    /// Reason the next agent in the chain was delegated from this ancestor.
-    pub delegation_reason: Option<String>,
-    /// Team this ancestor belongs to.
-    pub team_id: Option<String>,
-}
-
-/// Aggregate topology statistics across all registered agents.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TopologyStats {
-    /// Total agents in the registry.
-    pub total_agents: usize,
-    /// Number of root agents (depth == 0).
-    pub root_agent_count: usize,
-    /// Maximum observed delegation depth.
-    pub max_depth: u32,
-    /// Agents currently in `Active` status.
-    pub active_count: usize,
-    /// Agents currently in `Suspended` status.
-    pub suspended_count: usize,
-    /// Agents in `Deregistered` status.
-    pub deregistered_count: usize,
-    /// Number of teams with at least one agent.
-    pub team_count: usize,
-    /// Agent count per team.
-    pub team_sizes: HashMap<String, usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -335,22 +185,18 @@ pub async fn get_overview(
         v
     };
 
-    let standalone_root_agents = filtered
+    let mut standalone_root_agents: Vec<AgentNode> = filtered
         .iter()
         .filter(|r| r.depth == 0 && r.team_id.is_none())
-        .map(|r| AgentNode {
-            id: format_id(&r.agent_id),
-            name: r.name.clone(),
-            depth: r.depth,
-            status: status_str(&r.status).to_owned(),
-            team_id: None,
-            governance_level: if show_budget {
-                Some(format!("{:?}", r.governance_level))
-            } else {
-                None
-            },
+        .map(|r| {
+            let mut node = AgentNode::from(*r);
+            if show_budget {
+                node.governance_level = Some(format!("{:?}", r.governance_level));
+            }
+            node
         })
         .collect();
+    standalone_root_agents.sort_by(|a, b| a.id.cmp(&b.id));
 
     (
         StatusCode::OK,
@@ -446,17 +292,12 @@ pub async fn get_team(
                 .map_or(true, |f| matches_status_filter(&r.status, f))
                 && params.min_depth.map_or(true, |d| r.depth >= d)
         })
-        .map(|r| AgentNode {
-            id: format_id(&r.agent_id),
-            name: r.name.clone(),
-            depth: r.depth,
-            status: status_str(&r.status).to_owned(),
-            team_id: r.team_id.clone(),
-            governance_level: if show_budget {
-                Some(format!("{:?}", r.governance_level))
-            } else {
-                None
-            },
+        .map(|r| {
+            let mut node = AgentNode::from(&r);
+            if show_budget {
+                node.governance_level = Some(format!("{:?}", r.governance_level));
+            }
+            node
         })
         .collect();
     members.sort_by_key(|m| m.depth);
@@ -472,11 +313,12 @@ pub async fn get_team(
     ))
 }
 
-/// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
+/// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.
 ///
-/// Returns the ordered list of ancestors for the given agent, starting from its
-/// direct parent and ending at the root agent (depth 0). Each step includes the
-/// delegation reason and team membership. Returns 404 if the agent is unknown.
+/// Returns the ordered ancestry for the given agent, starting from the root
+/// (depth 0) and ending with the requested agent as the last element.
+/// A root agent returns a list of length 1 containing only itself.
+/// Returns 404 if the agent is unknown.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/lineage/{agent_id}",
@@ -496,12 +338,16 @@ pub async fn get_lineage(
 ) -> Result<(StatusCode, Json<AgentLineage>), ProblemDetail> {
     let agent_id = parse_agent_id(&agent_id_str)?;
 
-    state.agent_registry.get(&agent_id).ok_or_else(|| {
+    let record = state.agent_registry.get(&agent_id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
     })?;
 
-    let ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
-    let ancestors: Vec<LineageStep> = ancestor_ids
+    // ancestors_of returns parent-first (direct parent at [0], root at end).
+    // Reverse to root-first, then append the requested agent as the final element.
+    let mut ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
+    ancestor_ids.reverse();
+
+    let mut ancestors: Vec<LineageStep> = ancestor_ids
         .iter()
         .filter_map(|id| state.agent_registry.get(id))
         .map(|r| LineageStep {
@@ -512,6 +358,14 @@ pub async fn get_lineage(
             team_id: r.team_id.clone(),
         })
         .collect();
+
+    ancestors.push(LineageStep {
+        id: format_id(&record.agent_id),
+        name: record.name.clone(),
+        depth: record.depth,
+        delegation_reason: record.delegation_reason.clone(),
+        team_id: record.team_id.clone(),
+    });
 
     let ancestor_count = ancestors.len();
     Ok((
@@ -632,74 +486,5 @@ mod tests {
     fn matches_status_filter_unknown_passes_all() {
         let status = AgentStatus::Active;
         assert!(matches_status_filter(&status, "unknown_value"));
-    }
-
-    #[test]
-    fn topology_stats_serializes() {
-        let stats = TopologyStats {
-            total_agents: 5,
-            root_agent_count: 2,
-            max_depth: 3,
-            active_count: 4,
-            suspended_count: 1,
-            deregistered_count: 0,
-            team_count: 2,
-            team_sizes: [("team-a".to_string(), 3), ("team-b".to_string(), 2)].into(),
-        };
-        let json = serde_json::to_value(&stats).unwrap();
-        assert_eq!(json["total_agents"], 5);
-        assert_eq!(json["root_agent_count"], 2);
-        assert_eq!(json["max_depth"], 3);
-        assert_eq!(json["team_count"], 2);
-    }
-
-    #[test]
-    fn agent_lineage_serializes() {
-        let lineage = AgentLineage {
-            agent_id: "aabbccdd00112233aabbccdd00112233".to_string(),
-            ancestor_count: 1,
-            ancestors: vec![LineageStep {
-                id: "00112233aabbccdd00112233aabbccdd".to_string(),
-                name: "root-agent".to_string(),
-                depth: 0,
-                delegation_reason: Some("spawned by orchestrator".to_string()),
-                team_id: Some("team-a".to_string()),
-            }],
-        };
-        let json = serde_json::to_value(&lineage).unwrap();
-        assert_eq!(json["ancestor_count"], 1);
-        assert_eq!(json["ancestors"][0]["name"], "root-agent");
-        assert_eq!(json["ancestors"][0]["depth"], 0);
-    }
-
-    #[test]
-    fn agent_node_omits_governance_level_when_none() {
-        let node = AgentNode {
-            id: "aa".to_string(),
-            name: "n".to_string(),
-            depth: 0,
-            status: "active".to_string(),
-            team_id: None,
-            governance_level: None,
-        };
-        let json = serde_json::to_value(&node).unwrap();
-        assert!(json.get("governance_level").is_none());
-    }
-
-    #[test]
-    fn agent_tree_leaf_has_empty_children() {
-        let leaf = AgentTree {
-            id: "aa".to_string(),
-            name: "leaf".to_string(),
-            depth: 3,
-            status: "active".to_string(),
-            team_id: None,
-            delegation_reason: None,
-            spawned_by_tool: None,
-            governance_level: None,
-            children: vec![],
-        };
-        let json = serde_json::to_value(&leaf).unwrap();
-        assert_eq!(json["children"].as_array().unwrap().len(), 0);
     }
 }
