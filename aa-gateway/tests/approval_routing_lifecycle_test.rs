@@ -5,7 +5,7 @@
 //! escalation events are produced.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, ApprovalKind, GovernanceLevel, PolicyResult};
-use aa_gateway::approval::audit_sink::NoopAuditSink;
+use aa_core::{AgentContext, ApprovalKind, AuditEventType, GovernanceLevel, PolicyResult};
+use aa_gateway::approval::audit_sink::{AuditEventSink, NoopAuditSink};
 use aa_gateway::approval::clock::{Clock, FakeClock};
 use aa_gateway::approval::db_escalation_scheduler::DbEscalationScheduler;
 use aa_gateway::approval::escalation::EscalationScheduler;
@@ -26,6 +26,29 @@ use aa_runtime::approval::{ApprovalDecision, ApprovalQueue, ApprovalRequest};
 use sqlx::SqlitePool;
 
 // ── helpers ────────────────────────────────────────────────────────────────────
+
+/// Test-only audit sink that captures every emitted event for assertion.
+struct RecordingAuditSink {
+    events: Mutex<Vec<AuditEventType>>,
+}
+
+impl RecordingAuditSink {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            events: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn has(&self, event_type: AuditEventType) -> bool {
+        self.events.lock().unwrap().contains(&event_type)
+    }
+}
+
+impl AuditEventSink for RecordingAuditSink {
+    fn emit(&self, event_type: AuditEventType, _payload: String) {
+        self.events.lock().unwrap().push(event_type);
+    }
+}
 
 fn temp_path(suffix: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -272,9 +295,10 @@ async fn full_lifecycle_with_db_scheduler_and_fake_clock() {
 
     // 2. Route at t=0 → escalate_at = 30
     let fake_clock = Arc::new(FakeClock::new(0));
+    let audit_sink = RecordingAuditSink::new();
     let router = ApprovalRouter::new(
         Arc::new(repo),
-        Arc::new(NoopAuditSink),
+        Arc::clone(&audit_sink) as Arc<dyn AuditEventSink>,
         fake_clock.clone() as Arc<dyn Clock>,
     );
     let req = make_request(Some("team-y"));
@@ -283,12 +307,18 @@ async fn full_lifecycle_with_db_scheduler_and_fake_clock() {
     let routing_decision = router.route(&req, &ctx).await.unwrap();
     assert_eq!(routing_decision.escalate_at, 30);
 
+    // ApprovalRouted audit event must be emitted by the router
+    assert!(
+        audit_sink.has(AuditEventType::ApprovalRouted),
+        "AuditEvent::ApprovalRouted must be emitted after routing"
+    );
+
     // 3. Submit to queue
     let queue = ApprovalQueue::new();
     let (_id, decision_future) = queue.submit(req);
     queue.update_routing_status(request_id, "routed_to_team_admin".to_string());
 
-    // 4. Create DbEscalationScheduler sharing the same fake_clock
+    // 4. Create DbEscalationScheduler sharing the same fake_clock and audit sink
     let scheduler_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     let check_pool = scheduler_pool.clone();
     let (escalation_tx, mut escalation_rx) = broadcast::channel(16);
@@ -296,7 +326,7 @@ async fn full_lifecycle_with_db_scheduler_and_fake_clock() {
         scheduler_pool,
         fake_clock.clone() as Arc<dyn Clock>,
         Arc::clone(&queue),
-        Arc::new(NoopAuditSink),
+        Arc::clone(&audit_sink) as Arc<dyn AuditEventSink>,
         escalation_tx,
         Duration::from_secs(60),
     )
@@ -340,6 +370,21 @@ async fn full_lifecycle_with_db_scheduler_and_fake_clock() {
     assert_eq!(event.request_id, request_id);
     assert_eq!(event.team_id, "team-y");
     assert_eq!(event.escalation_approvers, vec!["org-admin"]);
+
+    // ApprovalEscalated audit event must be emitted by the scheduler
+    assert!(
+        audit_sink.has(AuditEventType::ApprovalEscalated),
+        "AuditEvent::ApprovalEscalated must be emitted after escalation fires"
+    );
+
+    // routing_status must be updated to reflect escalation
+    let pending = queue.list();
+    let entry = pending.iter().find(|p| p.request_id == request_id).unwrap();
+    assert_eq!(
+        entry.routing_status.as_deref(),
+        Some("escalated_to_org-admin"),
+        "routing_status must be escalated_to_<role> after escalation fires"
+    );
 
     // 9. Row must be deleted from DB after escalation
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pending_escalations WHERE approval_id = ?")
