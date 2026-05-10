@@ -23,9 +23,13 @@ use tokio::sync::broadcast;
 
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::approval::clock::SystemClock;
+use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
+use crate::approval::NoopAuditSink;
 use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer};
 use crate::budget::{BudgetAlert, BudgetTracker};
+use tokio_util::sync::CancellationToken;
 
 /// Default audit directory relative to the system data directory (`~/.aa/audit`).
 fn default_audit_dir() -> PathBuf {
@@ -122,6 +126,54 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
 /// Falls back gracefully — if the scheduler cannot be initialised (e.g. the
 /// persistence path is not writable), a warning is logged and `None` is returned
 /// so the rest of the server can still start.
+/// Start the [`DbEscalationScheduler`] and its background polling task.
+///
+/// The scheduler connects to `~/.aa/aa_gateway.db`, runs pending migrations,
+/// and polls `pending_escalations` every 30 s. The returned `CancellationToken`
+/// must be cancelled at shutdown so the task flushes any due rows before exit.
+///
+/// Falls back gracefully — if the DB cannot be opened a warning is logged and
+/// `None` is returned; the rest of the server continues without DB escalation.
+async fn start_db_escalation_scheduler(
+    approval_queue: Arc<ApprovalQueue>,
+    token: CancellationToken,
+) -> Option<Arc<DbEscalationScheduler>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let db_path = std::path::PathBuf::from(home).join(".aa").join("aa_gateway.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+    let pool = match sqlx::SqlitePool::connect(&db_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open gateway SQLite DB — DB escalation scheduler disabled");
+            return None;
+        }
+    };
+
+    let (tx, _rx) = tokio::sync::broadcast::channel(256);
+    match DbEscalationScheduler::new(
+        pool,
+        Arc::new(SystemClock),
+        approval_queue,
+        Arc::new(NoopAuditSink),
+        tx,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        Ok(scheduler) => {
+            let scheduler = Arc::new(scheduler);
+            tokio::spawn(Arc::clone(&scheduler).run(token));
+            tracing::info!("DB escalation scheduler started");
+            Some(scheduler)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to start DB escalation scheduler — DB escalation disabled");
+            None
+        }
+    }
+}
+
 fn start_escalation_scheduler() -> Option<Arc<EscalationScheduler>> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let path = std::path::PathBuf::from(home)
@@ -246,6 +298,8 @@ pub async fn serve_tcp(
     );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
+    let db_token = CancellationToken::new();
+    let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
@@ -257,11 +311,13 @@ pub async fn serve_tcp(
         audit_tx.clone(),
         Arc::clone(&audit_drops),
         initial_hash,
-    );
+    )
+    .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
-    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
+    let approval_svc =
+        ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
 
     let addr = listen_addr.parse()?;
     tracing::info!(%addr, "starting gRPC server on TCP");
@@ -272,7 +328,10 @@ pub async fn serve_tcp(
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
-        .serve_with_shutdown(addr, shutdown_signal())
+        .serve_with_shutdown(addr, async move {
+            shutdown_signal().await;
+            db_token.cancel();
+        })
         .await?;
 
     // Final flush so the last ≤60 s of spend is not lost.
@@ -301,6 +360,8 @@ pub async fn serve_uds(
     );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
     let escalation_scheduler = start_escalation_scheduler();
+    let db_token = CancellationToken::new();
+    let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
@@ -312,11 +373,13 @@ pub async fn serve_uds(
         audit_tx.clone(),
         Arc::clone(&audit_drops),
         initial_hash,
-    );
+    )
+    .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
-    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler);
+    let approval_svc =
+        ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
 
     tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS");
 
@@ -333,7 +396,10 @@ pub async fn serve_uds(
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
-        .serve_with_incoming_shutdown(incoming, shutdown_signal())
+        .serve_with_incoming_shutdown(incoming, async move {
+            shutdown_signal().await;
+            db_token.cancel();
+        })
         .await?;
 
     // Final flush so the last ≤60 s of spend is not lost.

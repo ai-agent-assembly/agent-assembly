@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT approval_id, team_id, escalation_role, from_role\n            FROM pending_escalations\n            WHERE escalate_at <= ?\n            ORDER BY escalate_at\n            LIMIT 50\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "team_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "escalation_role",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "from_role",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "481d1df3d0efedcf8c4fd21a682b86f28b177e3ee260affeb61097e8b12e15dc"
+}

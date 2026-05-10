@@ -15,6 +15,7 @@ use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, Chec
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
@@ -29,6 +30,7 @@ pub struct PolicyServiceImpl {
     registry: Option<Arc<AgentRegistry>>,
     approval_queue: Option<Arc<ApprovalQueue>>,
     escalation_scheduler: Option<Arc<EscalationScheduler>>,
+    db_escalation_scheduler: Option<Arc<DbEscalationScheduler>>,
     routing_store: Option<Arc<RoutingConfigStore>>,
     router: Option<Arc<ApprovalRouter>>,
     audit_tx: mpsc::Sender<AuditEntry>,
@@ -54,6 +56,7 @@ impl PolicyServiceImpl {
             registry: None,
             approval_queue: None,
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
             router: None,
             audit_tx,
@@ -79,6 +82,7 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: None,
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
             router: None,
             audit_tx,
@@ -106,6 +110,7 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: Some(approval_queue),
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
             router: None,
             audit_tx,
@@ -138,6 +143,7 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: Some(approval_queue),
             escalation_scheduler,
+            db_escalation_scheduler: None,
             routing_store,
             router: None,
             audit_tx,
@@ -145,6 +151,15 @@ impl PolicyServiceImpl {
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
         }
+    }
+
+    /// Attach a [`DbEscalationScheduler`] to this service.
+    ///
+    /// When present, the DB scheduler is called alongside the file-based scheduler
+    /// to persist escalation state in `pending_escalations`.
+    pub fn with_db_scheduler(mut self, scheduler: Option<Arc<DbEscalationScheduler>>) -> Self {
+        self.db_escalation_scheduler = scheduler;
+        self
     }
 
     /// Attach an [`ApprovalRouter`] to this service.
@@ -408,6 +423,22 @@ impl PolicyServiceImpl {
                 let approvers = vec![decision.escalation_role.clone()];
                 if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
                     tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+                }
+            }
+            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
+                if let Some(ref team_id_val) = decision.team_id {
+                    if let Err(e) = db_scheduler
+                        .register(
+                            approval_id,
+                            team_id_val.clone(),
+                            decision.escalation_role.clone(),
+                            "TeamAdmin".to_string(),
+                            decision.escalate_at,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
+                    }
                 }
             }
         } else if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
