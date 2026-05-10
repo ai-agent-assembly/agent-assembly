@@ -57,12 +57,12 @@ pub struct ApprovalRouter {
 }
 
 impl ApprovalRouter {
-    pub fn new(
-        repo: Arc<dyn ApprovalRoutingRepo>,
-        audit_sink: Arc<dyn AuditEventSink>,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
-        Self { repo, audit_sink, clock }
+    pub fn new(repo: Arc<dyn ApprovalRoutingRepo>, audit_sink: Arc<dyn AuditEventSink>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            repo,
+            audit_sink,
+            clock,
+        }
     }
 
     /// Route `approval` based on the agent's execution context.
@@ -70,11 +70,7 @@ impl ApprovalRouter {
     /// The caller is responsible for persisting the returned `RoutingDecision`
     /// (e.g. writing `routing_status = "routed_to_team_admin"` to the approval
     /// row and inserting a `pending_escalations` entry at `escalate_at`).
-    pub async fn route(
-        &self,
-        approval: &ApprovalRequest,
-        ctx: &AgentContext,
-    ) -> Result<RoutingDecision, RouterError> {
+    pub async fn route(&self, approval: &ApprovalRequest, ctx: &AgentContext) -> Result<RoutingDecision, RouterError> {
         let now = self.clock.now_secs();
 
         let decision = match ctx.team_id.as_deref() {
@@ -90,9 +86,7 @@ impl ApprovalRouter {
             }
             Some(team_id) => {
                 let config = self.repo.get(team_id, None).await?;
-                let effective_timeout = approval
-                    .timeout_override_secs
-                    .unwrap_or(config.escalation_timeout_secs);
+                let effective_timeout = approval.timeout_override_secs.unwrap_or(config.escalation_timeout_secs);
                 let effective_escalation_role = approval
                     .escalation_role_override
                     .clone()

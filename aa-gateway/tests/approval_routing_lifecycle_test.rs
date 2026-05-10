@@ -72,7 +72,11 @@ async fn in_memory_repo() -> SqliteApprovalRoutingRepo {
 }
 
 fn router_with_repo(repo: SqliteApprovalRoutingRepo, now_secs: u64) -> ApprovalRouter {
-    ApprovalRouter::new(Arc::new(repo), Arc::new(NoopAuditSink), Arc::new(FakeClock::new(now_secs)))
+    ApprovalRouter::new(
+        Arc::new(repo),
+        Arc::new(NoopAuditSink),
+        Arc::new(FakeClock::new(now_secs)),
+    )
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────────
