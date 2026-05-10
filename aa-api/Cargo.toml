@@ -34,6 +34,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 hex = "0.4"
+moka = { version = "0.12", features = ["future"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 

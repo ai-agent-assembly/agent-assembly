@@ -20,6 +20,7 @@ use crate::auth::config::AuthConfig;
 use crate::auth::jwt::{JwtSigner, JwtVerifier};
 use crate::auth::rate_limit::RateLimiter;
 use crate::events::EventBroadcast;
+use crate::models::topology::TopologyOverview;
 use crate::replay::ReplayBuffer;
 use crate::trace_store::TraceStore;
 
@@ -66,4 +67,6 @@ pub struct AppState {
     pub discovery: Arc<DiscoveryService>,
     /// Topology edge store for mesh edge queries.
     pub edge_repo: Arc<dyn EdgeRepo>,
+    /// Short-lived cache for GET /topology/overview responses (1 s TTL).
+    pub topology_overview_cache: moka::future::Cache<String, Arc<TopologyOverview>>,
 }
