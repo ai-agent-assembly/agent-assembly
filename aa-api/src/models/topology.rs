@@ -4,7 +4,7 @@
 //! Endpoint handlers in `routes/topology.rs` import these and convert from
 //! `AgentRecord` via the provided `From` impls.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -274,7 +274,12 @@ pub struct LineageStep {
 ///   "suspended_count": 2,
 ///   "deregistered_count": 1,
 ///   "team_count": 2,
-///   "team_sizes": { "team-alpha": 8, "team-beta": 4 }
+///   "team_sizes": { "team-alpha": 8, "team-beta": 4 },
+///   "depth_histogram": { "0": 3, "1": 7, "2": 5 },
+///   "team_size_histogram": { "4": 1, "8": 1 },
+///   "spawn_count_histogram": { "0": 8, "2": 4, "4": 1 },
+///   "orphan_count": 2,
+///   "avg_children_per_parent": 2.5
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -286,7 +291,12 @@ pub struct LineageStep {
     "suspended_count": 2,
     "deregistered_count": 1,
     "team_count": 2,
-    "team_sizes": {"team-alpha": 8, "team-beta": 4}
+    "team_sizes": {"team-alpha": 8, "team-beta": 4},
+    "depth_histogram": {"0": 3, "1": 7, "2": 5},
+    "team_size_histogram": {"4": 1, "8": 1},
+    "spawn_count_histogram": {"0": 8, "2": 4, "4": 1},
+    "orphan_count": 2,
+    "avg_children_per_parent": 2.5
 }))]
 pub struct TopologyStats {
     /// Total agents in the registry.
@@ -303,8 +313,18 @@ pub struct TopologyStats {
     pub deregistered_count: usize,
     /// Number of teams with at least one agent.
     pub team_count: usize,
-    /// Agent count per team.
+    /// Agent count per team (team_id → count).
     pub team_sizes: HashMap<String, usize>,
+    /// Agent count per depth level (depth → count).
+    pub depth_histogram: BTreeMap<String, u32>,
+    /// Number of teams per team-size bucket (team_size → team_count).
+    pub team_size_histogram: BTreeMap<String, u32>,
+    /// Number of agents per child-count bucket (child_count → agent_count).
+    pub spawn_count_histogram: BTreeMap<String, u32>,
+    /// Agents that have no team assignment and are not root agents (depth > 0).
+    pub orphan_count: usize,
+    /// Average number of children across all agents that have at least one child.
+    pub avg_children_per_parent: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +471,11 @@ mod tests {
             deregistered_count: 1,
             team_count: 2,
             team_sizes: [("team-alpha".to_string(), 8), ("team-beta".to_string(), 4)].into(),
+            depth_histogram: [("0".into(), 3), ("1".into(), 7), ("2".into(), 5)].into(),
+            team_size_histogram: [("4".into(), 1), ("8".into(), 1)].into(),
+            spawn_count_histogram: [("0".into(), 8), ("2".into(), 4), ("4".into(), 1)].into(),
+            orphan_count: 2,
+            avg_children_per_parent: 2.5,
         });
     }
 }

@@ -4,7 +4,7 @@
 //! membership, ancestry lineage, and aggregate statistics — all backed by
 //! the in-memory `AgentRegistry`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query};
@@ -446,10 +446,9 @@ pub async fn get_lineage(
 
 /// `GET /api/v1/topology/stats` — aggregate topology statistics.
 ///
-/// Returns aggregate counts across the entire registry: total agents, root
-/// agents, maximum delegation depth, per-status counts, and per-team agent
-/// counts. This endpoint never returns 404; an empty registry returns all
-/// zero counts.
+/// Returns aggregate counts and histograms across the entire registry.
+/// Includes depth distribution, team-size distribution, child-count distribution,
+/// orphan count, and average children per parent. Never returns 404.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/stats",
@@ -458,7 +457,11 @@ pub async fn get_lineage(
     ),
     tag = "topology"
 )]
-pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
+pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
+    if let Some(cached) = state.topology_stats_cache.get("stats").await {
+        return (StatusCode::OK, Json((*cached).clone()));
+    }
+
     let all = state.agent_registry.list();
 
     let mut root_agent_count = 0usize;
@@ -467,6 +470,9 @@ pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Js
     let mut suspended_count = 0usize;
     let mut deregistered_count = 0usize;
     let mut team_sizes: HashMap<String, usize> = HashMap::new();
+    let mut depth_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    let mut spawn_count_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    let mut orphan_count = 0usize;
 
     for r in &all {
         if r.depth == 0 {
@@ -482,25 +488,56 @@ pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Js
         }
         if let Some(tid) = &r.team_id {
             *team_sizes.entry(tid.clone()).or_insert(0) += 1;
+        } else if r.depth > 0 {
+            orphan_count += 1;
         }
+        *depth_histogram.entry(r.depth.to_string()).or_insert(0) += 1;
+        let child_count = state.agent_registry.children_of(&r.agent_id).len() as u32;
+        *spawn_count_histogram.entry(child_count.to_string()).or_insert(0) += 1;
     }
 
     let team_count = team_sizes.len();
     let total_agents = all.len();
 
-    (
-        StatusCode::OK,
-        Json(TopologyStats {
-            total_agents,
-            root_agent_count,
-            max_depth,
-            active_count,
-            suspended_count,
-            deregistered_count,
-            team_count,
-            team_sizes,
-        }),
-    )
+    let mut team_size_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    for &size in team_sizes.values() {
+        *team_size_histogram.entry(size.to_string()).or_insert(0) += 1;
+    }
+
+    let parents: Vec<u32> = spawn_count_histogram
+        .iter()
+        .filter(|(count, _)| count.parse::<u32>().unwrap_or(0) > 0)
+        .flat_map(|(count, &n)| {
+            let c = count.parse::<u32>().unwrap_or(0);
+            std::iter::repeat(c).take(n as usize)
+        })
+        .collect();
+    let avg_children_per_parent = if parents.is_empty() {
+        0.0
+    } else {
+        parents.iter().map(|&c| c as f64).sum::<f64>() / parents.len() as f64
+    };
+
+    let stats = TopologyStats {
+        total_agents,
+        root_agent_count,
+        max_depth,
+        active_count,
+        suspended_count,
+        deregistered_count,
+        team_count,
+        team_sizes,
+        depth_histogram,
+        team_size_histogram,
+        spawn_count_histogram,
+        orphan_count,
+        avg_children_per_parent,
+    };
+    state
+        .topology_stats_cache
+        .insert("stats", Arc::new(stats.clone()))
+        .await;
+    (StatusCode::OK, Json(stats))
 }
 
 // ---------------------------------------------------------------------------

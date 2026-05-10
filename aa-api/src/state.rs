@@ -20,7 +20,7 @@ use crate::auth::config::AuthConfig;
 use crate::auth::jwt::{JwtSigner, JwtVerifier};
 use crate::auth::rate_limit::RateLimiter;
 use crate::events::EventBroadcast;
-use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview};
+use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
 use crate::replay::ReplayBuffer;
 use crate::trace_store::TraceStore;
 
@@ -75,4 +75,6 @@ pub struct AppState {
     pub topology_team_cache: moka::future::Cache<String, Arc<TeamTopology>>,
     /// Short-lived cache for GET /topology/lineage/{agent_id} responses (5 s TTL).
     pub topology_lineage_cache: moka::future::Cache<String, Arc<AgentLineage>>,
+    /// Short-lived cache for GET /topology/stats responses (10 s TTL).
+    pub topology_stats_cache: moka::future::Cache<&'static str, Arc<TopologyStats>>,
 }
