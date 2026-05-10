@@ -148,6 +148,12 @@ spec:
         topology_tree_cache: moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(5))
             .build(),
+        topology_team_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
+        topology_lineage_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
     }
 }
 

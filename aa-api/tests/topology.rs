@@ -40,7 +40,7 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
         spawned_by_tool: None,
         root_agent_id: if depth == 0 { Some([id_byte; 16]) } else { parent_id },
         children: Vec::new(),
-        parent_key: None,
+        parent_key: parent_id,
     }
 }
 
@@ -439,6 +439,45 @@ async fn topology_lineage_root_agent_has_no_ancestors() {
     let ancestors = json["ancestors"].as_array().unwrap();
     assert_eq!(ancestors.len(), 1);
     assert_eq!(ancestors[0]["depth"], 0);
+}
+
+#[tokio::test]
+async fn topology_lineage_multi_hop_returns_root_first_ordering() {
+    let state = common::test_state();
+    let reg = &state.agent_registry;
+    // root → child → grandchild
+    reg.register(make_agent(0x01, "root", 0, None, None)).unwrap();
+    reg.register(make_agent(0x02, "child", 1, None, Some([0x01; 16])))
+        .unwrap();
+    reg.register(make_agent(0x03, "grandchild", 2, None, Some([0x02; 16])))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let id = hex_id(0x03);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/topology/lineage/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["ancestor_count"], 3);
+    let ancestors = json["ancestors"].as_array().unwrap();
+    assert_eq!(ancestors.len(), 3);
+    // root-first ordering: depth 0, 1, 2
+    assert_eq!(ancestors[0]["depth"], 0);
+    assert_eq!(ancestors[0]["name"], "root");
+    assert_eq!(ancestors[1]["depth"], 1);
+    assert_eq!(ancestors[1]["name"], "child");
+    assert_eq!(ancestors[2]["depth"], 2);
+    assert_eq!(ancestors[2]["name"], "grandchild");
 }
 
 // ---------------------------------------------------------------------------

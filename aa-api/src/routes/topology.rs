@@ -316,10 +316,22 @@ pub async fn get_tree(
     tag = "topology"
 )]
 pub async fn get_team(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(team_id): Path<String>,
     Query(params): Query<TopologyFilterParams>,
 ) -> Result<(StatusCode, Json<TeamTopology>), ProblemDetail> {
+    let cache_key = format!(
+        "{}|{}|{}|{}",
+        team_id,
+        params.status.as_deref().unwrap_or(""),
+        params.min_depth.unwrap_or(0),
+        params.show_budget.unwrap_or(false),
+    );
+    if let Some(cached) = state.topology_team_cache.get(&cache_key).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
+
     let member_ids = state.agent_registry.team_members(&team_id);
     if member_ids.is_empty() {
         return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
@@ -348,14 +360,16 @@ pub async fn get_team(
     members.sort_by_key(|m| m.depth);
 
     let agent_count = members.len();
-    Ok((
-        StatusCode::OK,
-        Json(TeamTopology {
-            team_id,
-            agent_count,
-            members,
-        }),
-    ))
+    let topology = TeamTopology {
+        team_id,
+        agent_count,
+        members,
+    };
+    state
+        .topology_team_cache
+        .insert(cache_key, Arc::new(topology.clone()))
+        .await;
+    Ok((StatusCode::OK, Json(topology)))
 }
 
 /// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.
@@ -378,9 +392,14 @@ pub async fn get_team(
     tag = "topology"
 )]
 pub async fn get_lineage(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(agent_id_str): Path<String>,
 ) -> Result<(StatusCode, Json<AgentLineage>), ProblemDetail> {
+    if let Some(cached) = state.topology_lineage_cache.get(&agent_id_str).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
+
     let agent_id = parse_agent_id(&agent_id_str)?;
 
     let record = state.agent_registry.get(&agent_id).ok_or_else(|| {
@@ -413,14 +432,16 @@ pub async fn get_lineage(
     });
 
     let ancestor_count = ancestors.len();
-    Ok((
-        StatusCode::OK,
-        Json(AgentLineage {
-            agent_id: agent_id_str,
-            ancestor_count,
-            ancestors,
-        }),
-    ))
+    let lineage = AgentLineage {
+        agent_id: agent_id_str.clone(),
+        ancestor_count,
+        ancestors,
+    };
+    state
+        .topology_lineage_cache
+        .insert(agent_id_str, Arc::new(lineage.clone()))
+        .await;
+    Ok((StatusCode::OK, Json(lineage)))
 }
 
 /// `GET /api/v1/topology/stats` — aggregate topology statistics.
