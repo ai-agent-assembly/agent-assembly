@@ -164,9 +164,25 @@ impl DbEscalationScheduler {
                 }
             };
 
-            let still_pending = self
-                .queue
-                .update_routing_status(approval_id, format!("escalated_to_{}", row.escalation_role));
+            let escalation_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let escalation_status = format!("escalated_to_{}", row.escalation_role);
+            let history_entry = aa_runtime::approval::RoutingHistoryEntry {
+                at: escalation_now,
+                action: "escalated".to_string(),
+                from_role: Some(row.from_role.clone()),
+                to_role: row.escalation_role.clone(),
+            };
+            let still_pending = self.queue.record_routing(
+                approval_id,
+                escalation_status,
+                Some(row.escalation_role.clone()),
+                None,
+                None,
+                Some(history_entry),
+            );
             if !still_pending {
                 tracing::debug!(
                     %approval_id,

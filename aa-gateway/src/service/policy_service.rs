@@ -463,25 +463,44 @@ impl PolicyServiceImpl {
 
         let (_id, future) = queue.submit(approval_req);
 
-        // AC2: persist routing_status on the in-flight queue entry so operators
-        // and the escalation event stream can observe the routing outcome.
-        let routing_status = routing_decision
+        // AC2: persist structured routing metadata on the in-flight queue entry
+        // so operators and the escalation event stream can observe the routing outcome.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let (routing_status, target_role, escalate_at_ts) = routing_decision
             .as_ref()
             .map(|d| {
-                if d.target_role == "TeamAdmin" {
+                let status = if d.target_role == "TeamAdmin" {
                     "routed_to_team_admin".to_string()
                 } else {
                     "routed_to_org_admin".to_string()
-                }
+                };
+                (status, Some(d.target_role.clone()), Some(d.escalate_at))
             })
             .unwrap_or_else(|| {
-                if team_id.is_some() {
+                let status = if team_id.is_some() {
                     "routed_to_team_admin".to_string()
                 } else {
                     "routed_to_org_admin".to_string()
-                }
+                };
+                (status, None, None)
             });
-        queue.update_routing_status(approval_id, routing_status);
+        let history_entry = aa_runtime::approval::RoutingHistoryEntry {
+            at: now_secs,
+            action: "routed".to_string(),
+            from_role: None,
+            to_role: target_role.clone().unwrap_or_else(|| routing_status.clone()),
+        };
+        queue.record_routing(
+            approval_id,
+            routing_status,
+            target_role,
+            Some(now_secs),
+            escalate_at_ts,
+            Some(history_entry),
+        );
 
         // Await the operator's decision with a timeout guard.
         // The ApprovalQueue also spawns its own timeout task, so both race;

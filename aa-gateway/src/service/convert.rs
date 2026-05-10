@@ -351,6 +351,10 @@ mod tests {
             timeout_secs: 300,
             team_id: team_id.map(str::to_string),
             routing_status: None,
+            target_role: None,
+            routed_at: None,
+            escalate_at: None,
+            routing_history: vec![],
         }
     }
 
