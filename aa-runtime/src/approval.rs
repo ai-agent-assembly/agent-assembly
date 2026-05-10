@@ -332,7 +332,11 @@ impl ApprovalQueue {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let action = if status.starts_with("escalated") { "escalated" } else { "routed" };
+        let action = if status.starts_with("escalated") {
+            "escalated"
+        } else {
+            "routed"
+        };
         let entry = RoutingHistoryEntry {
             at: now,
             action: action.to_string(),
