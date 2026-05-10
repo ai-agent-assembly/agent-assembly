@@ -142,6 +142,9 @@ spec:
         active_connections: Arc::new(AtomicI64::new(0)),
         discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
         edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+        topology_overview_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(1))
+            .build(),
     }
 }
 

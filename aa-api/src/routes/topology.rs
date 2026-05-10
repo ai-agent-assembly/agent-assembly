@@ -5,6 +5,7 @@
 //! the in-memory `AgentRegistry`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
@@ -14,6 +15,7 @@ use utoipa::IntoParams;
 
 use aa_gateway::registry::{AgentRegistry, AgentStatus};
 
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
 use crate::models::topology::{format_id, status_str};
 pub use crate::models::topology::{
@@ -139,9 +141,20 @@ fn build_tree(
     tag = "topology"
 )]
 pub async fn get_overview(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<TopologyFilterParams>,
 ) -> (StatusCode, Json<TopologyOverview>) {
+    let cache_key = format!(
+        "{}|{}|{}",
+        params.status.as_deref().unwrap_or(""),
+        params.min_depth.unwrap_or(0),
+        params.show_budget.unwrap_or(false),
+    );
+    if let Some(cached) = state.topology_overview_cache.get(&cache_key).await {
+        return (StatusCode::OK, Json((*cached).clone()));
+    }
+
     let all = state.agent_registry.list();
     let show_budget = params.show_budget.unwrap_or(false);
 
@@ -198,16 +211,18 @@ pub async fn get_overview(
         .collect();
     standalone_root_agents.sort_by(|a, b| a.id.cmp(&b.id));
 
-    (
-        StatusCode::OK,
-        Json(TopologyOverview {
-            team_count,
-            root_agent_count,
-            total_agent_count,
-            teams,
-            standalone_root_agents,
-        }),
-    )
+    let overview = TopologyOverview {
+        team_count,
+        root_agent_count,
+        total_agent_count,
+        teams,
+        standalone_root_agents,
+    };
+    state
+        .topology_overview_cache
+        .insert(cache_key, Arc::new(overview.clone()))
+        .await;
+    (StatusCode::OK, Json(overview))
 }
 
 /// `GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.
