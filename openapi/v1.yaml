@@ -2083,6 +2083,4 @@ tags:
 - name: events
   description: Real-time event streaming via WebSocket
 - name: topology
-  description: Agent topology — tree, team, lineage, and statistics queries
-- name: topology
-  description: Mesh topology edge store — record and query directed agent-to-agent edges
+  description: Agent topology — tree, team, lineage, statistics, and mesh edge queries

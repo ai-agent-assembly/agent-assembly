@@ -34,8 +34,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policie
         (name = "alerts", description = "Governance alerts"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
-        (name = "topology", description = "Agent topology — tree, team, lineage, and statistics queries"),
-        (name = "topology", description = "Mesh topology edge store — record and query directed agent-to-agent edges"),
+        (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
     ),
     paths(
         crate::routes::health::health,
