@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use aa_devtool::DiscoveryService;
 
+use aa_core::topology::EdgeRepo;
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::PolicyHistoryStore;
@@ -63,4 +64,6 @@ pub struct AppState {
     pub active_connections: Arc<AtomicI64>,
     /// Dev tool auto-discovery service.
     pub discovery: Arc<DiscoveryService>,
+    /// Topology edge store for mesh edge queries.
+    pub edge_repo: Arc<dyn EdgeRepo>,
 }

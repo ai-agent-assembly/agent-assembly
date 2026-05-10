@@ -19,6 +19,7 @@ use aa_api::trace_store::InMemoryTraceStore;
 use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
+use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::AgentRegistry;
@@ -140,6 +141,7 @@ spec:
         startup_time: Instant::now(),
         active_connections: Arc::new(AtomicI64::new(0)),
         discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+        edge_repo: Arc::new(InMemoryEdgeRepo::new()),
     }
 }
 
