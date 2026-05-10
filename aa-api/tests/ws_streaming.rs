@@ -272,6 +272,8 @@ async fn ws_cli_logs_follow_integration() {
                 reason: "timeout".to_string(),
             },
             team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
         })
         .unwrap();
 

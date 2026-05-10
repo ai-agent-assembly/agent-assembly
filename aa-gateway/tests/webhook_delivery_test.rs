@@ -62,6 +62,8 @@ async fn approval_event_is_delivered_as_webhook_post() {
             reason: "timed out".to_string(),
         },
         team_id: None,
+        timeout_override_secs: None,
+        escalation_role_override: None,
     };
     let expected_agent = req.agent_id.clone();
     let (_id, _fut) = approval_queue.submit(req);
