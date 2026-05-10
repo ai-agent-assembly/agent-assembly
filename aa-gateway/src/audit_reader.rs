@@ -70,6 +70,29 @@ impl AuditReader {
         Ok((page, total))
     }
 
+    /// Return all `PolicyViolation` entries newer than `since_ns`.
+    ///
+    /// When `root` is provided, only entries whose `root_agent_id` matches (or whose
+    /// `agent_id` equals the root, i.e. the root itself) are included, scoping the
+    /// result to that delegation subtree.
+    pub async fn list_violations(
+        &self,
+        since_ns: u64,
+        root: Option<AgentId>,
+    ) -> io::Result<Vec<AuditEntry>> {
+        let all = self.read_all_entries().await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                e.event_type() == AuditEventType::PolicyViolation
+                    && e.timestamp_ns() >= since_ns
+                    && root.map_or(true, |r| {
+                        e.root_agent_id() == Some(r) || e.agent_id() == r
+                    })
+            })
+            .collect())
+    }
+
     /// Read and parse all JSONL files in the audit directory.
     async fn read_all_entries(&self) -> io::Result<Vec<AuditEntry>> {
         let mut entries = Vec::new();
