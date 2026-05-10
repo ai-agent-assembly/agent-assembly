@@ -335,8 +335,11 @@ async fn topology_lineage_root_agent_has_no_ancestors() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["ancestor_count"], 0);
-    assert!(json["ancestors"].as_array().unwrap().is_empty());
+    // A root agent's lineage contains only itself as the single element (root-first ordering).
+    assert_eq!(json["ancestor_count"], 1);
+    let ancestors = json["ancestors"].as_array().unwrap();
+    assert_eq!(ancestors.len(), 1);
+    assert_eq!(ancestors[0]["depth"], 0);
 }
 
 // ---------------------------------------------------------------------------

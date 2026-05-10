@@ -307,10 +307,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
-         * @description Returns the ordered list of ancestors for the given agent, starting from its
-         *     direct parent and ending at the root agent (depth 0). Each step includes the
-         *     delegation reason and team membership. Returns 404 if the agent is unknown.
+         * `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.
+         * @description Returns the ordered ancestry for the given agent, starting from the root
+         *     (depth 0) and ending with the requested agent as the last element.
+         *     A root agent returns a list of length 1 containing only itself.
+         *     Returns 404 if the agent is unknown.
          */
         get: operations["get_lineage"];
         put?: never;
@@ -498,16 +499,73 @@ export interface components {
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
         };
-        /** @description An agent's complete ancestry chain from direct parent up to root. */
+        /**
+         * @description An agent's complete ancestry chain ordered root-first.
+         *
+         *     The first element is the root agent; the last element is the requested
+         *     agent itself. A root agent returns a list of length 1 containing only itself.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "agent_id": "aabbccdd00112233aabbccdd00112233",
+         *       "ancestor_count": 2,
+         *       "ancestors": [
+         *         { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null },
+         *         { "id": "aabbccdd00112233aabbccdd00112233", "name": "child", "depth": 1, "delegation_reason": "orchestrate", "team_id": "team-alpha" }
+         *       ]
+         *     }
+         *     ```
+         * @example {
+         *       "agent_id": "aabbccdd00112233aabbccdd00112233",
+         *       "ancestor_count": 2,
+         *       "ancestors": [
+         *         {
+         *           "delegation_reason": null,
+         *           "depth": 0,
+         *           "id": "root000000000000root000000000000",
+         *           "name": "root",
+         *           "team_id": null
+         *         },
+         *         {
+         *           "delegation_reason": "orchestrate",
+         *           "depth": 1,
+         *           "id": "aabbccdd00112233aabbccdd00112233",
+         *           "name": "child",
+         *           "team_id": "team-alpha"
+         *         }
+         *       ]
+         *     }
+         */
         AgentLineage: {
             /** @description The subject agent's hex-encoded UUID. */
             agent_id: string;
-            /** @description Number of ancestors — 0 if the agent is a root. */
+            /** @description Number of entries in `ancestors` (includes the agent itself). */
             ancestor_count: number;
-            /** @description Ordered ancestors: index 0 is the direct parent, last element is the root. */
+            /** @description Ordered ancestry: index 0 is the root agent, last element is the requested agent. */
             ancestors: components["schemas"]["LineageStep"][];
         };
-        /** @description Minimal agent representation used in list and tree responses. */
+        /**
+         * @description Minimal agent representation used in list and tree responses.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "my-agent",
+         *       "depth": 1,
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         *     ```
+         * @example {
+         *       "depth": 1,
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "my-agent",
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         */
         AgentNode: {
             /**
              * Format: int32
@@ -569,7 +627,33 @@ export interface components {
             /** @description Semver version string. */
             version: string;
         };
-        /** @description Recursive tree node representing an agent and all its descendants. */
+        /**
+         * @description Recursive tree node representing an agent and all its descendants.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "root-agent",
+         *       "depth": 0,
+         *       "status": "active",
+         *       "team_id": "team-alpha",
+         *       "delegation_reason": null,
+         *       "spawned_by_tool": null,
+         *       "children": []
+         *     }
+         *     ```
+         * @example {
+         *       "children": [],
+         *       "delegation_reason": null,
+         *       "depth": 0,
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "root-agent",
+         *       "spawned_by_tool": null,
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         */
         AgentTree: {
             children: components["schemas"]["AgentTree"][];
             /** @description Reason this agent was delegated from its parent, if recorded. */
@@ -772,20 +856,34 @@ export interface components {
             /** @description Gateway version (semver from Cargo.toml). */
             version: string;
         };
-        /** @description One step in an agent's ancestry chain. */
+        /**
+         * @description One step in an agent's ancestry chain.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null }
+         *     ```
+         * @example {
+         *       "delegation_reason": null,
+         *       "depth": 0,
+         *       "id": "root000000000000root000000000000",
+         *       "name": "root",
+         *       "team_id": null
+         *     }
+         */
         LineageStep: {
-            /** @description Reason the next agent in the chain was delegated from this ancestor. */
+            /** @description Reason the next agent in the chain was delegated from this node. */
             delegation_reason?: string | null;
             /**
              * Format: int32
-             * @description Delegation depth of this ancestor.
+             * @description Delegation depth of this node.
              */
             depth: number;
-            /** @description Hex-encoded UUID of this ancestor. */
+            /** @description Hex-encoded UUID of this ancestor (or the subject agent). */
             id: string;
-            /** @description Human-readable name of this ancestor. */
+            /** @description Human-readable name. */
             name: string;
-            /** @description Team this ancestor belongs to. */
+            /** @description Team this node belongs to. */
             team_id?: string | null;
         };
         /** @description JSON representation of an audit log entry. */
@@ -900,7 +998,19 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
-        /** @description High-level statistics for a single team. */
+        /**
+         * @description High-level statistics for a single team.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }
+         *     ```
+         * @example {
+         *       "agent_count": 7,
+         *       "root_agent_count": 1,
+         *       "team_id": "team-alpha"
+         *     }
+         */
         TeamSummary: {
             /** @description Total agents in this team. */
             agent_count: number;
@@ -909,7 +1019,19 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
-        /** @description All agents belonging to a single team. */
+        /**
+         * @description All agents belonging to a single team.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "team_id": "team-alpha", "agent_count": 2, "members": [] }
+         *     ```
+         * @example {
+         *       "agent_count": 2,
+         *       "members": [],
+         *       "team_id": "team-alpha"
+         *     }
+         */
         TeamTopology: {
             /** @description Number of agents in this team (after filtering). */
             agent_count: number;
@@ -938,20 +1060,75 @@ export interface components {
             /** @description The issued JWT token string. */
             token: string;
         };
-        /** @description Overview of the entire agent topology across all teams. */
+        /**
+         * @description Overview of the entire agent topology across all teams.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "team_count": 2,
+         *       "root_agent_count": 3,
+         *       "total_agent_count": 12,
+         *       "teams": [{ "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }],
+         *       "standalone_root_agents": []
+         *     }
+         *     ```
+         * @example {
+         *       "root_agent_count": 3,
+         *       "standalone_root_agents": [],
+         *       "team_count": 2,
+         *       "teams": [
+         *         {
+         *           "agent_count": 7,
+         *           "root_agent_count": 1,
+         *           "team_id": "team-alpha"
+         *         }
+         *       ],
+         *       "total_agent_count": 12
+         *     }
+         */
         TopologyOverview: {
             /** @description Number of root agents (depth == 0) across all teams. */
             root_agent_count: number;
-            /** @description Root agents that are not assigned to any team. */
+            /** @description Root agents that are not assigned to any team, sorted by agent id. */
             standalone_root_agents: components["schemas"]["AgentNode"][];
             /** @description Number of teams with at least one registered agent. */
             team_count: number;
-            /** @description Per-team agent count summaries. */
+            /** @description Per-team agent count summaries, sorted by team_id. */
             teams: components["schemas"]["TeamSummary"][];
             /** @description Total number of agents in the registry. */
             total_agent_count: number;
         };
-        /** @description Aggregate topology statistics across all registered agents. */
+        /**
+         * @description Aggregate topology statistics across all registered agents.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "total_agents": 15,
+         *       "root_agent_count": 3,
+         *       "max_depth": 4,
+         *       "active_count": 12,
+         *       "suspended_count": 2,
+         *       "deregistered_count": 1,
+         *       "team_count": 2,
+         *       "team_sizes": { "team-alpha": 8, "team-beta": 4 }
+         *     }
+         *     ```
+         * @example {
+         *       "active_count": 12,
+         *       "deregistered_count": 1,
+         *       "max_depth": 4,
+         *       "root_agent_count": 3,
+         *       "suspended_count": 2,
+         *       "team_count": 2,
+         *       "team_sizes": {
+         *         "team-alpha": 8,
+         *         "team-beta": 4
+         *       },
+         *       "total_agents": 15
+         *     }
+         */
         TopologyStats: {
             /** @description Agents currently in `Active` status. */
             active_count: number;
