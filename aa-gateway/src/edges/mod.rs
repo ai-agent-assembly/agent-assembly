@@ -4,10 +4,12 @@
 //! AAASM-980: append-only rows, `created_at DESC` ordering, and secondary
 //! indexes on `(source_agent_id, edge_type)` and `(target_agent_id, edge_type)`.
 
+pub mod cycle;
 pub mod events;
 pub mod repo;
 pub mod store;
 
+pub use cycle::detect_cycle;
 pub use events::CrossTeamEdgeEvent;
 pub use repo::InMemoryEdgeRepo;
 pub use store::InMemoryEdgeStore;

@@ -15,6 +15,9 @@ use crate::handle::AssemblyHandle;
 /// Maps detected framework name → Python hook module path.
 const HOOK_MODULES: &[(&str, &str)] = &[
     ("openai", "aa_hooks.openai"),
+    ("langgraph", "aa_hooks.langgraph"),
+    ("openai-agents", "aa_hooks.openai_agents"),
+    ("mcp", "aa_hooks.mcp"),
     // Future adapters:
     // ("anthropic", "aa_hooks.anthropic"),
     // ("langchain", "aa_hooks.langchain"),
