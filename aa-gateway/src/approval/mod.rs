@@ -2,6 +2,7 @@
 
 pub mod audit_sink;
 pub mod clock;
+pub mod db_escalation_scheduler;
 pub mod escalation;
 mod persistence;
 pub mod repo;
@@ -11,6 +12,7 @@ pub mod sqlite_repo;
 
 pub use audit_sink::{AuditEventSink, NoopAuditSink};
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use db_escalation_scheduler::{DbEscalationError, DbEscalationScheduler};
 pub use repo::{
     global_default, ApprovalRoutingRepo, RepoError, DEFAULT_ESCALATION_ROLE, DEFAULT_ESCALATION_TIMEOUT_SECS,
 };
