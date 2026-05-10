@@ -329,7 +329,8 @@ pub async fn serve_tcp(
     )
     .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
+    let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
@@ -391,7 +392,8 @@ pub async fn serve_uds(
     )
     .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), InMemoryEdgeRepo::new());
+    let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
