@@ -2082,9 +2082,7 @@ components:
             format: int32
             minimum: 0
           propertyNames:
-            type: integer
-            format: int32
-            minimum: 0
+            type: string
         deregistered_count:
           type: integer
           description: Agents in `Deregistered` status.
@@ -2110,9 +2108,7 @@ components:
             format: int32
             minimum: 0
           propertyNames:
-            type: integer
-            format: int32
-            minimum: 0
+            type: string
         suspended_count:
           type: integer
           description: Agents currently in `Suspended` status.
@@ -2129,9 +2125,7 @@ components:
             format: int32
             minimum: 0
           propertyNames:
-            type: integer
-            format: int32
-            minimum: 0
+            type: string
         team_sizes:
           type: object
           description: Agent count per team (team_id → count).

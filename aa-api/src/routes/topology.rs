@@ -470,8 +470,8 @@ pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>
     let mut suspended_count = 0usize;
     let mut deregistered_count = 0usize;
     let mut team_sizes: HashMap<String, usize> = HashMap::new();
-    let mut depth_histogram: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut spawn_count_histogram: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut depth_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    let mut spawn_count_histogram: BTreeMap<String, u32> = BTreeMap::new();
     let mut orphan_count = 0usize;
 
     for r in &all {
@@ -491,23 +491,26 @@ pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>
         } else if r.depth > 0 {
             orphan_count += 1;
         }
-        *depth_histogram.entry(r.depth).or_insert(0) += 1;
+        *depth_histogram.entry(r.depth.to_string()).or_insert(0) += 1;
         let child_count = state.agent_registry.children_of(&r.agent_id).len() as u32;
-        *spawn_count_histogram.entry(child_count).or_insert(0) += 1;
+        *spawn_count_histogram.entry(child_count.to_string()).or_insert(0) += 1;
     }
 
     let team_count = team_sizes.len();
     let total_agents = all.len();
 
-    let mut team_size_histogram: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut team_size_histogram: BTreeMap<String, u32> = BTreeMap::new();
     for &size in team_sizes.values() {
-        *team_size_histogram.entry(size as u32).or_insert(0) += 1;
+        *team_size_histogram.entry(size.to_string()).or_insert(0) += 1;
     }
 
     let parents: Vec<u32> = spawn_count_histogram
         .iter()
-        .filter(|(&count, _)| count > 0)
-        .flat_map(|(&count, &n)| std::iter::repeat(count).take(n as usize))
+        .filter(|(count, _)| count.parse::<u32>().unwrap_or(0) > 0)
+        .flat_map(|(count, &n)| {
+            let c = count.parse::<u32>().unwrap_or(0);
+            std::iter::repeat(c).take(n as usize)
+        })
         .collect();
     let avg_children_per_parent = if parents.is_empty() {
         0.0
