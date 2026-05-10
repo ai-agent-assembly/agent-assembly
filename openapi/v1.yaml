@@ -1342,13 +1342,10 @@ components:
           type: string
           description: Human-readable reason for the approval request.
         routing_status:
-          type:
-          - string
-          - 'null'
-          description: |-
-            Routing status set by the approval router: e.g. "routed_to_team_admin",
-            "routed_to_org_admin", or "escalated_to_<role>". Absent until the router
-            has processed the request.
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/RoutingStatusInfo'
+            description: Structured routing metadata. Absent until the router has processed the request.
         status:
           type: string
           description: 'Current status: "pending", "approved", or "rejected".'
@@ -1837,6 +1834,69 @@ components:
         previous_status:
           type: string
           description: Agent status before the resume operation.
+    RoutingHistoryEntry:
+      type: object
+      description: One step in the routing history of an approval request.
+      required:
+      - at
+      - action
+      - to_role
+      properties:
+        action:
+          type: string
+          description: 'Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`.'
+        at:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp (seconds) when this step occurred.
+          minimum: 0
+        from_role:
+          type:
+          - string
+          - 'null'
+          description: Role that previously held the request, if any.
+        to_role:
+          type: string
+          description: Role the request was routed or escalated to.
+    RoutingStatusInfo:
+      type: object
+      description: Structured routing metadata set by the approval router.
+      required:
+      - status
+      - history
+      properties:
+        escalate_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Unix timestamp (seconds) at which escalation is scheduled to fire.
+          minimum: 0
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingHistoryEntry'
+          description: Full routing and escalation history for this request.
+        routed_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Unix timestamp (seconds) when the initial routing decision was recorded.
+          minimum: 0
+        status:
+          type: string
+          description: 'Routing status string: `"routed_to_team_admin"`, `"routed_to_org_admin"`, or `"escalated_to_<role>"`.'
+        target_role:
+          type:
+          - string
+          - 'null'
+          description: Role the request is currently assigned to (e.g. `"TeamAdmin"`, `"OrgAdmin"`).
+        target_team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the request was routed to, if known.
     Scope:
       type: string
       description: |-
