@@ -1,0 +1,33 @@
+{
+  "name": "agent-assembly",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "stable"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
+  },
+  "postCreateCommand": "sudo apt-get install -y protobuf-compiler && cargo install cargo-nextest --locked && cargo install cargo-deny --locked && pip install pre-commit && pre-commit install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "serayuzgur.crates",
+        "tamasfe.even-better-toml",
+        "fill-labs.dependi"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.buildScripts.enable": true,
+        "rust-analyzer.checkOnSave.command": "clippy"
+      }
+    }
+  },
+  "remoteEnv": {
+    "CARGO_INCREMENTAL": "1"
+  }
+}
