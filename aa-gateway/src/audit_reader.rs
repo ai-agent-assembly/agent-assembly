@@ -75,20 +75,14 @@ impl AuditReader {
     /// When `root` is provided, only entries whose `root_agent_id` matches (or whose
     /// `agent_id` equals the root, i.e. the root itself) are included, scoping the
     /// result to that delegation subtree.
-    pub async fn list_violations(
-        &self,
-        since_ns: u64,
-        root: Option<AgentId>,
-    ) -> io::Result<Vec<AuditEntry>> {
+    pub async fn list_violations(&self, since_ns: u64, root: Option<AgentId>) -> io::Result<Vec<AuditEntry>> {
         let all = self.read_all_entries().await?;
         Ok(all
             .into_iter()
             .filter(|e| {
                 e.event_type() == AuditEventType::PolicyViolation
                     && e.timestamp_ns() >= since_ns
-                    && root.map_or(true, |r| {
-                        e.root_agent_id() == Some(r) || e.agent_id() == r
-                    })
+                    && root.map_or(true, |r| e.root_agent_id() == Some(r) || e.agent_id() == r)
             })
             .collect())
     }
