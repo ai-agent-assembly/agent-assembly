@@ -793,8 +793,16 @@ export interface components {
             id: string;
             /** @description Human-readable reason for the approval request. */
             reason: string;
+            /**
+             * @description Routing status set by the approval router: e.g. "routed_to_team_admin",
+             *     "routed_to_org_admin", or "escalated_to_<role>". Absent until the router
+             *     has processed the request.
+             */
+            routing_status?: string | null;
             /** @description Current status: "pending", "approved", or "rejected". */
             status: string;
+            /** @description Team the approval was routed to, if known. */
+            team_id?: string | null;
         };
         /**
          * @description Payload for `event_type: "budget"` events.
