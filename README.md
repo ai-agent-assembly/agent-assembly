@@ -63,6 +63,9 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target â
 <!-- docs-site: <asciinema-player src="quickstart.cast" cols="220" rows="50" preload="true"></asciinema-player> -->
 
 > **Demo recording:** `asciinema play docs/quickstart.cast`
+>
+> **Prefer Codespaces?** [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AI-agent-assembly/agent-assembly)
+> The `.devcontainer/` config installs all dependencies automatically.
 
 Get from a fresh clone to a verified local environment in under 10 minutes.
 
