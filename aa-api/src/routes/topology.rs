@@ -230,6 +230,7 @@ pub async fn get_overview(
 /// Recursively walks the delegation tree starting from the given agent, up to
 /// a configurable depth (default 10, maximum 10). Nodes can be filtered by
 /// status. Returns a nested JSON tree with each agent's children inline.
+/// Returns 422 if the agent exists but is not a root (depth > 0).
 #[utoipa::path(
     get,
     path = "/api/v1/topology/tree/{root_id}",
@@ -240,11 +241,13 @@ pub async fn get_overview(
     responses(
         (status = 200, description = "Agent subtree", body = AgentTree),
         (status = 400, description = "Invalid agent ID format"),
-        (status = 404, description = "Agent not found")
+        (status = 404, description = "Agent not found"),
+        (status = 422, description = "Agent is not a root agent")
     ),
     tag = "topology"
 )]
 pub async fn get_tree(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(root_id): Path<String>,
     Query(params): Query<TreeParams>,
@@ -252,6 +255,29 @@ pub async fn get_tree(
     let agent_id = parse_agent_id(&root_id)?;
     let max_depth = params.depth.unwrap_or(MAX_TREE_DEPTH).min(MAX_TREE_DEPTH);
     let show_budget = params.show_budget.unwrap_or(false);
+
+    // Validate the starting agent exists and is a root before hitting the cache.
+    if let Some(record) = state.agent_registry.get(&agent_id) {
+        if record.depth > 0 {
+            return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                .with_detail(format!("Agent {root_id} is not a root agent (depth {})", record.depth)));
+        }
+    } else {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
+        );
+    }
+
+    let cache_key = format!(
+        "{}|{}|{}|{}",
+        root_id,
+        max_depth,
+        params.status.as_deref().unwrap_or(""),
+        show_budget,
+    );
+    if let Some(cached) = state.topology_tree_cache.get(&cache_key).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
 
     let tree = build_tree(
         &state.agent_registry,
@@ -264,6 +290,10 @@ pub async fn get_tree(
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
     })?;
 
+    state
+        .topology_tree_cache
+        .insert(cache_key, Arc::new(tree.clone()))
+        .await;
     Ok((StatusCode::OK, Json(tree)))
 }
 
