@@ -4,22 +4,26 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
+use aa_core::identity::AgentId;
+use aa_core::topology::{EdgeRepo, EdgeType, NewEdge};
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyService;
 use aa_proto::assembly::topology::v1::{
     GetAgentTreeRequest, GetAgentTreeResponse, GetLineageRequest, GetLineageResponse, GetTeamMembersRequest,
-    GetTeamMembersResponse, TopologyAgent, TreeNode,
+    GetTeamMembersResponse, ReportEdgeRequest, ReportEdgeResponse, TopologyAgent, TreeNode,
 };
 
+use crate::edges::InMemoryEdgeRepo;
 use crate::registry::{AgentRecord, AgentRegistry, AgentStatus};
 
 /// gRPC service implementation for topology queries.
 pub struct TopologyServiceImpl {
     registry: Arc<AgentRegistry>,
+    edge_repo: InMemoryEdgeRepo,
 }
 
 impl TopologyServiceImpl {
-    pub fn new(registry: Arc<AgentRegistry>) -> Self {
-        Self { registry }
+    pub fn new(registry: Arc<AgentRegistry>, edge_repo: InMemoryEdgeRepo) -> Self {
+        Self { registry, edge_repo }
     }
 }
 
@@ -154,5 +158,40 @@ impl TopologyService for TopologyServiceImpl {
         members.sort_by(|a, b| a.id.cmp(&b.id));
 
         Ok(Response::new(GetTeamMembersResponse { members }))
+    }
+
+    async fn report_edge(&self, request: Request<ReportEdgeRequest>) -> Result<Response<ReportEdgeResponse>, Status> {
+        let req = request.into_inner();
+
+        let source_bytes = parse_agent_id(&req.source_agent_id)?;
+        let target_bytes = parse_agent_id(&req.target_agent_id)?;
+
+        let source = AgentId::from_bytes(source_bytes);
+        let target = AgentId::from_bytes(target_bytes);
+
+        let edge_type = EdgeType::try_from(req.edge_type.as_str())
+            .map_err(|_| Status::invalid_argument(format!("unknown edge_type: {:?}", req.edge_type)))?;
+
+        let metadata = if req.metadata_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str::<serde_json::Value>(&req.metadata_json)
+                    .map_err(|e| Status::invalid_argument(format!("metadata_json is not valid JSON: {e}")))?,
+            )
+        };
+
+        let id = self
+            .edge_repo
+            .insert(NewEdge {
+                source,
+                target,
+                edge_type,
+                metadata,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("edge store error: {e}")))?;
+
+        Ok(Response::new(ReportEdgeResponse { id }))
     }
 }
