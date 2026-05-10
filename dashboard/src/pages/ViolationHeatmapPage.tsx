@@ -1,5 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { ViolationHeatmap, ViolationNode } from "../components/ViolationHeatmap";
+
+// ---------------------------------------------------------------------------
+// State machine — avoids calling useState setters directly inside useEffect,
+// which is flagged by react-hooks/set-state-in-effect (v7 rule).
+// ---------------------------------------------------------------------------
 
 interface ApiResponse {
   nodes: ViolationNode[];
@@ -7,15 +12,40 @@ interface ApiResponse {
   generated_at: string;
 }
 
+type FetchState =
+  | { status: "loading"; data: null; error: null }
+  | { status: "success"; data: ApiResponse; error: null }
+  | { status: "error"; data: null; error: string };
+
+type FetchAction =
+  | { type: "start" }
+  | { type: "success"; data: ApiResponse }
+  | { type: "error"; error: string };
+
+function fetchReducer(_: FetchState, action: FetchAction): FetchState {
+  switch (action.type) {
+    case "start":   return { status: "loading", data: null, error: null };
+    case "success": return { status: "success", data: action.data, error: null };
+    case "error":   return { status: "error",   data: null, error: action.error };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function ViolationHeatmapPage() {
-  const [data, setData] = useState<ApiResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [fetchState, dispatch] = useReducer(fetchReducer, {
+    status: "loading",
+    data: null,
+    error: null,
+  });
   const [window_, setWindow_] = useState("24h");
   const [root, setRoot] = useState("");
 
   useEffect(() => {
-    setLoading(true);
+    dispatch({ type: "start" });
+
     const params = new URLSearchParams({ window: window_ });
     if (root) params.set("root", root);
 
@@ -24,13 +54,11 @@ export function ViolationHeatmapPage() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<ApiResponse>;
       })
-      .then((d) => {
-        setData(d);
-        setError(null);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+      .then((d) => dispatch({ type: "success", data: d }))
+      .catch((e: Error) => dispatch({ type: "error", error: e.message }));
   }, [window_, root]);
+
+  const { status, data, error } = fetchState;
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -57,9 +85,9 @@ export function ViolationHeatmapPage() {
         </label>
       </div>
 
-      {loading && <p style={{ color: "#6b7280" }}>Loading…</p>}
-      {error && <p style={{ color: "#ef4444" }}>Error: {error}</p>}
-      {data && !loading && (
+      {status === "loading" && <p style={{ color: "#6b7280" }}>Loading…</p>}
+      {status === "error"   && <p style={{ color: "#ef4444" }}>Error: {error}</p>}
+      {status === "success" && (
         <>
           <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
             {data.nodes.length} agent{data.nodes.length !== 1 ? "s" : ""} with violations ·
