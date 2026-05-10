@@ -9,9 +9,29 @@
 [![crates.io](https://img.shields.io/badge/crates.io-unpublished-lightgrey)](https://crates.io/)
 
 
+## Install the CLI
+
+```sh
+curl -sSf https://install.ai-agent-assembly.dev | sh
+```
+
+This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
+[published release](https://github.com/AI-agent-assembly/agent-assembly/releases).
+The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
+
+```sh
+# Pin a specific version
+AASM_VERSION=v0.1.0 curl -sSf https://install.ai-agent-assembly.dev | sh
+
+# Custom install directory
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev | sh
+```
+
 ## Overview
 
-`agent-assembly` is the core runtime that brings governance to AI agents at scale. It provides a three-layer interception model — eBPF kernel hooks, a sidecar proxy, and an SDK shim — backed by a policy engine and audit trail.
+`agent-assembly` is the core runtime that brings governance to AI agents at
+scale. It provides a three-layer interception model — eBPF kernel hooks, a
+sidecar proxy, and an SDK shim — backed by a policy engine and audit trail.
 
 ## Crate Map
 
