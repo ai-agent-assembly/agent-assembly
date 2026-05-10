@@ -1341,9 +1341,22 @@ components:
         reason:
           type: string
           description: Human-readable reason for the approval request.
+        routing_status:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Routing status set by the approval router: e.g. "routed_to_team_admin",
+            "routed_to_org_admin", or "escalated_to_<role>". Absent until the router
+            has processed the request.
         status:
           type: string
           description: 'Current status: "pending", "approved", or "rejected".'
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the approval was routed to, if known.
     BudgetAlertPayload:
       type: object
       description: |-
