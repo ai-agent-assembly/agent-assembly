@@ -539,4 +539,51 @@ async fn topology_stats_with_agents_returns_correct_counts() {
     assert_eq!(json["max_depth"], 1);
     assert_eq!(json["team_count"], 1);
     assert_eq!(json["team_sizes"]["team-a"], 2);
+    // histogram fields must be present
+    assert!(json["depth_histogram"].is_object());
+    assert!(json["team_size_histogram"].is_object());
+    assert!(json["spawn_count_histogram"].is_object());
+    assert!(json["orphan_count"].is_number());
+    assert!(json["avg_children_per_parent"].is_number());
+}
+
+#[tokio::test]
+async fn topology_stats_large_fixture_histograms_are_correct() {
+    // large_fixture_state: alpha(7) + beta(4) + standalone root-s(1) = 12 agents
+    // alpha: root-a(0), a1..a4(1), a5(2), a6(2)
+    // beta:  root-b(0), b1..b3(1)
+    // standalone: root-s(0)
+    // orphans (depth>0, no team): none — all non-roots belong to a team
+    let state = large_fixture_state();
+    let app = aa_api::server::build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["total_agents"], 12);
+    assert_eq!(json["max_depth"], 2);
+    assert_eq!(json["orphan_count"], 0);
+
+    // depth histogram: depth 0 → 3 roots, depth 1 → 7 (a1-a4 + b1-b3), depth 2 → 2 (a5, a6)
+    assert_eq!(json["depth_histogram"]["0"], 3);
+    assert_eq!(json["depth_histogram"]["1"], 7);
+    assert_eq!(json["depth_histogram"]["2"], 2);
+
+    // team_size_histogram: alpha has 7 members → bucket 7; beta has 4 → bucket 4
+    assert_eq!(json["team_size_histogram"]["7"], 1);
+    assert_eq!(json["team_size_histogram"]["4"], 1);
+
+    // avg_children_per_parent > 0 (root-a has 4 children, a1 has 2, root-b has 3)
+    assert!(json["avg_children_per_parent"].as_f64().unwrap() > 0.0);
 }
