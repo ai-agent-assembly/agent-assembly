@@ -808,6 +808,7 @@ paths:
         Recursively walks the delegation tree starting from the given agent, up to
         a configurable depth (default 10, maximum 10). Nodes can be filtered by
         status. Returns a nested JSON tree with each agent's children inline.
+        Returns 422 if the agent exists but is not a root (depth > 0).
       operationId: get_tree
       parameters:
       - name: root_id
@@ -853,6 +854,8 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+        '422':
+          description: Agent is not a root agent
   /api/v1/traces/{session_id}:
     get:
       tags:

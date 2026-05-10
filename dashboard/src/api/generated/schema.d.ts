@@ -467,6 +467,7 @@ export interface paths {
          * @description Recursively walks the delegation tree starting from the given agent, up to
          *     a configurable depth (default 10, maximum 10). Nodes can be filtered by
          *     status. Returns a nested JSON tree with each agent's children inline.
+         *     Returns 422 if the agent exists but is not a root (depth > 0).
          */
         get: operations["get_tree"];
         put?: never;
@@ -2155,6 +2156,13 @@ export interface operations {
             };
             /** @description Agent not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent is not a root agent */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
