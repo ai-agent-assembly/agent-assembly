@@ -447,8 +447,10 @@ async fn topology_lineage_multi_hop_returns_root_first_ordering() {
     let reg = &state.agent_registry;
     // root → child → grandchild
     reg.register(make_agent(0x01, "root", 0, None, None)).unwrap();
-    reg.register(make_agent(0x02, "child", 1, None, Some([0x01; 16]))).unwrap();
-    reg.register(make_agent(0x03, "grandchild", 2, None, Some([0x02; 16]))).unwrap();
+    reg.register(make_agent(0x02, "child", 1, None, Some([0x01; 16])))
+        .unwrap();
+    reg.register(make_agent(0x03, "grandchild", 2, None, Some([0x02; 16])))
+        .unwrap();
 
     let app = aa_api::server::build_app(state);
     let id = hex_id(0x03);
