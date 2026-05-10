@@ -793,12 +793,7 @@ export interface components {
             id: string;
             /** @description Human-readable reason for the approval request. */
             reason: string;
-            /**
-             * @description Routing status set by the approval router: e.g. "routed_to_team_admin",
-             *     "routed_to_org_admin", or "escalated_to_<role>". Absent until the router
-             *     has processed the request.
-             */
-            routing_status?: string | null;
+            routing_status?: null | components["schemas"]["RoutingStatusInfo"];
             /** @description Current status: "pending", "approved", or "rejected". */
             status: string;
             /** @description Team the approval was routed to, if known. */
@@ -1100,6 +1095,41 @@ export interface components {
             new_status: string;
             /** @description Agent status before the resume operation. */
             previous_status: string;
+        };
+        /** @description One step in the routing history of an approval request. */
+        RoutingHistoryEntry: {
+            /** @description Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`. */
+            action: string;
+            /**
+             * Format: int64
+             * @description Unix epoch timestamp (seconds) when this step occurred.
+             */
+            at: number;
+            /** @description Role that previously held the request, if any. */
+            from_role?: string | null;
+            /** @description Role the request was routed or escalated to. */
+            to_role: string;
+        };
+        /** @description Structured routing metadata set by the approval router. */
+        RoutingStatusInfo: {
+            /**
+             * Format: int64
+             * @description Unix timestamp (seconds) at which escalation is scheduled to fire.
+             */
+            escalate_at?: number | null;
+            /** @description Full routing and escalation history for this request. */
+            history: components["schemas"]["RoutingHistoryEntry"][];
+            /**
+             * Format: int64
+             * @description Unix timestamp (seconds) when the initial routing decision was recorded.
+             */
+            routed_at?: number | null;
+            /** @description Routing status string: `"routed_to_team_admin"`, `"routed_to_org_admin"`, or `"escalated_to_<role>"`. */
+            status: string;
+            /** @description Role the request is currently assigned to (e.g. `"TeamAdmin"`, `"OrgAdmin"`). */
+            target_role?: string | null;
+            /** @description Team the request was routed to, if known. */
+            target_team_id?: string | null;
         };
         /**
          * @description Authorization scope level for API operations.
