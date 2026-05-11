@@ -930,6 +930,46 @@ mod tests {
         assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
     }
 
+    // ── validate_variables tests ──────────────────────────────────────────
+
+    #[test]
+    fn validate_variables_accepts_known_variable() {
+        assert!(validate_variables("agent.depth > 2").is_ok());
+        assert!(validate_variables("team.active_agents == 5").is_ok());
+        assert!(validate_variables("child.tool == \"bash\"").is_ok());
+    }
+
+    #[test]
+    fn validate_variables_rejects_unknown_variable() {
+        let err = validate_variables("agent.xyz > 0").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("agent.xyz"), "message should name the unknown var: {msg}");
+        assert!(msg.contains("agent.depth"), "message should list known vars: {msg}");
+    }
+
+    #[test]
+    fn validate_variables_suggests_typo_correction() {
+        let err = validate_variables("agent.depht > 0").unwrap_err();
+        match err {
+            crate::policy::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+                assert_eq!(name, "agent.depht");
+                assert_eq!(suggestion.as_deref(), Some("agent.depth"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_variables_no_suggestion_when_too_different() {
+        let err = validate_variables("completely_unknown > 0").unwrap_err();
+        match err {
+            crate::policy::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
+                assert!(suggestion.is_none(), "should not suggest a match for a very different name");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
     #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
