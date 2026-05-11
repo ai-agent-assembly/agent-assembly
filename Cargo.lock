@@ -259,6 +259,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "humantime",
+ "insta",
  "metrics",
  "moka",
  "notify",

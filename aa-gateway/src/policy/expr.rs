@@ -507,7 +507,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -530,7 +530,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -1363,6 +1363,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: child,
+            agent_age_secs: None,
         }
     }
 
@@ -1453,6 +1454,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
             agent_age_secs: age_secs,
         }
     }
@@ -1480,6 +1482,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
             agent_age_secs: None,
         };
         assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
