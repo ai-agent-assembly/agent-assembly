@@ -11,7 +11,7 @@
 //! Never replace these with `==` comparisons — timing-side-channel attacks on
 //! HMAC-based webhook signatures are a known threat.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::provider::SaasProvider;
@@ -115,7 +115,7 @@ fn verify_raw_hex(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hmac::Mac;
+    use hmac::{KeyInit, Mac};
     use http::HeaderMap;
 
     fn compute_hmac(secret: &[u8], body: &[u8]) -> Vec<u8> {

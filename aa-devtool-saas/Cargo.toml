@@ -11,7 +11,7 @@ publish = false
 aa-core     = { path = "../aa-core", features = ["std", "serde"] }
 async-trait = "0.1"
 hex         = "0.4"
-hmac        = "0.12"
+hmac        = "0.13"
 http        = "1"
 serde       = { version = "1", features = ["derive"] }
 sha2        = "0.11"
