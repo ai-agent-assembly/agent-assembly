@@ -1234,6 +1234,53 @@ mod tests {
         }
     }
 
+    // ── agent.age and team.parallel_agents tests ─────────────────────────────
+
+    fn fake_age_ctx(age_secs: Option<u64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            agent_age_secs: age_secs,
+        }
+    }
+
+    #[test]
+    fn agent_age_gt_24h_fires_when_agent_is_old() {
+        // 25 hours old → 90000 s; rule threshold is 24h = 86400 s
+        let ctx = fake_age_ctx(Some(90_000));
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_age_gt_24h_no_match_when_agent_is_young() {
+        // 10 hours old → 36000 s; does not exceed 24h
+        let ctx = fake_age_ctx(Some(36_000));
+        assert!(!evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_parallel_agents_gt_matches() {
+        let ctx = crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: Some(8),
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            agent_age_secs: None,
+        };
+        assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn null_safety_agent_age_returns_false_without_context() {
+        assert!(!evaluate("agent.age > 24h", &tool("any"), None, None));
+    }
+
     // ── inter-team message condition tests ───────────────────────────────────
 
     fn send_message(
