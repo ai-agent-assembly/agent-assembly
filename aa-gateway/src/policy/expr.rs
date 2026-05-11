@@ -37,6 +37,7 @@ enum FieldRef {
     AgentDepth,
     TeamActiveAgents,
     TeamBudgetRemaining,
+    ChildTool,
 }
 
 #[derive(Debug, PartialEq)]
