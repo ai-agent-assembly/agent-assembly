@@ -38,6 +38,7 @@ uuid         = { version = "1", features = ["v4", "v7", "serde"] }
 clap         = { version = "4", features = ["derive"] }
 moka         = { version = "0.12", features = ["sync"] }
 strsim       = "0.11"
+humantime    = "2"
 ahash        = "0.8"
 metrics      = "0.24"
 sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
