@@ -81,3 +81,44 @@ async fn overview_json_output() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+// ── topology tree ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn tree_returns_success() {
+    let server = MockServer::start().await;
+
+    let root_id = "0102030405060708090a0b0c0d0e0f10";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/tree/{root_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": root_id,
+            "name": "root-agent",
+            "depth": 0,
+            "status": "active",
+            "team_id": "team-alpha",
+            "delegation_reason": null,
+            "spawned_by_tool": null,
+            "children": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::tree::TreeArgs {
+            agent_id: root_id.to_string(),
+            depth: None,
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::tree::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
