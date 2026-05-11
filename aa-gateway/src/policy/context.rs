@@ -31,7 +31,7 @@ impl<'a> ProductionPolicyContext<'a> {
 
 impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     fn agent_depth(&self) -> Option<u32> {
-        todo!("AAASM-1032: implement via registry lookup")
+        self.registry.get(&self.agent_key).map(|r| r.depth)
     }
 
     fn team_active_agents(&self) -> Option<u64> {
