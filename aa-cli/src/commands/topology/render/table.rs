@@ -48,3 +48,25 @@ pub fn render_overview_table(overview: &TopologyOverview) {
         println!("{table}");
     }
 }
+
+/// Render a team topology as a comfy-table.
+pub fn render_team_table(team: &TeamTopology) {
+    println!("Team: {}  |  Agents: {}\n", team.team_id, team.agent_count);
+
+    if team.members.is_empty() {
+        println!("No agents in this team.");
+        return;
+    }
+
+    let mut table = Table::new();
+    table.set_header(vec!["AGENT_ID", "NAME", "DEPTH", "STATUS"]);
+    for a in &team.members {
+        table.add_row(vec![
+            Cell::new(&a.id),
+            Cell::new(&a.name),
+            Cell::new(a.depth),
+            Cell::new(&a.status).fg(status_color(&a.status)),
+        ]);
+    }
+    println!("{table}");
+}
