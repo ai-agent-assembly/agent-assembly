@@ -488,6 +488,29 @@ fn eval_clause_safe(
         };
     }
 
+    // team.parallel_agents — integer count of currently-running agents in the current team.
+    // Semantically equivalent to team.active_agents; delegates to the same registry query.
+    // Returns false (null-safe no-match) when the agent has no team.
+    if let FieldRef::TeamParallelAgents = field {
+        let lhs = match policy_ctx.and_then(|c| c.team_active_agents()) {
+            Some(n) => n as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
     // agent.age — numeric (seconds) comparison against the current agent's age since registration.
     // Compares the agent's age in seconds against a Duration literal (e.g. `24h` = 86400s).
     // Returns false (null-safe no-match) when context or registry lookup is absent.
