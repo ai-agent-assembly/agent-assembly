@@ -469,7 +469,10 @@ impl BudgetTracker {
             .rev()
             .map(|&bytes| self.get_or_create_parent_lock(AgentId::from_bytes(bytes)))
             .collect();
+        let lock_wait_start = std::time::Instant::now();
         let _guards: Vec<_> = ancestor_arcs.iter().map(|arc| arc.lock()).collect();
+        metrics::histogram!("budget_parent_lock_wait_seconds")
+            .record(lock_wait_start.elapsed().as_secs_f64());
 
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
