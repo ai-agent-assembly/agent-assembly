@@ -1164,6 +1164,26 @@ mod tests {
         }
     }
 
+    // ── inter-team message condition tests ───────────────────────────────────
+
+    fn send_message(
+        source: Option<&str>,
+        target: Option<&str>,
+        channel: Option<&str>,
+    ) -> GovernanceAction {
+        GovernanceAction::SendMessage {
+            source_team_id: source.map(String::from),
+            target_team_id: target.map(String::from),
+            channel_id: channel.map(String::from),
+        }
+    }
+
+    #[test]
+    fn source_team_id_eq_matches_same_team_message() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"source.team_id == "team-alpha""#, &msg, None, None));
+    }
+
     #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
