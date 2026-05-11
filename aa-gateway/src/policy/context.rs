@@ -35,7 +35,8 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     }
 
     fn team_active_agents(&self) -> Option<u64> {
-        todo!("AAASM-1032: implement via team_index count")
+        let team_id = self.team_id.as_deref()?;
+        Some(self.registry.team_members(team_id).len() as u64)
     }
 
     fn team_budget_remaining(&self) -> Option<f64> {
