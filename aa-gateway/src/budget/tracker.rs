@@ -70,6 +70,9 @@ pub struct BudgetTracker {
     team_monthly_limit_usd: Option<Decimal>,
     /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
     pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
+    /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
+    /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
+    pub(crate) parent_locks: DashMap<AgentId, std::sync::Arc<parking_lot::Mutex<()>>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -107,6 +110,7 @@ impl BudgetTracker {
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
+            parent_locks: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -179,9 +183,23 @@ impl BudgetTracker {
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
+            parent_locks: DashMap::new(),
             alert_tx,
             timezone,
         }
+    }
+
+    /// Return an `Arc` wrapping the per-ancestor `parking_lot::Mutex`, creating it if absent.
+    ///
+    /// Callers must acquire these locks in root-down order (ascending depth) to prevent
+    /// deadlock when two concurrent callers share overlapping ancestor chains.
+    fn get_or_create_parent_lock(&self, ancestor_id: AgentId) -> std::sync::Arc<parking_lot::Mutex<()>> {
+        use std::sync::Arc;
+        self.parent_locks
+            .entry(ancestor_id)
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+            .value()
+            .clone()
     }
 
     /// Return the effective daily or monthly limit for `agent_id`.
@@ -444,6 +462,17 @@ impl BudgetTracker {
         ancestors: &[[u8; 16]],
         amount: Decimal,
     ) -> Result<(), crate::budget::types::BudgetError> {
+        // Acquire per-ancestor locks root-down (ancestors is leaf→root; reverse to get root-first).
+        // Deterministic ordering prevents A-then-B vs B-then-A deadlocks across concurrent calls.
+        let ancestor_arcs: Vec<_> = ancestors
+            .iter()
+            .rev()
+            .map(|&bytes| self.get_or_create_parent_lock(AgentId::from_bytes(bytes)))
+            .collect();
+        let lock_wait_start = std::time::Instant::now();
+        let _guards: Vec<_> = ancestor_arcs.iter().map(|arc| arc.lock()).collect();
+        metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
+
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
 
@@ -1048,6 +1077,117 @@ mod tests {
         let alert = rx.try_recv().expect("expected 95% team alert");
         assert_eq!(alert.threshold_pct, 95);
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
+    }
+
+    // ── AAASM-1028: proptest concurrent invariants ─────────────────────
+
+    #[test]
+    fn proptest_concurrent_decrement_invariants_hold() {
+        use proptest::prelude::*;
+        use std::sync::Arc;
+
+        // Run 256 independent scenarios: N threads each spending $0.01,
+        // root must accumulate exactly N × $0.01.
+        let config = proptest::test_runner::Config {
+            cases: 256,
+            ..Default::default()
+        };
+        let mut runner = proptest::test_runner::TestRunner::new(config);
+
+        runner
+            .run(&(1usize..=20usize), |n_threads| {
+                let root = AgentId::from_bytes([0xD0u8; 16]);
+                let child = AgentId::from_bytes([0xD1u8; 16]);
+                let t = Arc::new(
+                    BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                        .with_agent_limit(root, Some("10000.00".parse().unwrap()), None)
+                        .with_agent_limit(child, Some("10000.00".parse().unwrap()), None),
+                );
+                let ancestors = vec![*child.as_bytes(), *root.as_bytes()];
+                let amount: Decimal = "0.01".parse().unwrap();
+
+                let mut handles = Vec::new();
+                for idx in 0..n_threads {
+                    let t2 = Arc::clone(&t);
+                    let anc = ancestors.clone();
+                    handles.push(std::thread::spawn(move || {
+                        let leaf = AgentId::from_bytes({
+                            let mut b = [0xE0u8; 16];
+                            b[1] = idx as u8;
+                            b
+                        });
+                        t2.check_and_decrement(leaf, &anc, amount).unwrap();
+                    }));
+                }
+                for h in handles {
+                    h.join().unwrap();
+                }
+
+                let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+                let expected = amount * Decimal::from(n_threads);
+                prop_assert_eq!(root_spent, expected);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cross_ancestor_lock_ordering_completes_without_deadlock() {
+        // Two agent trees share the same root ancestor. Concurrent check_and_decrement
+        // calls for each tree must not deadlock due to the root-down lock ordering.
+        use std::sync::Arc;
+
+        let root = AgentId::from_bytes([0xF0u8; 16]);
+        let child_a = AgentId::from_bytes([0xF1u8; 16]);
+        let child_b = AgentId::from_bytes([0xF2u8; 16]);
+
+        let t = Arc::new(
+            BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                .with_agent_limit(root, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child_a, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child_b, Some("1000.00".parse().unwrap()), None),
+        );
+
+        // Thread 1: leaf_a → child_a → root
+        // Thread 2: leaf_b → child_b → root
+        // Both share root; root-down ordering is [root, child_X] for both threads.
+        let amount: Decimal = "0.01".parse().unwrap();
+        let mut handles = Vec::new();
+
+        for idx in 0u8..50 {
+            let t2 = Arc::clone(&t);
+            let (child, leaf_b) = if idx % 2 == 0 {
+                (
+                    *child_a.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xA0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
+            } else {
+                (
+                    *child_b.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xB0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
+            };
+            handles.push(std::thread::spawn(move || {
+                let ancestors = [child, *root.as_bytes()];
+                t2.check_and_decrement(leaf_b, &ancestors, amount).unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread must not panic (deadlock would timeout)");
+        }
+
+        let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+        let expected: Decimal = "0.50".parse().unwrap(); // 50 × $0.01
+        assert_eq!(root_spent, expected);
     }
 
     // ── subtree_spend (AAASM-1025) ─────────────────────────────────────
