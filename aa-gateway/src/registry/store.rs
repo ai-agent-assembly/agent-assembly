@@ -419,6 +419,36 @@ impl AgentRegistry {
         self.agents.iter().map(|r| r.value().clone()).collect()
     }
 
+    /// Deregister any active agent whose age (now_secs - registered_at) exceeds the
+    /// maximum configured for its team via [`set_team_max_age`].
+    ///
+    /// Returns the agent keys of every agent that was force-deregistered so callers
+    /// can emit [`aa_core::AuditEventType::AgentForceDeregistered`] events.
+    pub fn sweep_aged_agents(&self, now_secs: u64) -> Vec<[u8; 16]> {
+        let mut evicted = Vec::new();
+        for entry in self.agents.iter() {
+            let record = entry.value();
+            if !matches!(record.status, AgentStatus::Active) {
+                continue;
+            }
+            let Some(team_id) = &record.team_id else { continue };
+            let Some(max_secs) = self.team_max_age_secs.get(team_id.as_str()).map(|v| *v) else {
+                continue;
+            };
+            let registered_unix = record.registered_at.timestamp() as u64;
+            let age_secs = now_secs.saturating_sub(registered_unix);
+            if age_secs > max_secs {
+                evicted.push(*entry.key());
+            }
+        }
+        for key in &evicted {
+            if let Some(mut entry) = self.agents.get_mut(key) {
+                entry.status = AgentStatus::Deregistered;
+            }
+        }
+        evicted
+    }
+
     /// Return the scope lineage (org, team) for `agent_id` by reading the
     /// `"org_id"` and `"team_id"` metadata keys written at registration.
     ///
