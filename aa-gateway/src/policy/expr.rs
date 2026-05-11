@@ -52,6 +52,11 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "target.channel_id",
     "agent.age",
     "team.parallel_agents",
+    "agent.parent_id",
+    "agent.team_id",
+    "agent.children_count",
+    "agent.is_root",
+    "agent.is_leaf",
 ];
 
 // ---------------------------------------------------------------------------
@@ -78,6 +83,11 @@ enum FieldRef {
     TargetChannelId,
     AgentAge,
     TeamParallelAgents,
+    AgentParentId,
+    AgentTeamId,
+    AgentChildrenCount,
+    AgentIsRoot,
+    AgentIsLeaf,
 }
 
 #[derive(Debug, PartialEq)]
@@ -266,6 +276,11 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
                 "agent.age" => Token::Field(FieldRef::AgentAge),
                 "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
+                "agent.parent_id" => Token::Field(FieldRef::AgentParentId),
+                "agent.team_id" => Token::Field(FieldRef::AgentTeamId),
+                "agent.children_count" => Token::Field(FieldRef::AgentChildrenCount),
+                "agent.is_root" => Token::Field(FieldRef::AgentIsRoot),
+                "agent.is_leaf" => Token::Field(FieldRef::AgentIsLeaf),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
@@ -531,6 +546,108 @@ fn eval_clause_safe(
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
             OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+        };
+    }
+
+    // agent.parent_id — string comparison against the current agent's parent agent ID.
+    // Returns false when the agent has no parent (null-safe no-match).
+    if let FieldRef::AgentParentId = field {
+        let parent_id = match policy_ctx.and_then(|c| c.agent_parent_id()) {
+            Some(id) => id,
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => parent_id == rhs,
+            OpKind::Ne => parent_id != rhs,
+            OpKind::Contains => parent_id.contains(rhs),
+            OpKind::StartsWith => parent_id.starts_with(rhs),
+            _ => false,
+        };
+    }
+
+    // agent.team_id — string comparison against the current agent's team ID.
+    // Returns false when the agent has no team (null-safe no-match).
+    if let FieldRef::AgentTeamId = field {
+        let team_id = match policy_ctx.and_then(|c| c.agent_team_id()) {
+            Some(id) => id,
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => team_id == rhs,
+            OpKind::Ne => team_id != rhs,
+            OpKind::Contains => team_id.contains(rhs),
+            OpKind::StartsWith => team_id.starts_with(rhs),
+            _ => false,
+        };
+    }
+
+    // agent.children_count — numeric comparison against the number of direct children.
+    // Returns false when the agent is not found in the registry (null-safe no-match).
+    if let FieldRef::AgentChildrenCount = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_children_count()) {
+            Some(n) => n as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+        };
+    }
+
+    // agent.is_root — boolean (0/1) indicating whether the agent is a root agent
+    // (depth == 0). Supports only Eq and Ne against numeric 1 or 0.
+    // Returns false when the agent is not found in the registry (null-safe no-match).
+    if let FieldRef::AgentIsRoot = field {
+        let depth = match policy_ctx.and_then(|c| c.agent_depth()) {
+            Some(d) => d,
+            None => return false,
+        };
+        let is_root = if depth == 0 { 1.0_f64 } else { 0.0_f64 };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => is_root == rhs,
+            OpKind::Ne => is_root != rhs,
+            _ => false,
+        };
+    }
+
+    // agent.is_leaf — boolean (0/1) indicating whether the agent has no children
+    // (children_count == 0). Supports only Eq and Ne against numeric 1 or 0.
+    // Returns false when the agent is not found in the registry (null-safe no-match).
+    if let FieldRef::AgentIsLeaf = field {
+        let count = match policy_ctx.and_then(|c| c.agent_children_count()) {
+            Some(n) => n,
+            None => return false,
+        };
+        let is_leaf = if count == 0 { 1.0_f64 } else { 0.0_f64 };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => is_leaf == rhs,
+            OpKind::Ne => is_leaf != rhs,
+            _ => false,
         };
     }
 
@@ -1174,6 +1291,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1205,6 +1325,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1230,6 +1353,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1255,6 +1381,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1288,6 +1417,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
@@ -1313,6 +1445,9 @@ mod tests {
             parent_risk_tier: parent,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1364,6 +1499,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: child,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1456,6 +1594,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: age_secs,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         }
     }
 
@@ -1484,6 +1625,9 @@ mod tests {
             parent_risk_tier: None,
             child_risk_tier: None,
             agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: None,
         };
         assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
     }
@@ -1650,5 +1794,141 @@ mod tests {
                 "{literal} did not parse / compare equal for matching agent level"
             );
         }
+    }
+
+    // ── agent.parent_id, agent.team_id, agent.children_count tests ──────────
+
+    fn fake_topology_ctx(
+        parent_id: Option<&str>,
+        team_id: Option<&str>,
+        children_count: Option<u32>,
+    ) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            child_risk_tier: None,
+            agent_age_secs: None,
+            agent_parent_id: parent_id.map(String::from),
+            agent_team_id: team_id.map(String::from),
+            agent_children_count: children_count,
+        }
+    }
+
+    #[test]
+    fn agent_parent_id_eq_matches_known_parent() {
+        let ctx = fake_topology_ctx(Some("parent-abc"), None, None);
+        assert!(evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_parent_id_eq_no_match_different_parent() {
+        let ctx = fake_topology_ctx(Some("parent-xyz"), None, None);
+        assert!(!evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_parent_id_null_safe_when_no_parent() {
+        let ctx = fake_topology_ctx(None, None, None);
+        assert!(!evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_team_id_eq_matches_known_team() {
+        let ctx = fake_topology_ctx(None, Some("team-alpha"), None);
+        assert!(evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_team_id_eq_no_match_different_team() {
+        let ctx = fake_topology_ctx(None, Some("team-beta"), None);
+        assert!(!evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_team_id_null_safe_when_no_team() {
+        let ctx = fake_topology_ctx(None, None, None);
+        assert!(!evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_children_count_gt_matches_when_has_children() {
+        let ctx = fake_topology_ctx(None, None, Some(3));
+        assert!(evaluate("agent.children_count > 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_children_count_eq_zero_matches_leaf() {
+        let ctx = fake_topology_ctx(None, None, Some(0));
+        assert!(evaluate("agent.children_count == 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_children_count_null_safe_without_context() {
+        assert!(!evaluate("agent.children_count > 0", &tool("any"), None, None));
+    }
+
+    // ── agent.is_root, agent.is_leaf tests ───────────────────────────────────
+
+    fn fake_depth_children_ctx(depth: Option<u32>, children: Option<u32>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            child_risk_tier: None,
+            agent_age_secs: None,
+            agent_parent_id: None,
+            agent_team_id: None,
+            agent_children_count: children,
+        }
+    }
+
+    #[test]
+    fn agent_is_root_eq_1_matches_root_agent() {
+        let ctx = fake_depth_children_ctx(Some(0), None);
+        assert!(evaluate("agent.is_root == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_root_eq_1_no_match_non_root_agent() {
+        let ctx = fake_depth_children_ctx(Some(2), None);
+        assert!(!evaluate("agent.is_root == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_root_null_safe_without_context() {
+        assert!(!evaluate("agent.is_root == 1", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn agent_is_leaf_eq_1_matches_agent_with_no_children() {
+        let ctx = fake_depth_children_ctx(None, Some(0));
+        assert!(evaluate("agent.is_leaf == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_leaf_eq_1_no_match_agent_with_children() {
+        let ctx = fake_depth_children_ctx(None, Some(2));
+        assert!(!evaluate("agent.is_leaf == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_leaf_null_safe_without_context() {
+        assert!(!evaluate("agent.is_leaf == 1", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn validate_variables_accepts_new_topology_variables() {
+        assert!(validate_variables(r#"agent.parent_id == "abc""#).is_ok());
+        assert!(validate_variables(r#"agent.team_id == "t1""#).is_ok());
+        assert!(validate_variables("agent.children_count > 0").is_ok());
+        assert!(validate_variables("agent.is_root == 1").is_ok());
+        assert!(validate_variables("agent.is_leaf == 1").is_ok());
     }
 }
