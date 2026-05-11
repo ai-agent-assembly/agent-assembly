@@ -24,6 +24,27 @@ use aa_core::{GovernanceAction, GovernanceLevel};
 
 use crate::policy::context::PolicyContext;
 
+/// All variable names that the expression evaluator recognises.
+///
+/// Used by load-time validation to catch typos before a policy is ever
+/// evaluated.  Any identifier in a `requires_approval_if` expression that is
+/// not in this list and is not a combinator, operator, governance-level literal,
+/// or numeric literal will be rejected with
+/// [`PolicyParseError::UnknownVariable`](crate::policy::error::PolicyParseError::UnknownVariable).
+pub(crate) const KNOWN_VARIABLES: &[&str] = &[
+    "tool",
+    "path",
+    "url",
+    "method",
+    "command",
+    "governance_level",
+    "agent.depth",
+    "team.active_agents",
+    "team.budget_remaining",
+    "child.tool",
+    "parent.risk_tier",
+];
+
 // ---------------------------------------------------------------------------
 // Internal token types
 // ---------------------------------------------------------------------------
