@@ -20,6 +20,7 @@ pub mod policy;
 pub mod run;
 pub mod status;
 pub mod tools;
+pub mod topology;
 pub mod trace;
 pub mod version;
 
@@ -56,6 +57,8 @@ pub enum Commands {
     Run(run::RunArgs),
     /// List and manage AI dev tools on this system.
     Tools(tools::ToolsArgs),
+    /// Visualize agent topology, trees, lineage, and statistics.
+    Topology(topology::TopologyArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -76,5 +79,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Run(args) => run::dispatch(args, ctx, output),
         Commands::Tools(args) => tools::dispatch(args),
+        Commands::Topology(args) => topology::dispatch(args, ctx, output),
     }
 }

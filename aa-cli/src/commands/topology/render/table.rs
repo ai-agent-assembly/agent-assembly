@@ -146,4 +146,14 @@ pub fn render_stats_table(stats: &TopologyStats) {
         }
         println!("{htable}");
     }
+
+    if !stats.team_size_histogram.is_empty() {
+        println!("\nTeam-size histogram:");
+        let mut htable = Table::new();
+        htable.set_header(vec!["TEAM_SIZE", "COUNT"]);
+        for (size, count) in &stats.team_size_histogram {
+            htable.add_row(vec![Cell::new(size), Cell::new(count)]);
+        }
+        println!("{htable}");
+    }
 }

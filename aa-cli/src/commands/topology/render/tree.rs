@@ -6,11 +6,7 @@ use super::{AgentLineage, AgentTree};
 pub fn render_agent_tree(node: &AgentTree, prefix: &str, is_last: bool) {
     let connector = if is_last { "└── " } else { "├── " };
     let status_tag = format!("[{}]", node.status);
-    let team_tag = node
-        .team_id
-        .as_deref()
-        .map(|t| format!(" <{t}>"))
-        .unwrap_or_default();
+    let team_tag = node.team_id.as_deref().map(|t| format!(" <{t}>")).unwrap_or_default();
     println!("{prefix}{connector}{} {status_tag}{team_tag}", node.name);
 
     let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
