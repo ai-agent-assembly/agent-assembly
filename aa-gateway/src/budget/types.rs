@@ -42,6 +42,19 @@ pub enum BudgetKind {
     Global,
 }
 
+/// Error returned by [`super::tracker::BudgetTracker::check_and_decrement`].
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum BudgetError {
+    /// An ancestor agent's budget is exhausted; the spend was not applied to any node.
+    #[error("ancestor {ancestor_id:?} budget exhausted ({kind:?})")]
+    AncestorBudgetExhausted {
+        /// The ancestor agent whose budget was exceeded.
+        ancestor_id: [u8; 16],
+        /// Which window (daily/monthly/global) was exhausted.
+        kind: BudgetKind,
+    },
+}
+
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetStatus {
