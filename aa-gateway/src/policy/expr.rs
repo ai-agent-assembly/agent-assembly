@@ -1313,6 +1313,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_variables_suggests_source_team_id_for_typo() {
+        let err = validate_variables(r#"source.team_d == "team-alpha""#).unwrap_err();
+        match err {
+            crate::policy::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+                assert_eq!(name, "source.team_d");
+                assert_eq!(suggestion.as_deref(), Some("source.team_id"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
         // same level — covering all four members of the `GovernanceLevel`
