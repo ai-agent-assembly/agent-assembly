@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 
-use aa_core::{AuditEntry, AuditEventType, GovernanceAction};
 use aa_core::identity::{AgentId, SessionId};
+use aa_core::{AuditEntry, AuditEventType, GovernanceAction};
 
 use crate::engine::decision::PolicyDecision;
 
@@ -81,10 +81,7 @@ impl MessageRouter {
                 .unwrap_or_default()
                 .as_nanos() as u64;
             let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
-            let mut last_hash = self
-                .audit_last_hash
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut last_hash = self.audit_last_hash.lock().unwrap_or_else(|e| e.into_inner());
 
             let channel_id = match action {
                 GovernanceAction::SendMessage { channel_id, .. } => {
@@ -93,10 +90,7 @@ impl MessageRouter {
                 _ => "unknown".to_string(),
             };
 
-            let payload = format!(
-                r#"{{"reason":"{}","channel_id":"{}"}}"#,
-                block_reason, channel_id
-            );
+            let payload = format!(r#"{{"reason":"{}","channel_id":"{}"}}"#, block_reason, channel_id);
 
             let entry = AuditEntry::new(
                 seq,

@@ -101,9 +101,8 @@ fn allowed_channel_in_fixture_loads_without_errors() {
 
 #[test]
 fn allowed_channel_in_list_produces_allow_for_send_message_action() {
-    // The engine's Stage 5 approval gate fires only for ToolCall; SendMessage actions
-    // pass through to Allow regardless of the tool-level requires_approval_if expression.
-    // Expression correctness is verified by unit tests in expr.rs (in/not_in operator).
+    // "ops" is in ["ops", "general"], so the not_in expression returns false →
+    // Stage 5b approval gate does not fire → Allow.
     let doc = load_inter_team_fixture("allowed_channel_in.yaml");
     let ctx = make_ctx();
     let action = send_message_action("team-alpha", "team-beta", "ops");
@@ -123,12 +122,26 @@ fn allowed_channel_in_produces_allow_for_non_message_action() {
 }
 
 #[test]
-#[ignore = "TODO(AAASM-1017): pending SendMessage engine stage + MessageRouter (Epic 197); should assert RequireApproval/Deny + AuditEvent::MessageBlocked for disallowed channel"]
 fn disallowed_channel_triggers_approval_via_message_router() {
-    // Once the engine evaluates requires_approval_if for SendMessage actions and
-    // MessageRouter (Epic 197) is wired up:
-    // channel "private" not in ["ops", "general"] → RequireApproval → MessageBlocked audit event
-    todo!("wire rule into MessageRouter once Epic 197 ships")
+    use aa_core::AuditEventType;
+    use aa_gateway::message_router::MessageRouter;
+
+    let doc = load_inter_team_fixture("allowed_channel_in.yaml");
+    let ctx = make_ctx();
+    // "private" not in ["ops", "general"] → expression true → RequireApproval
+    let action = send_message_action("team-alpha", "team-beta", "private");
+
+    let (audit_tx, mut audit_rx) = tokio::sync::mpsc::channel(8);
+    let router = MessageRouter::new().with_audit_tx(audit_tx);
+
+    let decision = merge_decisions(&[doc], &ctx, &action, None);
+    let result = router.enforce(decision, ctx.agent_id, &action);
+
+    assert!(result.is_err(), "disallowed channel should be blocked");
+    let entry = audit_rx.try_recv().expect("MessageBlocked audit entry expected");
+    assert_eq!(entry.event_type(), AuditEventType::MessageBlocked);
+    assert!(entry.payload().contains("cross_team_unallowed_channel"));
+    assert!(entry.payload().contains("private"));
 }
 
 // ── load-time validation: typo rejection ─────────────────────────────────────
