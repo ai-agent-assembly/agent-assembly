@@ -388,6 +388,82 @@ fn eval_clause_safe(
         };
     }
 
+    // source.team_id — string equality against the sending agent's team ID.
+    // Returns false (null-safe no-match) when the action is not SendMessage or
+    // the source_team_id field is None.
+    if let FieldRef::SourceTeamId = field {
+        let team_id = match action {
+            GovernanceAction::SendMessage { source_team_id, .. } => {
+                match source_team_id.as_deref() {
+                    Some(id) => id.to_owned(),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => team_id == rhs,
+            OpKind::Ne => team_id != rhs,
+            OpKind::Contains => team_id.contains(rhs),
+            OpKind::StartsWith => team_id.starts_with(rhs),
+            _ => false,
+        };
+    }
+
+    // target.team_id — string equality against the recipient team ID.
+    // Returns false when the action is not SendMessage or target_team_id is None.
+    if let FieldRef::TargetTeamId = field {
+        let team_id = match action {
+            GovernanceAction::SendMessage { target_team_id, .. } => {
+                match target_team_id.as_deref() {
+                    Some(id) => id.to_owned(),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => team_id == rhs,
+            OpKind::Ne => team_id != rhs,
+            OpKind::Contains => team_id.contains(rhs),
+            OpKind::StartsWith => team_id.starts_with(rhs),
+            _ => false,
+        };
+    }
+
+    // target.channel_id — string equality against the channel routing identifier.
+    // Returns false when the action is not SendMessage or channel_id is None.
+    if let FieldRef::TargetChannelId = field {
+        let channel_id = match action {
+            GovernanceAction::SendMessage { channel_id, .. } => {
+                match channel_id.as_deref() {
+                    Some(id) => id.to_owned(),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => channel_id == rhs,
+            OpKind::Ne => channel_id != rhs,
+            OpKind::Contains => channel_id.contains(rhs),
+            OpKind::StartsWith => channel_id.starts_with(rhs),
+            _ => false,
+        };
+    }
+
     // governance_level is the only field whose value type is not a string;
     // route it through an Ord-based comparison and return early.
     if let FieldRef::GovernanceLevel = field {
