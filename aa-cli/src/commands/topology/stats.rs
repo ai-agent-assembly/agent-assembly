@@ -12,6 +12,10 @@ use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology stats`.
 #[derive(Args)]
+#[command(after_help = "\
+Examples:
+  aasm topology stats
+  aasm topology stats --output json")]
 pub struct StatsArgs {}
 
 /// Run the `aasm topology stats` command.
