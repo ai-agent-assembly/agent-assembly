@@ -482,6 +482,39 @@ impl BudgetTracker {
         Ok(())
     }
 
+    /// Accumulate today's spend for `agent_id` and every descendant in `descendants`.
+    ///
+    /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
+    /// This is a read-only snapshot — it does not mutate any state.
+    pub fn subtree_spend(
+        &self,
+        agent_id: &AgentId,
+        descendants: &[[u8; 16]],
+    ) -> crate::budget::types::SubtreeSpend {
+        let today = today_in_tz(self.timezone);
+        let mut total_usd = Decimal::ZERO;
+        let mut agents_counted = 0usize;
+
+        let ids = std::iter::once(*agent_id.as_bytes()).chain(descendants.iter().copied());
+        for id_bytes in ids {
+            let aid = AgentId::from_bytes(id_bytes);
+            if let Some(state) = self.per_agent.get(&aid) {
+                let mut copy = state.clone();
+                copy.maybe_reset(today);
+                if copy.spent_usd > Decimal::ZERO {
+                    total_usd += copy.spent_usd;
+                    agents_counted += 1;
+                }
+            }
+        }
+
+        crate::budget::types::SubtreeSpend {
+            tokens: 0,
+            usd: total_usd,
+            agents_counted,
+        }
+    }
+
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
     pub fn team_state(&self, team_id: &str) -> Option<BudgetState> {
         self.team_budgets.get(team_id).map(|s| s.clone())
