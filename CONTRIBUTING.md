@@ -113,6 +113,22 @@ On `git push`, documentation is also checked: `cargo doc --workspace --no-deps`.
 
 The workspace-level clippy lints (`correctness = deny`, `suspicious = deny`, others `warn`) live in `[workspace.lints.clippy]` of the top-level `Cargo.toml` — do not override them per-crate.
 
+## Performance and Latency Tests
+
+Latency and performance tests assert absolute timing thresholds (e.g. p99 < 15 ms). They **must not run under `cargo llvm-cov`** or any other coverage/instrumentation tool, because instrumentation adds 2–10× overhead per instruction and makes timing guarantees unreliable on shared CI runners.
+
+**Rule:** every `cargo llvm-cov` invocation that covers the workspace must pass `-- --skip <test-name>` for each timing-sensitive test.
+
+Example (`ci.yml` and `sonar.yml`):
+
+```yaml
+cargo llvm-cov --no-report --all-features --workspace \
+  --exclude aa-ebpf --exclude aa-ffi-python \
+  -- --skip sustained_load_p99_under_5ms
+```
+
+Latency tests run in the dedicated **Benchmark** CI job (`cargo test -p aa-gateway --test policy_latency_test`) which uses an unmodified binary with no instrumentation.
+
 ## Build docs locally
 
 Contributor documentation is an [mdBook](https://rust-lang.github.io/mdBook/) rooted at `docs/`. To build or preview it:
