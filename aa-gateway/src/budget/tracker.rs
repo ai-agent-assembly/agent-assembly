@@ -482,11 +482,7 @@ impl BudgetTracker {
     ///
     /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
     /// This is a read-only snapshot — it does not mutate any state.
-    pub fn subtree_spend(
-        &self,
-        agent_id: &AgentId,
-        descendants: &[[u8; 16]],
-    ) -> crate::budget::types::SubtreeSpend {
+    pub fn subtree_spend(&self, agent_id: &AgentId, descendants: &[[u8; 16]]) -> crate::budget::types::SubtreeSpend {
         let today = today_in_tz(self.timezone);
         let mut total_usd = Decimal::ZERO;
         let mut agents_counted = 0usize;
