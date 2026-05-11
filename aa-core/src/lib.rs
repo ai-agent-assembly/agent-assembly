@@ -33,6 +33,7 @@ pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
 pub mod policy;
+pub mod risk_tier;
 #[cfg(feature = "std")]
 pub mod scanner;
 pub mod time;
@@ -41,6 +42,7 @@ pub mod topology;
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
 pub use policy::{FileMode, PolicyDecision, PolicyError};
+pub use risk_tier::RiskTier;
 
 #[cfg(feature = "alloc")]
 pub use agent::{AgentContext, AgentContextBuilder};
