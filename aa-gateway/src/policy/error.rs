@@ -33,8 +33,17 @@ impl fmt::Display for PolicyParseError {
             Self::InvalidScope { raw, reason } => {
                 write!(f, "invalid policy scope {:?}: {}", raw, reason)
             }
-            Self::UnknownVariable { name, suggestion, available } => {
-                write!(f, "unknown variable {:?}; valid variables: {}", name, available.join(", "))?;
+            Self::UnknownVariable {
+                name,
+                suggestion,
+                available,
+            } => {
+                write!(
+                    f,
+                    "unknown variable {:?}; valid variables: {}",
+                    name,
+                    available.join(", ")
+                )?;
                 if let Some(s) = suggestion {
                     write!(f, "; did you mean {:?}?", s)?;
                 }

@@ -527,8 +527,16 @@ fn eval_tokens(
 /// running the full tokenizer.
 pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
     const SKIP_WORDS: &[&str] = &[
-        "AND", "OR", "true", "false", "contains", "starts_with",
-        "L0", "L1", "L2", "L3",
+        "AND",
+        "OR",
+        "true",
+        "false",
+        "contains",
+        "starts_with",
+        "L0",
+        "L1",
+        "L2",
+        "L3",
     ];
 
     let mut names = Vec::new();
@@ -547,7 +555,9 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
             loop {
                 match chars.next() {
                     Some('"') | None => break,
-                    Some('\\') => { chars.next(); }
+                    Some('\\') => {
+                        chars.next();
+                    }
                     _ => {}
                 }
             }
@@ -598,9 +608,7 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 /// Returns [`PolicyParseError::UnknownVariable`] on the first unknown name
 /// found, with a typo suggestion when the Levenshtein distance to the closest
 /// known variable is ≤ 2.
-pub(crate) fn validate_variables(
-    expr: &str,
-) -> Result<(), crate::policy::error::PolicyParseError> {
+pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
     for name in extract_field_names(expr) {
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
             let suggestion = suggest_variable(&name).map(str::to_owned);
@@ -969,7 +977,10 @@ mod tests {
         let err = validate_variables("completely_unknown > 0").unwrap_err();
         match err {
             crate::policy::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
-                assert!(suggestion.is_none(), "should not suggest a match for a very different name");
+                assert!(
+                    suggestion.is_none(),
+                    "should not suggest a match for a very different name"
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
