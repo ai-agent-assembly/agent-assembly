@@ -784,7 +784,7 @@ tools:
   bash:
     allow: true
     limit_per_hour: 10
-    requires_approval_if: "amount > 100"
+    requires_approval_if: "agent.depth > 1"
   file_write:
     allow: false
 "#;
