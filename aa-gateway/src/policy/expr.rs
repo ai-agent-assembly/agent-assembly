@@ -515,6 +515,69 @@ fn eval_tokens(
 }
 
 // ---------------------------------------------------------------------------
+// Variable extraction for load-time validation
+// ---------------------------------------------------------------------------
+
+/// Extract every identifier-like word from `expr` that could be a field
+/// reference (skipping quoted strings, numeric literals, and combinators).
+///
+/// Used by [`validate_variables`] to find unknown variable names without
+/// running the full tokenizer.
+pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
+    const SKIP_WORDS: &[&str] = &[
+        "AND", "OR", "true", "false", "contains", "starts_with",
+        "L0", "L1", "L2", "L3",
+    ];
+
+    let mut names = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        // Skip whitespace and operator chars
+        if ch.is_whitespace() || matches!(ch, '<' | '>' | '=' | '!') {
+            chars.next();
+            continue;
+        }
+
+        // Skip quoted string literals
+        if ch == '"' {
+            chars.next();
+            loop {
+                match chars.next() {
+                    Some('"') | None => break,
+                    Some('\\') => { chars.next(); }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+
+        // Collect word token (letters, digits, underscore, hyphen, dot)
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            let mut word = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                    word.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // Skip combinators, boolean keywords, and numeric literals
+            if SKIP_WORDS.contains(&word.as_str()) || word.parse::<f64>().is_ok() {
+                continue;
+            }
+            names.push(word);
+            continue;
+        }
+
+        chars.next();
+    }
+
+    names
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
