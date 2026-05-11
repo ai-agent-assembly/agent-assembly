@@ -194,3 +194,42 @@ async fn lineage_returns_success() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+// ── topology stats ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn stats_returns_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/topology/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_agents": 15,
+            "root_agent_count": 3,
+            "max_depth": 4,
+            "active_count": 12,
+            "suspended_count": 2,
+            "deregistered_count": 1,
+            "team_count": 2,
+            "team_sizes": {"team-alpha": 8, "team-beta": 4},
+            "depth_histogram": {"0": 3, "1": 7, "2": 5},
+            "team_size_histogram": {"4": 1, "8": 1},
+            "spawn_count_histogram": {"0": 8, "2": 4, "4": 1},
+            "orphan_count": 2,
+            "avg_children_per_parent": 2.5
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::stats::StatsArgs {};
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::stats::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
