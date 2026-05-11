@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::output::OutputFormat;
+
 pub mod json;
 pub mod table;
 pub mod tree;
@@ -104,4 +106,19 @@ pub enum TopologyPayload<'a> {
     Team(&'a TeamTopology),
     Lineage(&'a AgentLineage),
     Stats(&'a TopologyStats),
+}
+
+/// Render a topology payload in the requested output format.
+pub fn render(payload: TopologyPayload<'_>, output: OutputFormat) {
+    match output {
+        OutputFormat::Json => json::render_json(&payload),
+        OutputFormat::Yaml => json::render_yaml(&payload),
+        OutputFormat::Table => match payload {
+            TopologyPayload::Overview(v) => table::render_overview_table(v),
+            TopologyPayload::Tree(v) => tree::render_agent_tree(v, "", true),
+            TopologyPayload::Team(v) => table::render_team_table(v),
+            TopologyPayload::Lineage(v) => table::render_lineage_table(v),
+            TopologyPayload::Stats(v) => table::render_stats_table(v),
+        },
+    }
 }
