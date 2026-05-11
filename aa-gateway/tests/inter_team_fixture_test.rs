@@ -12,6 +12,14 @@ use aa_core::{AgentContext, GovernanceAction, GovernanceLevel};
 use aa_gateway::engine::decision::{merge_decisions, PolicyDecision};
 use aa_gateway::policy::validator::PolicyValidator;
 
+fn send_message_action(src: &str, tgt: &str, ch: &str) -> GovernanceAction {
+    GovernanceAction::SendMessage {
+        source_team_id: Some(src.to_string()),
+        target_team_id: Some(tgt.to_string()),
+        channel_id: Some(ch.to_string()),
+    }
+}
+
 fn make_ctx() -> AgentContext {
     AgentContext {
         agent_id: AgentId::from_bytes([1u8; 16]),
@@ -82,6 +90,45 @@ fn same_team_allow_produces_allow_for_non_message_action() {
     let action = tool_action("message");
     let result = merge_decisions(&[doc], &ctx, &action, None);
     assert_eq!(result, PolicyDecision::Allow);
+}
+
+// ── allowed_channel_in fixture (in / not_in operator) ────────────────────────
+
+#[test]
+fn allowed_channel_in_fixture_loads_without_errors() {
+    let _doc = load_inter_team_fixture("allowed_channel_in.yaml");
+}
+
+#[test]
+fn allowed_channel_in_list_produces_allow_for_send_message_action() {
+    // The engine's Stage 5 approval gate fires only for ToolCall; SendMessage actions
+    // pass through to Allow regardless of the tool-level requires_approval_if expression.
+    // Expression correctness is verified by unit tests in expr.rs (in/not_in operator).
+    let doc = load_inter_team_fixture("allowed_channel_in.yaml");
+    let ctx = make_ctx();
+    let action = send_message_action("team-alpha", "team-beta", "ops");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    assert_eq!(result, PolicyDecision::Allow);
+}
+
+#[test]
+fn allowed_channel_in_produces_allow_for_non_message_action() {
+    // A ToolCall is not a SendMessage; target.channel_id resolves to None (null-safe
+    // no-match) so not_in returns false → approval not triggered → Allow.
+    let doc = load_inter_team_fixture("allowed_channel_in.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("message");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    assert_eq!(result, PolicyDecision::Allow);
+}
+
+#[test]
+#[ignore = "TODO(AAASM-1017): pending SendMessage engine stage + MessageRouter (Epic 197); should assert RequireApproval/Deny + AuditEvent::MessageBlocked for disallowed channel"]
+fn disallowed_channel_triggers_approval_via_message_router() {
+    // Once the engine evaluates requires_approval_if for SendMessage actions and
+    // MessageRouter (Epic 197) is wired up:
+    // channel "private" not in ["ops", "general"] → RequireApproval → MessageBlocked audit event
+    todo!("wire rule into MessageRouter once Epic 197 ships")
 }
 
 // ── load-time validation: typo rejection ─────────────────────────────────────

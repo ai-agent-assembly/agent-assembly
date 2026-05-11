@@ -86,6 +86,8 @@ enum OpKind {
     Lte,
     Contains,
     StartsWith,
+    In,
+    NotIn,
 }
 
 #[derive(Debug, PartialEq)]
@@ -94,6 +96,7 @@ enum LiteralVal {
     Num(f64),
     Level(GovernanceLevel),
     Tier(aa_core::RiskTier),
+    StrList(Vec<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -117,6 +120,60 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
         // Skip whitespace
         if ch.is_whitespace() {
             chars.next();
+            continue;
+        }
+
+        // List literal: ["item1", "item2", ...]
+        if ch == '[' {
+            chars.next(); // consume '['
+            let mut items: Vec<String> = Vec::new();
+            loop {
+                // skip whitespace
+                while let Some(&c) = chars.peek() {
+                    if c.is_whitespace() {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                match chars.peek() {
+                    Some(&']') => {
+                        chars.next();
+                        break;
+                    }
+                    Some(&'"') => {
+                        chars.next(); // consume opening quote
+                        let mut s = String::new();
+                        loop {
+                            match chars.next() {
+                                Some('"') => break,
+                                Some('\\') => match chars.next() {
+                                    Some('"') => s.push('"'),
+                                    Some('\\') => s.push('\\'),
+                                    Some(c) => {
+                                        s.push('\\');
+                                        s.push(c);
+                                    }
+                                    None => return None,
+                                },
+                                Some(c) => s.push(c),
+                                None => return None,
+                            }
+                        }
+                        items.push(s);
+                        // skip whitespace and optional comma
+                        while let Some(&c) = chars.peek() {
+                            if c.is_whitespace() || c == ',' {
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    _ => return None, // unexpected token in list
+                }
+            }
+            tokens.push(Token::Literal(LiteralVal::StrList(items)));
             continue;
         }
 
@@ -211,6 +268,8 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "Critical" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Critical)),
                 "contains" => Token::Op(OpKind::Contains),
                 "starts_with" => Token::Op(OpKind::StartsWith),
+                "in" => Token::Op(OpKind::In),
+                "not_in" => Token::Op(OpKind::NotIn),
                 other => {
                     // Try to parse as a number
                     if let Ok(n) = other.parse::<f64>() {
@@ -278,7 +337,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -300,7 +359,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -323,7 +382,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -365,7 +424,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -387,7 +446,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -409,7 +468,7 @@ fn eval_clause_safe(
             OpKind::Gte => lhs >= rhs,
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -424,6 +483,16 @@ fn eval_clause_safe(
             },
             _ => return false,
         };
+        if *op == OpKind::In || *op == OpKind::NotIn {
+            if let LiteralVal::StrList(list) = literal {
+                return if *op == OpKind::In {
+                    list.iter().any(|s| s == &team_id)
+                } else {
+                    !list.iter().any(|s| s == &team_id)
+                };
+            }
+            return false;
+        }
         let rhs = match literal {
             LiteralVal::Str(s) => s.as_str(),
             _ => return false,
@@ -447,6 +516,16 @@ fn eval_clause_safe(
             },
             _ => return false,
         };
+        if *op == OpKind::In || *op == OpKind::NotIn {
+            if let LiteralVal::StrList(list) = literal {
+                return if *op == OpKind::In {
+                    list.iter().any(|s| s == &team_id)
+                } else {
+                    !list.iter().any(|s| s == &team_id)
+                };
+            }
+            return false;
+        }
         let rhs = match literal {
             LiteralVal::Str(s) => s.as_str(),
             _ => return false,
@@ -470,6 +549,16 @@ fn eval_clause_safe(
             },
             _ => return false,
         };
+        if *op == OpKind::In || *op == OpKind::NotIn {
+            if let LiteralVal::StrList(list) = literal {
+                return if *op == OpKind::In {
+                    list.iter().any(|s| s == &channel_id)
+                } else {
+                    !list.iter().any(|s| s == &channel_id)
+                };
+            }
+            return false;
+        }
         let rhs = match literal {
             LiteralVal::Str(s) => s.as_str(),
             _ => return false,
@@ -506,7 +595,7 @@ fn eval_clause_safe(
             OpKind::Lt => lhs < rhs,
             OpKind::Lte => lhs <= rhs,
             // String operators do not apply to governance_level.
-            OpKind::Contains | OpKind::StartsWith => false,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
         };
     }
 
@@ -527,6 +616,20 @@ fn eval_clause_safe(
                 false
             }
         }
+        OpKind::In => {
+            if let LiteralVal::StrList(list) = literal {
+                list.iter().any(|s| s.as_str() == lhs)
+            } else {
+                false
+            }
+        }
+        OpKind::NotIn => {
+            if let LiteralVal::StrList(list) = literal {
+                !list.iter().any(|s| s.as_str() == lhs)
+            } else {
+                false
+            }
+        }
         OpKind::Eq => match literal {
             LiteralVal::Num(rhs) => {
                 if let Ok(lhs_num) = lhs.parse::<f64>() {
@@ -536,8 +639,8 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level/tier literal against a non-level/tier field cannot match.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) => false,
+            // A level/tier/list literal against a non-level/tier/list field cannot match.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => false,
         },
         OpKind::Ne => match literal {
             LiteralVal::Num(rhs) => {
@@ -548,9 +651,9 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level/tier literal against a non-level/tier field is unconditionally
+            // A level/tier/list literal against a generic string field is unconditionally
             // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) => true,
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => true,
         },
         OpKind::Gt => {
             let rhs = numeric_literal(literal);
@@ -591,8 +694,8 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     match lit {
         LiteralVal::Num(n) => Some(*n),
         LiteralVal::Str(s) => s.parse::<f64>().ok(),
-        // Level and tier literals never participate in numeric comparisons.
-        LiteralVal::Level(_) | LiteralVal::Tier(_) => None,
+        // Level, tier, and list literals never participate in numeric comparisons.
+        LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => None,
     }
 }
 
@@ -683,6 +786,8 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
         "false",
         "contains",
         "starts_with",
+        "in",
+        "not_in",
         "L0",
         "L1",
         "L2",
@@ -700,6 +805,18 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
         // Skip whitespace and operator chars
         if ch.is_whitespace() || matches!(ch, '<' | '>' | '=' | '!') {
             chars.next();
+            continue;
+        }
+
+        // Skip list literals: [...] — contents are string values, not field names
+        if ch == '[' {
+            chars.next();
+            loop {
+                match chars.next() {
+                    Some(']') | None => break,
+                    _ => {}
+                }
+            }
             continue;
         }
 
@@ -1300,6 +1417,88 @@ mod tests {
         assert!(!evaluate(r#"source.team_id == "team-alpha""#, &msg, None, None));
         assert!(!evaluate(r#"target.team_id == "team-beta""#, &msg, None, None));
         assert!(!evaluate(r#"target.channel_id == "ops""#, &msg, None, None));
+    }
+
+    // ── in / not_in operator tests ────────────────────────────────────────────
+
+    #[test]
+    fn channel_id_in_list_matches_when_present() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"target.channel_id in ["ops", "general"]"#, &msg, None, None));
+    }
+
+    #[test]
+    fn channel_id_in_list_no_match_when_absent() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("private"));
+        assert!(!evaluate(
+            r#"target.channel_id in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn channel_id_not_in_list_no_match_when_in_list() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(!evaluate(
+            r#"target.channel_id not_in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn channel_id_not_in_list_matches_when_not_in_list() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("private"));
+        assert!(evaluate(
+            r#"target.channel_id not_in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn source_team_id_in_list_matches_known_team() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(
+            r#"source.team_id in ["team-alpha", "team-gamma"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn target_team_id_not_in_allows_non_restricted_team() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(
+            r#"target.team_id not_in ["team-restricted"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn in_operator_null_safe_for_non_message_action() {
+        // ToolCall is not a SendMessage; channel_id resolves to None → false.
+        assert!(!evaluate(r#"target.channel_id in ["ops"]"#, &tool("any"), None, None));
+        assert!(!evaluate(
+            r#"target.channel_id not_in ["ops"]"#,
+            &tool("any"),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn in_list_with_empty_list_never_matches() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(!evaluate(r#"target.channel_id in []"#, &msg, None, None));
+        assert!(evaluate(r#"target.channel_id not_in []"#, &msg, None, None));
     }
 
     #[test]
