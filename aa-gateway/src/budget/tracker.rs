@@ -72,7 +72,7 @@ pub struct BudgetTracker {
     pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
     /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
     /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
-    pub(crate) parent_locks: DashMap<AgentId, parking_lot::Mutex<()>>,
+    pub(crate) parent_locks: DashMap<AgentId, std::sync::Arc<parking_lot::Mutex<()>>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -193,13 +193,17 @@ impl BudgetTracker {
         }
     }
 
-    /// Return the `parking_lot::Mutex` entry for `ancestor_id`, creating it if absent.
+    /// Return an `Arc` wrapping the per-ancestor `parking_lot::Mutex`, creating it if absent.
     ///
     /// Callers must acquire these locks in root-down order (ascending depth) to prevent
     /// deadlock when two concurrent callers share overlapping ancestor chains.
-    fn get_or_create_parent_lock(&self, ancestor_id: AgentId) -> dashmap::mapref::one::Ref<'_, AgentId, parking_lot::Mutex<()>> {
-        self.parent_locks.entry(ancestor_id).or_insert_with(|| parking_lot::Mutex::new(()));
-        self.parent_locks.get(&ancestor_id).unwrap()
+    fn get_or_create_parent_lock(&self, ancestor_id: AgentId) -> std::sync::Arc<parking_lot::Mutex<()>> {
+        use std::sync::Arc;
+        self.parent_locks
+            .entry(ancestor_id)
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+            .value()
+            .clone()
     }
 
     /// Return the effective daily or monthly limit for `agent_id`.
@@ -462,6 +466,15 @@ impl BudgetTracker {
         ancestors: &[[u8; 16]],
         amount: Decimal,
     ) -> Result<(), crate::budget::types::BudgetError> {
+        // Acquire per-ancestor locks root-down (ancestors is leaf→root; reverse to get root-first).
+        // Deterministic ordering prevents A-then-B vs B-then-A deadlocks across concurrent calls.
+        let ancestor_arcs: Vec<_> = ancestors
+            .iter()
+            .rev()
+            .map(|&bytes| self.get_or_create_parent_lock(AgentId::from_bytes(bytes)))
+            .collect();
+        let _guards: Vec<_> = ancestor_arcs.iter().map(|arc| arc.lock()).collect();
+
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
 
