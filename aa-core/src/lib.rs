@@ -25,6 +25,7 @@ cfg_if::cfg_if! {
 pub mod agent;
 #[cfg(feature = "alloc")]
 pub mod approval;
+pub mod risk_tier;
 #[cfg(feature = "alloc")]
 pub mod audit;
 #[cfg(feature = "alloc")]
@@ -39,6 +40,7 @@ pub mod time;
 pub mod topology;
 
 pub use dev_tool::GovernanceLevel;
+pub use risk_tier::RiskTier;
 pub use identity::{AgentId, SessionId};
 pub use policy::{FileMode, PolicyDecision, PolicyError};
 
