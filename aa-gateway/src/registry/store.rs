@@ -1516,3 +1516,94 @@ mod cross_mode_integration {
         assert!(reg.get(&root).is_none(), "root must be removed");
     }
 }
+
+#[cfg(test)]
+mod sweep_aged_agents_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn aged_record(id: [u8; 16], team_id: &str, registered_at: chrono::DateTime<chrono::Utc>) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test-agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at,
+            last_heartbeat: registered_at,
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some(team_id.to_owned()),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+        }
+    }
+
+    #[test]
+    fn sweep_deregisters_agent_exceeding_max_age() {
+        let reg = AgentRegistry::new();
+        let id = [1u8; 16];
+        // Agent registered 2 hours ago; max age is 1 hour.
+        let registered_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        let record = aged_record(id, "team-alpha", registered_at);
+        reg.register(record).unwrap();
+        reg.set_team_max_age("team-alpha", 3600); // 1 hour
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert_eq!(evicted.len(), 1, "exactly one agent should be evicted");
+        assert_eq!(evicted[0], id);
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Deregistered);
+    }
+
+    #[test]
+    fn sweep_leaves_young_agent_active() {
+        let reg = AgentRegistry::new();
+        let id = [2u8; 16];
+        // Agent registered 30 minutes ago; max age is 1 hour.
+        let registered_at = chrono::Utc::now() - chrono::Duration::minutes(30);
+        let record = aged_record(id, "team-beta", registered_at);
+        reg.register(record).unwrap();
+        reg.set_team_max_age("team-beta", 3600);
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert!(evicted.is_empty(), "young agent must not be evicted");
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
+    }
+
+    #[test]
+    fn sweep_ignores_agents_without_team_max_age_config() {
+        let reg = AgentRegistry::new();
+        let id = [3u8; 16];
+        let registered_at = chrono::Utc::now() - chrono::Duration::days(365);
+        let record = aged_record(id, "team-gamma", registered_at);
+        reg.register(record).unwrap();
+        // No set_team_max_age call for team-gamma.
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert!(evicted.is_empty(), "unconfigured team must not trigger eviction");
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
+    }
+}
