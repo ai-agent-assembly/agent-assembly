@@ -15,6 +15,15 @@ use crate::budget::{
     types::{BudgetAlert, BudgetState, BudgetStatus},
 };
 
+/// Per-agent daily limit entry stored in `BudgetTracker::agent_limits`.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentLimit {
+    /// Per-day spend cap in USD for this agent.
+    pub daily_usd: Option<Decimal>,
+    /// Per-month spend cap in USD for this agent.
+    pub monthly_usd: Option<Decimal>,
+}
+
 const ALERT_CHANNEL_CAPACITY: usize = 64;
 const ALERT_PCT_HIGH: u8 = 95;
 const ALERT_PCT_LOW: u8 = 80;
@@ -59,6 +68,8 @@ pub struct BudgetTracker {
     team_daily_limit_usd: Option<Decimal>,
     /// Per-team monthly spend limit. Applied to each team independently.
     team_monthly_limit_usd: Option<Decimal>,
+    /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
+    pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -95,6 +106,7 @@ impl BudgetTracker {
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            agent_limits: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -155,6 +167,7 @@ impl BudgetTracker {
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            agent_limits: DashMap::new(),
             alert_tx,
             timezone,
         }
