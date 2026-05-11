@@ -2,6 +2,7 @@
 //!
 //! Entry point: [`validator::PolicyValidator::from_yaml`].
 
+pub(crate) mod context;
 pub mod document;
 pub mod error;
 pub(crate) mod expr;
