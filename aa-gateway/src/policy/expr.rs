@@ -24,6 +24,8 @@ use aa_core::{GovernanceAction, GovernanceLevel};
 
 use crate::policy::context::PolicyContext;
 
+use strsim;
+
 /// All variable names that the expression evaluator recognises.
 ///
 /// Used by load-time validation to catch typos before a policy is ever
@@ -575,6 +577,16 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
     }
 
     names
+}
+
+/// Return the closest entry in `KNOWN_VARIABLES` to `name` when the edit
+/// distance is at most 2, or `None` when no candidate is close enough.
+fn suggest_variable(name: &str) -> Option<&'static str> {
+    KNOWN_VARIABLES
+        .iter()
+        .copied()
+        .filter(|&v| strsim::levenshtein(name, v) <= 2)
+        .min_by_key(|&v| strsim::levenshtein(name, v))
 }
 
 // ---------------------------------------------------------------------------
