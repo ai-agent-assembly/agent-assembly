@@ -70,3 +70,29 @@ pub fn render_team_table(team: &TeamTopology) {
     }
     println!("{table}");
 }
+
+/// Render an agent lineage as a flat comfy-table.
+pub fn render_lineage_table(lineage: &AgentLineage) {
+    println!(
+        "Agent: {}  |  Ancestors: {}\n",
+        lineage.agent_id, lineage.ancestor_count,
+    );
+
+    if lineage.ancestors.is_empty() {
+        println!("No ancestry data.");
+        return;
+    }
+
+    let mut table = Table::new();
+    table.set_header(vec!["DEPTH", "AGENT_ID", "NAME", "TEAM", "DELEGATION_REASON"]);
+    for step in &lineage.ancestors {
+        table.add_row(vec![
+            Cell::new(step.depth),
+            Cell::new(&step.id),
+            Cell::new(&step.name),
+            Cell::new(step.team_id.as_deref().unwrap_or("-")),
+            Cell::new(step.delegation_reason.as_deref().unwrap_or("-")),
+        ]);
+    }
+    println!("{table}");
+}
