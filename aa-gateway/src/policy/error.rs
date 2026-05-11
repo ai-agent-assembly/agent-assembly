@@ -16,6 +16,15 @@ pub enum PolicyParseError {
         /// Human-readable explanation of the failure.
         reason: String,
     },
+    /// An expression references a variable name that is not in the known set.
+    UnknownVariable {
+        /// The unrecognised identifier.
+        name: String,
+        /// Closest known variable within the edit-distance threshold, if any.
+        suggestion: Option<String>,
+        /// Full list of valid variable names.
+        available: Vec<String>,
+    },
 }
 
 impl fmt::Display for PolicyParseError {
@@ -23,6 +32,22 @@ impl fmt::Display for PolicyParseError {
         match self {
             Self::InvalidScope { raw, reason } => {
                 write!(f, "invalid policy scope {:?}: {}", raw, reason)
+            }
+            Self::UnknownVariable {
+                name,
+                suggestion,
+                available,
+            } => {
+                write!(
+                    f,
+                    "unknown variable {:?}; valid variables: {}",
+                    name,
+                    available.join(", ")
+                )?;
+                if let Some(s) = suggestion {
+                    write!(f, "; did you mean {:?}?", s)?;
+                }
+                Ok(())
             }
         }
     }
@@ -138,5 +163,31 @@ mod tests {
     fn validation_warning_display_formatting() {
         let w = ValidationWarning::unknown_key("risk_tier");
         assert_eq!(w.to_string(), "risk_tier — Unknown key 'risk_tier' will be ignored");
+    }
+
+    #[test]
+    fn unknown_variable_display_without_suggestion() {
+        let e = PolicyParseError::UnknownVariable {
+            name: "agent.xyz".into(),
+            suggestion: None,
+            available: vec!["agent.depth".into()],
+        };
+        let s = e.to_string();
+        assert!(s.contains("agent.xyz"));
+        assert!(s.contains("agent.depth"));
+        assert!(!s.contains("did you mean"));
+    }
+
+    #[test]
+    fn unknown_variable_display_with_suggestion() {
+        let e = PolicyParseError::UnknownVariable {
+            name: "agent.depht".into(),
+            suggestion: Some("agent.depth".into()),
+            available: vec!["agent.depth".into()],
+        };
+        let s = e.to_string();
+        assert!(s.contains("agent.depht"));
+        assert!(s.contains("did you mean"));
+        assert!(s.contains("agent.depth"));
     }
 }

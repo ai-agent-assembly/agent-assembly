@@ -37,6 +37,7 @@ reqwest      = { version = "0.12", features = ["json", "rustls-tls"], default-fe
 uuid         = { version = "1", features = ["v4", "v7", "serde"] }
 clap         = { version = "4", features = ["derive"] }
 moka         = { version = "0.12", features = ["sync"] }
+strsim       = "0.11"
 ahash        = "0.8"
 metrics      = "0.24"
 sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
@@ -47,6 +48,7 @@ criterion    = { version = "0.8", features = ["async_tokio"] }
 proptest     = "1"
 tempfile     = "3"
 tokio-stream = "0.1"
+insta        = "1"
 
 [[bin]]
 name = "aa-gateway"

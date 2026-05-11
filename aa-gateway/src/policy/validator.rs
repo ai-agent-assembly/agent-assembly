@@ -374,6 +374,11 @@ impl PolicyValidator {
                         format!("tools.{}.requires_approval_if", name),
                         msg,
                     ));
+                } else if let Err(e) = super::expr::validate_variables(expr) {
+                    errors.push(ValidationError::new(
+                        format!("tools.{}.requires_approval_if", name),
+                        e.to_string(),
+                    ));
                 }
             }
 
@@ -779,7 +784,7 @@ tools:
   bash:
     allow: true
     limit_per_hour: 10
-    requires_approval_if: "amount > 100"
+    requires_approval_if: "agent.depth > 1"
   file_write:
     allow: false
 "#;

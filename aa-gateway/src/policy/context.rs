@@ -100,6 +100,28 @@ impl PolicyContext for FakePolicyContext {
 /// Production code wires this to `AgentRegistry` and `BudgetTracker` via
 /// [`super::super::engine::ProductionPolicyContext`]. Unit tests inject a
 /// `FakePolicyContext` that returns canned values.
+///
+/// # Null-safety semantics
+///
+/// Every getter returns `Option<T>`. When a variable cannot be resolved (the
+/// getter returns `None`), the expression clause that references it
+/// short-circuits to `false`. The effect on the overall policy decision is:
+///
+/// | Clause type          | Variable resolves `Some(_)` | Variable is `None`     |
+/// |----------------------|-----------------------------|------------------------|
+/// | `requires_approval_if` | fires when expression is `true` | **does not fire** |
+/// | `deny` condition     | denies when expression is `true` | **does not deny**  |
+/// | `allow`              | always allows               | always allows          |
+///
+/// In every case an unresolvable variable contributes **nothing** to the
+/// decision: it neither allows nor denies. A request that references an absent
+/// graph-variable is evaluated as if the condition clause were absent from the
+/// policy. This is sometimes called *null-as-no-match* or *fail-open on
+/// missing context*.
+///
+/// The fixture tests in `tests/graph_vars_fixture_test.rs` snapshot the
+/// `PolicyDecision` produced for each variable in both the null and non-null
+/// paths to guard against accidental semantics changes.
 pub trait PolicyContext: Send + Sync {
     /// Delegation depth of the current agent (0 = root).
     fn agent_depth(&self) -> Option<u32>;

@@ -1,0 +1,4 @@
+scope: global
+tools:
+  deploy:
+    allow: false

@@ -1,0 +1,6 @@
+---
+source: aa-gateway/tests/graph_vars_fixture_test.rs
+assertion_line: 188
+expression: result
+---
+Allow

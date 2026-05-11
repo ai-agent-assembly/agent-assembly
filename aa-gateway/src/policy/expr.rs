@@ -24,6 +24,29 @@ use aa_core::{GovernanceAction, GovernanceLevel};
 
 use crate::policy::context::PolicyContext;
 
+use strsim;
+
+/// All variable names that the expression evaluator recognises.
+///
+/// Used by load-time validation to catch typos before a policy is ever
+/// evaluated.  Any identifier in a `requires_approval_if` expression that is
+/// not in this list and is not a combinator, operator, governance-level literal,
+/// or numeric literal will be rejected with
+/// [`PolicyParseError::UnknownVariable`](crate::policy::error::PolicyParseError::UnknownVariable).
+pub(crate) const KNOWN_VARIABLES: &[&str] = &[
+    "tool",
+    "path",
+    "url",
+    "method",
+    "command",
+    "governance_level",
+    "agent.depth",
+    "team.active_agents",
+    "team.budget_remaining",
+    "child.tool",
+    "parent.risk_tier",
+];
+
 // ---------------------------------------------------------------------------
 // Internal token types
 // ---------------------------------------------------------------------------
@@ -494,8 +517,111 @@ fn eval_tokens(
 }
 
 // ---------------------------------------------------------------------------
+// Variable extraction for load-time validation
+// ---------------------------------------------------------------------------
+
+/// Extract every identifier-like word from `expr` that could be a field
+/// reference (skipping quoted strings, numeric literals, and combinators).
+///
+/// Used by [`validate_variables`] to find unknown variable names without
+/// running the full tokenizer.
+pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
+    const SKIP_WORDS: &[&str] = &[
+        "AND",
+        "OR",
+        "true",
+        "false",
+        "contains",
+        "starts_with",
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+    ];
+
+    let mut names = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        // Skip whitespace and operator chars
+        if ch.is_whitespace() || matches!(ch, '<' | '>' | '=' | '!') {
+            chars.next();
+            continue;
+        }
+
+        // Skip quoted string literals
+        if ch == '"' {
+            chars.next();
+            loop {
+                match chars.next() {
+                    Some('"') | None => break,
+                    Some('\\') => {
+                        chars.next();
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+
+        // Collect word token (letters, digits, underscore, hyphen, dot)
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            let mut word = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+                    word.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // Skip combinators, boolean keywords, and numeric literals
+            if SKIP_WORDS.contains(&word.as_str()) || word.parse::<f64>().is_ok() {
+                continue;
+            }
+            names.push(word);
+            continue;
+        }
+
+        chars.next();
+    }
+
+    names
+}
+
+/// Return the closest entry in `KNOWN_VARIABLES` to `name` when the edit
+/// distance is at most 2, or `None` when no candidate is close enough.
+fn suggest_variable(name: &str) -> Option<&'static str> {
+    KNOWN_VARIABLES
+        .iter()
+        .copied()
+        .filter(|&v| strsim::levenshtein(name, v) <= 2)
+        .min_by_key(|&v| strsim::levenshtein(name, v))
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
+
+/// Validate that every identifier in `expr` is a member of [`KNOWN_VARIABLES`].
+///
+/// Returns [`PolicyParseError::UnknownVariable`] on the first unknown name
+/// found, with a typo suggestion when the Levenshtein distance to the closest
+/// known variable is ≤ 2.
+pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
+    for name in extract_field_names(expr) {
+        if !KNOWN_VARIABLES.contains(&name.as_str()) {
+            let suggestion = suggest_variable(&name).map(str::to_owned);
+            let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
+            return Err(crate::policy::error::PolicyParseError::UnknownVariable {
+                name,
+                suggestion,
+                available,
+            });
+        }
+    }
+    Ok(())
+}
 
 /// Validate that every `governance_level` literal in `expr` is one of the
 /// four known levels (L0..L3).
@@ -815,6 +941,49 @@ mod tests {
     fn null_safety_returns_false_when_no_context() {
         // No context at all: graph-aware field must not fire (fail-closed → no-match).
         assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
+    }
+
+    // ── validate_variables tests ──────────────────────────────────────────
+
+    #[test]
+    fn validate_variables_accepts_known_variable() {
+        assert!(validate_variables("agent.depth > 2").is_ok());
+        assert!(validate_variables("team.active_agents == 5").is_ok());
+        assert!(validate_variables("child.tool == \"bash\"").is_ok());
+    }
+
+    #[test]
+    fn validate_variables_rejects_unknown_variable() {
+        let err = validate_variables("agent.xyz > 0").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("agent.xyz"), "message should name the unknown var: {msg}");
+        assert!(msg.contains("agent.depth"), "message should list known vars: {msg}");
+    }
+
+    #[test]
+    fn validate_variables_suggests_typo_correction() {
+        let err = validate_variables("agent.depht > 0").unwrap_err();
+        match err {
+            crate::policy::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+                assert_eq!(name, "agent.depht");
+                assert_eq!(suggestion.as_deref(), Some("agent.depth"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_variables_no_suggestion_when_too_different() {
+        let err = validate_variables("completely_unknown > 0").unwrap_err();
+        match err {
+            crate::policy::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
+                assert!(
+                    suggestion.is_none(),
+                    "should not suggest a match for a very different name"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
