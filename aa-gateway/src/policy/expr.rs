@@ -987,6 +987,58 @@ mod tests {
         assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
     }
 
+    // ── risk tier tests ──────────────────────────────────────────────────
+
+    fn fake_tier_ctx(
+        agent: Option<aa_core::RiskTier>,
+        parent: Option<aa_core::RiskTier>,
+    ) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: agent,
+            parent_risk_tier: parent,
+        }
+    }
+
+    #[test]
+    fn agent_risk_tier_eq_matches_same_tier() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Medium), None);
+        assert!(evaluate("agent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_risk_tier_eq_no_match_different_tier() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Low), None);
+        assert!(!evaluate("agent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_risk_tier_gt_detects_escalation() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::High), Some(aa_core::RiskTier::Medium));
+        // agent is High, parent is Medium → child tier > parent tier
+        assert!(evaluate("agent.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn parent_risk_tier_eq_matches() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::High), Some(aa_core::RiskTier::Medium));
+        assert!(evaluate("parent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn parent_risk_tier_returns_false_when_no_parent() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Low), None);
+        assert!(!evaluate("parent.risk_tier == Low", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn risk_tier_null_safe_no_context() {
+        assert!(!evaluate("agent.risk_tier == High", &tool("any"), None, None));
+    }
+
     // ── validate_variables tests ──────────────────────────────────────────
 
     #[test]
