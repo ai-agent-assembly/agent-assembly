@@ -1070,6 +1070,38 @@ mod tests {
         assert_eq!(result.agents_counted, 1);
     }
 
+    #[test]
+    fn subtree_spend_three_deep_seven_node_tree_returns_correct_total() {
+        // root → child_a, child_b; child_a → gc1, gc2; child_b → gc3, gc4
+        let root = agent(81);
+        let child_a = agent(82);
+        let child_b = agent(83);
+        let gc1 = agent(84);
+        let gc2 = agent(85);
+        let gc3 = agent(86);
+        let gc4 = agent(87);
+
+        let t = new_tracker();
+        // Record $1 each for every node.
+        let one: Decimal = "1.00".parse().unwrap();
+        for &a in &[root, child_a, child_b, gc1, gc2, gc3, gc4] {
+            t.record_raw_spend(a, None, one);
+        }
+
+        let descendants = [
+            *child_a.as_bytes(),
+            *child_b.as_bytes(),
+            *gc1.as_bytes(),
+            *gc2.as_bytes(),
+            *gc3.as_bytes(),
+            *gc4.as_bytes(),
+        ];
+        let result = t.subtree_spend(&root, &descendants);
+        let expected: Decimal = "7.00".parse().unwrap();
+        assert_eq!(result.usd, expected);
+        assert_eq!(result.agents_counted, 7);
+    }
+
     // ── check_and_decrement (AAASM-1023) ───────────────────────────────
 
     #[test]
