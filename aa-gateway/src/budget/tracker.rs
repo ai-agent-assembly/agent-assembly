@@ -1025,6 +1025,33 @@ mod tests {
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
     }
 
+    // ── check_and_decrement (AAASM-1023) ───────────────────────────────
+
+    #[test]
+    fn check_and_decrement_linear_chain_all_sufficient_decrements_all_levels() {
+        // root → child → grandchild; each has a $10 daily limit.
+        // Spend $1 for grandchild — should propagate to child and root.
+        let root = agent(70);
+        let child = agent(71);
+        let grandchild = agent(72);
+
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_agent_limit(root, Some("10.00".parse().unwrap()), None)
+            .with_agent_limit(child, Some("10.00".parse().unwrap()), None)
+            .with_agent_limit(grandchild, Some("10.00".parse().unwrap()), None);
+
+        // ancestors_of(grandchild) → [child, root]
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let amount: Decimal = "1.00".parse().unwrap();
+
+        t.check_and_decrement(grandchild, &ancestors, amount).unwrap();
+
+        // All three entries must reflect the $1 spend.
+        assert_eq!(t.per_agent.get(&grandchild).unwrap().spent_usd, amount);
+        assert_eq!(t.per_agent.get(&child).unwrap().spent_usd, amount);
+        assert_eq!(t.per_agent.get(&root).unwrap().spent_usd, amount);
+    }
+
     #[test]
     fn team_monthly_80_pct_fires_alert_with_team_id() {
         let t = tracker_with_team_monthly_limit("10.00");
