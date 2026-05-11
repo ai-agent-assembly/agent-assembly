@@ -155,4 +155,30 @@ mod tests {
         let w = ValidationWarning::unknown_key("risk_tier");
         assert_eq!(w.to_string(), "risk_tier — Unknown key 'risk_tier' will be ignored");
     }
+
+    #[test]
+    fn unknown_variable_display_without_suggestion() {
+        let e = PolicyParseError::UnknownVariable {
+            name: "agent.xyz".into(),
+            suggestion: None,
+            available: vec!["agent.depth".into()],
+        };
+        let s = e.to_string();
+        assert!(s.contains("agent.xyz"));
+        assert!(s.contains("agent.depth"));
+        assert!(!s.contains("did you mean"));
+    }
+
+    #[test]
+    fn unknown_variable_display_with_suggestion() {
+        let e = PolicyParseError::UnknownVariable {
+            name: "agent.depht".into(),
+            suggestion: Some("agent.depth".into()),
+            available: vec!["agent.depth".into()],
+        };
+        let s = e.to_string();
+        assert!(s.contains("agent.depht"));
+        assert!(s.contains("did you mean"));
+        assert!(s.contains("agent.depth"));
+    }
 }

@@ -248,6 +248,7 @@ mod tests {
                     expected_substring
                 );
             }
+            other => panic!("unexpected error variant: {other:?}"),
         }
     }
 
