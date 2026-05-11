@@ -158,3 +158,39 @@ async fn team_returns_success() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+// ── topology lineage ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn lineage_returns_success() {
+    let server = MockServer::start().await;
+
+    let agent_id = "aabbccdd00112233aabbccdd00112233";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/lineage/{agent_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "agent_id": agent_id,
+            "ancestor_count": 2,
+            "ancestors": [
+                {"id": "root0000000000000000000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null},
+                {"id": agent_id, "name": "child", "depth": 1, "delegation_reason": "orchestrate", "team_id": "team-alpha"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::lineage::LineageArgs {
+            agent_id: agent_id.to_string(),
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
