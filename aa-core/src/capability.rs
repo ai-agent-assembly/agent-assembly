@@ -143,6 +143,7 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
         } => Some(Capability::FileWrite),
         GovernanceAction::NetworkRequest { .. } => Some(Capability::NetworkOutbound),
         GovernanceAction::ProcessExec { .. } => Some(Capability::TerminalExec),
+        GovernanceAction::SendMessage { .. } => None,
     }
 }
 
