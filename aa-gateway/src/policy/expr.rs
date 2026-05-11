@@ -645,7 +645,12 @@ mod tests {
 
     #[test]
     fn or_combinator_first_true() {
-        assert!(evaluate(r#"tool == "x" OR tool == "search""#, &tool("search"), None, None));
+        assert!(evaluate(
+            r#"tool == "x" OR tool == "search""#,
+            &tool("search"),
+            None,
+            None
+        ));
     }
 
     #[test]

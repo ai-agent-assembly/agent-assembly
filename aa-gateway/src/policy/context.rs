@@ -25,7 +25,12 @@ impl<'a> ProductionPolicyContext<'a> {
         agent_key: [u8; 16],
         team_id: Option<String>,
     ) -> Self {
-        Self { registry, budget, agent_key, team_id }
+        Self {
+            registry,
+            budget,
+            agent_key,
+            team_id,
+        }
     }
 }
 

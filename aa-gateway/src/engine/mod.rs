@@ -505,8 +505,7 @@ impl PolicyEngine {
                 ctx.team_id.clone(),
             )
         });
-        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
-            pctx.as_ref().map(|c| c as _);
+        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
 
         let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
