@@ -403,6 +403,7 @@ impl PolicyEngine {
             aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
             aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
             aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
+            aa_core::GovernanceAction::SendMessage { .. } => "",
         };
 
         let scan = self.scanner.scan(text);
@@ -589,6 +590,7 @@ impl PolicyEngine {
             aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
             aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
             aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
+            aa_core::GovernanceAction::SendMessage { .. } => "",
         };
         let scan = self.scanner.scan(text);
         let mut all_findings = scan.findings;

@@ -62,6 +62,16 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
             "exec".hash(&mut h);
             command.hash(&mut h);
         }
+        aa_core::GovernanceAction::SendMessage {
+            source_team_id,
+            target_team_id,
+            channel_id,
+        } => {
+            "msg".hash(&mut h);
+            source_team_id.hash(&mut h);
+            target_team_id.hash(&mut h);
+            channel_id.hash(&mut h);
+        }
     }
     h.finish()
 }

@@ -1,0 +1,5 @@
+scope: global
+tools:
+  message:
+    allow: true
+    requires_approval_if: "target.channel_id not_in [\"ops\", \"general\"]"
