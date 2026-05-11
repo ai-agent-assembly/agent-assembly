@@ -96,3 +96,12 @@ pub struct TopologyStats {
     pub orphan_count: usize,
     pub avg_children_per_parent: f64,
 }
+
+/// Union of all topology API response shapes for rendering.
+pub enum TopologyPayload<'a> {
+    Overview(&'a TopologyOverview),
+    Tree(&'a AgentTree),
+    Team(&'a TeamTopology),
+    Lineage(&'a AgentLineage),
+    Stats(&'a TopologyStats),
+}
