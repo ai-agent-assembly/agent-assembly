@@ -233,3 +233,86 @@ async fn stats_returns_success() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+// ── topology tree error paths ─────────────────────────────────────────
+
+#[tokio::test]
+async fn tree_404_returns_exit_code_4() {
+    let server = MockServer::start().await;
+
+    let agent_id = "deadbeefdeadbeefdeadbeefdeadbeef";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/tree/{agent_id}")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::tree::TreeArgs {
+            agent_id: agent_id.to_string(),
+            depth: None,
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::tree::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::from(4u8));
+}
+
+#[tokio::test]
+async fn tree_422_returns_exit_code_5() {
+    let server = MockServer::start().await;
+
+    let agent_id = "cafebabecafebabecafebabecafebabe";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/tree/{agent_id}")))
+        .respond_with(ResponseTemplate::new(422))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::tree::TreeArgs {
+            agent_id: agent_id.to_string(),
+            depth: None,
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::tree::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::from(5u8));
+}
+
+#[tokio::test]
+async fn tree_depth_zero_returns_failure_without_http_call() {
+    let server = MockServer::start().await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::tree::TreeArgs {
+            agent_id: "anyagentid".to_string(),
+            depth: Some(0),
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::tree::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::FAILURE);
+}
