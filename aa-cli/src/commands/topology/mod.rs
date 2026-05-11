@@ -1,6 +1,11 @@
 //! `aasm topology` — visualize agent topology and lineage.
 
+use std::process::ExitCode;
+
 use clap::{Args, Subcommand};
+
+use crate::config::ResolvedContext;
+use crate::output::OutputFormat;
 
 pub mod lineage;
 pub mod overview;
@@ -29,4 +34,15 @@ pub enum TopologyCommands {
     Lineage(lineage::LineageArgs),
     /// Show aggregate topology statistics.
     Stats(stats::StatsArgs),
+}
+
+/// Dispatch a topology subcommand.
+pub fn dispatch(args: TopologyArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
+    match args.command {
+        TopologyCommands::Overview(a) => overview::run(a, ctx, output),
+        TopologyCommands::Tree(a) => tree::run(a, ctx, output),
+        TopologyCommands::Team(a) => team::run(a, ctx, output),
+        TopologyCommands::Lineage(a) => lineage::run(a, ctx, output),
+        TopologyCommands::Stats(a) => stats::run(a, ctx, output),
+    }
 }
