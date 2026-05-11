@@ -7,6 +7,7 @@ use clap::Args;
 use super::render::{render, AgentLineage, TopologyPayload};
 use crate::client;
 use crate::config::ResolvedContext;
+use crate::error::CliError;
 use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology lineage`.
@@ -23,6 +24,10 @@ pub fn run(args: LineageArgs, ctx: &ResolvedContext, output: OutputFormat) -> Ex
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let lineage: AgentLineage = match rt.block_on(client::get_json(ctx, &path)) {
         Ok(v) => v,
+        Err(CliError::Api(ref e)) if e.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+            eprintln!("error: agent {} not found", args.agent_id);
+            return ExitCode::from(4u8);
+        }
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
