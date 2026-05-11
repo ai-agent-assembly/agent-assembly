@@ -40,7 +40,12 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     }
 
     fn team_budget_remaining(&self) -> Option<f64> {
-        todo!("AAASM-1032: implement via BudgetTracker::team_state")
+        let team_id = self.team_id.as_deref()?;
+        let state = self.budget.team_state(team_id)?;
+        let limit = self.budget.monthly_limit_usd()?;
+        let spent = state.monthly_spent_usd.unwrap_or(state.spent_usd);
+        let remaining = (limit - spent).max(rust_decimal::Decimal::ZERO);
+        remaining.to_f64()
     }
 
     fn child_tools(&self) -> Vec<String> {
