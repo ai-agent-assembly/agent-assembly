@@ -38,6 +38,8 @@ enum FieldRef {
     TeamActiveAgents,
     TeamBudgetRemaining,
     ChildTool,
+    /// Phase B stub — real resolution wired in AAASM-1024.
+    ParentRiskTier,
 }
 
 #[derive(Debug, PartialEq)]
