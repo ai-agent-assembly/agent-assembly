@@ -15,6 +15,15 @@ use crate::budget::{
     types::{BudgetAlert, BudgetState, BudgetStatus},
 };
 
+/// Per-agent daily limit entry stored in `BudgetTracker::agent_limits`.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentLimit {
+    /// Per-day spend cap in USD for this agent.
+    pub daily_usd: Option<Decimal>,
+    /// Per-month spend cap in USD for this agent.
+    pub monthly_usd: Option<Decimal>,
+}
+
 const ALERT_CHANNEL_CAPACITY: usize = 64;
 const ALERT_PCT_HIGH: u8 = 95;
 const ALERT_PCT_LOW: u8 = 80;
@@ -59,6 +68,8 @@ pub struct BudgetTracker {
     team_daily_limit_usd: Option<Decimal>,
     /// Per-team monthly spend limit. Applied to each team independently.
     team_monthly_limit_usd: Option<Decimal>,
+    /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
+    pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -95,6 +106,7 @@ impl BudgetTracker {
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            agent_limits: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -109,6 +121,17 @@ impl BudgetTracker {
     /// Set the per-team monthly spend limit in USD. Enforced in `record_cost` for every team.
     pub fn with_team_monthly_limit(mut self, limit: Decimal) -> Self {
         self.team_monthly_limit_usd = Some(limit);
+        self
+    }
+
+    /// Register a per-agent daily and/or monthly spend cap.
+    ///
+    /// Used by `check_and_decrement` to validate per-agent limits before committing
+    /// ancestor decrements. `daily_usd` and `monthly_usd` may each be `None` to
+    /// leave that window unconstrained for this specific agent.
+    pub fn with_agent_limit(self, agent_id: AgentId, daily_usd: Option<Decimal>, monthly_usd: Option<Decimal>) -> Self {
+        self.agent_limits
+            .insert(agent_id, AgentLimit { daily_usd, monthly_usd });
         self
     }
 
@@ -155,8 +178,30 @@ impl BudgetTracker {
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            agent_limits: DashMap::new(),
             alert_tx,
             timezone,
+        }
+    }
+
+    /// Return the effective daily or monthly limit for `agent_id`.
+    ///
+    /// Checks `agent_limits` first, then falls back to the global tracker limits.
+    /// Returns `None` when neither per-agent nor global limit is configured for `kind`.
+    fn resolve_limit(&self, agent_id: &AgentId, kind: crate::budget::types::BudgetKind) -> Option<Decimal> {
+        use crate::budget::types::BudgetKind;
+        match kind {
+            BudgetKind::Daily => self
+                .agent_limits
+                .get(agent_id)
+                .and_then(|l| l.daily_usd)
+                .or(self.daily_limit_usd),
+            BudgetKind::Monthly => self
+                .agent_limits
+                .get(agent_id)
+                .and_then(|l| l.monthly_usd)
+                .or(self.monthly_limit_usd),
+            BudgetKind::Global => None,
         }
     }
 
@@ -348,6 +393,89 @@ impl BudgetTracker {
             },
             Some(limit) => self.check_limit_and_alert(agent_id, None, spent, limit),
         }
+    }
+
+    /// Check all ancestor budgets without mutating any state.
+    ///
+    /// `ancestors` is the chain returned by `AgentRegistry::ancestors_of` — first element
+    /// is the direct parent, last is the root. Returns the first exhausted ancestor as
+    /// `Err(BudgetError::AncestorBudgetExhausted)` so the caller can fast-fail without
+    /// applying any spend.
+    ///
+    /// This is Phase 1 of the two-phase commit used by `check_and_decrement`.
+    fn preflight_ancestors(
+        &self,
+        ancestors: &[[u8; 16]],
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        let today = today_in_tz(self.timezone);
+        for &ancestor_bytes in ancestors {
+            let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Daily) {
+                let spent = self
+                    .per_agent
+                    .get(&ancestor_id)
+                    .map(|s| {
+                        let mut copy = s.clone();
+                        copy.maybe_reset(today);
+                        copy.spent_usd
+                    })
+                    .unwrap_or(Decimal::ZERO);
+                if spent + amount > limit {
+                    return Err(BudgetError::AncestorBudgetExhausted {
+                        ancestor_id: ancestor_bytes,
+                        kind: BudgetKind::Daily,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically check all ancestor budgets then record spend for `agent_id` and every ancestor.
+    ///
+    /// Callers supply `ancestors` from `AgentRegistry::ancestors_of(agent_id)` so this method
+    /// does not require a registry reference. Returns `Err` without touching any `per_agent`
+    /// entry if Phase 1 detects an exhausted ancestor.
+    pub fn check_and_decrement(
+        &self,
+        agent_id: AgentId,
+        ancestors: &[[u8; 16]],
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        // Phase 1: preflight — verify all ancestors have headroom.
+        self.preflight_ancestors(ancestors, amount)?;
+
+        // Phase 2: commit — record spend on the agent and every ancestor.
+        let today = today_in_tz(self.timezone);
+        self.per_agent
+            .entry(agent_id)
+            .and_modify(|s| {
+                s.maybe_reset(today);
+                s.spent_usd += amount;
+            })
+            .or_insert_with(|| {
+                let mut s = BudgetState::new_for_date(today);
+                s.spent_usd = amount;
+                s
+            });
+        for &ancestor_bytes in ancestors {
+            let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            self.per_agent
+                .entry(ancestor_id)
+                .and_modify(|s| {
+                    s.maybe_reset(today);
+                    s.spent_usd += amount;
+                })
+                .or_insert_with(|| {
+                    let mut s = BudgetState::new_for_date(today);
+                    s.spent_usd = amount;
+                    s
+                });
+        }
+
+        Ok(())
     }
 
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
@@ -891,6 +1019,101 @@ mod tests {
         let alert = rx.try_recv().expect("expected 95% team alert");
         assert_eq!(alert.threshold_pct, 95);
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
+    }
+
+    // ── check_and_decrement (AAASM-1023) ───────────────────────────────
+
+    #[test]
+    fn check_and_decrement_linear_chain_all_sufficient_decrements_all_levels() {
+        // root → child → grandchild; each has a $10 daily limit.
+        // Spend $1 for grandchild — should propagate to child and root.
+        let root = agent(70);
+        let child = agent(71);
+        let grandchild = agent(72);
+
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_agent_limit(root, Some("10.00".parse().unwrap()), None)
+            .with_agent_limit(child, Some("10.00".parse().unwrap()), None)
+            .with_agent_limit(grandchild, Some("10.00".parse().unwrap()), None);
+
+        // ancestors_of(grandchild) → [child, root]
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let amount: Decimal = "1.00".parse().unwrap();
+
+        t.check_and_decrement(grandchild, &ancestors, amount).unwrap();
+
+        // All three entries must reflect the $1 spend.
+        assert_eq!(t.per_agent.get(&grandchild).unwrap().spent_usd, amount);
+        assert_eq!(t.per_agent.get(&child).unwrap().spent_usd, amount);
+        assert_eq!(t.per_agent.get(&root).unwrap().spent_usd, amount);
+    }
+
+    #[test]
+    fn check_and_decrement_ancestor_exhausted_blocks_all_decrements() {
+        // root has a $5 daily limit and is already at $5. Spending $1 more must be rejected.
+        // The child and grandchild entries must remain untouched.
+        let root = agent(73);
+        let child = agent(74);
+        let grandchild = agent(75);
+
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_agent_limit(root, Some("5.00".parse().unwrap()), None)
+            .with_agent_limit(child, Some("50.00".parse().unwrap()), None);
+
+        // Pre-seed root at exactly its limit.
+        t.per_agent
+            .entry(root)
+            .or_insert_with(|| BudgetState::new_for_date(today_in_tz(chrono_tz::UTC)))
+            .spent_usd = "5.00".parse().unwrap();
+
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let result = t.check_and_decrement(grandchild, &ancestors, "1.00".parse().unwrap());
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::budget::types::BudgetError::AncestorBudgetExhausted { .. })
+            ),
+            "expected AncestorBudgetExhausted, got: {:?}",
+            result
+        );
+        // Child and grandchild entries must not have been created or modified.
+        assert!(t.per_agent.get(&child).is_none());
+        assert!(t.per_agent.get(&grandchild).is_none());
+    }
+
+    #[test]
+    fn check_and_decrement_concurrent_calls_preserve_sum_invariant() {
+        // 100 concurrent calls of $0.10 each → root entry must end at exactly $10.00.
+        use std::sync::Arc;
+        let root = AgentId::from_bytes([0xA0u8; 16]);
+        let child = AgentId::from_bytes([0xB0u8; 16]);
+
+        let t = Arc::new(
+            BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                .with_agent_limit(root, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child, Some("1000.00".parse().unwrap()), None),
+        );
+
+        let ancestors = vec![*child.as_bytes(), *root.as_bytes()];
+        let amount: Decimal = "0.10".parse().unwrap();
+
+        let mut handles = Vec::new();
+        for n in 0u8..100 {
+            let t2 = Arc::clone(&t);
+            let anc = ancestors.clone();
+            handles.push(std::thread::spawn(move || {
+                let leaf = AgentId::from_bytes([0xC0u8 | (n % 64), n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                t2.check_and_decrement(leaf, &anc, amount).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+        let expected: Decimal = "10.00".parse().unwrap();
+        assert_eq!(root_spent, expected, "root must accumulate all 100 × $0.10");
     }
 
     #[test]

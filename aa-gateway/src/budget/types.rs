@@ -31,6 +31,30 @@ pub enum Model {
     CommandR,
 }
 
+/// Discriminates which budget window a limit or check applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BudgetKind {
+    /// Per-calendar-day spend window, reset at midnight in the configured timezone.
+    Daily,
+    /// Per-calendar-month spend window, reset on the first of each month.
+    Monthly,
+    /// Aggregate across all windows (used for subtree-level checks).
+    Global,
+}
+
+/// Error returned by [`super::tracker::BudgetTracker::check_and_decrement`].
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum BudgetError {
+    /// An ancestor agent's budget is exhausted; the spend was not applied to any node.
+    #[error("ancestor {ancestor_id:?} budget exhausted ({kind:?})")]
+    AncestorBudgetExhausted {
+        /// The ancestor agent whose budget was exceeded.
+        ancestor_id: [u8; 16],
+        /// Which window (daily/monthly/global) was exhausted.
+        kind: BudgetKind,
+    },
+}
+
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetStatus {
