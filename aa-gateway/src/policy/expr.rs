@@ -549,11 +549,16 @@ fn eval_clause_safe(
         };
     }
 
-    // agent.parent_id — string comparison against the current agent's parent agent ID.
-    // Returns false when the agent has no parent (null-safe no-match).
-    if let FieldRef::AgentParentId = field {
-        let parent_id = match policy_ctx.and_then(|c| c.agent_parent_id()) {
-            Some(id) => id,
+    // agent.parent_id / agent.team_id — string comparison against an agent identity field.
+    // Returns false when the field resolves to None (null-safe no-match).
+    if matches!(field, FieldRef::AgentParentId | FieldRef::AgentTeamId) {
+        let val = match field {
+            FieldRef::AgentParentId => policy_ctx.and_then(|c| c.agent_parent_id()),
+            FieldRef::AgentTeamId => policy_ctx.and_then(|c| c.agent_team_id()),
+            _ => unreachable!(),
+        };
+        let id = match val {
+            Some(v) => v,
             None => return false,
         };
         let rhs = match literal {
@@ -561,30 +566,10 @@ fn eval_clause_safe(
             _ => return false,
         };
         return match op {
-            OpKind::Eq => parent_id == rhs,
-            OpKind::Ne => parent_id != rhs,
-            OpKind::Contains => parent_id.contains(rhs),
-            OpKind::StartsWith => parent_id.starts_with(rhs),
-            _ => false,
-        };
-    }
-
-    // agent.team_id — string comparison against the current agent's team ID.
-    // Returns false when the agent has no team (null-safe no-match).
-    if let FieldRef::AgentTeamId = field {
-        let team_id = match policy_ctx.and_then(|c| c.agent_team_id()) {
-            Some(id) => id,
-            None => return false,
-        };
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => team_id == rhs,
-            OpKind::Ne => team_id != rhs,
-            OpKind::Contains => team_id.contains(rhs),
-            OpKind::StartsWith => team_id.starts_with(rhs),
+            OpKind::Eq => id == rhs,
+            OpKind::Ne => id != rhs,
+            OpKind::Contains => id.contains(rhs),
+            OpKind::StartsWith => id.starts_with(rhs),
             _ => false,
         };
     }
@@ -611,42 +596,33 @@ fn eval_clause_safe(
         };
     }
 
-    // agent.is_root — boolean (0/1) indicating whether the agent is a root agent
-    // (depth == 0). Supports only Eq and Ne against numeric 1 or 0.
-    // Returns false when the agent is not found in the registry (null-safe no-match).
-    if let FieldRef::AgentIsRoot = field {
-        let depth = match policy_ctx.and_then(|c| c.agent_depth()) {
-            Some(d) => d,
+    // agent.is_root / agent.is_leaf — boolean (0/1) topology flags.
+    // is_root fires when depth == 0; is_leaf fires when children_count == 0.
+    // Only Eq/Ne against numeric 1 or 0 are meaningful; other ops return false.
+    // Returns false when the backing data is unavailable (null-safe no-match).
+    if matches!(field, FieldRef::AgentIsRoot | FieldRef::AgentIsLeaf) {
+        let flag: Option<bool> = match field {
+            FieldRef::AgentIsRoot => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d == 0),
+            FieldRef::AgentIsLeaf => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n == 0),
+            _ => unreachable!(),
+        };
+        let lhs = match flag {
+            Some(v) => {
+                if v {
+                    1.0_f64
+                } else {
+                    0.0_f64
+                }
+            }
             None => return false,
         };
-        let is_root = if depth == 0 { 1.0_f64 } else { 0.0_f64 };
         let rhs = match numeric_literal(literal) {
             Some(r) => r,
             None => return false,
         };
         return match op {
-            OpKind::Eq => is_root == rhs,
-            OpKind::Ne => is_root != rhs,
-            _ => false,
-        };
-    }
-
-    // agent.is_leaf — boolean (0/1) indicating whether the agent has no children
-    // (children_count == 0). Supports only Eq and Ne against numeric 1 or 0.
-    // Returns false when the agent is not found in the registry (null-safe no-match).
-    if let FieldRef::AgentIsLeaf = field {
-        let count = match policy_ctx.and_then(|c| c.agent_children_count()) {
-            Some(n) => n,
-            None => return false,
-        };
-        let is_leaf = if count == 0 { 1.0_f64 } else { 0.0_f64 };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => is_leaf == rhs,
-            OpKind::Ne => is_leaf != rhs,
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
             _ => false,
         };
     }
