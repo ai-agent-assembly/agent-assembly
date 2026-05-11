@@ -1198,6 +1198,23 @@ mod tests {
     }
 
     #[test]
+    fn null_safety_non_message_action_returns_false_for_message_fields() {
+        // A ToolCall is not a SendMessage; message field conditions must not fire.
+        assert!(!evaluate(r#"source.team_id == "team-alpha""#, &tool("any"), None, None));
+        assert!(!evaluate(r#"target.team_id == "team-beta""#, &tool("any"), None, None));
+        assert!(!evaluate(r#"target.channel_id == "ops""#, &tool("any"), None, None));
+    }
+
+    #[test]
+    fn null_safety_none_fields_in_send_message_return_false() {
+        // All three fields are None → conditions must not fire (null-safe no-match).
+        let msg = send_message(None, None, None);
+        assert!(!evaluate(r#"source.team_id == "team-alpha""#, &msg, None, None));
+        assert!(!evaluate(r#"target.team_id == "team-beta""#, &msg, None, None));
+        assert!(!evaluate(r#"target.channel_id == "ops""#, &msg, None, None));
+    }
+
+    #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
         // same level — covering all four members of the `GovernanceLevel`
