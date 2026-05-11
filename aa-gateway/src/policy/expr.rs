@@ -485,6 +485,29 @@ fn eval_clause_safe(
         };
     }
 
+    // agent.age — numeric (seconds) comparison against the current agent's age since registration.
+    // Compares the agent's age in seconds against a Duration literal (e.g. `24h` = 86400s).
+    // Returns false (null-safe no-match) when context or registry lookup is absent.
+    if let FieldRef::AgentAge = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_age_secs()) {
+            Some(age) => age as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
     // source.team_id — string equality against the sending agent's team ID.
     // Returns false (null-safe no-match) when the action is not SendMessage or
     // the source_team_id field is None.
