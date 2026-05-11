@@ -1140,6 +1140,51 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn cross_ancestor_lock_ordering_completes_without_deadlock() {
+        // Two agent trees share the same root ancestor. Concurrent check_and_decrement
+        // calls for each tree must not deadlock due to the root-down lock ordering.
+        use std::sync::Arc;
+
+        let root = AgentId::from_bytes([0xF0u8; 16]);
+        let child_a = AgentId::from_bytes([0xF1u8; 16]);
+        let child_b = AgentId::from_bytes([0xF2u8; 16]);
+
+        let t = Arc::new(
+            BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                .with_agent_limit(root, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child_a, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child_b, Some("1000.00".parse().unwrap()), None),
+        );
+
+        // Thread 1: leaf_a → child_a → root
+        // Thread 2: leaf_b → child_b → root
+        // Both share root; root-down ordering is [root, child_X] for both threads.
+        let amount: Decimal = "0.01".parse().unwrap();
+        let mut handles = Vec::new();
+
+        for idx in 0u8..50 {
+            let t2 = Arc::clone(&t);
+            let (child, leaf_b) = if idx % 2 == 0 {
+                (*child_a.as_bytes(), AgentId::from_bytes({ let mut b = [0xA0u8; 16]; b[1] = idx; b }))
+            } else {
+                (*child_b.as_bytes(), AgentId::from_bytes({ let mut b = [0xB0u8; 16]; b[1] = idx; b }))
+            };
+            handles.push(std::thread::spawn(move || {
+                let ancestors = [child, *root.as_bytes()];
+                t2.check_and_decrement(leaf_b, &ancestors, amount).unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread must not panic (deadlock would timeout)");
+        }
+
+        let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+        let expected: Decimal = "0.50".parse().unwrap(); // 50 × $0.01
+        assert_eq!(root_spent, expected);
+    }
+
     // ── subtree_spend (AAASM-1025) ─────────────────────────────────────
 
     #[test]
