@@ -112,6 +112,7 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
 #[cfg(test)]
+#[derive(Default)]
 pub struct FakePolicyContext {
     pub depth: Option<u32>,
     pub team_active: Option<u64>,

@@ -1260,16 +1260,7 @@ mod tests {
     fn fake_ctx(depth: Option<u32>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
             depth,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1293,17 +1284,8 @@ mod tests {
 
     fn fake_team_ctx(active: Option<u64>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
             team_active: active,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1321,17 +1303,8 @@ mod tests {
 
     fn fake_budget_ctx(remaining: Option<f64>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
             team_budget: remaining,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1349,17 +1322,8 @@ mod tests {
 
     fn fake_child_ctx(tools: Vec<&str>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
             child_tools: tools.into_iter().map(String::from).collect(),
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1384,19 +1348,7 @@ mod tests {
     #[test]
     fn null_safety_team_active_returns_false_when_no_team() {
         // team_active = None means the agent has no team; condition must not fire.
-        let ctx = crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
-        };
+        let ctx = crate::policy::context::FakePolicyContext::default();
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
 
@@ -1413,17 +1365,9 @@ mod tests {
         parent: Option<aa_core::RiskTier>,
     ) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
             agent_risk_tier: agent,
             parent_risk_tier: parent,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1467,17 +1411,8 @@ mod tests {
 
     fn fake_child_tier_ctx(child: Option<aa_core::RiskTier>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
             child_risk_tier: child,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1562,17 +1497,8 @@ mod tests {
 
     fn fake_age_ctx(age_secs: Option<u64>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
             agent_age_secs: age_secs,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         }
     }
 
@@ -1593,17 +1519,8 @@ mod tests {
     #[test]
     fn team_parallel_agents_gt_matches() {
         let ctx = crate::policy::context::FakePolicyContext {
-            depth: None,
             team_active: Some(8),
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
-            agent_children_count: None,
+            ..Default::default()
         };
         assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
     }
@@ -1780,17 +1697,10 @@ mod tests {
         children_count: Option<u32>,
     ) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
-            depth: None,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
             agent_parent_id: parent_id.map(String::from),
             agent_team_id: team_id.map(String::from),
             agent_children_count: children_count,
+            ..Default::default()
         }
     }
 
@@ -1882,16 +1792,8 @@ mod tests {
     fn fake_depth_children_ctx(depth: Option<u32>, children: Option<u32>) -> crate::policy::context::FakePolicyContext {
         crate::policy::context::FakePolicyContext {
             depth,
-            team_active: None,
-            team_budget: None,
-            child_tools: vec![],
-            agent_risk_tier: None,
-            parent_risk_tier: None,
-            child_risk_tier: None,
-            agent_age_secs: None,
-            agent_parent_id: None,
-            agent_team_id: None,
             agent_children_count: children,
+            ..Default::default()
         }
     }
 
