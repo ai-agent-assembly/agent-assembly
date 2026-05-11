@@ -12,6 +12,7 @@ use aa_proto::assembly::approval::v1::{
 };
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::service::convert;
 
@@ -19,6 +20,7 @@ use crate::service::convert;
 pub struct ApprovalServiceImpl {
     queue: Arc<ApprovalQueue>,
     escalation_scheduler: Option<Arc<EscalationScheduler>>,
+    db_escalation_scheduler: Option<Arc<DbEscalationScheduler>>,
 }
 
 impl ApprovalServiceImpl {
@@ -27,6 +29,7 @@ impl ApprovalServiceImpl {
         Self {
             queue,
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
         }
     }
 
@@ -40,7 +43,16 @@ impl ApprovalServiceImpl {
         Self {
             queue,
             escalation_scheduler,
+            db_escalation_scheduler: None,
         }
+    }
+
+    /// Attach a [`DbEscalationScheduler`] to this service.
+    ///
+    /// When present, `decide()` also cancels the DB-backed escalation row.
+    pub fn with_db_scheduler(mut self, scheduler: Option<Arc<DbEscalationScheduler>>) -> Self {
+        self.db_escalation_scheduler = scheduler;
+        self
     }
 }
 
@@ -72,6 +84,13 @@ impl ApprovalService for ApprovalServiceImpl {
                         Ok(true) => tracing::debug!(approval_id = %id, "escalation timer cancelled"),
                         Ok(false) => {} // already fired or never registered
                         Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel escalation timer"),
+                    }
+                }
+                if let Some(db_scheduler) = &self.db_escalation_scheduler {
+                    match db_scheduler.cancel(id).await {
+                        Ok(true) => tracing::debug!(approval_id = %id, "DB escalation row cancelled"),
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel DB escalation row"),
                     }
                 }
                 Ok(Response::new(DecideResponse {
@@ -150,6 +169,8 @@ mod tests {
                 reason: "timed out".to_string(),
             },
             team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
         }
     }
 

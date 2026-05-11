@@ -9,13 +9,15 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AuditEntry, AuditEventType};
+use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse};
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
+use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
 use crate::registry::convert::proto_agent_id_to_key;
@@ -28,7 +30,9 @@ pub struct PolicyServiceImpl {
     registry: Option<Arc<AgentRegistry>>,
     approval_queue: Option<Arc<ApprovalQueue>>,
     escalation_scheduler: Option<Arc<EscalationScheduler>>,
+    db_escalation_scheduler: Option<Arc<DbEscalationScheduler>>,
     routing_store: Option<Arc<RoutingConfigStore>>,
+    router: Option<Arc<ApprovalRouter>>,
     audit_tx: mpsc::Sender<AuditEntry>,
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
@@ -52,7 +56,9 @@ impl PolicyServiceImpl {
             registry: None,
             approval_queue: None,
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
+            router: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -76,7 +82,9 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: None,
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
+            router: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -102,7 +110,9 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: Some(approval_queue),
             escalation_scheduler: None,
+            db_escalation_scheduler: None,
             routing_store: None,
+            router: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
@@ -133,12 +143,33 @@ impl PolicyServiceImpl {
             registry: Some(registry),
             approval_queue: Some(approval_queue),
             escalation_scheduler,
+            db_escalation_scheduler: None,
             routing_store,
+            router: None,
             audit_tx,
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
         }
+    }
+
+    /// Attach a [`DbEscalationScheduler`] to this service.
+    ///
+    /// When present, the DB scheduler is called alongside the file-based scheduler
+    /// to persist escalation state in `pending_escalations`.
+    pub fn with_db_scheduler(mut self, scheduler: Option<Arc<DbEscalationScheduler>>) -> Self {
+        self.db_escalation_scheduler = scheduler;
+        self
+    }
+
+    /// Attach an [`ApprovalRouter`] to this service.
+    ///
+    /// When present, the router is called on every `RequiresApproval` decision to
+    /// resolve the canonical routing target and escalation parameters, and to write
+    /// `routing_status` on the in-flight approval queue entry (AC2 / AC3).
+    pub fn with_router(mut self, router: Arc<ApprovalRouter>) -> Self {
+        self.router = Some(router);
+        self
     }
 
     /// Evaluate a single request against the engine, returning the raw
@@ -216,6 +247,8 @@ impl PolicyServiceImpl {
         timeout_secs: u32,
         team_id: Option<String>,
         request_id: uuid::Uuid,
+        timeout_override_secs: Option<u64>,
+        escalation_role_override: Option<String>,
     ) -> ApprovalRequest {
         let agent_id = req.agent_id.as_ref().map(|a| a.agent_id.clone()).unwrap_or_default();
         let now = SystemTime::now()
@@ -234,6 +267,8 @@ impl PolicyServiceImpl {
                 reason: "approval timed out".to_string(),
             },
             team_id,
+            timeout_override_secs,
+            escalation_role_override,
         }
     }
 
@@ -280,18 +315,20 @@ impl PolicyServiceImpl {
         // Pre-generate the request ID so it can be included in the ApprovalRouted audit event.
         let approval_request_id = uuid::Uuid::new_v4();
 
-        // Emit ApprovalRouted audit event when a team is identified.
+        // Extract agent identity for the chain-hashed audit entry and the router context.
+        let proto_agent = req.agent_id.as_ref();
+        let agent_id_val = proto_agent
+            .map(|a| AgentId::from_bytes(convert::hash_to_16(&a.agent_id)))
+            .unwrap_or_else(|| AgentId::from_bytes([0u8; 16]));
+        let session_id_val = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
+
+        // Emit ApprovalRouted audit event (chain-hashed WORM log) when a team is identified.
         if let Some(ref tid) = team_id {
             let seq = self.seq.fetch_add(1, Ordering::Relaxed);
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
-            let proto_agent = req.agent_id.as_ref();
-            let agent_id = proto_agent
-                .map(|a| AgentId::from_bytes(convert::hash_to_16(&a.agent_id)))
-                .unwrap_or_else(|| AgentId::from_bytes([0u8; 16]));
-            let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
             let payload = serde_json::json!({
                 "team_id": tid,
                 "action_type": req.action_type,
@@ -303,8 +340,8 @@ impl PolicyServiceImpl {
                 seq,
                 now,
                 AuditEventType::ApprovalRouted,
-                agent_id,
-                session_id,
+                agent_id_val,
+                session_id_val,
                 payload,
                 *last_hash,
             );
@@ -323,7 +360,15 @@ impl PolicyServiceImpl {
             }
         }
 
-        let approval_req = Self::build_approval_request(req, timeout_secs, team_id.clone(), approval_request_id);
+        let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
+        let approval_req = Self::build_approval_request(
+            req,
+            timeout_secs,
+            team_id.clone(),
+            approval_request_id,
+            timeout_override,
+            role_override.clone(),
+        );
         let approval_id = approval_req.request_id;
 
         tracing::info!(
@@ -334,9 +379,70 @@ impl PolicyServiceImpl {
             "submitting to approval queue"
         );
 
-        // Register with the escalation scheduler if a team is identified.
-        if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
-            let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
+        // Build AgentContext so the router can resolve team_id → routing target.
+        // Only team_id is consumed by the router; the other fields are populated from
+        // what is available at this call site.
+        let agent_ctx = AgentContext {
+            agent_id: agent_id_val,
+            session_id: session_id_val,
+            pid: 0,
+            started_at: Timestamp::from_nanos(0),
+            metadata: Default::default(),
+            governance_level: GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.clone(),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+        };
+
+        // AC3: resolve routing decision via ApprovalRouter when available;
+        // fall back to the legacy RoutingConfigStore path when the router is absent.
+        let routing_decision = if let Some(ref router) = self.router {
+            router.route(&approval_req, &agent_ctx).await.map_or_else(
+                |e| {
+                    tracing::warn!(error = %e, "ApprovalRouter failed — falling back to legacy routing");
+                    None
+                },
+                Some,
+            )
+        } else {
+            None
+        };
+
+        // Register the pending escalation with the scheduler.
+        if let Some(ref decision) = routing_decision {
+            // Router-driven path: use the decision's escalation_role and escalate_at.
+            if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
+                let now_secs = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
+                let approvers = vec![decision.escalation_role.clone()];
+                if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
+                    tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+                }
+            }
+            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
+                if let Some(ref team_id_val) = decision.team_id {
+                    if let Err(e) = db_scheduler
+                        .register(
+                            approval_id,
+                            team_id_val.clone(),
+                            decision.escalation_role.clone(),
+                            "TeamAdmin".to_string(),
+                            decision.escalate_at,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
+                    }
+                }
+            }
+        } else if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
+            // Legacy path: resolve escalation config from the RoutingConfigStore.
             let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
             let escalation_approvers = self
                 .routing_store
@@ -356,6 +462,45 @@ impl PolicyServiceImpl {
         }
 
         let (_id, future) = queue.submit(approval_req);
+
+        // AC2: persist structured routing metadata on the in-flight queue entry
+        // so operators and the escalation event stream can observe the routing outcome.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let (routing_status, target_role, escalate_at_ts) = routing_decision
+            .as_ref()
+            .map(|d| {
+                let status = if d.target_role == "TeamAdmin" {
+                    "routed_to_team_admin".to_string()
+                } else {
+                    "routed_to_org_admin".to_string()
+                };
+                (status, Some(d.target_role.clone()), Some(d.escalate_at))
+            })
+            .unwrap_or_else(|| {
+                let status = if team_id.is_some() {
+                    "routed_to_team_admin".to_string()
+                } else {
+                    "routed_to_org_admin".to_string()
+                };
+                (status, None, None)
+            });
+        let history_entry = aa_runtime::approval::RoutingHistoryEntry {
+            at: now_secs,
+            action: "routed".to_string(),
+            from_role: None,
+            to_role: target_role.clone().unwrap_or_else(|| routing_status.clone()),
+        };
+        queue.record_routing(
+            approval_id,
+            routing_status,
+            target_role,
+            Some(now_secs),
+            escalate_at_ts,
+            Some(history_entry),
+        );
 
         // Await the operator's decision with a timeout guard.
         // The ApprovalQueue also spawns its own timeout task, so both race;

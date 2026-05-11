@@ -99,6 +99,127 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+  /api/v1/agents/{id}/edges:
+    get:
+      tags:
+      - agents
+      summary: List directed edges for an agent.
+      description: |-
+        Returns edges ordered newest-first.  `direction` defaults to `outgoing`.
+        `limit` defaults to 100 and is capped at 1000.  `before` filters to edges
+        recorded before the given ISO 8601 timestamp.
+      operationId: list_agent_edges
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded agent ID
+        required: true
+        schema:
+          type: string
+      - name: type
+        in: query
+        description: Filter by edge type (snake_case). Omit for all types.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: messages
+      - name: direction
+        in: query
+        description: Direction of edges relative to the agent. Defaults to `outgoing`.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: outgoing
+      - name: limit
+        in: query
+        description: Maximum number of results. Defaults to 100, capped at 1000.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        example: 100
+      - name: before
+        in: query
+        description: Return only edges recorded before this ISO 8601 timestamp.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: 2026-01-01T00:00:00Z
+      responses:
+        '200':
+          description: Edge list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgeListResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '500':
+          description: Store error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/agents/{id}/graph:
+    get:
+      tags:
+      - agents
+      summary: Return the topology subgraph reachable from an agent.
+      description: |-
+        Performs BFS outward from `id` up to `depth` hops (default 2, max 5).
+        Returns all unique nodes reachable and the edges between them, with
+        `is_cross_team` computed via a batched registry lookup.
+      operationId: get_agent_graph
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded root agent ID
+        required: true
+        schema:
+          type: string
+      - name: depth
+        in: query
+        description: BFS depth from the root agent. Defaults to 2, capped at 5.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        example: 2
+      responses:
+        '200':
+          description: Subgraph
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '500':
+          description: Store error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/agents/{id}/resume:
     post:
       tags:
@@ -500,15 +621,50 @@ paths:
                 $ref: '#/components/schemas/PolicyResponse'
         '404':
           description: No active policy loaded
+  /api/v1/topology/edges:
+    post:
+      tags:
+      - topology
+      summary: Record a new directed topology edge.
+      description: |-
+        Used by SDK emitters (Python, Node.js, Go) to push observed
+        agent-to-agent interactions into the gateway edge store.
+      operationId: report_edge
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportEdgeRequest'
+        required: true
+      responses:
+        '201':
+          description: Edge recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportEdgeResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '500':
+          description: Store error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/topology/lineage/{agent_id}:
     get:
       tags:
       - topology
-      summary: '`GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.'
+      summary: '`GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.'
       description: |-
-        Returns the ordered list of ancestors for the given agent, starting from its
-        direct parent and ending at the root agent (depth 0). Each step includes the
-        delegation reason and team membership. Returns 404 if the agent is unknown.
+        Returns the ordered ancestry for the given agent, starting from the root
+        (depth 0) and ending with the requested agent as the last element.
+        A root agent returns a list of length 1 containing only itself.
+        Returns 404 if the agent is unknown.
       operationId: get_lineage
       parameters:
       - name: agent_id
@@ -579,10 +735,9 @@ paths:
       - topology
       summary: '`GET /api/v1/topology/stats` — aggregate topology statistics.'
       description: |-
-        Returns aggregate counts across the entire registry: total agents, root
-        agents, maximum delegation depth, per-status counts, and per-team agent
-        counts. This endpoint never returns 404; an empty registry returns all
-        zero counts.
+        Returns aggregate counts and histograms across the entire registry.
+        Includes depth distribution, team-size distribution, child-count distribution,
+        orphan count, and average children per parent. Never returns 404.
       operationId: get_stats
       responses:
         '200':
@@ -652,6 +807,7 @@ paths:
         Recursively walks the delegation tree starting from the given agent, up to
         a configurable depth (default 10, maximum 10). Nodes can be filtered by
         status. Returns a nested JSON tree with each agent's children inline.
+        Returns 422 if the agent exists but is not a root (depth > 0).
       operationId: get_tree
       parameters:
       - name: root_id
@@ -697,6 +853,8 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+        '422':
+          description: Agent is not a root agent
   /api/v1/traces/{session_id}:
     get:
       tags:
@@ -836,7 +994,23 @@ components:
           description: Total spend this month in USD for this agent (if monthly tracking is enabled).
     AgentLineage:
       type: object
-      description: An agent's complete ancestry chain from direct parent up to root.
+      description: |-
+        An agent's complete ancestry chain ordered root-first.
+
+        The first element is the root agent; the last element is the requested
+        agent itself. A root agent returns a list of length 1 containing only itself.
+
+        # Example JSON
+        ```json
+        {
+          "agent_id": "aabbccdd00112233aabbccdd00112233",
+          "ancestor_count": 2,
+          "ancestors": [
+            { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null },
+            { "id": "aabbccdd00112233aabbccdd00112233", "name": "child", "depth": 1, "delegation_reason": "orchestrate", "team_id": "team-alpha" }
+          ]
+        }
+        ```
       required:
       - agent_id
       - ancestor_count
@@ -847,16 +1021,42 @@ components:
           description: The subject agent's hex-encoded UUID.
         ancestor_count:
           type: integer
-          description: Number of ancestors — 0 if the agent is a root.
+          description: Number of entries in `ancestors` (includes the agent itself).
           minimum: 0
         ancestors:
           type: array
           items:
             $ref: '#/components/schemas/LineageStep'
-          description: 'Ordered ancestors: index 0 is the direct parent, last element is the root.'
+          description: 'Ordered ancestry: index 0 is the root agent, last element is the requested agent.'
+      example:
+        agent_id: aabbccdd00112233aabbccdd00112233
+        ancestor_count: 2
+        ancestors:
+        - delegation_reason: null
+          depth: 0
+          id: root000000000000root000000000000
+          name: root
+          team_id: null
+        - delegation_reason: orchestrate
+          depth: 1
+          id: aabbccdd00112233aabbccdd00112233
+          name: child
+          team_id: team-alpha
     AgentNode:
       type: object
-      description: Minimal agent representation used in list and tree responses.
+      description: |-
+        Minimal agent representation used in list and tree responses.
+
+        # Example JSON
+        ```json
+        {
+          "id": "0102030405060708090a0b0c0d0e0f10",
+          "name": "my-agent",
+          "depth": 1,
+          "status": "active",
+          "team_id": "team-alpha"
+        }
+        ```
       required:
       - id
       - name
@@ -887,6 +1087,12 @@ components:
           - string
           - 'null'
           description: Team this agent belongs to, if any.
+      example:
+        depth: 1
+        id: 0102030405060708090a0b0c0d0e0f10
+        name: my-agent
+        status: active
+        team_id: team-alpha
     AgentResponse:
       type: object
       description: JSON representation of an agent returned by the API.
@@ -975,7 +1181,22 @@ components:
           description: Semver version string.
     AgentTree:
       type: object
-      description: Recursive tree node representing an agent and all its descendants.
+      description: |-
+        Recursive tree node representing an agent and all its descendants.
+
+        # Example JSON
+        ```json
+        {
+          "id": "0102030405060708090a0b0c0d0e0f10",
+          "name": "root-agent",
+          "depth": 0,
+          "status": "active",
+          "team_id": "team-alpha",
+          "delegation_reason": null,
+          "spawned_by_tool": null,
+          "children": []
+        }
+        ```
       required:
       - id
       - name
@@ -1021,6 +1242,15 @@ components:
           - string
           - 'null'
           description: Team this agent belongs to, if any.
+      example:
+        children: []
+        delegation_reason: null
+        depth: 0
+        id: 0102030405060708090a0b0c0d0e0f10
+        name: root-agent
+        spawned_by_tool: null
+        status: active
+        team_id: team-alpha
     AlertResponse:
       type: object
       description: JSON representation of a governance alert.
@@ -1110,9 +1340,19 @@ components:
         reason:
           type: string
           description: Human-readable reason for the approval request.
+        routing_status:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/RoutingStatusInfo'
+            description: Structured routing metadata. Absent until the router has processed the request.
         status:
           type: string
           description: 'Current status: "pending", "approved", or "rejected".'
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the approval was routed to, if known.
     BudgetAlertPayload:
       type: object
       description: |-
@@ -1208,6 +1448,58 @@ components:
           - string
           - 'null'
           description: Optional reason for the decision.
+    EdgeListResponse:
+      type: object
+      description: Paginated list of directed edges for an agent.
+      required:
+      - agent_id
+      - edges
+      - count
+      properties:
+        agent_id:
+          type: string
+          description: The queried agent ID.
+        count:
+          type: integer
+          description: Total number of edges returned.
+          minimum: 0
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeResponse'
+          description: The list of matching edges, newest first.
+    EdgeResponse:
+      type: object
+      description: A single directed edge between two agents.
+      required:
+      - id
+      - source_agent_id
+      - target_agent_id
+      - edge_type
+      - created_at
+      - is_cross_team
+      properties:
+        created_at:
+          type: string
+          description: ISO 8601 timestamp when the edge was recorded.
+        edge_type:
+          type: string
+          description: Edge semantic type (snake_case).
+        id:
+          type: integer
+          format: int64
+          description: Auto-assigned edge identifier.
+        is_cross_team:
+          type: boolean
+          description: Whether the edge crosses team boundaries.
+        metadata:
+          description: Optional freeform metadata attached at emission time.
+        source_agent_id:
+          type: string
+          description: Hex-encoded source agent ID.
+        target_agent_id:
+          type: string
+          description: Hex-encoded target agent ID.
     EventPayload:
       oneOf:
       - $ref: '#/components/schemas/ViolationPayload'
@@ -1269,6 +1561,36 @@ components:
         timestamp:
           type: string
           description: Timestamp when the event was received by the API layer (ISO 8601).
+    GraphNode:
+      type: object
+      description: A node in the topology subgraph.
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          description: Hex-encoded agent ID.
+    GraphResponse:
+      type: object
+      description: Subgraph reachable from an agent within a depth bound.
+      required:
+      - root_agent_id
+      - nodes
+      - edges
+      properties:
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeResponse'
+          description: All edges between nodes in this subgraph.
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphNode'
+          description: All unique agent nodes reachable within `depth` hops.
+        root_agent_id:
+          type: string
+          description: Root agent ID used for the BFS.
     HealthResponse:
       type: object
       description: Response body for the health endpoint.
@@ -1305,7 +1627,13 @@ components:
           description: Gateway version (semver from Cargo.toml).
     LineageStep:
       type: object
-      description: One step in an agent's ancestry chain.
+      description: |-
+        One step in an agent's ancestry chain.
+
+        # Example JSON
+        ```json
+        { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null }
+        ```
       required:
       - id
       - name
@@ -1315,23 +1643,29 @@ components:
           type:
           - string
           - 'null'
-          description: Reason the next agent in the chain was delegated from this ancestor.
+          description: Reason the next agent in the chain was delegated from this node.
         depth:
           type: integer
           format: int32
-          description: Delegation depth of this ancestor.
+          description: Delegation depth of this node.
           minimum: 0
         id:
           type: string
-          description: Hex-encoded UUID of this ancestor.
+          description: Hex-encoded UUID of this ancestor (or the subject agent).
         name:
           type: string
-          description: Human-readable name of this ancestor.
+          description: Human-readable name.
         team_id:
           type:
           - string
           - 'null'
-          description: Team this ancestor belongs to.
+          description: Team this node belongs to.
+      example:
+        delegation_reason: null
+        depth: 0
+        id: root000000000000root000000000000
+        name: root
+        team_id: null
     LogEntry:
       type: object
       description: JSON representation of an audit log entry.
@@ -1450,6 +1784,38 @@ components:
         timestamp:
           type: string
           description: ISO 8601 timestamp when the trace session started.
+    ReportEdgeRequest:
+      type: object
+      description: Request body for recording a new directed edge.
+      required:
+      - source_agent_id
+      - target_agent_id
+      - edge_type
+      properties:
+        edge_type:
+          type: string
+          description: Edge semantic type (e.g. `"messages"`, `"delegates_to"`).
+        metadata_json:
+          type:
+          - string
+          - 'null'
+          description: Optional metadata JSON string.
+        source_agent_id:
+          type: string
+          description: Hex-encoded source agent ID.
+        target_agent_id:
+          type: string
+          description: Hex-encoded target agent ID.
+    ReportEdgeResponse:
+      type: object
+      description: Response after recording a new edge.
+      required:
+      - id
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Auto-assigned edge identifier.
     ResumeResponse:
       type: object
       description: Response from `POST /api/v1/agents/:id/resume`.
@@ -1467,6 +1833,69 @@ components:
         previous_status:
           type: string
           description: Agent status before the resume operation.
+    RoutingHistoryEntry:
+      type: object
+      description: One step in the routing history of an approval request.
+      required:
+      - at
+      - action
+      - to_role
+      properties:
+        action:
+          type: string
+          description: 'Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`.'
+        at:
+          type: integer
+          format: int64
+          description: Unix epoch timestamp (seconds) when this step occurred.
+          minimum: 0
+        from_role:
+          type:
+          - string
+          - 'null'
+          description: Role that previously held the request, if any.
+        to_role:
+          type: string
+          description: Role the request was routed or escalated to.
+    RoutingStatusInfo:
+      type: object
+      description: Structured routing metadata set by the approval router.
+      required:
+      - status
+      - history
+      properties:
+        escalate_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Unix timestamp (seconds) at which escalation is scheduled to fire.
+          minimum: 0
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingHistoryEntry'
+          description: Full routing and escalation history for this request.
+        routed_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Unix timestamp (seconds) when the initial routing decision was recorded.
+          minimum: 0
+        status:
+          type: string
+          description: 'Routing status string: `"routed_to_team_admin"`, `"routed_to_org_admin"`, or `"escalated_to_<role>"`.'
+        target_role:
+          type:
+          - string
+          - 'null'
+          description: Role the request is currently assigned to (e.g. `"TeamAdmin"`, `"OrgAdmin"`).
+        target_team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the request was routed to, if known.
     Scope:
       type: string
       description: |-
@@ -1528,7 +1957,13 @@ components:
           description: Team identifier.
     TeamSummary:
       type: object
-      description: High-level statistics for a single team.
+      description: |-
+        High-level statistics for a single team.
+
+        # Example JSON
+        ```json
+        { "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }
+        ```
       required:
       - team_id
       - agent_count
@@ -1545,9 +1980,19 @@ components:
         team_id:
           type: string
           description: Team identifier.
+      example:
+        agent_count: 7
+        root_agent_count: 1
+        team_id: team-alpha
     TeamTopology:
       type: object
-      description: All agents belonging to a single team.
+      description: |-
+        All agents belonging to a single team.
+
+        # Example JSON
+        ```json
+        { "team_id": "team-alpha", "agent_count": 2, "members": [] }
+        ```
       required:
       - team_id
       - agent_count
@@ -1565,6 +2010,10 @@ components:
         team_id:
           type: string
           description: Team identifier.
+      example:
+        agent_count: 2
+        members: []
+        team_id: team-alpha
     TokenRequest:
       type: object
       description: Request body for `POST /auth/token`.
@@ -1601,7 +2050,19 @@ components:
           description: The issued JWT token string.
     TopologyOverview:
       type: object
-      description: Overview of the entire agent topology across all teams.
+      description: |-
+        Overview of the entire agent topology across all teams.
+
+        # Example JSON
+        ```json
+        {
+          "team_count": 2,
+          "root_agent_count": 3,
+          "total_agent_count": 12,
+          "teams": [{ "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }],
+          "standalone_root_agents": []
+        }
+        ```
       required:
       - team_count
       - root_agent_count
@@ -1617,7 +2078,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentNode'
-          description: Root agents that are not assigned to any team.
+          description: Root agents that are not assigned to any team, sorted by agent id.
         team_count:
           type: integer
           description: Number of teams with at least one registered agent.
@@ -1626,14 +2087,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TeamSummary'
-          description: Per-team agent count summaries.
+          description: Per-team agent count summaries, sorted by team_id.
         total_agent_count:
           type: integer
           description: Total number of agents in the registry.
           minimum: 0
+      example:
+        root_agent_count: 3
+        standalone_root_agents: []
+        team_count: 2
+        teams:
+        - agent_count: 7
+          root_agent_count: 1
+          team_id: team-alpha
+        total_agent_count: 12
     TopologyStats:
       type: object
-      description: Aggregate topology statistics across all registered agents.
+      description: |-
+        Aggregate topology statistics across all registered agents.
+
+        # Example JSON
+        ```json
+        {
+          "total_agents": 15,
+          "root_agent_count": 3,
+          "max_depth": 4,
+          "active_count": 12,
+          "suspended_count": 2,
+          "deregistered_count": 1,
+          "team_count": 2,
+          "team_sizes": { "team-alpha": 8, "team-beta": 4 },
+          "depth_histogram": { "0": 3, "1": 7, "2": 5 },
+          "team_size_histogram": { "4": 1, "8": 1 },
+          "spawn_count_histogram": { "0": 8, "2": 4, "4": 1 },
+          "orphan_count": 2,
+          "avg_children_per_parent": 2.5
+        }
+        ```
       required:
       - total_agents
       - root_agent_count
@@ -1643,11 +2133,29 @@ components:
       - deregistered_count
       - team_count
       - team_sizes
+      - depth_histogram
+      - team_size_histogram
+      - spawn_count_histogram
+      - orphan_count
+      - avg_children_per_parent
       properties:
         active_count:
           type: integer
           description: Agents currently in `Active` status.
           minimum: 0
+        avg_children_per_parent:
+          type: number
+          format: double
+          description: Average number of children across all agents that have at least one child.
+        depth_histogram:
+          type: object
+          description: Agent count per depth level (depth → count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: string
         deregistered_count:
           type: integer
           description: Agents in `Deregistered` status.
@@ -1657,10 +2165,23 @@ components:
           format: int32
           description: Maximum observed delegation depth.
           minimum: 0
+        orphan_count:
+          type: integer
+          description: Agents that have no team assignment and are not root agents (depth > 0).
+          minimum: 0
         root_agent_count:
           type: integer
           description: Number of root agents (depth == 0).
           minimum: 0
+        spawn_count_histogram:
+          type: object
+          description: Number of agents per child-count bucket (child_count → agent_count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: string
         suspended_count:
           type: integer
           description: Agents currently in `Suspended` status.
@@ -1669,9 +2190,18 @@ components:
           type: integer
           description: Number of teams with at least one agent.
           minimum: 0
+        team_size_histogram:
+          type: object
+          description: Number of teams per team-size bucket (team_size → team_count).
+          additionalProperties:
+            type: integer
+            format: int32
+            minimum: 0
+          propertyNames:
+            type: string
         team_sizes:
           type: object
-          description: Agent count per team.
+          description: Agent count per team (team_id → count).
           additionalProperties:
             type: integer
             minimum: 0
@@ -1681,6 +2211,30 @@ components:
           type: integer
           description: Total agents in the registry.
           minimum: 0
+      example:
+        active_count: 12
+        avg_children_per_parent: 2.5
+        depth_histogram:
+          '0': 3
+          '1': 7
+          '2': 5
+        deregistered_count: 1
+        max_depth: 4
+        orphan_count: 2
+        root_agent_count: 3
+        spawn_count_histogram:
+          '0': 8
+          '2': 4
+          '4': 1
+        suspended_count: 2
+        team_count: 2
+        team_size_histogram:
+          '4': 1
+          '8': 1
+        team_sizes:
+          team-alpha: 8
+          team-beta: 4
+        total_agents: 15
     TraceResponse:
       type: object
       description: Full trace for one agent session.
@@ -1814,4 +2368,4 @@ tags:
 - name: events
   description: Real-time event streaming via WebSocket
 - name: topology
-  description: Agent topology — tree, team, lineage, and statistics queries
+  description: Agent topology — tree, team, lineage, statistics, and mesh edge queries

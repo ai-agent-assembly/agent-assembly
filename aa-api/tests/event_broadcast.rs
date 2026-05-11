@@ -38,6 +38,8 @@ async fn subscribe_approvals_receives_published_event() {
             reason: "test".to_string(),
         },
         team_id: None,
+        timeout_override_secs: None,
+        escalation_role_override: None,
     };
 
     tx.send(request).unwrap();

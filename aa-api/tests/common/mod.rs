@@ -19,6 +19,7 @@ use aa_api::trace_store::InMemoryTraceStore;
 use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
+use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::AgentRegistry;
@@ -140,6 +141,22 @@ spec:
         startup_time: Instant::now(),
         active_connections: Arc::new(AtomicI64::new(0)),
         discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+        edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+        topology_overview_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(1))
+            .build(),
+        topology_tree_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
+        topology_team_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
+        topology_lineage_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(5))
+            .build(),
+        topology_stats_cache: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(10))
+            .build(),
     }
 }
 

@@ -22,6 +22,10 @@
 
 - [Migration Template](migration/template.md)
 
+# Events
+
+- [Cross-Team Edge](events/cross_team_edge.md)
+
 # Benchmarks
 
 - [Baseline](benchmarks/BASELINE.md)

@@ -4,17 +4,23 @@
 //! membership, ancestry lineage, and aggregate statistics — all backed by
 //! the in-memory `AgentRegistry`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 use aa_gateway::registry::{AgentRegistry, AgentStatus};
 
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
+use crate::models::topology::{format_id, status_str};
+pub use crate::models::topology::{
+    AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyOverview, TopologyStats,
+};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -33,18 +39,6 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
             .with_detail(format!("Agent ID must be 32 hex characters: {id}"))
     })
-}
-
-fn format_id(id: &[u8; 16]) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn status_str(status: &AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Active => "active",
-        AgentStatus::Suspended(_) => "suspended",
-        AgentStatus::Deregistered => "deregistered",
-    }
 }
 
 fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
@@ -80,148 +74,6 @@ pub struct TreeParams {
     pub status: Option<String>,
     /// When `true`, include the governance level in each tree node.
     pub show_budget: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-/// Overview of the entire agent topology across all teams.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TopologyOverview {
-    /// Number of teams with at least one registered agent.
-    pub team_count: usize,
-    /// Number of root agents (depth == 0) across all teams.
-    pub root_agent_count: usize,
-    /// Total number of agents in the registry.
-    pub total_agent_count: usize,
-    /// Per-team agent count summaries.
-    pub teams: Vec<TeamSummary>,
-    /// Root agents that are not assigned to any team.
-    pub standalone_root_agents: Vec<AgentNode>,
-}
-
-/// High-level statistics for a single team.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TeamSummary {
-    /// Team identifier.
-    pub team_id: String,
-    /// Total agents in this team.
-    pub agent_count: usize,
-    /// Root agents (depth == 0) in this team.
-    pub root_agent_count: usize,
-}
-
-/// Minimal agent representation used in list and tree responses.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentNode {
-    /// Hex-encoded agent UUID.
-    pub id: String,
-    /// Human-readable agent name.
-    pub name: String,
-    /// Delegation depth — 0 for root agents.
-    pub depth: u32,
-    /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
-    /// Team this agent belongs to, if any.
-    pub team_id: Option<String>,
-    /// Governance level — included only when `show_budget=true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub governance_level: Option<String>,
-}
-
-/// Recursive tree node representing an agent and all its descendants.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentTree {
-    /// Hex-encoded agent UUID.
-    pub id: String,
-    /// Human-readable agent name.
-    pub name: String,
-    /// Delegation depth — 0 for root agents.
-    pub depth: u32,
-    /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
-    /// Team this agent belongs to, if any.
-    pub team_id: Option<String>,
-    /// Reason this agent was delegated from its parent, if recorded.
-    pub delegation_reason: Option<String>,
-    /// Tool that spawned this agent, if known.
-    pub spawned_by_tool: Option<String>,
-    /// Governance level — included only when `show_budget=true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub governance_level: Option<String>,
-    /// Direct children of this agent in the delegation tree.
-    #[schema(schema_with = agent_tree_children_schema)]
-    pub children: Vec<AgentTree>,
-}
-
-/// Returns a schema for `Vec<AgentTree>` using a `$ref` to break the recursive cycle.
-///
-/// Without this, utoipa's ToSchema derive recurses infinitely and overflows the stack.
-fn agent_tree_children_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-    use utoipa::openapi::schema::{ArrayBuilder, Ref};
-    ArrayBuilder::new()
-        .items(Ref::from_schema_name("AgentTree"))
-        .build()
-        .into()
-}
-
-/// All agents belonging to a single team.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TeamTopology {
-    /// Team identifier.
-    pub team_id: String,
-    /// Number of agents in this team (after filtering).
-    pub agent_count: usize,
-    /// Agents in this team.
-    pub members: Vec<AgentNode>,
-}
-
-/// An agent's complete ancestry chain from direct parent up to root.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct AgentLineage {
-    /// The subject agent's hex-encoded UUID.
-    pub agent_id: String,
-    /// Number of ancestors — 0 if the agent is a root.
-    pub ancestor_count: usize,
-    /// Ordered ancestors: index 0 is the direct parent, last element is the root.
-    pub ancestors: Vec<LineageStep>,
-}
-
-/// One step in an agent's ancestry chain.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct LineageStep {
-    /// Hex-encoded UUID of this ancestor.
-    pub id: String,
-    /// Human-readable name of this ancestor.
-    pub name: String,
-    /// Delegation depth of this ancestor.
-    pub depth: u32,
-    /// Reason the next agent in the chain was delegated from this ancestor.
-    pub delegation_reason: Option<String>,
-    /// Team this ancestor belongs to.
-    pub team_id: Option<String>,
-}
-
-/// Aggregate topology statistics across all registered agents.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TopologyStats {
-    /// Total agents in the registry.
-    pub total_agents: usize,
-    /// Number of root agents (depth == 0).
-    pub root_agent_count: usize,
-    /// Maximum observed delegation depth.
-    pub max_depth: u32,
-    /// Agents currently in `Active` status.
-    pub active_count: usize,
-    /// Agents currently in `Suspended` status.
-    pub suspended_count: usize,
-    /// Agents in `Deregistered` status.
-    pub deregistered_count: usize,
-    /// Number of teams with at least one agent.
-    pub team_count: usize,
-    /// Agent count per team.
-    pub team_sizes: HashMap<String, usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,9 +141,20 @@ fn build_tree(
     tag = "topology"
 )]
 pub async fn get_overview(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<TopologyFilterParams>,
 ) -> (StatusCode, Json<TopologyOverview>) {
+    let cache_key = format!(
+        "{}|{}|{}",
+        params.status.as_deref().unwrap_or(""),
+        params.min_depth.unwrap_or(0),
+        params.show_budget.unwrap_or(false),
+    );
+    if let Some(cached) = state.topology_overview_cache.get(&cache_key).await {
+        return (StatusCode::OK, Json((*cached).clone()));
+    }
+
     let all = state.agent_registry.list();
     let show_budget = params.show_budget.unwrap_or(false);
 
@@ -335,33 +198,31 @@ pub async fn get_overview(
         v
     };
 
-    let standalone_root_agents = filtered
+    let mut standalone_root_agents: Vec<AgentNode> = filtered
         .iter()
         .filter(|r| r.depth == 0 && r.team_id.is_none())
-        .map(|r| AgentNode {
-            id: format_id(&r.agent_id),
-            name: r.name.clone(),
-            depth: r.depth,
-            status: status_str(&r.status).to_owned(),
-            team_id: None,
-            governance_level: if show_budget {
-                Some(format!("{:?}", r.governance_level))
-            } else {
-                None
-            },
+        .map(|r| {
+            let mut node = AgentNode::from(*r);
+            if show_budget {
+                node.governance_level = Some(format!("{:?}", r.governance_level));
+            }
+            node
         })
         .collect();
+    standalone_root_agents.sort_by(|a, b| a.id.cmp(&b.id));
 
-    (
-        StatusCode::OK,
-        Json(TopologyOverview {
-            team_count,
-            root_agent_count,
-            total_agent_count,
-            teams,
-            standalone_root_agents,
-        }),
-    )
+    let overview = TopologyOverview {
+        team_count,
+        root_agent_count,
+        total_agent_count,
+        teams,
+        standalone_root_agents,
+    };
+    state
+        .topology_overview_cache
+        .insert(cache_key, Arc::new(overview.clone()))
+        .await;
+    (StatusCode::OK, Json(overview))
 }
 
 /// `GET /api/v1/topology/tree/{root_id}` — full subtree from a given root agent.
@@ -369,6 +230,7 @@ pub async fn get_overview(
 /// Recursively walks the delegation tree starting from the given agent, up to
 /// a configurable depth (default 10, maximum 10). Nodes can be filtered by
 /// status. Returns a nested JSON tree with each agent's children inline.
+/// Returns 422 if the agent exists but is not a root (depth > 0).
 #[utoipa::path(
     get,
     path = "/api/v1/topology/tree/{root_id}",
@@ -379,11 +241,13 @@ pub async fn get_overview(
     responses(
         (status = 200, description = "Agent subtree", body = AgentTree),
         (status = 400, description = "Invalid agent ID format"),
-        (status = 404, description = "Agent not found")
+        (status = 404, description = "Agent not found"),
+        (status = 422, description = "Agent is not a root agent")
     ),
     tag = "topology"
 )]
 pub async fn get_tree(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(root_id): Path<String>,
     Query(params): Query<TreeParams>,
@@ -391,6 +255,29 @@ pub async fn get_tree(
     let agent_id = parse_agent_id(&root_id)?;
     let max_depth = params.depth.unwrap_or(MAX_TREE_DEPTH).min(MAX_TREE_DEPTH);
     let show_budget = params.show_budget.unwrap_or(false);
+
+    // Validate the starting agent exists and is a root before hitting the cache.
+    if let Some(record) = state.agent_registry.get(&agent_id) {
+        if record.depth > 0 {
+            return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                .with_detail(format!("Agent {root_id} is not a root agent (depth {})", record.depth)));
+        }
+    } else {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
+        );
+    }
+
+    let cache_key = format!(
+        "{}|{}|{}|{}",
+        root_id,
+        max_depth,
+        params.status.as_deref().unwrap_or(""),
+        show_budget,
+    );
+    if let Some(cached) = state.topology_tree_cache.get(&cache_key).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
 
     let tree = build_tree(
         &state.agent_registry,
@@ -403,6 +290,10 @@ pub async fn get_tree(
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
     })?;
 
+    state
+        .topology_tree_cache
+        .insert(cache_key, Arc::new(tree.clone()))
+        .await;
     Ok((StatusCode::OK, Json(tree)))
 }
 
@@ -425,10 +316,22 @@ pub async fn get_tree(
     tag = "topology"
 )]
 pub async fn get_team(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(team_id): Path<String>,
     Query(params): Query<TopologyFilterParams>,
 ) -> Result<(StatusCode, Json<TeamTopology>), ProblemDetail> {
+    let cache_key = format!(
+        "{}|{}|{}|{}",
+        team_id,
+        params.status.as_deref().unwrap_or(""),
+        params.min_depth.unwrap_or(0),
+        params.show_budget.unwrap_or(false),
+    );
+    if let Some(cached) = state.topology_team_cache.get(&cache_key).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
+
     let member_ids = state.agent_registry.team_members(&team_id);
     if member_ids.is_empty() {
         return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
@@ -446,37 +349,35 @@ pub async fn get_team(
                 .map_or(true, |f| matches_status_filter(&r.status, f))
                 && params.min_depth.map_or(true, |d| r.depth >= d)
         })
-        .map(|r| AgentNode {
-            id: format_id(&r.agent_id),
-            name: r.name.clone(),
-            depth: r.depth,
-            status: status_str(&r.status).to_owned(),
-            team_id: r.team_id.clone(),
-            governance_level: if show_budget {
-                Some(format!("{:?}", r.governance_level))
-            } else {
-                None
-            },
+        .map(|r| {
+            let mut node = AgentNode::from(&r);
+            if show_budget {
+                node.governance_level = Some(format!("{:?}", r.governance_level));
+            }
+            node
         })
         .collect();
     members.sort_by_key(|m| m.depth);
 
     let agent_count = members.len();
-    Ok((
-        StatusCode::OK,
-        Json(TeamTopology {
-            team_id,
-            agent_count,
-            members,
-        }),
-    ))
+    let topology = TeamTopology {
+        team_id,
+        agent_count,
+        members,
+    };
+    state
+        .topology_team_cache
+        .insert(cache_key, Arc::new(topology.clone()))
+        .await;
+    Ok((StatusCode::OK, Json(topology)))
 }
 
-/// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
+/// `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.
 ///
-/// Returns the ordered list of ancestors for the given agent, starting from its
-/// direct parent and ending at the root agent (depth 0). Each step includes the
-/// delegation reason and team membership. Returns 404 if the agent is unknown.
+/// Returns the ordered ancestry for the given agent, starting from the root
+/// (depth 0) and ending with the requested agent as the last element.
+/// A root agent returns a list of length 1 containing only itself.
+/// Returns 404 if the agent is unknown.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/lineage/{agent_id}",
@@ -491,17 +392,26 @@ pub async fn get_team(
     tag = "topology"
 )]
 pub async fn get_lineage(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(agent_id_str): Path<String>,
 ) -> Result<(StatusCode, Json<AgentLineage>), ProblemDetail> {
+    if let Some(cached) = state.topology_lineage_cache.get(&agent_id_str).await {
+        return Ok((StatusCode::OK, Json((*cached).clone())));
+    }
+
     let agent_id = parse_agent_id(&agent_id_str)?;
 
-    state.agent_registry.get(&agent_id).ok_or_else(|| {
+    let record = state.agent_registry.get(&agent_id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
     })?;
 
-    let ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
-    let ancestors: Vec<LineageStep> = ancestor_ids
+    // ancestors_of returns parent-first (direct parent at [0], root at end).
+    // Reverse to root-first, then append the requested agent as the final element.
+    let mut ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
+    ancestor_ids.reverse();
+
+    let mut ancestors: Vec<LineageStep> = ancestor_ids
         .iter()
         .filter_map(|id| state.agent_registry.get(id))
         .map(|r| LineageStep {
@@ -513,23 +423,32 @@ pub async fn get_lineage(
         })
         .collect();
 
+    ancestors.push(LineageStep {
+        id: format_id(&record.agent_id),
+        name: record.name.clone(),
+        depth: record.depth,
+        delegation_reason: record.delegation_reason.clone(),
+        team_id: record.team_id.clone(),
+    });
+
     let ancestor_count = ancestors.len();
-    Ok((
-        StatusCode::OK,
-        Json(AgentLineage {
-            agent_id: agent_id_str,
-            ancestor_count,
-            ancestors,
-        }),
-    ))
+    let lineage = AgentLineage {
+        agent_id: agent_id_str.clone(),
+        ancestor_count,
+        ancestors,
+    };
+    state
+        .topology_lineage_cache
+        .insert(agent_id_str, Arc::new(lineage.clone()))
+        .await;
+    Ok((StatusCode::OK, Json(lineage)))
 }
 
 /// `GET /api/v1/topology/stats` — aggregate topology statistics.
 ///
-/// Returns aggregate counts across the entire registry: total agents, root
-/// agents, maximum delegation depth, per-status counts, and per-team agent
-/// counts. This endpoint never returns 404; an empty registry returns all
-/// zero counts.
+/// Returns aggregate counts and histograms across the entire registry.
+/// Includes depth distribution, team-size distribution, child-count distribution,
+/// orphan count, and average children per parent. Never returns 404.
 #[utoipa::path(
     get,
     path = "/api/v1/topology/stats",
@@ -538,7 +457,11 @@ pub async fn get_lineage(
     ),
     tag = "topology"
 )]
-pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
+pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
+    if let Some(cached) = state.topology_stats_cache.get("stats").await {
+        return (StatusCode::OK, Json((*cached).clone()));
+    }
+
     let all = state.agent_registry.list();
 
     let mut root_agent_count = 0usize;
@@ -547,6 +470,9 @@ pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Js
     let mut suspended_count = 0usize;
     let mut deregistered_count = 0usize;
     let mut team_sizes: HashMap<String, usize> = HashMap::new();
+    let mut depth_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    let mut spawn_count_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    let mut orphan_count = 0usize;
 
     for r in &all {
         if r.depth == 0 {
@@ -562,25 +488,56 @@ pub async fn get_stats(Extension(state): Extension<AppState>) -> (StatusCode, Js
         }
         if let Some(tid) = &r.team_id {
             *team_sizes.entry(tid.clone()).or_insert(0) += 1;
+        } else if r.depth > 0 {
+            orphan_count += 1;
         }
+        *depth_histogram.entry(r.depth.to_string()).or_insert(0) += 1;
+        let child_count = state.agent_registry.children_of(&r.agent_id).len() as u32;
+        *spawn_count_histogram.entry(child_count.to_string()).or_insert(0) += 1;
     }
 
     let team_count = team_sizes.len();
     let total_agents = all.len();
 
-    (
-        StatusCode::OK,
-        Json(TopologyStats {
-            total_agents,
-            root_agent_count,
-            max_depth,
-            active_count,
-            suspended_count,
-            deregistered_count,
-            team_count,
-            team_sizes,
-        }),
-    )
+    let mut team_size_histogram: BTreeMap<String, u32> = BTreeMap::new();
+    for &size in team_sizes.values() {
+        *team_size_histogram.entry(size.to_string()).or_insert(0) += 1;
+    }
+
+    let parents: Vec<u32> = spawn_count_histogram
+        .iter()
+        .filter(|(count, _)| count.parse::<u32>().unwrap_or(0) > 0)
+        .flat_map(|(count, &n)| {
+            let c = count.parse::<u32>().unwrap_or(0);
+            std::iter::repeat(c).take(n as usize)
+        })
+        .collect();
+    let avg_children_per_parent = if parents.is_empty() {
+        0.0
+    } else {
+        parents.iter().map(|&c| c as f64).sum::<f64>() / parents.len() as f64
+    };
+
+    let stats = TopologyStats {
+        total_agents,
+        root_agent_count,
+        max_depth,
+        active_count,
+        suspended_count,
+        deregistered_count,
+        team_count,
+        team_sizes,
+        depth_histogram,
+        team_size_histogram,
+        spawn_count_histogram,
+        orphan_count,
+        avg_children_per_parent,
+    };
+    state
+        .topology_stats_cache
+        .insert("stats", Arc::new(stats.clone()))
+        .await;
+    (StatusCode::OK, Json(stats))
 }
 
 // ---------------------------------------------------------------------------
@@ -632,74 +589,5 @@ mod tests {
     fn matches_status_filter_unknown_passes_all() {
         let status = AgentStatus::Active;
         assert!(matches_status_filter(&status, "unknown_value"));
-    }
-
-    #[test]
-    fn topology_stats_serializes() {
-        let stats = TopologyStats {
-            total_agents: 5,
-            root_agent_count: 2,
-            max_depth: 3,
-            active_count: 4,
-            suspended_count: 1,
-            deregistered_count: 0,
-            team_count: 2,
-            team_sizes: [("team-a".to_string(), 3), ("team-b".to_string(), 2)].into(),
-        };
-        let json = serde_json::to_value(&stats).unwrap();
-        assert_eq!(json["total_agents"], 5);
-        assert_eq!(json["root_agent_count"], 2);
-        assert_eq!(json["max_depth"], 3);
-        assert_eq!(json["team_count"], 2);
-    }
-
-    #[test]
-    fn agent_lineage_serializes() {
-        let lineage = AgentLineage {
-            agent_id: "aabbccdd00112233aabbccdd00112233".to_string(),
-            ancestor_count: 1,
-            ancestors: vec![LineageStep {
-                id: "00112233aabbccdd00112233aabbccdd".to_string(),
-                name: "root-agent".to_string(),
-                depth: 0,
-                delegation_reason: Some("spawned by orchestrator".to_string()),
-                team_id: Some("team-a".to_string()),
-            }],
-        };
-        let json = serde_json::to_value(&lineage).unwrap();
-        assert_eq!(json["ancestor_count"], 1);
-        assert_eq!(json["ancestors"][0]["name"], "root-agent");
-        assert_eq!(json["ancestors"][0]["depth"], 0);
-    }
-
-    #[test]
-    fn agent_node_omits_governance_level_when_none() {
-        let node = AgentNode {
-            id: "aa".to_string(),
-            name: "n".to_string(),
-            depth: 0,
-            status: "active".to_string(),
-            team_id: None,
-            governance_level: None,
-        };
-        let json = serde_json::to_value(&node).unwrap();
-        assert!(json.get("governance_level").is_none());
-    }
-
-    #[test]
-    fn agent_tree_leaf_has_empty_children() {
-        let leaf = AgentTree {
-            id: "aa".to_string(),
-            name: "leaf".to_string(),
-            depth: 3,
-            status: "active".to_string(),
-            team_id: None,
-            delegation_reason: None,
-            spawned_by_tool: None,
-            governance_level: None,
-            children: vec![],
-        };
-        let json = serde_json::to_value(&leaf).unwrap();
-        assert_eq!(json["children"].as_array().unwrap().len(), 0);
     }
 }

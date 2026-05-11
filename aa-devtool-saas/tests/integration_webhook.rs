@@ -9,7 +9,7 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::routing::post;
 use axum::Router;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tower::ServiceExt;
 
