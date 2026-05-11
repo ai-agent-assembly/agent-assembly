@@ -124,6 +124,21 @@ impl BudgetTracker {
         self
     }
 
+    /// Register a per-agent daily and/or monthly spend cap.
+    ///
+    /// Used by `check_and_decrement` to validate per-agent limits before committing
+    /// ancestor decrements. `daily_usd` and `monthly_usd` may each be `None` to
+    /// leave that window unconstrained for this specific agent.
+    pub fn with_agent_limit(
+        self,
+        agent_id: AgentId,
+        daily_usd: Option<Decimal>,
+        monthly_usd: Option<Decimal>,
+    ) -> Self {
+        self.agent_limits.insert(agent_id, AgentLimit { daily_usd, monthly_usd });
+        self
+    }
+
     /// Create a tracker pre-loaded with persisted state (call after `load_from_disk`).
     pub fn with_state(
         pricing: PricingTable,
