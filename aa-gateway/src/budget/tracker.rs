@@ -1087,6 +1087,40 @@ mod tests {
     }
 
     #[test]
+    fn check_and_decrement_concurrent_calls_preserve_sum_invariant() {
+        // 100 concurrent calls of $0.10 each → root entry must end at exactly $10.00.
+        use std::sync::Arc;
+        let root = AgentId::from_bytes([0xA0u8; 16]);
+        let child = AgentId::from_bytes([0xB0u8; 16]);
+
+        let t = Arc::new(
+            BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                .with_agent_limit(root, Some("1000.00".parse().unwrap()), None)
+                .with_agent_limit(child, Some("1000.00".parse().unwrap()), None),
+        );
+
+        let ancestors = vec![*child.as_bytes(), *root.as_bytes()];
+        let amount: Decimal = "0.10".parse().unwrap();
+
+        let mut handles = Vec::new();
+        for n in 0u8..100 {
+            let t2 = Arc::clone(&t);
+            let anc = ancestors.clone();
+            handles.push(std::thread::spawn(move || {
+                let leaf = AgentId::from_bytes([0xC0u8 | (n % 64), n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                t2.check_and_decrement(leaf, &anc, amount).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+        let expected: Decimal = "10.00".parse().unwrap();
+        assert_eq!(root_spent, expected, "root must accumulate all 100 × $0.10");
+    }
+
+    #[test]
     fn team_monthly_80_pct_fires_alert_with_team_id() {
         let t = tracker_with_team_monthly_limit("10.00");
         let mut rx = t.subscribe_alerts();
