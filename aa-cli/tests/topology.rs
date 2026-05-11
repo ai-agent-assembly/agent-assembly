@@ -122,3 +122,39 @@ async fn tree_returns_success() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+// ── topology team ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn team_returns_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/topology/team/team-alpha"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "team_id": "team-alpha",
+            "agent_count": 2,
+            "members": [
+                {"id": "aabb", "name": "agent-1", "depth": 0, "status": "active", "team_id": "team-alpha"},
+                {"id": "ccdd", "name": "agent-2", "depth": 1, "status": "active", "team_id": "team-alpha"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::team::TeamArgs {
+            team_id: "team-alpha".to_string(),
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::team::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
