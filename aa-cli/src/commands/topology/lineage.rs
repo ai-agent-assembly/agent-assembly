@@ -12,6 +12,10 @@ use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology lineage`.
 #[derive(Args)]
+#[command(after_help = "\
+Examples:
+  aasm topology lineage aabbccdd00112233aabbccdd00112233
+  aasm topology lineage aabbccdd00112233aabbccdd00112233 --output json")]
 pub struct LineageArgs {
     /// Agent ID (hex-encoded UUID).
     pub agent_id: String,
