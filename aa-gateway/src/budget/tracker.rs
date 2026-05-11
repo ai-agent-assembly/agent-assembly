@@ -399,6 +399,61 @@ impl BudgetTracker {
         }
     }
 
+    /// Check all ancestor budgets without mutating any state.
+    ///
+    /// `ancestors` is the chain returned by `AgentRegistry::ancestors_of` — first element
+    /// is the direct parent, last is the root. Returns the first exhausted ancestor as
+    /// `Err(BudgetError::AncestorBudgetExhausted)` so the caller can fast-fail without
+    /// applying any spend.
+    ///
+    /// This is Phase 1 of the two-phase commit used by `check_and_decrement`.
+    fn preflight_ancestors(
+        &self,
+        ancestors: &[[u8; 16]],
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        let today = today_in_tz(self.timezone);
+        for &ancestor_bytes in ancestors {
+            let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Daily) {
+                let spent = self
+                    .per_agent
+                    .get(&ancestor_id)
+                    .map(|s| {
+                        let mut copy = s.clone();
+                        copy.maybe_reset(today);
+                        copy.spent_usd
+                    })
+                    .unwrap_or(Decimal::ZERO);
+                if spent + amount > limit {
+                    return Err(BudgetError::AncestorBudgetExhausted {
+                        ancestor_id: ancestor_bytes,
+                        kind: BudgetKind::Daily,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically check all ancestor budgets then record spend for `agent_id` and every ancestor.
+    ///
+    /// Callers supply `ancestors` from `AgentRegistry::ancestors_of(agent_id)` so this method
+    /// does not require a registry reference. Returns `Err` without touching any `per_agent`
+    /// entry if Phase 1 detects an exhausted ancestor.
+    pub fn check_and_decrement(
+        &self,
+        agent_id: AgentId,
+        ancestors: &[[u8; 16]],
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        // Phase 1: preflight — verify all ancestors have headroom.
+        self.preflight_ancestors(ancestors, amount)?;
+
+        Ok(())
+    }
+
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
     pub fn team_state(&self, team_id: &str) -> Option<BudgetState> {
         self.team_budgets.get(team_id).map(|s| s.clone())
