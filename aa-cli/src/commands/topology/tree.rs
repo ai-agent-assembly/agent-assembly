@@ -16,7 +16,7 @@ pub struct TreeArgs {
     /// Root agent ID (hex-encoded UUID).
     pub agent_id: String,
     /// Maximum traversal depth from the root (default 10).
-    #[arg(long)]
+    #[arg(long = "max-depth")]
     pub depth: Option<u32>,
     /// Filter tree nodes by status.
     #[arg(long)]
@@ -30,7 +30,7 @@ pub struct TreeArgs {
 pub fn run(args: TreeArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     if let Some(d) = args.depth {
         if d == 0 {
-            eprintln!("error: --depth must be at least 1");
+            eprintln!("error: --max-depth must be at least 1");
             return ExitCode::FAILURE;
         }
     }
