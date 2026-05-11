@@ -285,6 +285,31 @@ fn eval_clause_safe(
         };
     }
 
+    // child.tool — string comparison against the union of tool_names across all
+    // direct children of the current agent. Returns false when context is absent.
+    if let FieldRef::ChildTool = field {
+        let tools = match policy_ctx {
+            Some(c) => c.child_tools(),
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => tools.iter().any(|t| t == rhs),
+            OpKind::Ne => tools.iter().all(|t| t != rhs),
+            OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
+            OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
+            _ => false,
+        };
+    }
+
+    // parent.risk_tier — Phase B stub; real resolution wired in AAASM-1024.
+    if let FieldRef::ParentRiskTier = field {
+        return false;
+    }
+
     // governance_level is the only field whose value type is not a string;
     // route it through an Ord-based comparison and return early.
     if let FieldRef::GovernanceLevel = field {
