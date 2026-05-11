@@ -1,0 +1,5 @@
+scope: global
+tools:
+  expensive_op:
+    allow: true
+    requires_approval_if: "team.budget_remaining < 50"

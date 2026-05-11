@@ -1,0 +1,5 @@
+scope: global
+tools:
+  delegate:
+    allow: true
+    requires_approval_if: "child.tool == \"bash\""
