@@ -7,6 +7,7 @@ use clap::Args;
 use super::render::{render, TeamTopology, TopologyPayload};
 use crate::client;
 use crate::config::ResolvedContext;
+use crate::error::CliError;
 use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology team`.
@@ -39,6 +40,10 @@ pub fn run(args: TeamArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitC
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let team: TeamTopology = match rt.block_on(client::get_json(ctx, &path)) {
         Ok(v) => v,
+        Err(CliError::Api(ref e)) if e.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+            eprintln!("error: team {} not found", args.team_id);
+            return ExitCode::from(4u8);
+        }
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;

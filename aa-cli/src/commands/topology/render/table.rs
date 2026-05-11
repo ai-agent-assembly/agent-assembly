@@ -54,13 +54,16 @@ pub fn render_team_table(team: &TeamTopology) {
     println!("Team: {}  |  Agents: {}\n", team.team_id, team.agent_count);
 
     if team.members.is_empty() {
-        println!("No agents in this team.");
+        println!("(no members)");
         return;
     }
 
+    let mut members: Vec<&super::AgentNode> = team.members.iter().collect();
+    members.sort_by_key(|a| a.id.as_str());
+
     let mut table = Table::new();
     table.set_header(vec!["AGENT_ID", "NAME", "DEPTH", "STATUS"]);
-    for a in &team.members {
+    for a in &members {
         table.add_row(vec![
             Cell::new(&a.id),
             Cell::new(&a.name),
@@ -91,10 +94,20 @@ pub fn render_lineage_table(lineage: &AgentLineage) {
             Cell::new(&step.id),
             Cell::new(&step.name),
             Cell::new(step.team_id.as_deref().unwrap_or("-")),
-            Cell::new(step.delegation_reason.as_deref().unwrap_or("-")),
+            Cell::new(
+                step.delegation_reason
+                    .as_deref()
+                    .map(|r| if r.len() > 60 { &r[..60] } else { r })
+                    .unwrap_or("-"),
+            ),
         ]);
     }
     println!("{table}");
+
+    let is_root = lineage.ancestors.len() == 1 && lineage.ancestors[0].depth == 0;
+    if is_root {
+        println!("\n(this is a root agent)");
+    }
 }
 
 /// Render aggregate topology statistics as a comfy-table.
