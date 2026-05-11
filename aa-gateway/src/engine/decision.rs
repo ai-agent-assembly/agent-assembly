@@ -51,6 +51,7 @@ pub(crate) fn evaluate_single_doc(
     doc: &PolicyDocument,
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
     // Stage 1 — Schedule
     if let Some(schedule) = &doc.schedule {
@@ -123,7 +124,7 @@ pub(crate) fn evaluate_single_doc(
     if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
         if let Some(tp) = doc.tools.get(name) {
             if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), None) {
+                if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx) {
                     return PolicyDecision::RequireApproval {
                         reason: format!("approval required for tool '{name}'"),
                         timeout_secs: doc.approval_timeout_secs,
@@ -153,6 +154,7 @@ pub fn merge_decisions(
     cascade: &[Arc<PolicyDocument>],
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
     if cascade.is_empty() {
         return PolicyDecision::Deny {
@@ -164,7 +166,7 @@ pub fn merge_decisions(
     let mut running = PolicyDecision::Allow;
 
     for doc in cascade {
-        let verdict = evaluate_single_doc(doc, ctx, action);
+        let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx);
         match verdict {
             // Short-circuit: Deny always wins.
             PolicyDecision::Deny { .. } => return verdict,

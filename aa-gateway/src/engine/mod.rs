@@ -497,11 +497,22 @@ impl PolicyEngine {
         // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
+        let pctx = self.registry.as_ref().map(|reg| {
+            crate::policy::context::ProductionPolicyContext::new(
+                reg.as_ref(),
+                self.budget.as_ref(),
+                *ctx.agent_id.as_bytes(),
+                ctx.team_id.clone(),
+            )
+        });
+        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
+            pctx.as_ref().map(|c| c as _);
+
         let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
         } else {
             // Stages 1–3 and 5: stateless per-doc rules merged across cascade.
-            let v = merge_decisions(&cascade, ctx, action);
+            let v = merge_decisions(&cascade, ctx, action, pctx_dyn);
             self.decision_cache.insert(cache_key, v.clone());
             v
         };
