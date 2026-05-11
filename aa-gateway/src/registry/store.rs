@@ -147,6 +147,9 @@ pub struct AgentRegistry {
     /// an agent suspended for BudgetExceeded retains that reason when also
     /// suspended via ParentSuspended cascade.
     suspend_reasons: DashMap<[u8; 16], Vec<super::SuspendReason>>,
+    /// Per-team maximum agent age in seconds. Agents older than this threshold
+    /// are force-deregistered by `sweep_aged_agents`.
+    team_max_age_secs: DashMap<String, u64>,
 }
 
 impl AgentRegistry {
@@ -158,7 +161,13 @@ impl AgentRegistry {
             team_index: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
+            team_max_age_secs: DashMap::new(),
         }
+    }
+
+    /// Configure the maximum allowed age (in seconds) for agents belonging to `team_id`.
+    pub fn set_team_max_age(&self, team_id: &str, max_secs: u64) {
+        self.team_max_age_secs.insert(team_id.to_owned(), max_secs);
     }
 
     /// Validate that registering `agent_id` with `parent_key` does not introduce a cycle
