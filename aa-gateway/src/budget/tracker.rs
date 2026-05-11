@@ -1054,6 +1054,18 @@ mod tests {
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
     }
 
+    // ── subtree_spend (AAASM-1025) ─────────────────────────────────────
+
+    #[test]
+    fn subtree_spend_leaf_agent_equals_own_spend() {
+        let t = new_tracker();
+        let id = agent(80);
+        t.record_raw_spend(id, None, "3.00".parse().unwrap());
+        let result = t.subtree_spend(&id, &[]);
+        assert_eq!(result.usd, "3.00".parse::<Decimal>().unwrap());
+        assert_eq!(result.agents_counted, 1);
+    }
+
     // ── check_and_decrement (AAASM-1023) ───────────────────────────────
 
     #[test]
