@@ -335,9 +335,48 @@ fn eval_clause_safe(
         };
     }
 
-    // parent.risk_tier — Phase B stub; real resolution wired in AAASM-1024.
+    // agent.risk_tier — ordinal comparison against the current agent's risk tier.
+    // Returns false (null-safe no-match) when context or registry lookup is absent.
+    if let FieldRef::AgentRiskTier = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_risk_tier()) {
+            Some(t) => t,
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Tier(t) => *t,
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
+    // parent.risk_tier — ordinal comparison against the parent agent's risk tier.
+    // Returns false when context is absent, agent has no parent, or parent not in registry.
     if let FieldRef::ParentRiskTier = field {
-        return false;
+        let lhs = match policy_ctx.and_then(|c| c.parent_risk_tier()) {
+            Some(t) => t,
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Tier(t) => *t,
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
     }
 
     // governance_level is the only field whose value type is not a string;
