@@ -62,6 +62,34 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     }
 }
 
+/// Minimal test double for [`PolicyContext`] that returns canned values.
+#[cfg(test)]
+pub struct FakePolicyContext {
+    pub depth: Option<u32>,
+    pub team_active: Option<u64>,
+    pub team_budget: Option<f64>,
+    pub child_tools: Vec<String>,
+}
+
+#[cfg(test)]
+impl PolicyContext for FakePolicyContext {
+    fn agent_depth(&self) -> Option<u32> {
+        self.depth
+    }
+
+    fn team_active_agents(&self) -> Option<u64> {
+        self.team_active
+    }
+
+    fn team_budget_remaining(&self) -> Option<f64> {
+        self.team_budget
+    }
+
+    fn child_tools(&self) -> Vec<String> {
+        self.child_tools.clone()
+    }
+}
+
 /// Provides runtime values for graph-aware policy condition variables.
 ///
 /// Production code wires this to `AgentRegistry` and `BudgetTracker` via
