@@ -31,6 +31,17 @@ pub enum Model {
     CommandR,
 }
 
+/// Discriminates which budget window a limit or check applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BudgetKind {
+    /// Per-calendar-day spend window, reset at midnight in the configured timezone.
+    Daily,
+    /// Per-calendar-month spend window, reset on the first of each month.
+    Monthly,
+    /// Aggregate across all windows (used for subtree-level checks).
+    Global,
+}
+
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetStatus {
