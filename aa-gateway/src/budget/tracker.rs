@@ -188,6 +188,27 @@ impl BudgetTracker {
         }
     }
 
+    /// Return the effective daily or monthly limit for `agent_id`.
+    ///
+    /// Checks `agent_limits` first, then falls back to the global tracker limits.
+    /// Returns `None` when neither per-agent nor global limit is configured for `kind`.
+    fn resolve_limit(&self, agent_id: &AgentId, kind: crate::budget::types::BudgetKind) -> Option<Decimal> {
+        use crate::budget::types::BudgetKind;
+        match kind {
+            BudgetKind::Daily => self
+                .agent_limits
+                .get(agent_id)
+                .and_then(|l| l.daily_usd)
+                .or(self.daily_limit_usd),
+            BudgetKind::Monthly => self
+                .agent_limits
+                .get(agent_id)
+                .and_then(|l| l.monthly_usd)
+                .or(self.monthly_limit_usd),
+            BudgetKind::Global => None,
+        }
+    }
+
     /// Subscribe to budget threshold alert events (80% and 95% crossings).
     pub fn subscribe_alerts(&self) -> broadcast::Receiver<BudgetAlert> {
         self.alert_tx.subscribe()
