@@ -725,6 +725,48 @@ mod tests {
         assert!(evaluate("agent.depth == 0", &tool("any"), None, Some(&ctx)));
     }
 
+    fn fake_team_ctx(active: Option<u64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: active,
+            team_budget: None,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn team_active_agents_gt_matches() {
+        let ctx = fake_team_ctx(Some(6));
+        assert!(evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_active_agents_gt_no_match() {
+        let ctx = fake_team_ctx(Some(3));
+        assert!(!evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_budget_ctx(remaining: Option<f64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: remaining,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_matches_when_low() {
+        let ctx = fake_budget_ctx(Some(50.0));
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_no_match_when_sufficient() {
+        let ctx = fake_budget_ctx(Some(200.0));
+        assert!(!evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
     #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
