@@ -45,6 +45,7 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "team.active_agents",
     "team.budget_remaining",
     "child.tool",
+    "child.risk_tier",
     "parent.risk_tier",
 ];
 
@@ -64,6 +65,7 @@ enum FieldRef {
     TeamActiveAgents,
     TeamBudgetRemaining,
     ChildTool,
+    ChildRiskTier,
     AgentRiskTier,
     ParentRiskTier,
 }
@@ -187,6 +189,7 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
                 "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
                 "child.tool" => Token::Field(FieldRef::ChildTool),
+                "child.risk_tier" => Token::Field(FieldRef::ChildRiskTier),
                 "agent.risk_tier" => Token::Field(FieldRef::AgentRiskTier),
                 "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
@@ -361,6 +364,28 @@ fn eval_clause_safe(
     // Returns false when context is absent, agent has no parent, or parent not in registry.
     if let FieldRef::ParentRiskTier = field {
         let lhs = match policy_ctx.and_then(|c| c.parent_risk_tier()) {
+            Some(t) => t,
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Tier(t) => *t,
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
+    // child.risk_tier — ordinal comparison against the proposed risk tier of the
+    // child agent being spawned. Returns false when no spawn context is supplied.
+    if let FieldRef::ChildRiskTier = field {
+        let lhs = match policy_ctx.and_then(|c| c.child_risk_tier()) {
             Some(t) => t,
             None => return false,
         };
@@ -887,6 +912,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
         }
     }
 
@@ -916,6 +942,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
         }
     }
 
@@ -939,6 +966,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
         }
     }
 
@@ -962,6 +990,7 @@ mod tests {
             child_tools: tools.into_iter().map(String::from).collect(),
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
         }
     }
 
@@ -993,6 +1022,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            child_risk_tier: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
@@ -1016,6 +1046,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: agent,
             parent_risk_tier: parent,
+            child_risk_tier: None,
         }
     }
 
@@ -1055,6 +1086,52 @@ mod tests {
         assert!(!evaluate("agent.risk_tier == High", &tool("any"), None, None));
     }
 
+    // ── child.risk_tier tests ────────────────────────────────────────────────
+
+    fn fake_child_tier_ctx(child: Option<aa_core::RiskTier>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            child_risk_tier: child,
+        }
+    }
+
+    #[test]
+    fn child_risk_tier_gt_denies_escalation() {
+        // Spawn proposes High; parent is Medium → child.risk_tier > Medium fires.
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::High));
+        assert!(evaluate("child.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_same_tier_does_not_fire() {
+        // Spawn proposes Medium; parent is Medium → child.risk_tier > Medium does not fire.
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::Medium));
+        assert!(!evaluate("child.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_eq_matches_exact() {
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::Critical));
+        assert!(evaluate("child.risk_tier == Critical", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_null_safe_when_no_spawn_context() {
+        // No spawn context supplied → condition does not fire (null-safe no-match).
+        let ctx = fake_child_tier_ctx(None);
+        assert!(!evaluate("child.risk_tier > Low", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_null_safe_no_context_at_all() {
+        assert!(!evaluate("child.risk_tier == High", &tool("any"), None, None));
+    }
+
     // ── validate_variables tests ──────────────────────────────────────────
 
     #[test]
@@ -1062,6 +1139,8 @@ mod tests {
         assert!(validate_variables("agent.depth > 2").is_ok());
         assert!(validate_variables("team.active_agents == 5").is_ok());
         assert!(validate_variables("child.tool == \"bash\"").is_ok());
+        assert!(validate_variables("child.risk_tier > Medium").is_ok());
+        assert!(validate_variables("child.risk_tier == Critical").is_ok());
     }
 
     #[test]

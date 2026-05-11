@@ -16,6 +16,9 @@ pub struct ProductionPolicyContext<'a> {
     budget: &'a BudgetTracker,
     agent_key: [u8; 16],
     team_id: Option<String>,
+    /// Proposed risk tier of the child agent being spawned (from the spawn
+    /// request payload). `None` when the evaluation is not for a spawn action.
+    proposed_child_risk_tier: Option<aa_core::RiskTier>,
 }
 
 impl<'a> ProductionPolicyContext<'a> {
@@ -30,6 +33,7 @@ impl<'a> ProductionPolicyContext<'a> {
             budget,
             agent_key,
             team_id,
+            proposed_child_risk_tier: None,
         }
     }
 }
@@ -77,6 +81,10 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
         let parent = self.registry.get(&parent_key)?;
         aa_core::RiskTier::from_proto_i32(parent.risk_tier)
     }
+
+    fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        self.proposed_child_risk_tier
+    }
 }
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
@@ -88,6 +96,7 @@ pub struct FakePolicyContext {
     pub child_tools: Vec<String>,
     pub agent_risk_tier: Option<aa_core::RiskTier>,
     pub parent_risk_tier: Option<aa_core::RiskTier>,
+    pub child_risk_tier: Option<aa_core::RiskTier>,
 }
 
 #[cfg(test)]
@@ -114,6 +123,10 @@ impl PolicyContext for FakePolicyContext {
 
     fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
         self.parent_risk_tier
+    }
+
+    fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        self.child_risk_tier
     }
 }
 
@@ -162,4 +175,8 @@ pub trait PolicyContext: Send + Sync {
     /// Risk tier of the current agent's parent. Returns `None` when the agent
     /// has no parent or the parent is not in the registry.
     fn parent_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// Proposed risk tier of the child agent being spawned, supplied in the
+    /// spawn action payload. Returns `None` when the evaluation is not for a
+    /// spawn action or no tier was specified.
+    fn child_risk_tier(&self) -> Option<aa_core::RiskTier>;
 }
