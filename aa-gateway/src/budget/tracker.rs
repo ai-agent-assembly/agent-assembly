@@ -1053,6 +1053,40 @@ mod tests {
     }
 
     #[test]
+    fn check_and_decrement_ancestor_exhausted_blocks_all_decrements() {
+        // root has a $5 daily limit and is already at $5. Spending $1 more must be rejected.
+        // The child and grandchild entries must remain untouched.
+        let root = agent(73);
+        let child = agent(74);
+        let grandchild = agent(75);
+
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_agent_limit(root, Some("5.00".parse().unwrap()), None)
+            .with_agent_limit(child, Some("50.00".parse().unwrap()), None);
+
+        // Pre-seed root at exactly its limit.
+        t.per_agent
+            .entry(root)
+            .or_insert_with(|| BudgetState::new_for_date(today_in_tz(chrono_tz::UTC)))
+            .spent_usd = "5.00".parse().unwrap();
+
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let result = t.check_and_decrement(grandchild, &ancestors, "1.00".parse().unwrap());
+
+        assert!(
+            matches!(
+                result,
+                Err(crate::budget::types::BudgetError::AncestorBudgetExhausted { .. })
+            ),
+            "expected AncestorBudgetExhausted, got: {:?}",
+            result
+        );
+        // Child and grandchild entries must not have been created or modified.
+        assert!(t.per_agent.get(&child).is_none());
+        assert!(t.per_agent.get(&grandchild).is_none());
+    }
+
+    #[test]
     fn team_monthly_80_pct_fires_alert_with_team_id() {
         let t = tracker_with_team_monthly_limit("10.00");
         let mut rx = t.subscribe_alerts();
