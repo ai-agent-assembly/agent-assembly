@@ -690,6 +690,166 @@ async fn root_agent_id_chains_3_levels() {
     );
 }
 
+// ── TTL / sweep integration tests ─────────────────────────────────────────
+
+/// Shared helper: start a server with an audit channel wired in.
+/// Returns (addr, registry, audit_rx).
+async fn start_server_with_audit() -> (
+    SocketAddr,
+    Arc<AgentRegistry>,
+    tokio::sync::mpsc::Receiver<aa_core::AuditEntry>,
+) {
+    let registry = Arc::new(AgentRegistry::new());
+    let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<aa_core::AuditEntry>(64);
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_audit_tx(audit_tx);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(AgentLifecycleServiceServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (addr, registry, audit_rx)
+}
+
+/// Helper: build a minimal AgentRecord with controllable registered_at.
+fn aged_record_for_test(
+    agent_key: [u8; 16],
+    team_id: &str,
+    registered_at: chrono::DateTime<chrono::Utc>,
+) -> aa_gateway::AgentRecord {
+    use std::collections::BTreeMap;
+    aa_gateway::AgentRecord {
+        agent_id: agent_key,
+        name: "ttl-test-agent".into(),
+        framework: "test".into(),
+        version: "0.0.1".into(),
+        risk_tier: 0,
+        tool_names: vec![],
+        public_key: test_ed25519_public_key_hex(),
+        credential_token: "sweep-test-token".into(),
+        metadata: BTreeMap::new(),
+        registered_at,
+        last_heartbeat: registered_at,
+        status: aa_gateway::AgentStatus::Active,
+        pid: None,
+        session_count: 0,
+        last_event: None,
+        policy_violations_count: 0,
+        active_sessions: vec![],
+        recent_events: Default::default(),
+        recent_traces: vec![],
+        layer: None,
+        governance_level: aa_core::GovernanceLevel::default(),
+        parent_agent_id: None,
+        team_id: Some(team_id.to_owned()),
+        depth: 0,
+        delegation_reason: None,
+        spawned_by_tool: None,
+        root_agent_id: Some(agent_key),
+        children: vec![],
+        parent_key: None,
+    }
+}
+
+/// Heartbeat triggers sweep and deregisters agents past max_agent_age.
+#[tokio::test]
+async fn heartbeat_triggers_sweep_and_deregisters_aged_agent() {
+    use aa_gateway::registry::convert::proto_agent_id_to_key;
+
+    let (addr, registry, _audit_rx) = start_server_with_audit().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    // Insert an agent registered 2 hours ago; max age is 1 hour.
+    let proto_id = ProtoAgentId {
+        org_id: "org-sweep".into(),
+        team_id: "team-sweep".into(),
+        agent_id: "aged-agent".into(),
+    };
+    let agent_key = proto_agent_id_to_key(&proto_id);
+    let registered_at = chrono::Utc::now() - chrono::Duration::hours(2);
+    let record = aged_record_for_test(agent_key, "team-sweep", registered_at);
+    registry.register(record).unwrap();
+    registry.set_team_max_age("team-sweep", 3600); // 1 hour
+
+    // Send a heartbeat on behalf of the aged agent. This triggers sweep.
+    client
+        .heartbeat(HeartbeatRequest {
+            agent_id: Some(proto_id.clone()),
+            credential_token: "sweep-test-token".into(),
+            active_runs: 0,
+            actions_count: 0,
+        })
+        .await
+        .unwrap();
+
+    // After the heartbeat, the agent must be Deregistered.
+    assert_eq!(
+        registry.get(&agent_key).unwrap().status,
+        aa_gateway::AgentStatus::Deregistered,
+        "aged agent must be deregistered by sweep during heartbeat"
+    );
+}
+
+/// Heartbeat sweep emits AgentForceDeregistered audit entry for each evicted agent.
+#[tokio::test]
+async fn heartbeat_sweep_emits_audit_event_for_aged_agent() {
+    use aa_core::AuditEventType;
+    use aa_gateway::registry::convert::proto_agent_id_to_key;
+
+    let (addr, registry, mut audit_rx) = start_server_with_audit().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let proto_id = ProtoAgentId {
+        org_id: "org-audit".into(),
+        team_id: "team-audit".into(),
+        agent_id: "audit-aged-agent".into(),
+    };
+    let agent_key = proto_agent_id_to_key(&proto_id);
+    let registered_at = chrono::Utc::now() - chrono::Duration::hours(3);
+    let record = aged_record_for_test(agent_key, "team-audit", registered_at);
+    registry.register(record).unwrap();
+    registry.set_team_max_age("team-audit", 3600); // 1 hour
+
+    client
+        .heartbeat(HeartbeatRequest {
+            agent_id: Some(proto_id),
+            credential_token: "sweep-test-token".into(),
+            active_runs: 0,
+            actions_count: 0,
+        })
+        .await
+        .unwrap();
+
+    // Expect exactly one AgentForceDeregistered audit entry.
+    let entry = tokio::time::timeout(std::time::Duration::from_secs(1), audit_rx.recv())
+        .await
+        .expect("timeout waiting for audit entry")
+        .expect("audit channel closed");
+
+    assert_eq!(
+        entry.event_type(),
+        AuditEventType::AgentForceDeregistered,
+        "expected AgentForceDeregistered event"
+    );
+    assert!(
+        entry.payload().contains("age_exceeded"),
+        "payload must include reason: {}",
+        entry.payload()
+    );
+}
+
 #[tokio::test]
 async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
     let (addr, _registry) = start_server().await;
