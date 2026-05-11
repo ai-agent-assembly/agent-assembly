@@ -159,6 +159,57 @@ impl AssemblyHandle {
         Ok(())
     }
 
+    /// Report a directed topology edge between two agents.
+    ///
+    /// Called by framework adapter hooks (LangGraph, OpenAI Agents, MCP) when
+    /// they detect inter-agent interactions. The edge is encoded into an
+    /// `AuditEvent` with structured labels and forwarded to the audit pipeline;
+    /// the gateway extracts and persists it into the edge store.
+    ///
+    /// Args:
+    ///     source_agent_id: Hex-encoded ID of the originating agent.
+    ///     target_agent_id: Hex-encoded ID of the target agent.
+    ///     edge_type:       Relationship kind — one of `delegates_to`, `calls`,
+    ///                      `reads`, `writes`, `approves`, `messages`.
+    ///     metadata_json:   Optional JSON string with extra context.
+    #[pyo3(signature = (source_agent_id, target_agent_id, edge_type, metadata_json=None))]
+    pub fn report_edge(
+        &self,
+        source_agent_id: String,
+        target_agent_id: String,
+        edge_type: String,
+        metadata_json: Option<String>,
+    ) -> PyResult<()> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("lock poisoned: {e}")))?;
+
+        let ipc = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("AssemblyHandle is shut down; cannot report events")
+        })?;
+
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("__aa_edge_source__".to_string(), source_agent_id);
+        labels.insert("__aa_edge_target__".to_string(), target_agent_id);
+        labels.insert("__aa_edge_type__".to_string(), edge_type);
+        if let Some(m) = metadata_json {
+            labels.insert("__aa_edge_metadata__".to_string(), m);
+        }
+
+        let event = aa_proto::assembly::audit::v1::AuditEvent {
+            event_id: unique_event_id(),
+            labels,
+            ..Default::default()
+        };
+
+        ipc.cmd_tx
+            .blocking_send(IpcCommand::SendEvent(Box::new(event)))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("failed to enqueue event: {e}")))?;
+
+        Ok(())
+    }
+
     /// Shut down the IPC connection and join the background thread.
     ///
     /// Safe to call multiple times — subsequent calls are no-ops.

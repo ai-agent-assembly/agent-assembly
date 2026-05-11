@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT OR IGNORE INTO pending_escalations\n                (approval_id, team_id, escalation_role, from_role, escalate_at)\n            VALUES (?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "c1d68fc06230e548b05e7a0e11877e9f167cab28cb4c46d54b58ad12d8716b01"
+}

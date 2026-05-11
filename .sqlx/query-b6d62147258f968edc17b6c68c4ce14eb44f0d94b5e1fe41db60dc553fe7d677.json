@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pending_escalations WHERE approval_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b6d62147258f968edc17b6c68c4ce14eb44f0d94b5e1fe41db60dc553fe7d677"
+}

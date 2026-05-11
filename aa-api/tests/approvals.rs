@@ -20,6 +20,8 @@ fn make_approval_request(timeout_secs: u64) -> ApprovalRequest {
             reason: "timed out".to_string(),
         },
         team_id: None,
+        timeout_override_secs: None,
+        escalation_role_override: None,
     }
 }
 

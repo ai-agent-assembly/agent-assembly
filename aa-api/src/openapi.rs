@@ -8,7 +8,7 @@ use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
-use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, topology, traces};
+use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policies, topology, traces};
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
 #[derive(OpenApi)]
@@ -34,7 +34,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, topo
         (name = "alerts", description = "Governance alerts"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
-        (name = "topology", description = "Agent topology — tree, team, lineage, and statistics queries"),
+        (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
     ),
     paths(
         crate::routes::health::health,
@@ -60,6 +60,9 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, topo
         topology::get_team,
         topology::get_lineage,
         topology::get_stats,
+        edges::report_edge,
+        edges::list_agent_edges,
+        edges::get_agent_graph,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -93,6 +96,12 @@ use crate::routes::{agents, alerts, approvals, auth, costs, logs, policies, topo
         topology::AgentLineage,
         topology::LineageStep,
         topology::TopologyStats,
+        edges::ReportEdgeRequest,
+        edges::ReportEdgeResponse,
+        edges::EdgeResponse,
+        edges::EdgeListResponse,
+        edges::GraphNode,
+        edges::GraphResponse,
         GovernanceEvent,
         EventType,
         ViolationPayload,

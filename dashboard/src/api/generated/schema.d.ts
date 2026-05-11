@@ -48,6 +48,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List directed edges for an agent.
+         * @description Returns edges ordered newest-first.  `direction` defaults to `outgoing`.
+         *     `limit` defaults to 100 and is capped at 1000.  `before` filters to edges
+         *     recorded before the given ISO 8601 timestamp.
+         */
+        get: operations["list_agent_edges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Return the topology subgraph reachable from an agent.
+         * @description Performs BFS outward from `id` up to `depth` hops (default 2, max 5).
+         *     Returns all unique nodes reachable and the edges between them, with
+         *     `is_cross_team` computed via a batched registry lookup.
+         */
+        get: operations["get_agent_graph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/resume": {
         parameters: {
             query?: never;
@@ -299,6 +343,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topology/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a new directed topology edge.
+         * @description Used by SDK emitters (Python, Node.js, Go) to push observed
+         *     agent-to-agent interactions into the gateway edge store.
+         */
+        post: operations["report_edge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topology/lineage/{agent_id}": {
         parameters: {
             query?: never;
@@ -307,10 +372,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from agent up to root.
-         * @description Returns the ordered list of ancestors for the given agent, starting from its
-         *     direct parent and ending at the root agent (depth 0). Each step includes the
-         *     delegation reason and team membership. Returns 404 if the agent is unknown.
+         * `GET /api/v1/topology/lineage/{agent_id}` — ancestor chain from root down to agent.
+         * @description Returns the ordered ancestry for the given agent, starting from the root
+         *     (depth 0) and ending with the requested agent as the last element.
+         *     A root agent returns a list of length 1 containing only itself.
+         *     Returns 404 if the agent is unknown.
          */
         get: operations["get_lineage"];
         put?: never;
@@ -353,10 +419,9 @@ export interface paths {
         };
         /**
          * `GET /api/v1/topology/stats` — aggregate topology statistics.
-         * @description Returns aggregate counts across the entire registry: total agents, root
-         *     agents, maximum delegation depth, per-status counts, and per-team agent
-         *     counts. This endpoint never returns 404; an empty registry returns all
-         *     zero counts.
+         * @description Returns aggregate counts and histograms across the entire registry.
+         *     Includes depth distribution, team-size distribution, child-count distribution,
+         *     orphan count, and average children per parent. Never returns 404.
          */
         get: operations["get_stats"];
         put?: never;
@@ -401,6 +466,7 @@ export interface paths {
          * @description Recursively walks the delegation tree starting from the given agent, up to
          *     a configurable depth (default 10, maximum 10). Nodes can be filtered by
          *     status. Returns a nested JSON tree with each agent's children inline.
+         *     Returns 422 if the agent exists but is not a root (depth > 0).
          */
         get: operations["get_tree"];
         put?: never;
@@ -498,16 +564,73 @@ export interface components {
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
         };
-        /** @description An agent's complete ancestry chain from direct parent up to root. */
+        /**
+         * @description An agent's complete ancestry chain ordered root-first.
+         *
+         *     The first element is the root agent; the last element is the requested
+         *     agent itself. A root agent returns a list of length 1 containing only itself.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "agent_id": "aabbccdd00112233aabbccdd00112233",
+         *       "ancestor_count": 2,
+         *       "ancestors": [
+         *         { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null },
+         *         { "id": "aabbccdd00112233aabbccdd00112233", "name": "child", "depth": 1, "delegation_reason": "orchestrate", "team_id": "team-alpha" }
+         *       ]
+         *     }
+         *     ```
+         * @example {
+         *       "agent_id": "aabbccdd00112233aabbccdd00112233",
+         *       "ancestor_count": 2,
+         *       "ancestors": [
+         *         {
+         *           "delegation_reason": null,
+         *           "depth": 0,
+         *           "id": "root000000000000root000000000000",
+         *           "name": "root",
+         *           "team_id": null
+         *         },
+         *         {
+         *           "delegation_reason": "orchestrate",
+         *           "depth": 1,
+         *           "id": "aabbccdd00112233aabbccdd00112233",
+         *           "name": "child",
+         *           "team_id": "team-alpha"
+         *         }
+         *       ]
+         *     }
+         */
         AgentLineage: {
             /** @description The subject agent's hex-encoded UUID. */
             agent_id: string;
-            /** @description Number of ancestors — 0 if the agent is a root. */
+            /** @description Number of entries in `ancestors` (includes the agent itself). */
             ancestor_count: number;
-            /** @description Ordered ancestors: index 0 is the direct parent, last element is the root. */
+            /** @description Ordered ancestry: index 0 is the root agent, last element is the requested agent. */
             ancestors: components["schemas"]["LineageStep"][];
         };
-        /** @description Minimal agent representation used in list and tree responses. */
+        /**
+         * @description Minimal agent representation used in list and tree responses.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "my-agent",
+         *       "depth": 1,
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         *     ```
+         * @example {
+         *       "depth": 1,
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "my-agent",
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         */
         AgentNode: {
             /**
              * Format: int32
@@ -569,7 +692,33 @@ export interface components {
             /** @description Semver version string. */
             version: string;
         };
-        /** @description Recursive tree node representing an agent and all its descendants. */
+        /**
+         * @description Recursive tree node representing an agent and all its descendants.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "root-agent",
+         *       "depth": 0,
+         *       "status": "active",
+         *       "team_id": "team-alpha",
+         *       "delegation_reason": null,
+         *       "spawned_by_tool": null,
+         *       "children": []
+         *     }
+         *     ```
+         * @example {
+         *       "children": [],
+         *       "delegation_reason": null,
+         *       "depth": 0,
+         *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "name": "root-agent",
+         *       "spawned_by_tool": null,
+         *       "status": "active",
+         *       "team_id": "team-alpha"
+         *     }
+         */
         AgentTree: {
             children: components["schemas"]["AgentTree"][];
             /** @description Reason this agent was delegated from its parent, if recorded. */
@@ -643,8 +792,11 @@ export interface components {
             id: string;
             /** @description Human-readable reason for the approval request. */
             reason: string;
+            routing_status?: null | components["schemas"]["RoutingStatusInfo"];
             /** @description Current status: "pending", "approved", or "rejected". */
             status: string;
+            /** @description Team the approval was routed to, if known. */
+            team_id?: string | null;
         };
         /**
          * @description Payload for `event_type: "budget"` events.
@@ -705,6 +857,35 @@ export interface components {
             /** @description Optional reason for the decision. */
             reason?: string | null;
         };
+        /** @description Paginated list of directed edges for an agent. */
+        EdgeListResponse: {
+            /** @description The queried agent ID. */
+            agent_id: string;
+            /** @description Total number of edges returned. */
+            count: number;
+            /** @description The list of matching edges, newest first. */
+            edges: components["schemas"]["EdgeResponse"][];
+        };
+        /** @description A single directed edge between two agents. */
+        EdgeResponse: {
+            /** @description ISO 8601 timestamp when the edge was recorded. */
+            created_at: string;
+            /** @description Edge semantic type (snake_case). */
+            edge_type: string;
+            /**
+             * Format: int64
+             * @description Auto-assigned edge identifier.
+             */
+            id: number;
+            /** @description Whether the edge crosses team boundaries. */
+            is_cross_team: boolean;
+            /** @description Optional freeform metadata attached at emission time. */
+            metadata?: unknown;
+            /** @description Hex-encoded source agent ID. */
+            source_agent_id: string;
+            /** @description Hex-encoded target agent ID. */
+            target_agent_id: string;
+        };
         /**
          * @description Discriminated union of all possible `GovernanceEvent.payload` shapes.
          *
@@ -748,6 +929,20 @@ export interface components {
             /** @description Timestamp when the event was received by the API layer (ISO 8601). */
             timestamp: string;
         };
+        /** @description A node in the topology subgraph. */
+        GraphNode: {
+            /** @description Hex-encoded agent ID. */
+            id: string;
+        };
+        /** @description Subgraph reachable from an agent within a depth bound. */
+        GraphResponse: {
+            /** @description All edges between nodes in this subgraph. */
+            edges: components["schemas"]["EdgeResponse"][];
+            /** @description All unique agent nodes reachable within `depth` hops. */
+            nodes: components["schemas"]["GraphNode"][];
+            /** @description Root agent ID used for the BFS. */
+            root_agent_id: string;
+        };
         /** @description Response body for the health endpoint. */
         HealthResponse: {
             /**
@@ -772,20 +967,34 @@ export interface components {
             /** @description Gateway version (semver from Cargo.toml). */
             version: string;
         };
-        /** @description One step in an agent's ancestry chain. */
+        /**
+         * @description One step in an agent's ancestry chain.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "id": "root000000000000root000000000000", "name": "root", "depth": 0, "delegation_reason": null, "team_id": null }
+         *     ```
+         * @example {
+         *       "delegation_reason": null,
+         *       "depth": 0,
+         *       "id": "root000000000000root000000000000",
+         *       "name": "root",
+         *       "team_id": null
+         *     }
+         */
         LineageStep: {
-            /** @description Reason the next agent in the chain was delegated from this ancestor. */
+            /** @description Reason the next agent in the chain was delegated from this node. */
             delegation_reason?: string | null;
             /**
              * Format: int32
-             * @description Delegation depth of this ancestor.
+             * @description Delegation depth of this node.
              */
             depth: number;
-            /** @description Hex-encoded UUID of this ancestor. */
+            /** @description Hex-encoded UUID of this ancestor (or the subject agent). */
             id: string;
-            /** @description Human-readable name of this ancestor. */
+            /** @description Human-readable name. */
             name: string;
-            /** @description Team this ancestor belongs to. */
+            /** @description Team this node belongs to. */
             team_id?: string | null;
         };
         /** @description JSON representation of an audit log entry. */
@@ -858,6 +1067,25 @@ export interface components {
             /** @description ISO 8601 timestamp when the trace session started. */
             timestamp: string;
         };
+        /** @description Request body for recording a new directed edge. */
+        ReportEdgeRequest: {
+            /** @description Edge semantic type (e.g. `"messages"`, `"delegates_to"`). */
+            edge_type: string;
+            /** @description Optional metadata JSON string. */
+            metadata_json?: string | null;
+            /** @description Hex-encoded source agent ID. */
+            source_agent_id: string;
+            /** @description Hex-encoded target agent ID. */
+            target_agent_id: string;
+        };
+        /** @description Response after recording a new edge. */
+        ReportEdgeResponse: {
+            /**
+             * Format: int64
+             * @description Auto-assigned edge identifier.
+             */
+            id: number;
+        };
         /** @description Response from `POST /api/v1/agents/:id/resume`. */
         ResumeResponse: {
             /** @description Hex-encoded agent UUID. */
@@ -866,6 +1094,41 @@ export interface components {
             new_status: string;
             /** @description Agent status before the resume operation. */
             previous_status: string;
+        };
+        /** @description One step in the routing history of an approval request. */
+        RoutingHistoryEntry: {
+            /** @description Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`. */
+            action: string;
+            /**
+             * Format: int64
+             * @description Unix epoch timestamp (seconds) when this step occurred.
+             */
+            at: number;
+            /** @description Role that previously held the request, if any. */
+            from_role?: string | null;
+            /** @description Role the request was routed or escalated to. */
+            to_role: string;
+        };
+        /** @description Structured routing metadata set by the approval router. */
+        RoutingStatusInfo: {
+            /**
+             * Format: int64
+             * @description Unix timestamp (seconds) at which escalation is scheduled to fire.
+             */
+            escalate_at?: number | null;
+            /** @description Full routing and escalation history for this request. */
+            history: components["schemas"]["RoutingHistoryEntry"][];
+            /**
+             * Format: int64
+             * @description Unix timestamp (seconds) when the initial routing decision was recorded.
+             */
+            routed_at?: number | null;
+            /** @description Routing status string: `"routed_to_team_admin"`, `"routed_to_org_admin"`, or `"escalated_to_<role>"`. */
+            status: string;
+            /** @description Role the request is currently assigned to (e.g. `"TeamAdmin"`, `"OrgAdmin"`). */
+            target_role?: string | null;
+            /** @description Team the request was routed to, if known. */
+            target_team_id?: string | null;
         };
         /**
          * @description Authorization scope level for API operations.
@@ -900,7 +1163,19 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
-        /** @description High-level statistics for a single team. */
+        /**
+         * @description High-level statistics for a single team.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }
+         *     ```
+         * @example {
+         *       "agent_count": 7,
+         *       "root_agent_count": 1,
+         *       "team_id": "team-alpha"
+         *     }
+         */
         TeamSummary: {
             /** @description Total agents in this team. */
             agent_count: number;
@@ -909,7 +1184,19 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
-        /** @description All agents belonging to a single team. */
+        /**
+         * @description All agents belonging to a single team.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "team_id": "team-alpha", "agent_count": 2, "members": [] }
+         *     ```
+         * @example {
+         *       "agent_count": 2,
+         *       "members": [],
+         *       "team_id": "team-alpha"
+         *     }
+         */
         TeamTopology: {
             /** @description Number of agents in this team (after filtering). */
             agent_count: number;
@@ -938,23 +1225,108 @@ export interface components {
             /** @description The issued JWT token string. */
             token: string;
         };
-        /** @description Overview of the entire agent topology across all teams. */
+        /**
+         * @description Overview of the entire agent topology across all teams.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "team_count": 2,
+         *       "root_agent_count": 3,
+         *       "total_agent_count": 12,
+         *       "teams": [{ "team_id": "team-alpha", "agent_count": 7, "root_agent_count": 1 }],
+         *       "standalone_root_agents": []
+         *     }
+         *     ```
+         * @example {
+         *       "root_agent_count": 3,
+         *       "standalone_root_agents": [],
+         *       "team_count": 2,
+         *       "teams": [
+         *         {
+         *           "agent_count": 7,
+         *           "root_agent_count": 1,
+         *           "team_id": "team-alpha"
+         *         }
+         *       ],
+         *       "total_agent_count": 12
+         *     }
+         */
         TopologyOverview: {
             /** @description Number of root agents (depth == 0) across all teams. */
             root_agent_count: number;
-            /** @description Root agents that are not assigned to any team. */
+            /** @description Root agents that are not assigned to any team, sorted by agent id. */
             standalone_root_agents: components["schemas"]["AgentNode"][];
             /** @description Number of teams with at least one registered agent. */
             team_count: number;
-            /** @description Per-team agent count summaries. */
+            /** @description Per-team agent count summaries, sorted by team_id. */
             teams: components["schemas"]["TeamSummary"][];
             /** @description Total number of agents in the registry. */
             total_agent_count: number;
         };
-        /** @description Aggregate topology statistics across all registered agents. */
+        /**
+         * @description Aggregate topology statistics across all registered agents.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "total_agents": 15,
+         *       "root_agent_count": 3,
+         *       "max_depth": 4,
+         *       "active_count": 12,
+         *       "suspended_count": 2,
+         *       "deregistered_count": 1,
+         *       "team_count": 2,
+         *       "team_sizes": { "team-alpha": 8, "team-beta": 4 },
+         *       "depth_histogram": { "0": 3, "1": 7, "2": 5 },
+         *       "team_size_histogram": { "4": 1, "8": 1 },
+         *       "spawn_count_histogram": { "0": 8, "2": 4, "4": 1 },
+         *       "orphan_count": 2,
+         *       "avg_children_per_parent": 2.5
+         *     }
+         *     ```
+         * @example {
+         *       "active_count": 12,
+         *       "avg_children_per_parent": 2.5,
+         *       "depth_histogram": {
+         *         "0": 3,
+         *         "1": 7,
+         *         "2": 5
+         *       },
+         *       "deregistered_count": 1,
+         *       "max_depth": 4,
+         *       "orphan_count": 2,
+         *       "root_agent_count": 3,
+         *       "spawn_count_histogram": {
+         *         "0": 8,
+         *         "2": 4,
+         *         "4": 1
+         *       },
+         *       "suspended_count": 2,
+         *       "team_count": 2,
+         *       "team_size_histogram": {
+         *         "4": 1,
+         *         "8": 1
+         *       },
+         *       "team_sizes": {
+         *         "team-alpha": 8,
+         *         "team-beta": 4
+         *       },
+         *       "total_agents": 15
+         *     }
+         */
         TopologyStats: {
             /** @description Agents currently in `Active` status. */
             active_count: number;
+            /**
+             * Format: double
+             * @description Average number of children across all agents that have at least one child.
+             */
+            avg_children_per_parent: number;
+            /** @description Agent count per depth level (depth → count). */
+            depth_histogram: {
+                [key: string]: number;
+            };
             /** @description Agents in `Deregistered` status. */
             deregistered_count: number;
             /**
@@ -962,13 +1334,23 @@ export interface components {
              * @description Maximum observed delegation depth.
              */
             max_depth: number;
+            /** @description Agents that have no team assignment and are not root agents (depth > 0). */
+            orphan_count: number;
             /** @description Number of root agents (depth == 0). */
             root_agent_count: number;
+            /** @description Number of agents per child-count bucket (child_count → agent_count). */
+            spawn_count_histogram: {
+                [key: string]: number;
+            };
             /** @description Agents currently in `Suspended` status. */
             suspended_count: number;
             /** @description Number of teams with at least one agent. */
             team_count: number;
-            /** @description Agent count per team. */
+            /** @description Number of teams per team-size bucket (team_size → team_count). */
+            team_size_histogram: {
+                [key: string]: number;
+            };
+            /** @description Agent count per team (team_id → count). */
             team_sizes: {
                 [key: string]: number;
             };
@@ -1133,6 +1515,115 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    list_agent_edges: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Filter by edge type (snake_case). Omit for all types.
+                 * @example messages
+                 */
+                type?: string | null;
+                /**
+                 * @description Direction of edges relative to the agent. Defaults to `outgoing`.
+                 * @example outgoing
+                 */
+                direction?: string | null;
+                /**
+                 * @description Maximum number of results. Defaults to 100, capped at 1000.
+                 * @example 100
+                 */
+                limit?: number | null;
+                /**
+                 * @description Return only edges recorded before this ISO 8601 timestamp.
+                 * @example 2026-01-01T00:00:00Z
+                 */
+                before?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Edge list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EdgeListResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    get_agent_graph: {
+        parameters: {
+            query?: {
+                /**
+                 * @description BFS depth from the root agent. Defaults to 2, capped at 5.
+                 * @example 2
+                 */
+                depth?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded root agent ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subgraph */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
@@ -1542,6 +2033,48 @@ export interface operations {
             };
         };
     };
+    report_edge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportEdgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Edge recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportEdgeResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     get_lineage: {
         parameters: {
             query?: never;
@@ -1700,6 +2233,13 @@ export interface operations {
             };
             /** @description Agent not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent is not a root agent */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
