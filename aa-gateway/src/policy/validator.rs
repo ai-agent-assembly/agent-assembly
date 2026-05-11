@@ -374,6 +374,11 @@ impl PolicyValidator {
                         format!("tools.{}.requires_approval_if", name),
                         msg,
                     ));
+                } else if let Err(e) = super::expr::validate_variables(expr) {
+                    errors.push(ValidationError::new(
+                        format!("tools.{}.requires_approval_if", name),
+                        e.to_string(),
+                    ));
                 }
             }
 
