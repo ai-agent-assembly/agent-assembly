@@ -189,6 +189,15 @@ impl BudgetTracker {
         }
     }
 
+    /// Return the `parking_lot::Mutex` entry for `ancestor_id`, creating it if absent.
+    ///
+    /// Callers must acquire these locks in root-down order (ascending depth) to prevent
+    /// deadlock when two concurrent callers share overlapping ancestor chains.
+    fn get_or_create_parent_lock(&self, ancestor_id: AgentId) -> dashmap::mapref::one::Ref<'_, AgentId, parking_lot::Mutex<()>> {
+        self.parent_locks.entry(ancestor_id).or_insert_with(|| parking_lot::Mutex::new(()));
+        self.parent_locks.get(&ancestor_id).unwrap()
+    }
+
     /// Return the effective daily or monthly limit for `agent_id`.
     ///
     /// Checks `agent_limits` first, then falls back to the global tracker limits.
