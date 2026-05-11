@@ -136,6 +136,26 @@ pub(crate) fn evaluate_single_doc(
         }
     }
 
+    // Stage 5b — Approval condition for SendMessage (channel policy).
+    // Looks up the "message" sentinel key in the tools map; all inter-team
+    // channel rules are expressed as `requires_approval_if` on that key.
+    // The expression evaluator resolves source.team_id, target.team_id, and
+    // target.channel_id directly from the SendMessage action fields.
+    if let aa_core::GovernanceAction::SendMessage { .. } = action {
+        if let Some(tp) = doc.tools.get("message") {
+            if let Some(expr) = &tp.requires_approval_if {
+                if !expr.is_empty()
+                    && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
+                {
+                    return PolicyDecision::RequireApproval {
+                        reason: "approval required: cross-team channel policy".into(),
+                        timeout_secs: doc.approval_timeout_secs,
+                    };
+                }
+            }
+        }
+    }
+
     PolicyDecision::Allow
 }
 
