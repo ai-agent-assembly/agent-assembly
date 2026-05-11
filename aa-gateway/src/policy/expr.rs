@@ -36,6 +36,7 @@ enum FieldRef {
     GovernanceLevel,
     AgentDepth,
     TeamActiveAgents,
+    TeamBudgetRemaining,
 }
 
 #[derive(Debug, PartialEq)]
