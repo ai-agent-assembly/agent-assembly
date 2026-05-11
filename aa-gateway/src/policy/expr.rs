@@ -97,6 +97,8 @@ enum LiteralVal {
     Level(GovernanceLevel),
     Tier(aa_core::RiskTier),
     StrList(Vec<String>),
+    /// Duration in seconds, parsed from human-readable strings like `24h`, `30m`.
+    Duration(u64),
 }
 
 #[derive(Debug, PartialEq)]
@@ -639,8 +641,8 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level/tier/list literal against a non-level/tier/list field cannot match.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => false,
+            // A level/tier/list/duration literal against a generic string field cannot match.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => false,
         },
         OpKind::Ne => match literal {
             LiteralVal::Num(rhs) => {
@@ -651,9 +653,9 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level/tier/list literal against a generic string field is unconditionally
+            // A level/tier/list/duration literal against a generic string field is unconditionally
             // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => true,
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => true,
         },
         OpKind::Gt => {
             let rhs = numeric_literal(literal);
@@ -694,6 +696,8 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     match lit {
         LiteralVal::Num(n) => Some(*n),
         LiteralVal::Str(s) => s.parse::<f64>().ok(),
+        // Duration participates in numeric comparisons (as seconds).
+        LiteralVal::Duration(secs) => Some(*secs as f64),
         // Level, tier, and list literals never participate in numeric comparisons.
         LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => None,
     }
