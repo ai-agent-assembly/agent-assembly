@@ -1102,6 +1102,15 @@ mod tests {
         assert_eq!(result.agents_counted, 7);
     }
 
+    #[test]
+    fn subtree_spend_no_usage_returns_zero() {
+        let t = new_tracker();
+        let id = agent(88);
+        let result = t.subtree_spend(&id, &[]);
+        assert_eq!(result.usd, Decimal::ZERO);
+        assert_eq!(result.agents_counted, 0);
+    }
+
     // ── check_and_decrement (AAASM-1023) ───────────────────────────────
 
     #[test]
