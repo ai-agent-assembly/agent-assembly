@@ -376,3 +376,65 @@ async fn team_404_returns_exit_code_4() {
 
     assert_eq!(result, ExitCode::from(4u8));
 }
+
+// ── topology lineage edge cases ───────────────────────────────────────
+
+#[tokio::test]
+async fn lineage_root_agent_returns_success() {
+    let server = MockServer::start().await;
+
+    let agent_id = "root0000000000000000000000000000";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/lineage/{agent_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "agent_id": agent_id,
+            "ancestor_count": 1,
+            "ancestors": [
+                {"id": agent_id, "name": "root", "depth": 0, "delegation_reason": null, "team_id": null}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::lineage::LineageArgs {
+            agent_id: agent_id.to_string(),
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
+
+#[tokio::test]
+async fn lineage_404_returns_exit_code_4() {
+    let server = MockServer::start().await;
+
+    let agent_id = "ffffffffffffffffffffffffffffffff";
+
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/topology/lineage/{agent_id}")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::lineage::LineageArgs {
+            agent_id: agent_id.to_string(),
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::from(4u8));
+}
