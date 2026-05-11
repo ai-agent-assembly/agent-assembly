@@ -41,6 +41,7 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "command",
     "governance_level",
     "agent.depth",
+    "agent.risk_tier",
     "team.active_agents",
     "team.budget_remaining",
     "child.tool",
@@ -63,7 +64,7 @@ enum FieldRef {
     TeamActiveAgents,
     TeamBudgetRemaining,
     ChildTool,
-    /// Phase B stub — real resolution wired in AAASM-1024.
+    AgentRiskTier,
     ParentRiskTier,
 }
 
@@ -84,6 +85,7 @@ enum LiteralVal {
     Str(String),
     Num(f64),
     Level(GovernanceLevel),
+    Tier(aa_core::RiskTier),
 }
 
 #[derive(Debug, PartialEq)]
@@ -185,11 +187,16 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
                 "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
                 "child.tool" => Token::Field(FieldRef::ChildTool),
+                "agent.risk_tier" => Token::Field(FieldRef::AgentRiskTier),
                 "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
                 "L3" => Token::Literal(LiteralVal::Level(GovernanceLevel::L3Native)),
+                "Low"      => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Low)),
+                "Medium"   => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Medium)),
+                "High"     => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::High)),
+                "Critical" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Critical)),
                 "contains" => Token::Op(OpKind::Contains),
                 "starts_with" => Token::Op(OpKind::StartsWith),
                 other => {
@@ -386,8 +393,8 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level literal against a non-level field cannot match.
-            LiteralVal::Level(_) => false,
+            // A level/tier literal against a non-level/tier field cannot match.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) => false,
         },
         OpKind::Ne => match literal {
             LiteralVal::Num(rhs) => {
@@ -398,9 +405,9 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level literal against a non-level field is unconditionally
+            // A level/tier literal against a non-level/tier field is unconditionally
             // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) => true,
+            LiteralVal::Level(_) | LiteralVal::Tier(_) => true,
         },
         OpKind::Gt => {
             let rhs = numeric_literal(literal);
@@ -441,8 +448,8 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     match lit {
         LiteralVal::Num(n) => Some(*n),
         LiteralVal::Str(s) => s.parse::<f64>().ok(),
-        // Level literals never participate in numeric comparisons.
-        LiteralVal::Level(_) => None,
+        // Level and tier literals never participate in numeric comparisons.
+        LiteralVal::Level(_) | LiteralVal::Tier(_) => None,
     }
 }
 
@@ -529,6 +536,7 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
     const SKIP_WORDS: &[&str] = &[
         "AND", "OR", "true", "false", "contains", "starts_with",
         "L0", "L1", "L2", "L3",
+        "Low", "Medium", "High", "Critical",
     ];
 
     let mut names = Vec::new();
