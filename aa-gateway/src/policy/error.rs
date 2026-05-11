@@ -16,6 +16,15 @@ pub enum PolicyParseError {
         /// Human-readable explanation of the failure.
         reason: String,
     },
+    /// An expression references a variable name that is not in the known set.
+    UnknownVariable {
+        /// The unrecognised identifier.
+        name: String,
+        /// Closest known variable within the edit-distance threshold, if any.
+        suggestion: Option<String>,
+        /// Full list of valid variable names.
+        available: Vec<String>,
+    },
 }
 
 impl fmt::Display for PolicyParseError {
@@ -23,6 +32,13 @@ impl fmt::Display for PolicyParseError {
         match self {
             Self::InvalidScope { raw, reason } => {
                 write!(f, "invalid policy scope {:?}: {}", raw, reason)
+            }
+            Self::UnknownVariable { name, suggestion, available } => {
+                write!(f, "unknown variable {:?}; valid variables: {}", name, available.join(", "))?;
+                if let Some(s) = suggestion {
+                    write!(f, "; did you mean {:?}?", s)?;
+                }
+                Ok(())
             }
         }
     }
