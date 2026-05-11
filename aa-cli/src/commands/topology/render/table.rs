@@ -96,3 +96,41 @@ pub fn render_lineage_table(lineage: &AgentLineage) {
     }
     println!("{table}");
 }
+
+/// Render aggregate topology statistics as a comfy-table.
+pub fn render_stats_table(stats: &TopologyStats) {
+    let mut table = Table::new();
+    table.set_header(vec!["METRIC", "VALUE"]);
+    table.add_row(vec![Cell::new("Total agents"), Cell::new(stats.total_agents)]);
+    table.add_row(vec![Cell::new("Root agents"), Cell::new(stats.root_agent_count)]);
+    table.add_row(vec![Cell::new("Max depth"), Cell::new(stats.max_depth)]);
+    table.add_row(vec![
+        Cell::new("Active"),
+        Cell::new(stats.active_count).fg(Color::Green),
+    ]);
+    table.add_row(vec![
+        Cell::new("Suspended"),
+        Cell::new(stats.suspended_count).fg(Color::Yellow),
+    ]);
+    table.add_row(vec![
+        Cell::new("Deregistered"),
+        Cell::new(stats.deregistered_count).fg(Color::Red),
+    ]);
+    table.add_row(vec![Cell::new("Teams"), Cell::new(stats.team_count)]);
+    table.add_row(vec![Cell::new("Orphans"), Cell::new(stats.orphan_count)]);
+    table.add_row(vec![
+        Cell::new("Avg children/parent"),
+        Cell::new(format!("{:.2}", stats.avg_children_per_parent)),
+    ]);
+    println!("{table}");
+
+    if !stats.depth_histogram.is_empty() {
+        println!("\nDepth histogram:");
+        let mut htable = Table::new();
+        htable.set_header(vec!["DEPTH", "COUNT"]);
+        for (depth, count) in &stats.depth_histogram {
+            htable.add_row(vec![Cell::new(depth), Cell::new(count)]);
+        }
+        println!("{htable}");
+    }
+}
