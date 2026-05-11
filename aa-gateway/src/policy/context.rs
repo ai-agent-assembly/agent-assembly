@@ -65,6 +65,18 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
             })
             .collect()
     }
+
+    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        let record = self.registry.get(&self.agent_key)?;
+        aa_core::RiskTier::from_proto_i32(record.risk_tier)
+    }
+
+    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        let record = self.registry.get(&self.agent_key)?;
+        let parent_key = record.parent_key?;
+        let parent = self.registry.get(&parent_key)?;
+        aa_core::RiskTier::from_proto_i32(parent.risk_tier)
+    }
 }
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
@@ -74,6 +86,8 @@ pub struct FakePolicyContext {
     pub team_active: Option<u64>,
     pub team_budget: Option<f64>,
     pub child_tools: Vec<String>,
+    pub agent_risk_tier: Option<aa_core::RiskTier>,
+    pub parent_risk_tier: Option<aa_core::RiskTier>,
 }
 
 #[cfg(test)]
@@ -92,6 +106,14 @@ impl PolicyContext for FakePolicyContext {
 
     fn child_tools(&self) -> Vec<String> {
         self.child_tools.clone()
+    }
+
+    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        self.agent_risk_tier
+    }
+
+    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
+        self.parent_risk_tier
     }
 }
 
@@ -134,4 +156,10 @@ pub trait PolicyContext: Send + Sync {
     fn team_budget_remaining(&self) -> Option<f64>;
     /// Union of `tool_names` across all direct children of the current agent.
     fn child_tools(&self) -> Vec<String>;
+    /// Risk tier of the current agent. Returns `None` when the agent is not
+    /// found in the registry or has an unspecified (0) risk tier.
+    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// Risk tier of the current agent's parent. Returns `None` when the agent
+    /// has no parent or the parent is not in the registry.
+    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier>;
 }

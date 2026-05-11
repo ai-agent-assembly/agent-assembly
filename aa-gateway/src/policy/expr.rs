@@ -835,6 +835,8 @@ mod tests {
             team_active: None,
             team_budget: None,
             child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
         }
     }
 
@@ -862,6 +864,8 @@ mod tests {
             team_active: active,
             team_budget: None,
             child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
         }
     }
 
@@ -883,6 +887,8 @@ mod tests {
             team_active: None,
             team_budget: remaining,
             child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
         }
     }
 
@@ -904,6 +910,8 @@ mod tests {
             team_active: None,
             team_budget: None,
             child_tools: tools.into_iter().map(String::from).collect(),
+            agent_risk_tier: None,
+            parent_risk_tier: None,
         }
     }
 
@@ -933,6 +941,8 @@ mod tests {
             team_active: None,
             team_budget: None,
             child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
