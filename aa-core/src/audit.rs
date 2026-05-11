@@ -47,6 +47,8 @@ pub enum AuditEventType {
     ApprovalEscalated = 10,
     /// An agent was force-deregistered by the gateway because it exceeded its configured maximum age.
     AgentForceDeregistered = 11,
+    /// An inter-team message was blocked because the target channel is not permitted by policy.
+    MessageBlocked = 12,
 }
 
 impl AuditEventType {
@@ -67,6 +69,7 @@ impl AuditEventType {
             Self::ApprovalRouted => "ApprovalRouted",
             Self::ApprovalEscalated => "ApprovalEscalated",
             Self::AgentForceDeregistered => "AgentForceDeregistered",
+            Self::MessageBlocked => "MessageBlocked",
         }
     }
 }

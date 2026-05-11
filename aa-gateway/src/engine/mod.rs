@@ -394,6 +394,38 @@ impl PolicyEngine {
             }
         }
 
+        // Stage 5b — Approval condition for SendMessage (channel policy).
+        if let aa_core::GovernanceAction::SendMessage { .. } = action {
+            if let Some(tp) = policy.tools.get("message") {
+                if let Some(expr) = &tp.requires_approval_if {
+                    if !expr.is_empty() {
+                        let now_secs = chrono::Utc::now().timestamp() as u64;
+                        let pctx = self.registry.as_ref().map(|reg| {
+                            crate::policy::context::ProductionPolicyContext::new(
+                                reg.as_ref(),
+                                self.budget.as_ref(),
+                                *ctx.agent_id.as_bytes(),
+                                ctx.team_id.clone(),
+                                now_secs,
+                            )
+                        });
+                        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
+                            pctx.as_ref().map(|c| c as _);
+                        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
+                            return EvaluationResult {
+                                decision: aa_core::PolicyResult::RequiresApproval {
+                                    timeout_secs: policy.approval_timeout_secs,
+                                },
+                                redacted_payload: None,
+                                credential_findings: vec![],
+                                deny_action: None,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
         // Stage 6 — Credential scan + custom pattern scan: redact in-memory, never deny.
         //
         // Pass 1: Aho-Corasick built-in scan (18+ patterns via aa-core::CredentialScanner).

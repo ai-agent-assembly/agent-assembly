@@ -131,11 +131,12 @@ jobs:
         # and doesn't add instrumented coverage. Running it under --all-features would
         # add 8+ minutes of Docker build time with zero coverage benefit.
         run: |
-          # sustained_load_p99_under_5ms is a timing-sensitive latency test that fails
-          # under llvm-cov instrumentation overhead — skipped in coverage runs only.
+          # sustained_load_p99_under_5ms and all_layers_run_independently are
+          # timing-sensitive tests that fail under llvm-cov instrumentation overhead —
+          # skipped in coverage runs only.
           cargo llvm-cov --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
-            -- --skip sustained_load_p99_under_5ms
+            -- --skip sustained_load_p99_under_5ms --skip all_layers_run_independently
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --codecov --output-path codecov.xml
       - name: Upload to Codecov
