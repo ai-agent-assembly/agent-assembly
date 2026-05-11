@@ -12,6 +12,11 @@ use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology overview`.
 #[derive(Args)]
+#[command(after_help = "\
+Examples:
+  aasm topology overview
+  aasm topology overview --output json
+  aasm topology overview --status active")]
 pub struct OverviewArgs {
     /// Filter agents by status (active, suspended, deregistered).
     #[arg(long)]
