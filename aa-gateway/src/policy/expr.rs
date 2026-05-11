@@ -593,6 +593,28 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Validate that every identifier in `expr` is a member of [`KNOWN_VARIABLES`].
+///
+/// Returns [`PolicyParseError::UnknownVariable`] on the first unknown name
+/// found, with a typo suggestion when the Levenshtein distance to the closest
+/// known variable is ≤ 2.
+pub(crate) fn validate_variables(
+    expr: &str,
+) -> Result<(), crate::policy::error::PolicyParseError> {
+    for name in extract_field_names(expr) {
+        if !KNOWN_VARIABLES.contains(&name.as_str()) {
+            let suggestion = suggest_variable(&name).map(str::to_owned);
+            let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
+            return Err(crate::policy::error::PolicyParseError::UnknownVariable {
+                name,
+                suggestion,
+                available,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate that every `governance_level` literal in `expr` is one of the
 /// four known levels (L0..L3).
 ///
