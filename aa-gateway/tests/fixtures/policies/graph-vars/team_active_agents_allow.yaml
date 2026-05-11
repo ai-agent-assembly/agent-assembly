@@ -1,0 +1,5 @@
+scope: global
+tools:
+  spawn:
+    allow: true
+    requires_approval_if: "team.active_agents > 10"
