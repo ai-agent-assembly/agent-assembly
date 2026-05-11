@@ -1185,6 +1185,13 @@ mod tests {
     }
 
     #[test]
+    fn target_team_id_and_channel_id_eq_match_cross_team_message() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"target.team_id == "team-beta""#, &msg, None, None));
+        assert!(evaluate(r#"target.channel_id == "ops""#, &msg, None, None));
+    }
+
+    #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
         // same level — covering all four members of the `GovernanceLevel`
