@@ -70,6 +70,9 @@ pub struct BudgetTracker {
     team_monthly_limit_usd: Option<Decimal>,
     /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
     pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
+    /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
+    /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
+    pub(crate) parent_locks: DashMap<AgentId, parking_lot::Mutex<()>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -107,6 +110,7 @@ impl BudgetTracker {
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
+            parent_locks: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -183,6 +187,7 @@ impl BudgetTracker {
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
+            parent_locks: DashMap::new(),
             alert_tx,
             timezone,
         }
