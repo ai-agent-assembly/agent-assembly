@@ -123,7 +123,7 @@ pub(crate) fn evaluate_single_doc(
     if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
         if let Some(tp) = doc.tools.get(name) {
             if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level)) {
+                if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), None) {
                     return PolicyDecision::RequireApproval {
                         reason: format!("approval required for tool '{name}'"),
                         timeout_secs: doc.approval_timeout_secs,

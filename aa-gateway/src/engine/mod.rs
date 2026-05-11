@@ -366,7 +366,7 @@ impl PolicyEngine {
         if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
             if let Some(tp) = policy.tools.get(name) {
                 if let Some(expr) = &tp.requires_approval_if {
-                    if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level)) {
+                    if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), None) {
                         return EvaluationResult {
                             decision: aa_core::PolicyResult::RequiresApproval {
                                 timeout_secs: policy.approval_timeout_secs,

@@ -22,6 +22,8 @@
 
 use aa_core::{GovernanceAction, GovernanceLevel};
 
+use crate::policy::context::PolicyContext;
+
 // ---------------------------------------------------------------------------
 // Internal token types
 // ---------------------------------------------------------------------------
@@ -214,6 +216,7 @@ fn eval_clause_safe(
     literal: &LiteralVal,
     action: &GovernanceAction,
     agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
     // governance_level is the only field whose value type is not a string;
     // route it through an Ord-based comparison and return early.
@@ -339,7 +342,12 @@ struct Clause<'t> {
     literal: &'t LiteralVal,
 }
 
-fn eval_tokens(tokens: &[Token], action: &GovernanceAction, agent_level: Option<GovernanceLevel>) -> bool {
+fn eval_tokens(
+    tokens: &[Token],
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> bool {
     // Parse tokens into a sequence of clauses separated by AND/OR.
     // Strategy: split into OR-groups where each group is a slice of
     // AND-connected clauses.  Result = any OR-group where all clauses are true.
@@ -389,7 +397,7 @@ fn eval_tokens(tokens: &[Token], action: &GovernanceAction, agent_level: Option<
     or_groups.iter().any(|group| {
         group
             .iter()
-            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level))
+            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx))
     })
 }
 
@@ -449,12 +457,17 @@ pub(crate) fn validate_governance_levels(expr: &str) -> Result<(), String> {
 ///
 /// Returns `true` if the expression matches (approval required).
 /// Returns `true` on ANY parse/tokenization error (fail-safe).
-pub(crate) fn evaluate(expr: &str, action: &GovernanceAction, agent_level: Option<GovernanceLevel>) -> bool {
+pub(crate) fn evaluate(
+    expr: &str,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> bool {
     let tokens = match tokenize(expr) {
         Some(t) if !t.is_empty() => t,
         _ => return true, // fail-safe
     };
-    eval_tokens(&tokens, action, agent_level)
+    eval_tokens(&tokens, action, agent_level, policy_ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -495,12 +508,12 @@ mod tests {
 
     #[test]
     fn eq_operator_matches_tool_name() {
-        assert!(evaluate(r#"tool == "search""#, &tool("search"), None));
+        assert!(evaluate(r#"tool == "search""#, &tool("search"), None, None));
     }
 
     #[test]
     fn ne_operator_false_when_equal() {
-        assert!(!evaluate(r#"tool != "search""#, &tool("search"), None));
+        assert!(!evaluate(r#"tool != "search""#, &tool("search"), None, None));
     }
 
     #[test]
@@ -508,13 +521,14 @@ mod tests {
         assert!(evaluate(
             r#"url contains "evil""#,
             &network("https://evil.com", "GET"),
-            None
+            None,
+            None,
         ));
     }
 
     #[test]
     fn starts_with_operator_on_path() {
-        assert!(evaluate(r#"path starts_with "/etc""#, &file("/etc/passwd"), None));
+        assert!(evaluate(r#"path starts_with "/etc""#, &file("/etc/passwd"), None, None));
     }
 
     #[test]
@@ -522,7 +536,8 @@ mod tests {
         assert!(evaluate(
             r#"tool == "search" AND tool == "search""#,
             &tool("search"),
-            None
+            None,
+            None,
         ));
     }
 
@@ -531,24 +546,25 @@ mod tests {
         assert!(!evaluate(
             r#"tool == "search" AND tool == "other""#,
             &tool("search"),
-            None
+            None,
+            None,
         ));
     }
 
     #[test]
     fn or_combinator_first_true() {
-        assert!(evaluate(r#"tool == "x" OR tool == "search""#, &tool("search"), None));
+        assert!(evaluate(r#"tool == "x" OR tool == "search""#, &tool("search"), None, None));
     }
 
     #[test]
     fn fail_safe_on_bad_expr() {
-        assert!(evaluate("not valid @@@ expr", &tool("anything"), None));
+        assert!(evaluate("not valid @@@ expr", &tool("anything"), None, None));
     }
 
     #[test]
     fn field_absent_for_action_variant_returns_false() {
         // `tool` field is "" for ProcessExec → should NOT match "foo"
-        assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None));
+        assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None, None));
     }
 
     #[test]
@@ -558,6 +574,7 @@ mod tests {
             "governance_level >= L2",
             &tool("any"),
             Some(GovernanceLevel::L2Enforce),
+            None,
         ));
     }
 
@@ -568,6 +585,7 @@ mod tests {
             "governance_level >= L2",
             &tool("any"),
             Some(GovernanceLevel::L1Observe),
+            None,
         ));
     }
 
@@ -582,7 +600,7 @@ mod tests {
             GovernanceLevel::L3Native,
         ] {
             assert!(
-                evaluate(r#"tool == "search""#, &tool("search"), Some(level)),
+                evaluate(r#"tool == "search""#, &tool("search"), Some(level), None),
                 "tool-only condition unexpectedly skipped for {level:?}"
             );
         }
@@ -601,7 +619,7 @@ mod tests {
         ] {
             let expr = format!("governance_level == {literal}");
             assert!(
-                evaluate(&expr, &tool("any"), Some(level)),
+                evaluate(&expr, &tool("any"), Some(level), None),
                 "{literal} did not parse / compare equal for matching agent level"
             );
         }
