@@ -2,11 +2,17 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use chrono::Utc;
+use tokio::sync::{mpsc, Mutex};
 use tonic::{Request, Response, Status};
 
+use aa_core::identity::{AgentId, SessionId};
+use aa_core::time::Timestamp;
+use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleService;
 use aa_proto::assembly::agent::v1::{
     ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse, HeartbeatRequest, HeartbeatResponse,
@@ -29,6 +35,11 @@ const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
 pub struct AgentLifecycleServiceImpl {
     registry: Arc<AgentRegistry>,
     policy_engine: Option<Arc<PolicyEngine>>,
+    /// Optional channel for emitting `AgentForceDeregistered` audit entries when
+    /// `sweep_aged_agents` evicts agents during heartbeat processing.
+    audit_tx: Option<mpsc::Sender<AuditEntry>>,
+    audit_seq: Arc<AtomicU64>,
+    audit_last_hash: Arc<Mutex<[u8; 32]>>,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -37,6 +48,9 @@ impl AgentLifecycleServiceImpl {
         Self {
             registry,
             policy_engine: None,
+            audit_tx: None,
+            audit_seq: Arc::new(AtomicU64::new(0)),
+            audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
         }
     }
 
@@ -48,7 +62,17 @@ impl AgentLifecycleServiceImpl {
         Self {
             registry,
             policy_engine: Some(policy_engine),
+            audit_tx: None,
+            audit_seq: Arc::new(AtomicU64::new(0)),
+            audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
         }
+    }
+
+    /// Attach an audit channel so `sweep_aged_agents` evictions emit
+    /// `AgentForceDeregistered` audit entries during heartbeat processing.
+    pub fn with_audit_tx(mut self, audit_tx: mpsc::Sender<AuditEntry>) -> Self {
+        self.audit_tx = Some(audit_tx);
+        self
     }
 }
 
@@ -208,6 +232,31 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         };
 
         tracing::debug!(agent_id = ?proto_id.agent_id, should_suspend, "heartbeat received");
+
+        // Piggyback TTL sweep on every heartbeat: deregister agents past max_agent_age
+        // and emit AgentForceDeregistered audit entries when an audit channel is wired in.
+        let now_secs = Utc::now().timestamp() as u64;
+        let evicted = self.registry.sweep_aged_agents(now_secs);
+        if !evicted.is_empty() {
+            if let Some(ref tx) = self.audit_tx {
+                let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
+                let mut last_hash = self.audit_last_hash.lock().await;
+                for key in &evicted {
+                    let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
+                    let entry = AuditEntry::new(
+                        seq,
+                        timestamp_ns,
+                        AuditEventType::AgentForceDeregistered,
+                        AgentId::from_bytes(*key),
+                        SessionId::from_bytes([0u8; 16]),
+                        r#"{"reason":"age_exceeded"}"#.to_owned(),
+                        *last_hash,
+                    );
+                    *last_hash = *entry.entry_hash();
+                    let _ = tx.try_send(entry);
+                }
+            }
+        }
 
         Ok(Response::new(HeartbeatResponse {
             policy_updated: false,

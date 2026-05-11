@@ -50,6 +50,8 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "source.team_id",
     "target.team_id",
     "target.channel_id",
+    "agent.age",
+    "team.parallel_agents",
 ];
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,8 @@ enum FieldRef {
     SourceTeamId,
     TargetTeamId,
     TargetChannelId,
+    AgentAge,
+    TeamParallelAgents,
 }
 
 #[derive(Debug, PartialEq)]
@@ -97,6 +101,8 @@ enum LiteralVal {
     Level(GovernanceLevel),
     Tier(aa_core::RiskTier),
     StrList(Vec<String>),
+    /// Duration in seconds, parsed from human-readable strings like `24h`, `30m`.
+    Duration(u64),
 }
 
 #[derive(Debug, PartialEq)]
@@ -258,6 +264,8 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "source.team_id" => Token::Field(FieldRef::SourceTeamId),
                 "target.team_id" => Token::Field(FieldRef::TargetTeamId),
                 "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
+                "agent.age" => Token::Field(FieldRef::AgentAge),
+                "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
@@ -274,6 +282,14 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                     // Try to parse as a number
                     if let Ok(n) = other.parse::<f64>() {
                         Token::Literal(LiteralVal::Num(n))
+                    } else if other.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                        // Try to parse as a humantime duration (e.g. "24h", "30m", "1h30m").
+                        // Only attempt when the word starts with a digit — avoids false positives.
+                        if let Ok(d) = humantime::parse_duration(other) {
+                            Token::Literal(LiteralVal::Duration(d.as_secs()))
+                        } else {
+                            return None;
+                        }
                     } else {
                         return None; // unknown word
                     }
@@ -472,6 +488,52 @@ fn eval_clause_safe(
         };
     }
 
+    // team.parallel_agents — integer count of currently-running agents in the current team.
+    // Semantically equivalent to team.active_agents; delegates to the same registry query.
+    // Returns false (null-safe no-match) when the agent has no team.
+    if let FieldRef::TeamParallelAgents = field {
+        let lhs = match policy_ctx.and_then(|c| c.team_active_agents()) {
+            Some(n) => n as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+        };
+    }
+
+    // agent.age — numeric (seconds) comparison against the current agent's age since registration.
+    // Compares the agent's age in seconds against a Duration literal (e.g. `24h` = 86400s).
+    // Returns false (null-safe no-match) when context or registry lookup is absent.
+    if let FieldRef::AgentAge = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_age_secs()) {
+            Some(age) => age as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+        };
+    }
+
     // source.team_id — string equality against the sending agent's team ID.
     // Returns false (null-safe no-match) when the action is not SendMessage or
     // the source_team_id field is None.
@@ -639,8 +701,8 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level/tier/list literal against a non-level/tier/list field cannot match.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => false,
+            // A level/tier/list/duration literal against a generic string field cannot match.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => false,
         },
         OpKind::Ne => match literal {
             LiteralVal::Num(rhs) => {
@@ -651,9 +713,9 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level/tier/list literal against a generic string field is unconditionally
+            // A level/tier/list/duration literal against a generic string field is unconditionally
             // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => true,
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => true,
         },
         OpKind::Gt => {
             let rhs = numeric_literal(literal);
@@ -694,6 +756,8 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     match lit {
         LiteralVal::Num(n) => Some(*n),
         LiteralVal::Str(s) => s.parse::<f64>().ok(),
+        // Duration participates in numeric comparisons (as seconds).
+        LiteralVal::Duration(secs) => Some(*secs as f64),
         // Level, tier, and list literals never participate in numeric comparisons.
         LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => None,
     }
@@ -1109,6 +1173,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1139,6 +1204,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1163,6 +1229,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1187,6 +1254,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1219,6 +1287,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
@@ -1243,6 +1312,7 @@ mod tests {
             agent_risk_tier: agent,
             parent_risk_tier: parent,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1293,6 +1363,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: child,
+            agent_age_secs: None,
         }
     }
 
@@ -1371,6 +1442,55 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    // ── agent.age and team.parallel_agents tests ─────────────────────────────
+
+    fn fake_age_ctx(age_secs: Option<u64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            child_risk_tier: None,
+            agent_age_secs: age_secs,
+        }
+    }
+
+    #[test]
+    fn agent_age_gt_24h_fires_when_agent_is_old() {
+        // 25 hours old → 90000 s; rule threshold is 24h = 86400 s
+        let ctx = fake_age_ctx(Some(90_000));
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_age_gt_24h_no_match_when_agent_is_young() {
+        // 10 hours old → 36000 s; does not exceed 24h
+        let ctx = fake_age_ctx(Some(36_000));
+        assert!(!evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_parallel_agents_gt_matches() {
+        let ctx = crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: Some(8),
+            team_budget: None,
+            child_tools: vec![],
+            agent_risk_tier: None,
+            parent_risk_tier: None,
+            child_risk_tier: None,
+            agent_age_secs: None,
+        };
+        assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn null_safety_agent_age_returns_false_without_context() {
+        assert!(!evaluate("agent.age > 24h", &tool("any"), None, None));
     }
 
     // ── inter-team message condition tests ───────────────────────────────────

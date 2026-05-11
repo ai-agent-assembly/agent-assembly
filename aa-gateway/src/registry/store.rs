@@ -147,6 +147,9 @@ pub struct AgentRegistry {
     /// an agent suspended for BudgetExceeded retains that reason when also
     /// suspended via ParentSuspended cascade.
     suspend_reasons: DashMap<[u8; 16], Vec<super::SuspendReason>>,
+    /// Per-team maximum agent age in seconds. Agents older than this threshold
+    /// are force-deregistered by `sweep_aged_agents`.
+    team_max_age_secs: DashMap<String, u64>,
 }
 
 impl AgentRegistry {
@@ -158,7 +161,13 @@ impl AgentRegistry {
             team_index: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
+            team_max_age_secs: DashMap::new(),
         }
+    }
+
+    /// Configure the maximum allowed age (in seconds) for agents belonging to `team_id`.
+    pub fn set_team_max_age(&self, team_id: &str, max_secs: u64) {
+        self.team_max_age_secs.insert(team_id.to_owned(), max_secs);
     }
 
     /// Validate that registering `agent_id` with `parent_key` does not introduce a cycle
@@ -408,6 +417,36 @@ impl AgentRegistry {
     /// Return a snapshot of all currently registered agents.
     pub fn list(&self) -> Vec<AgentRecord> {
         self.agents.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Deregister any active agent whose age (now_secs - registered_at) exceeds the
+    /// maximum configured for its team via [`set_team_max_age`].
+    ///
+    /// Returns the agent keys of every agent that was force-deregistered so callers
+    /// can emit [`aa_core::AuditEventType::AgentForceDeregistered`] events.
+    pub fn sweep_aged_agents(&self, now_secs: u64) -> Vec<[u8; 16]> {
+        let mut evicted = Vec::new();
+        for entry in self.agents.iter() {
+            let record = entry.value();
+            if !matches!(record.status, AgentStatus::Active) {
+                continue;
+            }
+            let Some(team_id) = &record.team_id else { continue };
+            let Some(max_secs) = self.team_max_age_secs.get(team_id.as_str()).map(|v| *v) else {
+                continue;
+            };
+            let registered_unix = record.registered_at.timestamp() as u64;
+            let age_secs = now_secs.saturating_sub(registered_unix);
+            if age_secs > max_secs {
+                evicted.push(*entry.key());
+            }
+        }
+        for key in &evicted {
+            if let Some(mut entry) = self.agents.get_mut(key) {
+                entry.status = AgentStatus::Deregistered;
+            }
+        }
+        evicted
     }
 
     /// Return the scope lineage (org, team) for `agent_id` by reading the
@@ -1475,5 +1514,96 @@ mod cross_mode_integration {
             assert!(reg.get(&key(n)).is_none(), "key {n} must be removed from registry");
         }
         assert!(reg.get(&root).is_none(), "root must be removed");
+    }
+}
+
+#[cfg(test)]
+mod sweep_aged_agents_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn aged_record(id: [u8; 16], team_id: &str, registered_at: chrono::DateTime<chrono::Utc>) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test-agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at,
+            last_heartbeat: registered_at,
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some(team_id.to_owned()),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+        }
+    }
+
+    #[test]
+    fn sweep_deregisters_agent_exceeding_max_age() {
+        let reg = AgentRegistry::new();
+        let id = [1u8; 16];
+        // Agent registered 2 hours ago; max age is 1 hour.
+        let registered_at = chrono::Utc::now() - chrono::Duration::hours(2);
+        let record = aged_record(id, "team-alpha", registered_at);
+        reg.register(record).unwrap();
+        reg.set_team_max_age("team-alpha", 3600); // 1 hour
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert_eq!(evicted.len(), 1, "exactly one agent should be evicted");
+        assert_eq!(evicted[0], id);
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Deregistered);
+    }
+
+    #[test]
+    fn sweep_leaves_young_agent_active() {
+        let reg = AgentRegistry::new();
+        let id = [2u8; 16];
+        // Agent registered 30 minutes ago; max age is 1 hour.
+        let registered_at = chrono::Utc::now() - chrono::Duration::minutes(30);
+        let record = aged_record(id, "team-beta", registered_at);
+        reg.register(record).unwrap();
+        reg.set_team_max_age("team-beta", 3600);
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert!(evicted.is_empty(), "young agent must not be evicted");
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
+    }
+
+    #[test]
+    fn sweep_ignores_agents_without_team_max_age_config() {
+        let reg = AgentRegistry::new();
+        let id = [3u8; 16];
+        let registered_at = chrono::Utc::now() - chrono::Duration::days(365);
+        let record = aged_record(id, "team-gamma", registered_at);
+        reg.register(record).unwrap();
+        // No set_team_max_age call for team-gamma.
+
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let evicted = reg.sweep_aged_agents(now_secs);
+
+        assert!(evicted.is_empty(), "unconfigured team must not trigger eviction");
+        assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
     }
 }
