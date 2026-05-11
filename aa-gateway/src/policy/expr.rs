@@ -1124,6 +1124,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1154,6 +1155,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1178,6 +1180,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1202,6 +1205,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1234,6 +1238,7 @@ mod tests {
             agent_risk_tier: None,
             parent_risk_tier: None,
             child_risk_tier: None,
+            agent_age_secs: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
@@ -1258,6 +1263,7 @@ mod tests {
             agent_risk_tier: agent,
             parent_risk_tier: parent,
             child_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 

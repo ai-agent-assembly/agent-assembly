@@ -19,6 +19,8 @@ pub struct ProductionPolicyContext<'a> {
     /// Proposed risk tier of the child agent being spawned (from the spawn
     /// request payload). `None` when the evaluation is not for a spawn action.
     proposed_child_risk_tier: Option<aa_core::RiskTier>,
+    /// Unix timestamp in seconds captured at context construction time, used to compute agent.age.
+    now_secs: u64,
 }
 
 impl<'a> ProductionPolicyContext<'a> {
@@ -27,6 +29,7 @@ impl<'a> ProductionPolicyContext<'a> {
         budget: &'a BudgetTracker,
         agent_key: [u8; 16],
         team_id: Option<String>,
+        now_secs: u64,
     ) -> Self {
         Self {
             registry,
@@ -34,6 +37,7 @@ impl<'a> ProductionPolicyContext<'a> {
             agent_key,
             team_id,
             proposed_child_risk_tier: None,
+            now_secs,
         }
     }
 }
@@ -85,6 +89,12 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
         self.proposed_child_risk_tier
     }
+
+    fn agent_age_secs(&self) -> Option<u64> {
+        let record = self.registry.get(&self.agent_key)?;
+        let registered_unix = record.registered_at.timestamp() as u64;
+        Some(self.now_secs.saturating_sub(registered_unix))
+    }
 }
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
@@ -97,6 +107,7 @@ pub struct FakePolicyContext {
     pub agent_risk_tier: Option<aa_core::RiskTier>,
     pub parent_risk_tier: Option<aa_core::RiskTier>,
     pub child_risk_tier: Option<aa_core::RiskTier>,
+    pub agent_age_secs: Option<u64>,
 }
 
 #[cfg(test)]
@@ -127,6 +138,10 @@ impl PolicyContext for FakePolicyContext {
 
     fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
         self.child_risk_tier
+    }
+
+    fn agent_age_secs(&self) -> Option<u64> {
+        self.agent_age_secs
     }
 }
 
@@ -179,4 +194,7 @@ pub trait PolicyContext: Send + Sync {
     /// spawn action payload. Returns `None` when the evaluation is not for a
     /// spawn action or no tier was specified.
     fn child_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// Age of the current agent in seconds, computed as `now_secs - registered_at`.
+    /// Returns `None` when the agent is not found in the registry.
+    fn agent_age_secs(&self) -> Option<u64>;
 }
