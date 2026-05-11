@@ -366,15 +366,27 @@ impl PolicyEngine {
         if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
             if let Some(tp) = policy.tools.get(name) {
                 if let Some(expr) = &tp.requires_approval_if {
-                    if !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level)) {
-                        return EvaluationResult {
-                            decision: aa_core::PolicyResult::RequiresApproval {
-                                timeout_secs: policy.approval_timeout_secs,
-                            },
-                            redacted_payload: None,
-                            credential_findings: vec![],
-                            deny_action: None,
-                        };
+                    if !expr.is_empty() {
+                        let pctx = self.registry.as_ref().map(|reg| {
+                            crate::policy::context::ProductionPolicyContext::new(
+                                reg.as_ref(),
+                                self.budget.as_ref(),
+                                *ctx.agent_id.as_bytes(),
+                                ctx.team_id.clone(),
+                            )
+                        });
+                        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
+                            pctx.as_ref().map(|c| c as _);
+                        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
+                            return EvaluationResult {
+                                decision: aa_core::PolicyResult::RequiresApproval {
+                                    timeout_secs: policy.approval_timeout_secs,
+                                },
+                                redacted_payload: None,
+                                credential_findings: vec![],
+                                deny_action: None,
+                            };
+                        }
                     }
                 }
             }
@@ -485,11 +497,21 @@ impl PolicyEngine {
         // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
+        let pctx = self.registry.as_ref().map(|reg| {
+            crate::policy::context::ProductionPolicyContext::new(
+                reg.as_ref(),
+                self.budget.as_ref(),
+                *ctx.agent_id.as_bytes(),
+                ctx.team_id.clone(),
+            )
+        });
+        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
+
         let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
         } else {
             // Stages 1–3 and 5: stateless per-doc rules merged across cascade.
-            let v = merge_decisions(&cascade, ctx, action);
+            let v = merge_decisions(&cascade, ctx, action, pctx_dyn);
             self.decision_cache.insert(cache_key, v.clone());
             v
         };

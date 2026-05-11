@@ -110,7 +110,7 @@ fn tool_action(name: &str) -> GovernanceAction {
 fn empty_cascade_is_deny_fail_closed() {
     let ctx = make_ctx();
     let action = tool_action("bash");
-    let result = merge_decisions(&[], &ctx, &action);
+    let result = merge_decisions(&[], &ctx, &action, None);
     assert!(
         matches!(result, PolicyDecision::Deny { .. }),
         "empty cascade must be fail-closed Deny"
@@ -123,7 +123,7 @@ fn single_allow_doc_returns_allow() {
     let ctx = make_ctx();
     let action = tool_action("bash");
     let cascade = vec![allow_doc(PolicyScope::Global)];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     assert_eq!(result, PolicyDecision::Allow);
 }
 
@@ -137,7 +137,7 @@ fn deny_in_any_scope_wins_over_allow() {
         deny_tool_doc(PolicyScope::Org("acme".into()), "bash"),
         allow_doc(PolicyScope::Agent(AgentId::from_bytes([1u8; 16]))),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     assert!(
         matches!(result, PolicyDecision::Deny { .. }),
         "Deny must win over Allow"
@@ -154,7 +154,7 @@ fn require_approval_most_specific_scope_wins() {
         approval_tool_doc(PolicyScope::Org("acme".into()), "deploy", 600),
         approval_tool_doc(PolicyScope::Team("platform".into()), "deploy", 120),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     match result {
         PolicyDecision::RequireApproval { timeout_secs, .. } => {
             assert_eq!(
@@ -176,7 +176,7 @@ fn deny_overrides_require_approval() {
         approval_tool_doc(PolicyScope::Org("acme".into()), "deploy", 300),
         deny_tool_doc(PolicyScope::Team("platform".into()), "deploy"),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     assert!(
         matches!(result, PolicyDecision::Deny { .. }),
         "Deny must beat RequireApproval"
@@ -194,7 +194,7 @@ fn deny_source_scope_identifies_denying_scope() {
         deny_tool_doc(PolicyScope::Team("platform".into()), "bash"),
         allow_doc(PolicyScope::Agent(AgentId::from_bytes([1u8; 16]))),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     match result {
         PolicyDecision::Deny { source_scope, .. } => {
             assert_eq!(
@@ -218,7 +218,7 @@ fn agent_allow_does_not_override_org_require_approval() {
         approval_tool_doc(PolicyScope::Org("acme".into()), "deploy", 300),
         allow_doc(PolicyScope::Agent(AgentId::from_bytes([1u8; 16]))),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     assert!(
         matches!(result, PolicyDecision::RequireApproval { .. }),
         "Agent Allow must not downgrade Org's RequireApproval; got {result:?}"
@@ -235,7 +235,7 @@ fn deny_at_global_beats_allow_at_agent() {
         deny_tool_doc(PolicyScope::Global, "bash"),
         allow_doc(PolicyScope::Agent(AgentId::from_bytes([1u8; 16]))),
     ];
-    let result = merge_decisions(&cascade, &ctx, &action);
+    let result = merge_decisions(&cascade, &ctx, &action, None);
     assert!(
         matches!(result, PolicyDecision::Deny { .. }),
         "Global Deny must win over Agent Allow; got {result:?}"

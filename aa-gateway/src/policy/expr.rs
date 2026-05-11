@@ -22,6 +22,8 @@
 
 use aa_core::{GovernanceAction, GovernanceLevel};
 
+use crate::policy::context::PolicyContext;
+
 // ---------------------------------------------------------------------------
 // Internal token types
 // ---------------------------------------------------------------------------
@@ -34,6 +36,12 @@ enum FieldRef {
     Method,
     Command,
     GovernanceLevel,
+    AgentDepth,
+    TeamActiveAgents,
+    TeamBudgetRemaining,
+    ChildTool,
+    /// Phase B stub — real resolution wired in AAASM-1024.
+    ParentRiskTier,
 }
 
 #[derive(Debug, PartialEq)]
@@ -150,6 +158,11 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "method" => Token::Field(FieldRef::Method),
                 "command" => Token::Field(FieldRef::Command),
                 "governance_level" => Token::Field(FieldRef::GovernanceLevel),
+                "agent.depth" => Token::Field(FieldRef::AgentDepth),
+                "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
+                "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
+                "child.tool" => Token::Field(FieldRef::ChildTool),
+                "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
@@ -203,7 +216,100 @@ fn eval_clause_safe(
     literal: &LiteralVal,
     action: &GovernanceAction,
     agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
+    // agent.depth — numeric comparison against the current agent's delegation depth.
+    // Returns false (null-safe no-match) when no context is available.
+    if let FieldRef::AgentDepth = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_depth()) {
+            Some(d) => d as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
+    // team.active_agents — numeric comparison against the count of agents in the
+    // current agent's team. Returns false when the agent has no team (null-safe).
+    if let FieldRef::TeamActiveAgents = field {
+        let lhs = match policy_ctx.and_then(|c| c.team_active_agents()) {
+            Some(n) => n as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
+    // team.budget_remaining — numeric comparison against the remaining monthly
+    // budget for the current agent's team. Returns false when no budget entry or
+    // no monthly limit is configured (null-safe).
+    if let FieldRef::TeamBudgetRemaining = field {
+        let lhs = match policy_ctx.and_then(|c| c.team_budget_remaining()) {
+            Some(r) => r,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
+    // child.tool — string comparison against the union of tool_names across all
+    // direct children of the current agent. Returns false when context is absent.
+    if let FieldRef::ChildTool = field {
+        let tools = match policy_ctx {
+            Some(c) => c.child_tools(),
+            None => return false,
+        };
+        let rhs = match literal {
+            LiteralVal::Str(s) => s.as_str(),
+            _ => return false,
+        };
+        return match op {
+            OpKind::Eq => tools.iter().any(|t| t == rhs),
+            OpKind::Ne => tools.iter().all(|t| t != rhs),
+            OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
+            OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
+            _ => false,
+        };
+    }
+
+    // parent.risk_tier — Phase B stub; real resolution wired in AAASM-1024.
+    if let FieldRef::ParentRiskTier = field {
+        return false;
+    }
+
     // governance_level is the only field whose value type is not a string;
     // route it through an Ord-based comparison and return early.
     if let FieldRef::GovernanceLevel = field {
@@ -328,7 +434,12 @@ struct Clause<'t> {
     literal: &'t LiteralVal,
 }
 
-fn eval_tokens(tokens: &[Token], action: &GovernanceAction, agent_level: Option<GovernanceLevel>) -> bool {
+fn eval_tokens(
+    tokens: &[Token],
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> bool {
     // Parse tokens into a sequence of clauses separated by AND/OR.
     // Strategy: split into OR-groups where each group is a slice of
     // AND-connected clauses.  Result = any OR-group where all clauses are true.
@@ -378,7 +489,7 @@ fn eval_tokens(tokens: &[Token], action: &GovernanceAction, agent_level: Option<
     or_groups.iter().any(|group| {
         group
             .iter()
-            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level))
+            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx))
     })
 }
 
@@ -438,12 +549,17 @@ pub(crate) fn validate_governance_levels(expr: &str) -> Result<(), String> {
 ///
 /// Returns `true` if the expression matches (approval required).
 /// Returns `true` on ANY parse/tokenization error (fail-safe).
-pub(crate) fn evaluate(expr: &str, action: &GovernanceAction, agent_level: Option<GovernanceLevel>) -> bool {
+pub(crate) fn evaluate(
+    expr: &str,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> bool {
     let tokens = match tokenize(expr) {
         Some(t) if !t.is_empty() => t,
         _ => return true, // fail-safe
     };
-    eval_tokens(&tokens, action, agent_level)
+    eval_tokens(&tokens, action, agent_level, policy_ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,12 +600,12 @@ mod tests {
 
     #[test]
     fn eq_operator_matches_tool_name() {
-        assert!(evaluate(r#"tool == "search""#, &tool("search"), None));
+        assert!(evaluate(r#"tool == "search""#, &tool("search"), None, None));
     }
 
     #[test]
     fn ne_operator_false_when_equal() {
-        assert!(!evaluate(r#"tool != "search""#, &tool("search"), None));
+        assert!(!evaluate(r#"tool != "search""#, &tool("search"), None, None));
     }
 
     #[test]
@@ -497,13 +613,14 @@ mod tests {
         assert!(evaluate(
             r#"url contains "evil""#,
             &network("https://evil.com", "GET"),
-            None
+            None,
+            None,
         ));
     }
 
     #[test]
     fn starts_with_operator_on_path() {
-        assert!(evaluate(r#"path starts_with "/etc""#, &file("/etc/passwd"), None));
+        assert!(evaluate(r#"path starts_with "/etc""#, &file("/etc/passwd"), None, None));
     }
 
     #[test]
@@ -511,7 +628,8 @@ mod tests {
         assert!(evaluate(
             r#"tool == "search" AND tool == "search""#,
             &tool("search"),
-            None
+            None,
+            None,
         ));
     }
 
@@ -520,24 +638,30 @@ mod tests {
         assert!(!evaluate(
             r#"tool == "search" AND tool == "other""#,
             &tool("search"),
-            None
+            None,
+            None,
         ));
     }
 
     #[test]
     fn or_combinator_first_true() {
-        assert!(evaluate(r#"tool == "x" OR tool == "search""#, &tool("search"), None));
+        assert!(evaluate(
+            r#"tool == "x" OR tool == "search""#,
+            &tool("search"),
+            None,
+            None
+        ));
     }
 
     #[test]
     fn fail_safe_on_bad_expr() {
-        assert!(evaluate("not valid @@@ expr", &tool("anything"), None));
+        assert!(evaluate("not valid @@@ expr", &tool("anything"), None, None));
     }
 
     #[test]
     fn field_absent_for_action_variant_returns_false() {
         // `tool` field is "" for ProcessExec → should NOT match "foo"
-        assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None));
+        assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None, None));
     }
 
     #[test]
@@ -547,6 +671,7 @@ mod tests {
             "governance_level >= L2",
             &tool("any"),
             Some(GovernanceLevel::L2Enforce),
+            None,
         ));
     }
 
@@ -557,6 +682,7 @@ mod tests {
             "governance_level >= L2",
             &tool("any"),
             Some(GovernanceLevel::L1Observe),
+            None,
         ));
     }
 
@@ -571,10 +697,124 @@ mod tests {
             GovernanceLevel::L3Native,
         ] {
             assert!(
-                evaluate(r#"tool == "search""#, &tool("search"), Some(level)),
+                evaluate(r#"tool == "search""#, &tool("search"), Some(level), None),
                 "tool-only condition unexpectedly skipped for {level:?}"
             );
         }
+    }
+
+    fn fake_ctx(depth: Option<u32>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn agent_depth_gt_matches_when_deeper() {
+        let ctx = fake_ctx(Some(3));
+        assert!(evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_gt_no_match_when_shallower() {
+        let ctx = fake_ctx(Some(1));
+        assert!(!evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_eq_matches_exact() {
+        let ctx = fake_ctx(Some(0));
+        assert!(evaluate("agent.depth == 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_team_ctx(active: Option<u64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: active,
+            team_budget: None,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn team_active_agents_gt_matches() {
+        let ctx = fake_team_ctx(Some(6));
+        assert!(evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_active_agents_gt_no_match() {
+        let ctx = fake_team_ctx(Some(3));
+        assert!(!evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_budget_ctx(remaining: Option<f64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: remaining,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_matches_when_low() {
+        let ctx = fake_budget_ctx(Some(50.0));
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_no_match_when_sufficient() {
+        let ctx = fake_budget_ctx(Some(200.0));
+        assert!(!evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_child_ctx(tools: Vec<&str>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: tools.into_iter().map(String::from).collect(),
+        }
+    }
+
+    #[test]
+    fn child_tool_eq_matches_when_present() {
+        let ctx = fake_child_ctx(vec!["bash", "search"]);
+        assert!(evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_eq_no_match_when_absent() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(!evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_ne_true_when_all_differ() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(evaluate(r#"child.tool != "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn null_safety_team_active_returns_false_when_no_team() {
+        // team_active = None means the agent has no team; condition must not fire.
+        let ctx = crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+        };
+        assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn null_safety_returns_false_when_no_context() {
+        // No context at all: graph-aware field must not fire (fail-closed → no-match).
+        assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
     }
 
     #[test]
@@ -590,7 +830,7 @@ mod tests {
         ] {
             let expr = format!("governance_level == {literal}");
             assert!(
-                evaluate(&expr, &tool("any"), Some(level)),
+                evaluate(&expr, &tool("any"), Some(level), None),
                 "{literal} did not parse / compare equal for matching agent level"
             );
         }
