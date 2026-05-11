@@ -52,7 +52,7 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "target.channel_id",
     "agent.age",
     "team.parallel_agents",
-    "agent.parent_id",
+    "agent.parent_agent_id",
     "agent.team_id",
     "agent.children_count",
     "agent.is_root",
@@ -276,7 +276,7 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
                 "agent.age" => Token::Field(FieldRef::AgentAge),
                 "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
-                "agent.parent_id" => Token::Field(FieldRef::AgentParentId),
+                "agent.parent_agent_id" => Token::Field(FieldRef::AgentParentId),
                 "agent.team_id" => Token::Field(FieldRef::AgentTeamId),
                 "agent.children_count" => Token::Field(FieldRef::AgentChildrenCount),
                 "agent.is_root" => Token::Field(FieldRef::AgentIsRoot),
@@ -549,7 +549,7 @@ fn eval_clause_safe(
         };
     }
 
-    // agent.parent_id / agent.team_id — string comparison against an agent identity field.
+    // agent.parent_agent_id / agent.team_id — string comparison against an agent identity field.
     // Returns false when the field resolves to None (null-safe no-match).
     if matches!(field, FieldRef::AgentParentId | FieldRef::AgentTeamId) {
         let val = match field {
@@ -1798,7 +1798,7 @@ mod tests {
     fn agent_parent_id_eq_matches_known_parent() {
         let ctx = fake_topology_ctx(Some("parent-abc"), None, None);
         assert!(evaluate(
-            r#"agent.parent_id == "parent-abc""#,
+            r#"agent.parent_agent_id == "parent-abc""#,
             &tool("any"),
             None,
             Some(&ctx)
@@ -1809,7 +1809,7 @@ mod tests {
     fn agent_parent_id_eq_no_match_different_parent() {
         let ctx = fake_topology_ctx(Some("parent-xyz"), None, None);
         assert!(!evaluate(
-            r#"agent.parent_id == "parent-abc""#,
+            r#"agent.parent_agent_id == "parent-abc""#,
             &tool("any"),
             None,
             Some(&ctx)
@@ -1820,7 +1820,7 @@ mod tests {
     fn agent_parent_id_null_safe_when_no_parent() {
         let ctx = fake_topology_ctx(None, None, None);
         assert!(!evaluate(
-            r#"agent.parent_id == "parent-abc""#,
+            r#"agent.parent_agent_id == "parent-abc""#,
             &tool("any"),
             None,
             Some(&ctx)
@@ -1931,7 +1931,7 @@ mod tests {
 
     #[test]
     fn validate_variables_accepts_new_topology_variables() {
-        assert!(validate_variables(r#"agent.parent_id == "abc""#).is_ok());
+        assert!(validate_variables(r#"agent.parent_agent_id == "abc""#).is_ok());
         assert!(validate_variables(r#"agent.team_id == "t1""#).is_ok());
         assert!(validate_variables("agent.children_count > 0").is_ok());
         assert!(validate_variables("agent.is_root == 1").is_ok());
