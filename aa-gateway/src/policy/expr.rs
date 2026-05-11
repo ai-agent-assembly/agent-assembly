@@ -159,6 +159,7 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "agent.depth" => Token::Field(FieldRef::AgentDepth),
                 "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
                 "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
+                "child.tool" => Token::Field(FieldRef::ChildTool),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
