@@ -139,6 +139,15 @@ pub enum GovernanceAction {
         /// Full shell command string to be executed.
         command: alloc::string::String,
     },
+    /// Inter-team message sent through a named channel.
+    SendMessage {
+        /// Team ID of the sending agent's team. `None` when the sender has no team.
+        source_team_id: Option<alloc::string::String>,
+        /// Team ID of the intended recipient team. `None` when the target is unresolved.
+        target_team_id: Option<alloc::string::String>,
+        /// Logical channel identifier through which the message is routed.
+        channel_id: Option<alloc::string::String>,
+    },
 }
 
 /// Pluggable policy evaluation backend.
