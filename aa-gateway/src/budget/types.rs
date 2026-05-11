@@ -123,6 +123,17 @@ impl BudgetState {
     }
 }
 
+/// Aggregate spend summary for an agent and its entire descendant subtree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtreeSpend {
+    /// Total input + output tokens across the subtree for today's window.
+    pub tokens: u64,
+    /// Total USD spend across the subtree for today's window.
+    pub usd: rust_decimal::Decimal,
+    /// Number of distinct agents in the subtree that have recorded spend today.
+    pub agents_counted: usize,
+}
+
 /// Alert emitted via broadcast when spend crosses 80% or 95% of a daily or monthly limit.
 #[derive(Debug, Clone)]
 pub struct BudgetAlert {
