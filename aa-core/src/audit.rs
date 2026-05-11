@@ -45,6 +45,8 @@ pub enum AuditEventType {
     ApprovalRouted = 9,
     /// An approval request was escalated after the initial approver did not respond.
     ApprovalEscalated = 10,
+    /// An agent was force-deregistered by the gateway because it exceeded its configured maximum age.
+    AgentForceDeregistered = 11,
 }
 
 impl AuditEventType {
@@ -64,6 +66,7 @@ impl AuditEventType {
             Self::ApprovalTimedOut => "ApprovalTimedOut",
             Self::ApprovalRouted => "ApprovalRouted",
             Self::ApprovalEscalated => "ApprovalEscalated",
+            Self::AgentForceDeregistered => "AgentForceDeregistered",
         }
     }
 }
