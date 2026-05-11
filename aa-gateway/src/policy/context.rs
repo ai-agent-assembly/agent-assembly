@@ -95,10 +95,24 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
         let registered_unix = record.registered_at.timestamp() as u64;
         Some(self.now_secs.saturating_sub(registered_unix))
     }
+
+    fn agent_parent_id(&self) -> Option<String> {
+        self.registry.get(&self.agent_key)?.parent_agent_id.clone()
+    }
+
+    fn agent_team_id(&self) -> Option<String> {
+        self.team_id.clone()
+    }
+
+    fn agent_children_count(&self) -> Option<u32> {
+        let record = self.registry.get(&self.agent_key)?;
+        Some(record.children.len() as u32)
+    }
 }
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
 #[cfg(test)]
+#[derive(Default)]
 pub struct FakePolicyContext {
     pub depth: Option<u32>,
     pub team_active: Option<u64>,
@@ -108,6 +122,9 @@ pub struct FakePolicyContext {
     pub parent_risk_tier: Option<aa_core::RiskTier>,
     pub child_risk_tier: Option<aa_core::RiskTier>,
     pub agent_age_secs: Option<u64>,
+    pub agent_parent_id: Option<String>,
+    pub agent_team_id: Option<String>,
+    pub agent_children_count: Option<u32>,
 }
 
 #[cfg(test)]
@@ -142,6 +159,18 @@ impl PolicyContext for FakePolicyContext {
 
     fn agent_age_secs(&self) -> Option<u64> {
         self.agent_age_secs
+    }
+
+    fn agent_parent_id(&self) -> Option<String> {
+        self.agent_parent_id.clone()
+    }
+
+    fn agent_team_id(&self) -> Option<String> {
+        self.agent_team_id.clone()
+    }
+
+    fn agent_children_count(&self) -> Option<u32> {
+        self.agent_children_count
     }
 }
 
@@ -197,4 +226,12 @@ pub trait PolicyContext: Send + Sync {
     /// Age of the current agent in seconds, computed as `now_secs - registered_at`.
     /// Returns `None` when the agent is not found in the registry.
     fn agent_age_secs(&self) -> Option<u64>;
+    /// Parent agent ID string of the current agent. Returns `None` when the agent
+    /// has no parent (i.e. it is a root agent).
+    fn agent_parent_id(&self) -> Option<String>;
+    /// Team ID of the current agent. Returns `None` when the agent has no team.
+    fn agent_team_id(&self) -> Option<String>;
+    /// Number of direct children of the current agent. Returns `None` when the
+    /// agent is not found in the registry.
+    fn agent_children_count(&self) -> Option<u32>;
 }
