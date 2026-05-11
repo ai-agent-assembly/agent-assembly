@@ -471,8 +471,7 @@ impl BudgetTracker {
             .collect();
         let lock_wait_start = std::time::Instant::now();
         let _guards: Vec<_> = ancestor_arcs.iter().map(|arc| arc.lock()).collect();
-        metrics::histogram!("budget_parent_lock_wait_seconds")
-            .record(lock_wait_start.elapsed().as_secs_f64());
+        metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
 
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
@@ -1158,9 +1157,23 @@ mod tests {
         for idx in 0u8..50 {
             let t2 = Arc::clone(&t);
             let (child, leaf_b) = if idx % 2 == 0 {
-                (*child_a.as_bytes(), AgentId::from_bytes({ let mut b = [0xA0u8; 16]; b[1] = idx; b }))
+                (
+                    *child_a.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xA0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
             } else {
-                (*child_b.as_bytes(), AgentId::from_bytes({ let mut b = [0xB0u8; 16]; b[1] = idx; b }))
+                (
+                    *child_b.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xB0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
             };
             handles.push(std::thread::spawn(move || {
                 let ancestors = [child, *root.as_bytes()];
