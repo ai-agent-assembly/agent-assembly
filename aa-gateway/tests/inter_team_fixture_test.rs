@@ -30,7 +30,10 @@ fn make_ctx() -> AgentContext {
 }
 
 fn tool_action(name: &str) -> GovernanceAction {
-    GovernanceAction::ToolCall { name: name.to_string(), args: String::new() }
+    GovernanceAction::ToolCall {
+        name: name.to_string(),
+        args: String::new(),
+    }
 }
 
 fn load_inter_team_fixture(filename: &str) -> Arc<aa_gateway::policy::document::PolicyDocument> {
@@ -39,8 +42,7 @@ fn load_inter_team_fixture(filename: &str) -> Arc<aa_gateway::policy::document::
         env!("CARGO_MANIFEST_DIR"),
         filename
     );
-    let yaml = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
     let out = PolicyValidator::from_yaml(&yaml)
         .unwrap_or_else(|errs| panic!("fixture {filename} failed validation: {errs:?}"));
     Arc::new(out.document)

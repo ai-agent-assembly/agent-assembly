@@ -418,12 +418,10 @@ fn eval_clause_safe(
     // the source_team_id field is None.
     if let FieldRef::SourceTeamId = field {
         let team_id = match action {
-            GovernanceAction::SendMessage { source_team_id, .. } => {
-                match source_team_id.as_deref() {
-                    Some(id) => id.to_owned(),
-                    None => return false,
-                }
-            }
+            GovernanceAction::SendMessage { source_team_id, .. } => match source_team_id.as_deref() {
+                Some(id) => id.to_owned(),
+                None => return false,
+            },
             _ => return false,
         };
         let rhs = match literal {
@@ -443,12 +441,10 @@ fn eval_clause_safe(
     // Returns false when the action is not SendMessage or target_team_id is None.
     if let FieldRef::TargetTeamId = field {
         let team_id = match action {
-            GovernanceAction::SendMessage { target_team_id, .. } => {
-                match target_team_id.as_deref() {
-                    Some(id) => id.to_owned(),
-                    None => return false,
-                }
-            }
+            GovernanceAction::SendMessage { target_team_id, .. } => match target_team_id.as_deref() {
+                Some(id) => id.to_owned(),
+                None => return false,
+            },
             _ => return false,
         };
         let rhs = match literal {
@@ -468,12 +464,10 @@ fn eval_clause_safe(
     // Returns false when the action is not SendMessage or channel_id is None.
     if let FieldRef::TargetChannelId = field {
         let channel_id = match action {
-            GovernanceAction::SendMessage { channel_id, .. } => {
-                match channel_id.as_deref() {
-                    Some(id) => id.to_owned(),
-                    None => return false,
-                }
-            }
+            GovernanceAction::SendMessage { channel_id, .. } => match channel_id.as_deref() {
+                Some(id) => id.to_owned(),
+                None => return false,
+            },
             _ => return false,
         };
         let rhs = match literal {
@@ -1264,11 +1258,7 @@ mod tests {
 
     // ── inter-team message condition tests ───────────────────────────────────
 
-    fn send_message(
-        source: Option<&str>,
-        target: Option<&str>,
-        channel: Option<&str>,
-    ) -> GovernanceAction {
+    fn send_message(source: Option<&str>, target: Option<&str>, channel: Option<&str>) -> GovernanceAction {
         GovernanceAction::SendMessage {
             source_team_id: source.map(String::from),
             target_team_id: target.map(String::from),
