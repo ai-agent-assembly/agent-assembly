@@ -637,6 +637,24 @@ impl AgentRegistry {
     pub fn agent_depth(&self, agent_id: &[u8; 16]) -> Option<u32> {
         self.agents.get(agent_id).map(|r| r.depth)
     }
+
+    /// Return all descendants of `agent_id` in BFS order, excluding `agent_id` itself.
+    ///
+    /// Returns an empty `Vec` when the agent has no children or is not registered.
+    pub fn descendants_of(&self, agent_id: &[u8; 16]) -> Vec<[u8; 16]> {
+        let mut result = Vec::new();
+        let mut queue = VecDeque::new();
+        for child in self.children_of(agent_id) {
+            queue.push_back(child);
+        }
+        while let Some(current) = queue.pop_front() {
+            result.push(current);
+            for child in self.children_of(&current) {
+                queue.push_back(child);
+            }
+        }
+        result
+    }
 }
 
 impl Default for AgentRegistry {
