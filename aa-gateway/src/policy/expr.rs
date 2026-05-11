@@ -971,6 +971,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1000,6 +1001,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1023,6 +1025,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1046,6 +1049,7 @@ mod tests {
             child_tools: tools.into_iter().map(String::from).collect(),
             agent_risk_tier: None,
             parent_risk_tier: None,
+            agent_age_secs: None,
         }
     }
 
@@ -1077,6 +1081,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: None,
             parent_risk_tier: None,
+            agent_age_secs: None,
         };
         assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
@@ -1100,6 +1105,7 @@ mod tests {
             child_tools: vec![],
             agent_risk_tier: agent,
             parent_risk_tier: parent,
+            agent_age_secs: None,
         }
     }
 

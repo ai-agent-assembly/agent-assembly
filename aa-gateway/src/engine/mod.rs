@@ -367,12 +367,14 @@ impl PolicyEngine {
             if let Some(tp) = policy.tools.get(name) {
                 if let Some(expr) = &tp.requires_approval_if {
                     if !expr.is_empty() {
+                        let now_secs = chrono::Utc::now().timestamp() as u64;
                         let pctx = self.registry.as_ref().map(|reg| {
                             crate::policy::context::ProductionPolicyContext::new(
                                 reg.as_ref(),
                                 self.budget.as_ref(),
                                 *ctx.agent_id.as_bytes(),
                                 ctx.team_id.clone(),
+                                now_secs,
                             )
                         });
                         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
@@ -498,12 +500,14 @@ impl PolicyEngine {
         // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
+        let now_secs = chrono::Utc::now().timestamp() as u64;
         let pctx = self.registry.as_ref().map(|reg| {
             crate::policy::context::ProductionPolicyContext::new(
                 reg.as_ref(),
                 self.budget.as_ref(),
                 *ctx.agent_id.as_bytes(),
                 ctx.team_id.clone(),
+                now_secs,
             )
         });
         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =

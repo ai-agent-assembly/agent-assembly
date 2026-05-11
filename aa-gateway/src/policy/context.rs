@@ -16,6 +16,8 @@ pub struct ProductionPolicyContext<'a> {
     budget: &'a BudgetTracker,
     agent_key: [u8; 16],
     team_id: Option<String>,
+    /// Unix timestamp in seconds captured at context construction time, used to compute agent.age.
+    now_secs: u64,
 }
 
 impl<'a> ProductionPolicyContext<'a> {
@@ -24,8 +26,9 @@ impl<'a> ProductionPolicyContext<'a> {
         budget: &'a BudgetTracker,
         agent_key: [u8; 16],
         team_id: Option<String>,
+        now_secs: u64,
     ) -> Self {
-        Self { registry, budget, agent_key, team_id }
+        Self { registry, budget, agent_key, team_id, now_secs }
     }
 }
 
@@ -72,6 +75,12 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
         let parent = self.registry.get(&parent_key)?;
         aa_core::RiskTier::from_proto_i32(parent.risk_tier)
     }
+
+    fn agent_age_secs(&self) -> Option<u64> {
+        let record = self.registry.get(&self.agent_key)?;
+        let registered_unix = record.registered_at.timestamp() as u64;
+        Some(self.now_secs.saturating_sub(registered_unix))
+    }
 }
 
 /// Minimal test double for [`PolicyContext`] that returns canned values.
@@ -83,6 +92,7 @@ pub struct FakePolicyContext {
     pub child_tools: Vec<String>,
     pub agent_risk_tier: Option<aa_core::RiskTier>,
     pub parent_risk_tier: Option<aa_core::RiskTier>,
+    pub agent_age_secs: Option<u64>,
 }
 
 #[cfg(test)]
@@ -110,6 +120,10 @@ impl PolicyContext for FakePolicyContext {
     fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
         self.parent_risk_tier
     }
+
+    fn agent_age_secs(&self) -> Option<u64> {
+        self.agent_age_secs
+    }
 }
 
 /// Provides runtime values for graph-aware policy condition variables.
@@ -135,4 +149,7 @@ pub trait PolicyContext: Send + Sync {
     /// Risk tier of the current agent's parent. Returns `None` when the agent
     /// has no parent or the parent is not in the registry.
     fn parent_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// Age of the current agent in seconds, computed as `now_secs - registered_at`.
+    /// Returns `None` when the agent is not found in the registry.
+    fn agent_age_secs(&self) -> Option<u64>;
 }
