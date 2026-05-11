@@ -12,6 +12,12 @@ use crate::output::OutputFormat;
 
 /// Arguments for `aasm topology team`.
 #[derive(Args)]
+#[command(after_help = "\
+Examples:
+  aasm topology team team-abc123
+  aasm topology team team-abc123 --output json
+  aasm topology team team-abc123 --status active
+  aasm topology team team-abc123 --show-budget")]
 pub struct TeamArgs {
     /// Team ID.
     pub team_id: String,
