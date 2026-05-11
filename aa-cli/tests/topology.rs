@@ -55,3 +55,29 @@ async fn overview_returns_success() {
 
     assert_eq!(result, ExitCode::SUCCESS);
 }
+
+#[tokio::test]
+async fn overview_json_output() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/topology/overview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(sample_overview_json()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::overview::OverviewArgs {
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::overview::run(args, &ctx, OutputFormat::Json)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
