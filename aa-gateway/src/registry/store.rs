@@ -775,6 +775,32 @@ mod tree_tests {
     }
 
     #[test]
+    fn descendants_of_returns_all_bfs_nodes_excluding_self() {
+        let reg = AgentRegistry::new();
+        let root = [1u8; 16];
+        let child_a = [2u8; 16];
+        let child_b = [3u8; 16];
+        let gc1 = [4u8; 16];
+        let gc2 = [5u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child_a, Some(root), None, 1)).unwrap();
+        reg.register(make_record(child_b, Some(root), None, 1)).unwrap();
+        reg.register(make_record(gc1, Some(child_a), None, 2)).unwrap();
+        reg.register(make_record(gc2, Some(child_b), None, 2)).unwrap();
+
+        let descendants = reg.descendants_of(&root);
+
+        // Must contain all 4 descendants, not the root itself.
+        assert_eq!(descendants.len(), 4);
+        assert!(!descendants.contains(&root));
+        assert!(descendants.contains(&child_a));
+        assert!(descendants.contains(&child_b));
+        assert!(descendants.contains(&gc1));
+        assert!(descendants.contains(&gc2));
+    }
+
+    #[test]
     fn ancestors_of_three_levels() {
         let reg = AgentRegistry::new();
         let r = [1u8; 16];
