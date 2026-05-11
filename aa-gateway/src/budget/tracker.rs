@@ -133,13 +133,9 @@ impl BudgetTracker {
     /// Used by `check_and_decrement` to validate per-agent limits before committing
     /// ancestor decrements. `daily_usd` and `monthly_usd` may each be `None` to
     /// leave that window unconstrained for this specific agent.
-    pub fn with_agent_limit(
-        self,
-        agent_id: AgentId,
-        daily_usd: Option<Decimal>,
-        monthly_usd: Option<Decimal>,
-    ) -> Self {
-        self.agent_limits.insert(agent_id, AgentLimit { daily_usd, monthly_usd });
+    pub fn with_agent_limit(self, agent_id: AgentId, daily_usd: Option<Decimal>, monthly_usd: Option<Decimal>) -> Self {
+        self.agent_limits
+            .insert(agent_id, AgentLimit { daily_usd, monthly_usd });
         self
     }
 
@@ -475,8 +471,7 @@ impl BudgetTracker {
             .collect();
         let lock_wait_start = std::time::Instant::now();
         let _guards: Vec<_> = ancestor_arcs.iter().map(|arc| arc.lock()).collect();
-        metrics::histogram!("budget_parent_lock_wait_seconds")
-            .record(lock_wait_start.elapsed().as_secs_f64());
+        metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
 
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
@@ -516,11 +511,7 @@ impl BudgetTracker {
     ///
     /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
     /// This is a read-only snapshot — it does not mutate any state.
-    pub fn subtree_spend(
-        &self,
-        agent_id: &AgentId,
-        descendants: &[[u8; 16]],
-    ) -> crate::budget::types::SubtreeSpend {
+    pub fn subtree_spend(&self, agent_id: &AgentId, descendants: &[[u8; 16]]) -> crate::budget::types::SubtreeSpend {
         let today = today_in_tz(self.timezone);
         let mut total_usd = Decimal::ZERO;
         let mut agents_counted = 0usize;
@@ -1166,9 +1157,23 @@ mod tests {
         for idx in 0u8..50 {
             let t2 = Arc::clone(&t);
             let (child, leaf_b) = if idx % 2 == 0 {
-                (*child_a.as_bytes(), AgentId::from_bytes({ let mut b = [0xA0u8; 16]; b[1] = idx; b }))
+                (
+                    *child_a.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xA0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
             } else {
-                (*child_b.as_bytes(), AgentId::from_bytes({ let mut b = [0xB0u8; 16]; b[1] = idx; b }))
+                (
+                    *child_b.as_bytes(),
+                    AgentId::from_bytes({
+                        let mut b = [0xB0u8; 16];
+                        b[1] = idx;
+                        b
+                    }),
+                )
             };
             handles.push(std::thread::spawn(move || {
                 let ancestors = [child, *root.as_bytes()];

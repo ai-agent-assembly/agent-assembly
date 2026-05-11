@@ -260,6 +260,7 @@ dependencies = [
  "metrics",
  "moka",
  "notify",
+ "parking_lot",
  "proptest",
  "regex",
  "reqwest",
