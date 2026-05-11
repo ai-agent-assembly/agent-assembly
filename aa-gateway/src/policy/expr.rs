@@ -47,6 +47,9 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "child.tool",
     "child.risk_tier",
     "parent.risk_tier",
+    "source.team_id",
+    "target.team_id",
+    "target.channel_id",
 ];
 
 // ---------------------------------------------------------------------------
