@@ -92,6 +92,8 @@ enum LiteralVal {
     Num(f64),
     Level(GovernanceLevel),
     Tier(aa_core::RiskTier),
+    /// Duration in seconds, parsed from human-readable strings like `24h`, `30m`.
+    Duration(u64),
 }
 
 #[derive(Debug, PartialEq)]
@@ -517,8 +519,8 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level/tier literal against a non-level/tier field cannot match.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) => false,
+            // A level/tier/duration literal against a non-level/tier/duration field cannot match.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::Duration(_) => false,
         },
         OpKind::Ne => match literal {
             LiteralVal::Num(rhs) => {
@@ -529,9 +531,9 @@ fn eval_clause_safe(
                 }
             }
             LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level/tier literal against a non-level/tier field is unconditionally
-            // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) => true,
+            // A level/tier/duration literal against a non-level/tier/duration field is
+            // unconditionally not-equal — matches the symmetric Eq handling above.
+            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::Duration(_) => true,
         },
         OpKind::Gt => {
             let rhs = numeric_literal(literal);
@@ -572,6 +574,8 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     match lit {
         LiteralVal::Num(n) => Some(*n),
         LiteralVal::Str(s) => s.parse::<f64>().ok(),
+        // Duration participates in numeric comparisons (as seconds).
+        LiteralVal::Duration(secs) => Some(*secs as f64),
         // Level and tier literals never participate in numeric comparisons.
         LiteralVal::Level(_) | LiteralVal::Tier(_) => None,
     }
