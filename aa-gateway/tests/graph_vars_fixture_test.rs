@@ -145,3 +145,57 @@ fn completely_unknown_variable_rejected_at_load_time() {
         "expected error for 'totally_unknown', got: {errs:?}"
     );
 }
+
+// ── null-safety snapshot tests ───────────────────────────────────────────────
+//
+// These snapshots lock the `PolicyDecision` produced when a graph-aware
+// variable is absent (PolicyContext = None). Changing null-safety semantics
+// requires an explicit snapshot review, which is the intent per AAASM-1035.
+
+#[test]
+fn snapshot_unconditional_deny_unaffected_by_null_ctx() {
+    // `agent_depth_deny.yaml` uses `allow: false` — an unconditional deny.
+    // Null-safety only suppresses graph-aware *conditional* clauses; it does
+    // not bypass an explicit deny rule. Snapshot confirms the distinction.
+    let doc = load_fixture("agent_depth_deny.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("deploy");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    insta::assert_debug_snapshot!(result);
+}
+
+#[test]
+fn snapshot_null_ctx_team_active_agents_allow_fixture_yields_allow() {
+    let doc = load_fixture("team_active_agents_allow.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("spawn");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    insta::assert_debug_snapshot!(result);
+}
+
+#[test]
+fn snapshot_null_ctx_team_budget_remaining_deny_fixture_yields_allow() {
+    let doc = load_fixture("team_budget_remaining_deny.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("expensive_op");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    insta::assert_debug_snapshot!(result);
+}
+
+#[test]
+fn snapshot_null_ctx_child_tool_deny_fixture_yields_allow() {
+    let doc = load_fixture("child_tool_deny.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("delegate");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    insta::assert_debug_snapshot!(result);
+}
+
+#[test]
+fn snapshot_null_ctx_agent_depth_allow_fixture_yields_allow() {
+    let doc = load_fixture("agent_depth_allow.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("deploy");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    insta::assert_debug_snapshot!(result);
+}

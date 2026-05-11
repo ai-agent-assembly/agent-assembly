@@ -1,0 +1,9 @@
+---
+source: aa-gateway/tests/graph_vars_fixture_test.rs
+assertion_line: 164
+expression: result
+---
+Deny {
+    reason: "tool denied by policy",
+    source_scope: Global,
+}
