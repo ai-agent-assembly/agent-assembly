@@ -214,6 +214,14 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                     // Try to parse as a number
                     if let Ok(n) = other.parse::<f64>() {
                         Token::Literal(LiteralVal::Num(n))
+                    } else if other.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                        // Try to parse as a humantime duration (e.g. "24h", "30m", "1h30m").
+                        // Only attempt when the word starts with a digit — avoids false positives.
+                        if let Ok(d) = humantime::parse_duration(other) {
+                            Token::Literal(LiteralVal::Duration(d.as_secs()))
+                        } else {
+                            return None;
+                        }
                     } else {
                         return None; // unknown word
                     }
