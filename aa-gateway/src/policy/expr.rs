@@ -767,6 +767,33 @@ mod tests {
         assert!(!evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
     }
 
+    fn fake_child_ctx(tools: Vec<&str>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: tools.into_iter().map(String::from).collect(),
+        }
+    }
+
+    #[test]
+    fn child_tool_eq_matches_when_present() {
+        let ctx = fake_child_ctx(vec!["bash", "search"]);
+        assert!(evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_eq_no_match_when_absent() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(!evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_ne_true_when_all_differ() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(evaluate(r#"child.tool != "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
     #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
