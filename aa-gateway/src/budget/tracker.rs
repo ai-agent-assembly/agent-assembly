@@ -1080,6 +1080,58 @@ mod tests {
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
     }
 
+    // ── AAASM-1028: proptest concurrent invariants ─────────────────────
+
+    #[test]
+    fn proptest_concurrent_decrement_invariants_hold() {
+        use proptest::prelude::*;
+        use std::sync::Arc;
+
+        // Run 256 independent scenarios: N threads each spending $0.01,
+        // root must accumulate exactly N × $0.01.
+        let config = proptest::test_runner::Config {
+            cases: 256,
+            ..Default::default()
+        };
+        let mut runner = proptest::test_runner::TestRunner::new(config);
+
+        runner
+            .run(&(1usize..=20usize), |n_threads| {
+                let root = AgentId::from_bytes([0xD0u8; 16]);
+                let child = AgentId::from_bytes([0xD1u8; 16]);
+                let t = Arc::new(
+                    BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+                        .with_agent_limit(root, Some("10000.00".parse().unwrap()), None)
+                        .with_agent_limit(child, Some("10000.00".parse().unwrap()), None),
+                );
+                let ancestors = vec![*child.as_bytes(), *root.as_bytes()];
+                let amount: Decimal = "0.01".parse().unwrap();
+
+                let mut handles = Vec::new();
+                for idx in 0..n_threads {
+                    let t2 = Arc::clone(&t);
+                    let anc = ancestors.clone();
+                    handles.push(std::thread::spawn(move || {
+                        let leaf = AgentId::from_bytes({
+                            let mut b = [0xE0u8; 16];
+                            b[1] = idx as u8;
+                            b
+                        });
+                        t2.check_and_decrement(leaf, &anc, amount).unwrap();
+                    }));
+                }
+                for h in handles {
+                    h.join().unwrap();
+                }
+
+                let root_spent = t.per_agent.get(&root).unwrap().spent_usd;
+                let expected = amount * Decimal::from(n_threads);
+                prop_assert_eq!(root_spent, expected);
+                Ok(())
+            })
+            .unwrap();
+    }
+
     // ── subtree_spend (AAASM-1025) ─────────────────────────────────────
 
     #[test]
