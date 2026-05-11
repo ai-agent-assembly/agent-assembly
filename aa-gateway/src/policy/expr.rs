@@ -66,6 +66,9 @@ enum FieldRef {
     ChildTool,
     AgentRiskTier,
     ParentRiskTier,
+    SourceTeamId,
+    TargetTeamId,
+    TargetChannelId,
 }
 
 #[derive(Debug, PartialEq)]

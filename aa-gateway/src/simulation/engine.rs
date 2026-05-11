@@ -131,6 +131,9 @@ fn action_summary(action: &GovernanceAction) -> String {
         GovernanceAction::FileAccess { path, mode } => format!("file:{mode:?}:{path}"),
         GovernanceAction::NetworkRequest { url, method, .. } => format!("net:{method}:{url}"),
         GovernanceAction::ProcessExec { command, .. } => format!("exec:{command}"),
+        GovernanceAction::SendMessage { channel_id, .. } => {
+            format!("msg:{}", channel_id.as_deref().unwrap_or(""))
+        }
     }
 }
 
