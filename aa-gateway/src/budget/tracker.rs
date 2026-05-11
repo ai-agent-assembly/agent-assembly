@@ -451,6 +451,34 @@ impl BudgetTracker {
         // Phase 1: preflight — verify all ancestors have headroom.
         self.preflight_ancestors(ancestors, amount)?;
 
+        // Phase 2: commit — record spend on the agent and every ancestor.
+        let today = today_in_tz(self.timezone);
+        self.per_agent
+            .entry(agent_id)
+            .and_modify(|s| {
+                s.maybe_reset(today);
+                s.spent_usd += amount;
+            })
+            .or_insert_with(|| {
+                let mut s = BudgetState::new_for_date(today);
+                s.spent_usd = amount;
+                s
+            });
+        for &ancestor_bytes in ancestors {
+            let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            self.per_agent
+                .entry(ancestor_id)
+                .and_modify(|s| {
+                    s.maybe_reset(today);
+                    s.spent_usd += amount;
+                })
+                .or_insert_with(|| {
+                    let mut s = BudgetState::new_for_date(today);
+                    s.spent_usd = amount;
+                    s
+                });
+        }
+
         Ok(())
     }
 
