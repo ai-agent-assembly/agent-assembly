@@ -83,14 +83,23 @@ impl MessageRouter {
             let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
             let mut last_hash = self.audit_last_hash.lock().unwrap_or_else(|e| e.into_inner());
 
-            let channel_id = match action {
-                GovernanceAction::SendMessage { channel_id, .. } => {
-                    channel_id.as_deref().unwrap_or("unknown").to_string()
-                }
-                _ => "unknown".to_string(),
+            let (channel_id, source_team_id, target_team_id) = match action {
+                GovernanceAction::SendMessage {
+                    channel_id,
+                    source_team_id,
+                    target_team_id,
+                } => (
+                    channel_id.as_deref().unwrap_or("unknown").to_string(),
+                    source_team_id.as_deref().unwrap_or("unknown").to_string(),
+                    target_team_id.as_deref().unwrap_or("unknown").to_string(),
+                ),
+                _ => ("unknown".to_string(), "unknown".to_string(), "unknown".to_string()),
             };
 
-            let payload = format!(r#"{{"reason":"{}","channel_id":"{}"}}"#, block_reason, channel_id);
+            let payload = format!(
+                r#"{{"reason":"{}","channel_id":"{}","source_team_id":"{}","target_team_id":"{}"}}"#,
+                block_reason, channel_id, source_team_id, target_team_id
+            );
 
             let entry = AuditEntry::new(
                 seq,
@@ -180,6 +189,8 @@ mod tests {
         assert_eq!(entry.event_type(), AuditEventType::MessageBlocked);
         assert!(entry.payload().contains("cross_team_unallowed_channel"));
         assert!(entry.payload().contains("private"));
+        assert!(entry.payload().contains("team-alpha"));
+        assert!(entry.payload().contains("team-beta"));
     }
 
     #[test]

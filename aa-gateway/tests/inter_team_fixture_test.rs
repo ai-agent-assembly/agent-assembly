@@ -92,6 +92,31 @@ fn same_team_allow_produces_allow_for_non_message_action() {
     assert_eq!(result, PolicyDecision::Allow);
 }
 
+#[test]
+fn same_team_send_message_produces_allow() {
+    // target.team_id == "team-alpha" → expression "target.team_id != \"team-alpha\""
+    // evaluates to false → Stage 5b does not fire → Allow.
+    let doc = load_inter_team_fixture("same_team_allow.yaml");
+    let ctx = make_ctx();
+    let action = send_message_action("team-alpha", "team-alpha", "ops");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    assert_eq!(result, PolicyDecision::Allow);
+}
+
+#[test]
+fn cross_team_send_message_requires_approval() {
+    // target.team_id == "team-beta" → expression "target.team_id != \"team-alpha\""
+    // evaluates to true → Stage 5b fires → RequireApproval.
+    let doc = load_inter_team_fixture("same_team_allow.yaml");
+    let ctx = make_ctx();
+    let action = send_message_action("team-alpha", "team-beta", "ops");
+    let result = merge_decisions(&[doc], &ctx, &action, None);
+    assert!(
+        matches!(result, PolicyDecision::RequireApproval { .. }),
+        "expected RequireApproval, got {result:?}"
+    );
+}
+
 // ── allowed_channel_in fixture (in / not_in operator) ────────────────────────
 
 #[test]
@@ -142,6 +167,8 @@ fn disallowed_channel_triggers_approval_via_message_router() {
     assert_eq!(entry.event_type(), AuditEventType::MessageBlocked);
     assert!(entry.payload().contains("cross_team_unallowed_channel"));
     assert!(entry.payload().contains("private"));
+    assert!(entry.payload().contains("team-alpha"));
+    assert!(entry.payload().contains("team-beta"));
 }
 
 // ── load-time validation: typo rejection ─────────────────────────────────────
