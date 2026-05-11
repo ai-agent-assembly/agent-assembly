@@ -698,6 +698,33 @@ mod tests {
         }
     }
 
+    fn fake_ctx(depth: Option<u32>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+        }
+    }
+
+    #[test]
+    fn agent_depth_gt_matches_when_deeper() {
+        let ctx = fake_ctx(Some(3));
+        assert!(evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_gt_no_match_when_shallower() {
+        let ctx = fake_ctx(Some(1));
+        assert!(!evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_eq_matches_exact() {
+        let ctx = fake_ctx(Some(0));
+        assert!(evaluate("agent.depth == 0", &tool("any"), None, Some(&ctx)));
+    }
+
     #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the

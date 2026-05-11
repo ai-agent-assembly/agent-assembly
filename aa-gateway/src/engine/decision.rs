@@ -242,7 +242,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -261,7 +261,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -280,7 +280,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -293,7 +293,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -305,7 +305,7 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -323,7 +323,7 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(result, PolicyDecision::Allow);
     }
 }
