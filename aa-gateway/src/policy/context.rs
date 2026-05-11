@@ -49,7 +49,16 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
     }
 
     fn child_tools(&self) -> Vec<String> {
-        todo!("AAASM-1032: implement via registry children_of")
+        self.registry
+            .children_of(&self.agent_key)
+            .into_iter()
+            .flat_map(|key| {
+                self.registry
+                    .get(&key)
+                    .map(|r| r.tool_names.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 }
 
