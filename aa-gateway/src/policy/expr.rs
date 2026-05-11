@@ -218,6 +218,28 @@ fn eval_clause_safe(
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
+    // agent.depth — numeric comparison against the current agent's delegation depth.
+    // Returns false (null-safe no-match) when no context is available.
+    if let FieldRef::AgentDepth = field {
+        let lhs = match policy_ctx.and_then(|c| c.agent_depth()) {
+            Some(d) => d as f64,
+            None => return false,
+        };
+        let rhs = match numeric_literal(literal) {
+            Some(r) => r,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq => lhs == rhs,
+            OpKind::Ne => lhs != rhs,
+            OpKind::Gt => lhs > rhs,
+            OpKind::Gte => lhs >= rhs,
+            OpKind::Lt => lhs < rhs,
+            OpKind::Lte => lhs <= rhs,
+            OpKind::Contains | OpKind::StartsWith => false,
+        };
+    }
+
     // governance_level is the only field whose value type is not a string;
     // route it through an Ord-based comparison and return early.
     if let FieldRef::GovernanceLevel = field {
