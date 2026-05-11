@@ -795,6 +795,24 @@ mod tests {
     }
 
     #[test]
+    fn null_safety_team_active_returns_false_when_no_team() {
+        // team_active = None means the agent has no team; condition must not fire.
+        let ctx = crate::policy::context::FakePolicyContext {
+            depth: None,
+            team_active: None,
+            team_budget: None,
+            child_tools: vec![],
+        };
+        assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn null_safety_returns_false_when_no_context() {
+        // No context at all: graph-aware field must not fire (fail-closed → no-match).
+        assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
+    }
+
+    #[test]
     fn parser_accepts_l0_through_l3() {
         // Each named level parses and compares equal against an agent of the
         // same level — covering all four members of the `GovernanceLevel`
