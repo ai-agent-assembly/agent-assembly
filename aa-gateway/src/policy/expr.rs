@@ -1821,37 +1821,67 @@ mod tests {
     #[test]
     fn agent_parent_id_eq_matches_known_parent() {
         let ctx = fake_topology_ctx(Some("parent-abc"), None, None);
-        assert!(evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+        assert!(evaluate(
+            r#"agent.parent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
     fn agent_parent_id_eq_no_match_different_parent() {
         let ctx = fake_topology_ctx(Some("parent-xyz"), None, None);
-        assert!(!evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+        assert!(!evaluate(
+            r#"agent.parent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
     fn agent_parent_id_null_safe_when_no_parent() {
         let ctx = fake_topology_ctx(None, None, None);
-        assert!(!evaluate(r#"agent.parent_id == "parent-abc""#, &tool("any"), None, Some(&ctx)));
+        assert!(!evaluate(
+            r#"agent.parent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
     fn agent_team_id_eq_matches_known_team() {
         let ctx = fake_topology_ctx(None, Some("team-alpha"), None);
-        assert!(evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+        assert!(evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
     fn agent_team_id_eq_no_match_different_team() {
         let ctx = fake_topology_ctx(None, Some("team-beta"), None);
-        assert!(!evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+        assert!(!evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
     fn agent_team_id_null_safe_when_no_team() {
         let ctx = fake_topology_ctx(None, None, None);
-        assert!(!evaluate(r#"agent.team_id == "team-alpha""#, &tool("any"), None, Some(&ctx)));
+        assert!(!evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
     }
 
     #[test]
