@@ -637,6 +637,24 @@ impl AgentRegistry {
     pub fn agent_depth(&self, agent_id: &[u8; 16]) -> Option<u32> {
         self.agents.get(agent_id).map(|r| r.depth)
     }
+
+    /// Return all descendants of `agent_id` in BFS order, excluding `agent_id` itself.
+    ///
+    /// Returns an empty `Vec` when the agent has no children or is not registered.
+    pub fn descendants_of(&self, agent_id: &[u8; 16]) -> Vec<[u8; 16]> {
+        let mut result = Vec::new();
+        let mut queue = VecDeque::new();
+        for child in self.children_of(agent_id) {
+            queue.push_back(child);
+        }
+        while let Some(current) = queue.pop_front() {
+            result.push(current);
+            for child in self.children_of(&current) {
+                queue.push_back(child);
+            }
+        }
+        result
+    }
 }
 
 impl Default for AgentRegistry {
@@ -754,6 +772,32 @@ mod tree_tests {
         let graph = AgentGraph::from_registry(&reg);
         assert_eq!(graph.team_stats.get("eng"), Some(&2));
         assert_eq!(graph.team_stats.get("ops"), Some(&1));
+    }
+
+    #[test]
+    fn descendants_of_returns_all_bfs_nodes_excluding_self() {
+        let reg = AgentRegistry::new();
+        let root = [1u8; 16];
+        let child_a = [2u8; 16];
+        let child_b = [3u8; 16];
+        let gc1 = [4u8; 16];
+        let gc2 = [5u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child_a, Some(root), None, 1)).unwrap();
+        reg.register(make_record(child_b, Some(root), None, 1)).unwrap();
+        reg.register(make_record(gc1, Some(child_a), None, 2)).unwrap();
+        reg.register(make_record(gc2, Some(child_b), None, 2)).unwrap();
+
+        let descendants = reg.descendants_of(&root);
+
+        // Must contain all 4 descendants, not the root itself.
+        assert_eq!(descendants.len(), 4);
+        assert!(!descendants.contains(&root));
+        assert!(descendants.contains(&child_a));
+        assert!(descendants.contains(&child_b));
+        assert!(descendants.contains(&gc1));
+        assert!(descendants.contains(&gc2));
     }
 
     #[test]

@@ -478,6 +478,35 @@ impl BudgetTracker {
         Ok(())
     }
 
+    /// Accumulate today's spend for `agent_id` and every descendant in `descendants`.
+    ///
+    /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
+    /// This is a read-only snapshot — it does not mutate any state.
+    pub fn subtree_spend(&self, agent_id: &AgentId, descendants: &[[u8; 16]]) -> crate::budget::types::SubtreeSpend {
+        let today = today_in_tz(self.timezone);
+        let mut total_usd = Decimal::ZERO;
+        let mut agents_counted = 0usize;
+
+        let ids = std::iter::once(*agent_id.as_bytes()).chain(descendants.iter().copied());
+        for id_bytes in ids {
+            let aid = AgentId::from_bytes(id_bytes);
+            if let Some(state) = self.per_agent.get(&aid) {
+                let mut copy = state.clone();
+                copy.maybe_reset(today);
+                if copy.spent_usd > Decimal::ZERO {
+                    total_usd += copy.spent_usd;
+                    agents_counted += 1;
+                }
+            }
+        }
+
+        crate::budget::types::SubtreeSpend {
+            tokens: 0,
+            usd: total_usd,
+            agents_counted,
+        }
+    }
+
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
     pub fn team_state(&self, team_id: &str) -> Option<BudgetState> {
         self.team_budgets.get(team_id).map(|s| s.clone())
@@ -1019,6 +1048,59 @@ mod tests {
         let alert = rx.try_recv().expect("expected 95% team alert");
         assert_eq!(alert.threshold_pct, 95);
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
+    }
+
+    // ── subtree_spend (AAASM-1025) ─────────────────────────────────────
+
+    #[test]
+    fn subtree_spend_leaf_agent_equals_own_spend() {
+        let t = new_tracker();
+        let id = agent(80);
+        t.record_raw_spend(id, None, "3.00".parse().unwrap());
+        let result = t.subtree_spend(&id, &[]);
+        assert_eq!(result.usd, "3.00".parse::<Decimal>().unwrap());
+        assert_eq!(result.agents_counted, 1);
+    }
+
+    #[test]
+    fn subtree_spend_three_deep_seven_node_tree_returns_correct_total() {
+        // root → child_a, child_b; child_a → gc1, gc2; child_b → gc3, gc4
+        let root = agent(81);
+        let child_a = agent(82);
+        let child_b = agent(83);
+        let gc1 = agent(84);
+        let gc2 = agent(85);
+        let gc3 = agent(86);
+        let gc4 = agent(87);
+
+        let t = new_tracker();
+        // Record $1 each for every node.
+        let one: Decimal = "1.00".parse().unwrap();
+        for &a in &[root, child_a, child_b, gc1, gc2, gc3, gc4] {
+            t.record_raw_spend(a, None, one);
+        }
+
+        let descendants = [
+            *child_a.as_bytes(),
+            *child_b.as_bytes(),
+            *gc1.as_bytes(),
+            *gc2.as_bytes(),
+            *gc3.as_bytes(),
+            *gc4.as_bytes(),
+        ];
+        let result = t.subtree_spend(&root, &descendants);
+        let expected: Decimal = "7.00".parse().unwrap();
+        assert_eq!(result.usd, expected);
+        assert_eq!(result.agents_counted, 7);
+    }
+
+    #[test]
+    fn subtree_spend_no_usage_returns_zero() {
+        let t = new_tracker();
+        let id = agent(88);
+        let result = t.subtree_spend(&id, &[]);
+        assert_eq!(result.usd, Decimal::ZERO);
+        assert_eq!(result.agents_counted, 0);
     }
 
     // ── check_and_decrement (AAASM-1023) ───────────────────────────────
