@@ -1839,4 +1839,55 @@ mod tests {
         assert!(validate_variables("agent.is_root == 1").is_ok());
         assert!(validate_variables("agent.is_leaf == 1").is_ok());
     }
+
+    // ── compound AND rule: equivalent of AAASM-225 example rule 3 ───────────
+    //
+    // Original rule 3 used `action.model_cost * 0.2` which requires arithmetic
+    // not supported by the flat grammar. The equivalent supported form combines
+    // agent.depth and team.budget_remaining with AND — testing the same
+    // compound-condition path.
+
+    fn fake_depth_budget_ctx(depth: Option<u32>, budget: Option<f64>) -> crate::policy::context::FakePolicyContext {
+        crate::policy::context::FakePolicyContext {
+            depth,
+            team_budget: budget,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compound_and_depth_budget_fires_when_both_clauses_true() {
+        // depth=2 satisfies `agent.depth > 0`; budget=50 satisfies `team.budget_remaining < 100`
+        let ctx = fake_depth_budget_ctx(Some(2), Some(50.0));
+        assert!(evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
+
+    #[test]
+    fn compound_and_depth_budget_no_fire_when_depth_clause_false() {
+        // depth=0 fails `agent.depth > 0`; AND short-circuits → no fire
+        let ctx = fake_depth_budget_ctx(Some(0), Some(50.0));
+        assert!(!evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
+
+    #[test]
+    fn compound_and_depth_budget_no_fire_when_budget_clause_false() {
+        // depth=2 satisfies first clause; budget=200 fails `team.budget_remaining < 100` → no fire
+        let ctx = fake_depth_budget_ctx(Some(2), Some(200.0));
+        assert!(!evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
 }
