@@ -316,3 +316,63 @@ async fn tree_depth_zero_returns_failure_without_http_call() {
 
     assert_eq!(result, ExitCode::FAILURE);
 }
+
+// ── topology team edge cases ──────────────────────────────────────────
+
+#[tokio::test]
+async fn team_empty_returns_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/topology/team/empty-team"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "team_id": "empty-team",
+            "agent_count": 0,
+            "members": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::team::TeamArgs {
+            team_id: "empty-team".to_string(),
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::team::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::SUCCESS);
+}
+
+#[tokio::test]
+async fn team_404_returns_exit_code_4() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/topology/team/ghost-team"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::topology::team::TeamArgs {
+            team_id: "ghost-team".to_string(),
+            status: None,
+            show_budget: false,
+        };
+        let ctx = make_context(&uri);
+        aa_cli::commands::topology::team::run(args, &ctx, OutputFormat::Table)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(result, ExitCode::from(4u8));
+}
