@@ -156,6 +156,7 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "method" => Token::Field(FieldRef::Method),
                 "command" => Token::Field(FieldRef::Command),
                 "governance_level" => Token::Field(FieldRef::GovernanceLevel),
+                "agent.depth" => Token::Field(FieldRef::AgentDepth),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
