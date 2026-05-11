@@ -51,6 +51,7 @@ pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "target.team_id",
     "target.channel_id",
     "agent.age",
+    "team.parallel_agents",
 ];
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ enum FieldRef {
     TargetTeamId,
     TargetChannelId,
     AgentAge,
+    TeamParallelAgents,
 }
 
 #[derive(Debug, PartialEq)]
@@ -263,6 +265,7 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 "target.team_id" => Token::Field(FieldRef::TargetTeamId),
                 "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
                 "agent.age" => Token::Field(FieldRef::AgentAge),
+                "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
                 "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
                 "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
                 "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
