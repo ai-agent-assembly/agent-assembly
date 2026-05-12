@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Agent Assembly · IA Overview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Caveat:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>body { margin: 0; background: #ece7dc; }</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="../design-canvas.jsx"></script>
+<script type="text/babel" src="ia-pages.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+  function App() {
+    return (
+      <window.DesignCanvas
+        title="Agent Assembly Dashboard · IA Overview"
+        subtitle="Stage A — 全景圖 + 6 頁 wireframe 縮略。⭐ 是建議下一階段進 hi-fi 的兩個亮點頁。"
+      >
+        <window.DCSection id="ia" title="Information architecture">
+          <window.DCArtboard id="sitemap" label="Sitemap · 6 頁結構 + drill-down 路徑" width={1280} height={800}>
+            <window.Sitemap />
+          </window.DCArtboard>
+        </window.DCSection>
+        <window.DCSection id="pages" title="Page thumbnails — 6 頁骨架">
+          <window.DCArtboard id="p1" label="Page 1 · Overview" width={1280} height={800}>
+            <window.PageOverview />
+          </window.DCArtboard>
+          <window.DCArtboard id="p2" label="Page 2 · Fleet" width={1280} height={800}>
+            <window.PageFleet />
+          </window.DCArtboard>
+          <window.DCArtboard id="p3" label="Page 3 ⭐ · Capability" width={1280} height={800}>
+            <window.PageCapability />
+          </window.DCArtboard>
+          <window.DCArtboard id="p4" label="Page 4 · Policy" width={1280} height={800}>
+            <window.PagePolicy />
+          </window.DCArtboard>
+          <window.DCArtboard id="p5" label="Page 5 · Live Ops" width={1280} height={800}>
+            <window.PageLive />
+          </window.DCArtboard>
+          <window.DCArtboard id="p6" label="Page 6 ⭐ · Secret Scrubbing" width={1280} height={800}>
+            <window.PageScrub />
+          </window.DCArtboard>
+        </window.DCSection>
+      </window.DesignCanvas>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
