@@ -36,3 +36,6 @@ codecov.xml
 node_modules/
 dashboard/dist/
 *.db
+
+# Claude Design handoff export (canonical artefacts are at design/v1/)
+openapi/agent-assembly-brief/project/
