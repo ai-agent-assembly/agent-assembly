@@ -18,9 +18,9 @@ aa-devtool-windsurf  = { path = "../aa-devtool-windsurf" }
 aa-gateway           = { path = "../aa-gateway" }
 anyhow         = "1"
 async-trait    = "0.1"
-axum           = { version = "0.8", features = ["macros"] }
+axum           = "0.8"
 chrono         = { version = "0.4", features = ["serde"] }
-clap           = { version = "4", features = ["derive"] }
+clap           = { version = "4", features = ["derive", "env"] }
 clap_complete  = "4"
 colored        = "3"
 csv            = "1"
