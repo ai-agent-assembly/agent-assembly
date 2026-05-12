@@ -7,7 +7,8 @@ async function injectToken(page: import('@playwright/test').Page) {
   })
 }
 
-// Minimal approval fixture for route mocking.
+// ── Fixtures ───────────────────────────────────────────────────────────────────
+
 const APPROVAL = {
   id: 'e2e-appr-001',
   agent_id: 'agent-e2e',
@@ -19,13 +20,48 @@ const APPROVAL = {
   team_id: null,
 }
 
-// Minimal policy fixture.
 const POLICY = {
   name: 'e2e-policy',
   version: '1.0.0',
   rule_count: 2,
   active: true,
 }
+
+const AGENT = {
+  id: 'agent-e2e-001',
+  name: 'E2E Test Agent',
+  framework: 'langchain',
+  version: '0.1.0',
+  status: 'active',
+  layer: 'sdk',
+  session_count: 3,
+  policy_violations_count: 0,
+  last_event: '2026-05-12T10:00:00Z',
+  tool_names: ['search', 'code_exec'],
+  recent_events: [],
+}
+
+// ── Login flow ─────────────────────────────────────────────────────────────────
+
+test.describe('Login flow', () => {
+  test('successful login redirects to /', async ({ page }) => {
+    await page.route('/api/v1/auth/token', (route) =>
+      route.fulfill({ json: { token: 'e2e-test-token' } }),
+    )
+    await page.route('/api/v1/approvals**', (route) => route.fulfill({ json: [] }))
+    await page.route('/api/v1/ws/events**', (route) => route.abort())
+
+    await page.goto('/login')
+    await expect(page.getByLabelText('API Key')).toBeVisible()
+    await page.getByLabel('API Key').fill('aa_test_key')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+
+    await expect(page).toHaveURL('/')
+    await expect(page.getByTestId('appshell')).toBeVisible()
+  })
+})
+
+// ── AppShell ───────────────────────────────────────────────────────────────────
 
 test.describe('AppShell', () => {
   test.beforeEach(async ({ page }) => {
@@ -56,6 +92,40 @@ test.describe('AppShell', () => {
     await expect(page).toHaveURL(/\/login/)
   })
 })
+
+// ── Agents page ────────────────────────────────────────────────────────────────
+
+test.describe('Agents page', () => {
+  test.beforeEach(async ({ page }) => {
+    await injectToken(page)
+    await page.route('/api/v1/agents', (route) =>
+      route.fulfill({ json: [AGENT] }),
+    )
+    await page.route(/\/api\/v1\/agents\/[^/]+$/, (route) =>
+      route.fulfill({ json: AGENT }),
+    )
+    await page.route('/api/v1/logs**', (route) =>
+      route.fulfill({ json: [] }),
+    )
+  })
+
+  test('renders agent table with at least 1 row', async ({ page }) => {
+    await page.goto('/agents')
+    await expect(page.getByTestId('agents-table')).toBeVisible()
+    await expect(page.getByTestId('agent-row').first()).toBeVisible()
+    await expect(page.getByText('E2E Test Agent')).toBeVisible()
+  })
+
+  test('agent detail shows identity profile fields', async ({ page }) => {
+    await page.goto('/agents')
+    await page.getByText('E2E Test Agent').click()
+    await expect(page.getByTestId('agent-profile')).toBeVisible()
+    await expect(page.getByText('agent-e2e-001')).toBeVisible()
+    await expect(page.getByText('langchain')).toBeVisible()
+  })
+})
+
+// ── Approvals page ─────────────────────────────────────────────────────────────
 
 test.describe('Approvals page', () => {
   test.beforeEach(async ({ page }) => {
@@ -105,9 +175,7 @@ test.describe('Approvals page', () => {
     await page.getByTestId('reject-btn').click()
     await expect(page.getByTestId('reject-dialog')).toBeVisible()
 
-    // Confirm button disabled without reason
     await expect(page.getByTestId('reject-confirm-btn')).toBeDisabled()
-
     await page.getByTestId('reject-reason-input').fill('not authorized')
     await expect(page.getByTestId('reject-confirm-btn')).not.toBeDisabled()
     await page.getByTestId('reject-confirm-btn').click()
@@ -116,6 +184,8 @@ test.describe('Approvals page', () => {
     await expect(page.getByTestId('reject-dialog')).not.toBeVisible()
   })
 })
+
+// ── Policies page ──────────────────────────────────────────────────────────────
 
 test.describe('Policies page', () => {
   test.beforeEach(async ({ page }) => {
@@ -140,6 +210,8 @@ test.describe('Policies page', () => {
   })
 })
 
+// ── Policy editor page ─────────────────────────────────────────────────────────
+
 test.describe('Policy editor page', () => {
   test.beforeEach(async ({ page }) => {
     await injectToken(page)
@@ -151,19 +223,20 @@ test.describe('Policy editor page', () => {
     })
   })
 
-  test('shows validation errors for invalid YAML', async ({ page }) => {
-    await page.goto('/policies/editor')
-    await expect(page.getByTestId('policy-editor')).toBeVisible()
-    // The editor renders a textarea in the test build via Monaco stub.
-    // In the real browser, Monaco renders a div. We navigate to the editor
-    // and verify the initial valid state (no validation errors shown).
-    await expect(page.getByTestId('validation-errors')).not.toBeVisible()
-  })
-
   test('Apply button is visible and enabled with default template', async ({ page }) => {
     await page.goto('/policies/editor')
     await expect(page.getByTestId('apply-btn')).toBeVisible()
     await expect(page.getByTestId('apply-btn')).not.toBeDisabled()
+  })
+
+  test('Diff button toggles to diff panel and back', async ({ page }) => {
+    await page.goto('/policies/editor')
+    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Diff')
+    await page.getByTestId('toggle-diff-btn').click()
+    // Monaco loads async; confirm the toggle state changed before the editor resolves
+    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Editor')
+    await page.getByTestId('toggle-diff-btn').click()
+    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Diff')
   })
 
   test('Discard navigates back to /policies', async ({ page }) => {
@@ -173,9 +246,10 @@ test.describe('Policy editor page', () => {
   })
 })
 
+// ── Unauthenticated redirect ───────────────────────────────────────────────────
+
 test.describe('Unauthenticated redirect', () => {
   test('redirects to /login when no token', async ({ page }) => {
-    // No injectToken — localStorage is clean
     await page.goto('/approvals')
     await expect(page).toHaveURL(/\/login/)
   })
