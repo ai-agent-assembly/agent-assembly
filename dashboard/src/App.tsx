@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ProtectedRoute } from './pages/ProtectedRoute'
 import { LoginPage } from './pages/LoginPage'
 import { AgentsPage } from './pages/AgentsPage'
+import { AgentDetailPage } from './pages/AgentDetailPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { PoliciesPage } from './pages/PoliciesPage'
@@ -14,6 +15,7 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/" element={<ApprovalsPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/agents/:id" element={<AgentDetailPage />} />
           <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
         </Route>
