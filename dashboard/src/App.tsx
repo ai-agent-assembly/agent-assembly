@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ProtectedRoute } from './pages/ProtectedRoute'
+import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
 import { AgentsPage } from './pages/AgentsPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
@@ -15,13 +16,15 @@ function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ProtectedRoute />}>
-          <Route path="/" element={<ApprovalsPage />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/:id" element={<AgentDetailPage />} />
-          <Route path="/policies" element={<PoliciesPage />} />
-          <Route path="/policies/editor" element={<PolicyEditorPage />} />
-          <Route path="/approvals" element={<ApprovalsPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route element={<AppShell />}>
+            <Route path="/" element={<ApprovalsPage />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/:id" element={<AgentDetailPage />} />
+            <Route path="/policies" element={<PoliciesPage />} />
+            <Route path="/policies/editor" element={<PolicyEditorPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/analytics" element={<AnalyticsPage />} />
+          </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
