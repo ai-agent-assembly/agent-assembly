@@ -88,6 +88,7 @@ export function AgentsPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: agents ?? [],
     columns,
