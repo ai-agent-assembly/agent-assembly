@@ -20,6 +20,29 @@ pub struct ContextConfig {
     pub api_key: Option<String>,
 }
 
+/// Dashboard server configuration, stored under `dashboard:` in `~/.aa/config.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardConfig {
+    /// TCP port the embedded SPA server listens on (default: 3000).
+    #[serde(default = "DashboardConfig::default_port")]
+    pub port: u16,
+    /// Open the system browser automatically after `aasm dashboard start` is ready.
+    #[serde(default)]
+    pub auto_open: bool,
+}
+
+impl DashboardConfig {
+    fn default_port() -> u16 {
+        3000
+    }
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self { port: 3000, auto_open: false }
+    }
+}
+
 /// Top-level CLI configuration file schema (`~/.aa/config.yaml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
@@ -29,6 +52,22 @@ pub struct CliConfig {
     /// Named contexts mapping (e.g. `{ "production": { api_url: "..." } }`).
     #[serde(default)]
     pub contexts: BTreeMap<String, ContextConfig>,
+    /// Dashboard server settings (`aasm dashboard start`).
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
+}
+
+/// Resolve the dashboard port from (highest to lowest priority):
+/// 1. `AASM_DASHBOARD_PORT` environment variable
+/// 2. `port_flag` — the `--port` CLI argument
+/// 3. `config.dashboard.port`
+pub fn resolve_dashboard_port(config: &CliConfig, port_flag: Option<u16>) -> u16 {
+    if let Ok(val) = std::env::var("AASM_DASHBOARD_PORT") {
+        if let Ok(p) = val.parse::<u16>() {
+            return p;
+        }
+    }
+    port_flag.unwrap_or(config.dashboard.port)
 }
 
 /// Return the config directory path (`~/.aa/`).
@@ -50,6 +89,7 @@ pub fn load() -> Result<CliConfig, CliError> {
         return Ok(CliConfig {
             default_context: None,
             contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
         });
     }
     let contents = std::fs::read_to_string(&path).map_err(|e| CliError::Config {
@@ -160,6 +200,7 @@ mod tests {
         CliConfig {
             default_context: Some("production".to_string()),
             contexts,
+            dashboard: DashboardConfig::default(),
         }
     }
 
@@ -225,6 +266,7 @@ mod tests {
         let cfg = CliConfig {
             default_context: None,
             contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
         };
         let resolved = resolve_context(&cfg, None, None, None).unwrap();
         assert_eq!(resolved.api_url, "http://localhost:8080");
