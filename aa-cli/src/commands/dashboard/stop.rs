@@ -34,9 +34,7 @@ pub fn dispatch() -> ExitCode {
             eprintln!("error: could not open process {server_pid}");
             return ExitCode::FAILURE;
         }
-        let ok = unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(handle, 1)
-        };
+        let ok = unsafe { windows_sys::Win32::System::Threading::TerminateProcess(handle, 1) };
         unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         if ok == 0 {
             eprintln!("error: TerminateProcess failed for PID {server_pid}");

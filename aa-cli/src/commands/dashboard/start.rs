@@ -118,15 +118,11 @@ async fn proxy_handler(
     req_headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let path_and_query = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or(uri.path());
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or(uri.path());
     let target = format!("{}{}", gateway_url, path_and_query);
 
     let client = reqwest::Client::new();
-    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
-        .unwrap_or(reqwest::Method::GET);
+    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
 
     let mut builder = client.request(reqwest_method, &target);
     for (name, value) in &req_headers {
@@ -143,8 +139,7 @@ async fn proxy_handler(
         }
     };
 
-    let status = StatusCode::from_u16(upstream.status().as_u16())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let resp_headers = upstream.headers().clone();
     let resp_body = upstream.bytes().await.unwrap_or_default();
 

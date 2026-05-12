@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
 fn main() {
-    let dist = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("../dashboard/dist");
+    let dist = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../dashboard/dist");
 
     // Create a stub index.html so include_dir! compiles when the SPA has not been built yet.
     let index = dist.join("index.html");

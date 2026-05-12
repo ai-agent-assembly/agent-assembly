@@ -39,12 +39,15 @@ impl DashboardConfig {
 
 impl Default for DashboardConfig {
     fn default() -> Self {
-        Self { port: 3000, auto_open: false }
+        Self {
+            port: 3000,
+            auto_open: false,
+        }
     }
 }
 
 /// Top-level CLI configuration file schema (`~/.aa/config.yaml`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CliConfig {
     /// Name of the default context to use when `--context` is not specified.
     #[serde(default)]
@@ -70,16 +73,6 @@ pub fn resolve_dashboard_port(config: &CliConfig, port_flag: Option<u16>) -> u16
     port_flag.unwrap_or(config.dashboard.port)
 }
 
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self {
-            default_context: None,
-            contexts: BTreeMap::new(),
-            dashboard: DashboardConfig::default(),
-        }
-    }
-}
-
 /// Return the config directory path (`~/.aa/`).
 pub fn config_dir() -> PathBuf {
     dirs::home_dir().expect("cannot determine home directory").join(".aa")
@@ -96,11 +89,7 @@ pub fn config_path() -> PathBuf {
 pub fn load() -> Result<CliConfig, CliError> {
     let path = config_path();
     if !path.exists() {
-        return Ok(CliConfig {
-            default_context: None,
-            contexts: BTreeMap::new(),
-            dashboard: DashboardConfig::default(),
-        });
+        return Ok(CliConfig::default());
     }
     let contents = std::fs::read_to_string(&path).map_err(|e| CliError::Config {
         path: path.clone(),
