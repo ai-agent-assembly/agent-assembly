@@ -1,0 +1,217 @@
+/* Wireframe aesthetic — sketchy, hand-drawn, low-fi */
+:root {
+  --ink: #1a1a1a;
+  --ink-soft: #4a4a4a;
+  --ink-faint: #888;
+  --paper: #fafaf7;
+  --paper-warm: #f3efe6;
+  --line: #2a2a2a;
+  --danger: #c1272d;
+  --danger-soft: #f4d8d8;
+  --warn: #d97706;
+  --warn-soft: #fce7c8;
+  --ok: #2e7d32;
+  --ok-soft: #d4e6d4;
+  --info: #1d4ed8;
+  --info-soft: #d6dffa;
+  --scrub: #6b21a8;
+  --scrub-soft: #e8dbf3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Caveat', 'Kalam', 'Comic Sans MS', cursive;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.wf {
+  font-family: 'Kalam', 'Caveat', 'Comic Sans MS', cursive;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 20px;
+  position: relative;
+}
+
+.wf-mono {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+/* Sketchy borders — hand-drawn feeling */
+.sketch {
+  border: 2px solid var(--line);
+  border-radius: 6px 8px 5px 9px / 8px 5px 9px 6px;
+  background: var(--paper);
+  padding: 12px;
+  position: relative;
+}
+.sketch-thick {
+  border-width: 3px;
+}
+.sketch-dashed {
+  border-style: dashed;
+  border-width: 2px;
+}
+.sketch-double {
+  box-shadow: 3px 3px 0 0 var(--line);
+}
+
+.wf h1, .wf h2, .wf h3, .wf h4 {
+  margin: 0 0 6px 0;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.wf h1 { font-size: 28px; }
+.wf h2 { font-size: 22px; }
+.wf h3 { font-size: 18px; }
+.wf h4 { font-size: 16px; color: var(--ink-soft); }
+
+.wf p, .wf li, .wf span, .wf div { font-size: 16px; line-height: 1.4; }
+.wf small { font-size: 13px; color: var(--ink-soft); }
+
+.kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-bottom: 1.5px dashed var(--ink-faint);
+  padding-bottom: 2px;
+  display: inline-block;
+}
+
+.note {
+  font-style: italic;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.annotation {
+  position: absolute;
+  font-family: 'Caveat', cursive;
+  font-size: 16px;
+  color: var(--danger);
+  pointer-events: none;
+}
+.annotation::before {
+  content: '↳ ';
+}
+
+.arrow-right::after { content: ' →'; }
+.arrow-down::after { content: ' ↓'; }
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1.5px solid var(--line);
+  border-radius: 999px / 6px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  margin-right: 4px;
+  background: var(--paper);
+}
+.tag-danger { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.tag-warn { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.tag-ok { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+.tag-info { background: var(--info-soft); border-color: var(--info); color: var(--info); }
+.tag-scrub { background: var(--scrub-soft); border-color: var(--scrub); color: var(--scrub); }
+
+.row { display: flex; gap: 12px; }
+.col { display: flex; flex-direction: column; gap: 12px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.between { justify-content: space-between; align-items: center; }
+
+.placeholder {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 6px,
+    rgba(0,0,0,0.06) 6px,
+    rgba(0,0,0,0.06) 7px
+  );
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; color: var(--ink-faint);
+  border: 1.5px dashed var(--ink-faint);
+  border-radius: 4px;
+}
+
+.metric-big {
+  font-family: 'Kalam', cursive;
+  font-size: 38px; font-weight: 700;
+  line-height: 1;
+}
+.metric-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--line); margin-bottom: 12px; }
+.tab {
+  padding: 6px 14px;
+  border: 2px solid var(--line);
+  border-bottom: none;
+  background: var(--paper-warm);
+  margin-right: -2px;
+  font-family: 'Kalam', cursive;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0 / 8px 8px 0 0;
+}
+.tab.active { background: var(--ink); color: var(--paper); }
+
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+.dot-ok { background: var(--ok); }
+.dot-warn { background: var(--warn); }
+.dot-danger { background: var(--danger); }
+
+.bar {
+  height: 8px; background: var(--paper-warm);
+  border: 1.5px solid var(--line); border-radius: 999px;
+  overflow: hidden; position: relative;
+}
+.bar-fill { height: 100%; background: var(--ink); }
+
+/* Wonky corners for handmade feel */
+.wonky-1 { transform: rotate(-0.3deg); }
+.wonky-2 { transform: rotate(0.4deg); }
+.wonky-3 { transform: rotate(-0.2deg); }
+
+/* SVG strokes */
+.stroke-ink { stroke: var(--ink); fill: none; stroke-width: 2; }
+.stroke-thick { stroke: var(--ink); fill: none; stroke-width: 3; }
+.stroke-dashed { stroke: var(--ink); fill: none; stroke-width: 2; stroke-dasharray: 4 3; }
+.fill-paper { fill: var(--paper); }
+
+/* Density — compact mode */
+.compact .sketch { padding: 8px; }
+.compact .wf h2 { font-size: 18px; }
+.compact .wf h3 { font-size: 15px; }
+.compact .metric-big { font-size: 28px; }
+.compact .row, .compact .col, .compact .grid-2, .compact .grid-3, .compact .grid-4 { gap: 8px; }
+
+/* Color schemes */
+.scheme-mono { --danger: #1a1a1a; --warn: #4a4a4a; --ok: #4a4a4a; --info: #4a4a4a; --scrub: #4a4a4a; }
+.scheme-blueprint { --paper: #e8eef5; --paper-warm: #d6dfee; --line: #14365c; --ink: #14365c; }
+
+table.wf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.wf-table th, .wf-table td {
+  text-align: left; padding: 6px 8px;
+  border-bottom: 1.5px dashed var(--ink-faint);
+}
+.wf-table th {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--ink-soft);
+}
+
+.id-card {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
