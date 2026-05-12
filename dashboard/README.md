@@ -48,6 +48,45 @@ pnpm test:coverage
 pnpm build
 ```
 
+## Serving the built dashboard
+
+After `pnpm build` produces `dist/`, use the `aasm` CLI to serve it:
+
+```bash
+# Start the embedded SPA server (default port 3000)
+aasm dashboard start
+
+# Override the port
+aasm dashboard start --port 4000
+
+# Start and open the browser automatically
+aasm dashboard start --open
+
+# Port can also be set via environment variable
+AASM_DASHBOARD_PORT=4000 aasm dashboard start
+```
+
+Other dashboard commands:
+
+```bash
+# Open the browser to a running dashboard (reads port from PID file)
+aasm dashboard open
+
+# Stop a running dashboard server
+aasm dashboard stop
+```
+
+Dashboard config can also be set in `~/.aa/config.yaml`:
+
+```yaml
+dashboard:
+  port: 4000       # default: 3000
+  auto_open: true  # default: false
+```
+
+The server proxies `/api/*` requests to the configured gateway address
+(default `http://localhost:8080`, overridden via `--api-url` or context config).
+
 ## API client
 
 The typed client lives in `src/api/client.ts` and is generated from `../openapi/v1.yaml`.
