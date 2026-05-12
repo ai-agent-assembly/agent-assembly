@@ -104,7 +104,7 @@
   color: #dc2626;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .appshell__nav {
     position: fixed;
     top: 0;
