@@ -1,73 +1,76 @@
+// Smoke tests for the refactored ApprovalsPage.
+// Comprehensive feature tests live in src/features/approvals/api.test.tsx.
 import { render, screen, waitFor } from '@testing-library/react'
-import type { components } from '../api/generated/schema'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { vi } from 'vitest'
 import { ApprovalsPage } from './ApprovalsPage'
+import * as approvalsApi from '../features/approvals/api'
+import type { Approval } from '../features/approvals/api'
+import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query'
 
-type ApprovalRow = components['schemas']['ApprovalResponse']
+class MockWebSocket {
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  close() {}
+}
+vi.stubGlobal('WebSocket', MockWebSocket)
 
-const ROUTING_STATUS: components['schemas']['RoutingStatusInfo'] = {
-  status: 'routed_to_team_admin',
-  target_team_id: 'team-alpha',
-  target_role: 'TeamAdmin',
-  routed_at: 1746835200,
-  escalate_at: 1746838800,
-  history: [{ at: 1746835200, action: 'routed', from_role: null, to_role: 'TeamAdmin' }],
+function mockQuery<T>(p: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, Error> {
+  return p as unknown as UseQueryResult<T, Error>
+}
+function mockMutation<D, V>(p: Partial<UseMutationResult<D, Error, V>>): UseMutationResult<D, Error, V> {
+  return p as unknown as UseMutationResult<D, Error, V>
 }
 
-const MOCK_APPROVAL: ApprovalRow = {
-  id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-  agent_id: 'agent-001',
-  action: 'send_email',
-  reason: 'external comms policy',
-  status: 'pending',
-  created_at: '2026-05-10T00:00:00Z',
-  routing_status: ROUTING_STATUS,
-  team_id: 'team-alpha',
+function Wrapper({ children }: { children: React.ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
 }
 
-function mockFetch(items: unknown[]) {
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    json: () => Promise.resolve({ items, page: 1, per_page: 20, total: items.length }),
-  } as Response)
+const MOCK_APPROVAL: Approval = {
+  id: 'a1b2c3d4', agent_id: 'agent-001', action: 'send_email',
+  reason: 'external comms', status: 'pending',
+  created_at: '2026-05-10T00:00:00Z', routing_status: null, team_id: null,
 }
 
-afterEach(() => {
-  vi.restoreAllMocks()
-})
+afterEach(() => { vi.restoreAllMocks() })
 
 describe('ApprovalsPage', () => {
-  it('renders the page heading', async () => {
-    mockFetch([])
-    render(<ApprovalsPage />)
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Pending Approvals' })).toBeInTheDocument())
-  })
-
-  it('shows empty state when no approvals', async () => {
-    mockFetch([])
-    render(<ApprovalsPage />)
-    await waitFor(() => expect(screen.getByText('No pending approvals.')).toBeInTheDocument())
-  })
-
-  it('renders a routing badge for approvals with routing_status', async () => {
-    mockFetch([MOCK_APPROVAL])
-    render(<ApprovalsPage />)
-    await waitFor(() =>
-      expect(screen.getByText('Routed to Team Admins of team-alpha')).toBeInTheDocument(),
+  function setupMocks(approvals: Approval[]) {
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      mockQuery<Approval[]>({ data: approvals, isLoading: false, isError: false, refetch: vi.fn() }),
     )
-    expect(screen.getByText('Routed to Team Admins of team-alpha')).toHaveClass('badge--blue')
+    vi.spyOn(approvalsApi, 'useApproveAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
+    )
+    vi.spyOn(approvalsApi, 'useRejectAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
+    )
+  }
+
+  it('renders the page heading', async () => {
+    setupMocks([])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Approvals' })).toBeInTheDocument())
   })
 
-  it('renders dash for approvals without routing_status', async () => {
-    const unrouted: ApprovalRow = { ...MOCK_APPROVAL, routing_status: undefined }
-    mockFetch([unrouted])
-    render(<ApprovalsPage />)
-    await waitFor(() => expect(screen.getByText('—')).toBeInTheDocument())
+  it('shows empty state when no pending approvals', async () => {
+    setupMocks([])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByTestId('approvals-empty')).toBeInTheDocument())
   })
 
-  it('matches layout snapshot', async () => {
-    mockFetch([MOCK_APPROVAL])
-    const { container } = render(<ApprovalsPage />)
-    await waitFor(() => screen.getByText('Routed to Team Admins of team-alpha'))
-    expect(container).toMatchSnapshot()
+  it('renders a row for each pending approval', async () => {
+    setupMocks([MOCK_APPROVAL])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
+    expect(screen.getByText('send_email')).toBeInTheDocument()
   })
 })

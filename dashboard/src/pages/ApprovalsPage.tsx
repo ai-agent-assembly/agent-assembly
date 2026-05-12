@@ -88,7 +88,6 @@ function TabBar({
   function tabStyle(t: 'pending' | 'decided') {
     return {
       padding: '0.5rem 1rem',
-      borderBottom: `2px solid ${active === t ? '#2563eb' : 'transparent'}`,
       fontWeight: active === t ? 600 : 400,
       color: active === t ? '#2563eb' : '#6b7280',
       cursor: 'pointer',
