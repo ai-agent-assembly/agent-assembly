@@ -7,6 +7,7 @@ import { ApprovalsPage } from './pages/ApprovalsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { PoliciesPage } from './pages/PoliciesPage'
 import { PolicyEditorPage } from './pages/PolicyEditorPage'
+import { AnalyticsPage } from './pages/AnalyticsPage'
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
           <Route path="/policies" element={<PoliciesPage />} />
           <Route path="/policies/editor" element={<PolicyEditorPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
