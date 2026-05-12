@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Agent Assembly · Dashboard Wireframes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Caveat:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>
+  body { margin: 0; background: #ece7dc; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="../design-canvas.jsx"></script>
+<script type="text/babel" src="../tweaks-panel.jsx"></script>
+<script type="text/babel" src="variants.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+  const { useState } = React;
+  const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "scale": "medium",
+    "density": "cozy",
+    "scheme": "default"
+  }/*EDITMODE-END*/;
+
+  function App() {
+    const [tweaks, setTweak] = window.useTweaks(TWEAK_DEFAULTS);
+    const data = window.MOCK[tweaks.scale] || window.MOCK.medium;
+
+    const wrapClass = `${tweaks.density === 'compact' ? 'compact' : ''} scheme-${tweaks.scheme}`;
+
+    return (
+      <div className={wrapClass}>
+        <window.DesignCanvas
+          title="Agent Assembly · Governance Dashboard · Wireframes"
+          subtitle="5 lo-fi 方向，主打三大亮點：Identity (誰) → Capability Narrowing (能做什麼) → Secret Scrubbing (網路層淨化)"
+        >
+          <window.DCSection id="exploration" title="Wireframe exploration">
+            <window.DCArtboard id="v1" label="V1 · Capability Narrowing matrix (差異化主角)" width={1280} height={920}>
+              <window.V1 data={data} />
+            </window.DCArtboard>
+            <window.DCArtboard id="v2" label="V2 · Identity-first · agent passport" width={1280} height={920}>
+              <window.V2 data={data} />
+            </window.DCArtboard>
+            <window.DCArtboard id="v3" label="V3 · 三層防禦管線 · pipeline flow" width={1280} height={920}>
+              <window.V3 data={data} />
+            </window.DCArtboard>
+            <window.DCArtboard id="v4" label="V4 · 城堡護城河 · concentric defense" width={1280} height={920}>
+              <window.V4 data={data} />
+            </window.DCArtboard>
+            <window.DCArtboard id="v5" label="V5 · Ops terminal · high-density on-call view" width={1280} height={920}>
+              <window.V5 data={data} />
+            </window.DCArtboard>
+          </window.DCSection>
+        </window.DesignCanvas>
+
+        <window.TweaksPanel title="Tweaks">
+          <window.TweakSection title="Data scale">
+            <window.TweakRadio
+              label="fleet size"
+              value={tweaks.scale}
+              onChange={(v) => setTweak('scale', v)}
+              options={[
+                { value: 'small', label: 'small (8)' },
+                { value: 'medium', label: 'medium (142)' },
+                { value: 'large', label: 'large (1284)' },
+              ]}
+            />
+          </window.TweakSection>
+          <window.TweakSection title="Density">
+            <window.TweakRadio
+              label="layout density"
+              value={tweaks.density}
+              onChange={(v) => setTweak('density', v)}
+              options={[
+                { value: 'cozy', label: 'cozy' },
+                { value: 'compact', label: 'compact' },
+              ]}
+            />
+          </window.TweakSection>
+          <window.TweakSection title="Color scheme">
+            <window.TweakRadio
+              label="scheme"
+              value={tweaks.scheme}
+              onChange={(v) => setTweak('scheme', v)}
+              options={[
+                { value: 'default', label: 'paper' },
+                { value: 'mono', label: 'mono' },
+                { value: 'blueprint', label: 'blueprint' },
+              ]}
+            />
+          </window.TweakSection>
+        </window.TweaksPanel>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

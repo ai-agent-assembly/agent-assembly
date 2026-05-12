@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Live Ops · low-fi exploration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Caveat:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>body { margin: 0; background: #ece7dc; }</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="../design-canvas.jsx"></script>
+<script type="text/babel" src="live-ops-sketch.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+  function App() {
+    return (
+      <window.DesignCanvas
+        title="Live Ops · low-fi exploration"
+        subtitle="三個方向草圖。確認方向後進 hi-fi (含真實粒子動畫 + approval drawer)。"
+      >
+        <window.DCSection id="dirs" title="Direction options">
+          <window.DCArtboard id="A" label="A · Three-zone (推薦)" width={1280} height={780}>
+            <window.LiveA />
+          </window.DCArtboard>
+          <window.DCArtboard id="B" label="B · Castle moat (視覺最強)" width={1280} height={780}>
+            <window.LiveB />
+          </window.DCArtboard>
+          <window.DCArtboard id="C" label="C · Compact (資料密度)" width={1280} height={780}>
+            <window.LiveC />
+          </window.DCArtboard>
+        </window.DCSection>
+      </window.DesignCanvas>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

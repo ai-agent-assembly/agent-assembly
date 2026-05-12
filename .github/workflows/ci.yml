@@ -11,7 +11,7 @@ on:
       - "Cargo.lock"
       - "deny.toml"
       - "dashboard/**"
-      - "openapi/**"
+      - "openapi/v1.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
   pull_request:
@@ -24,7 +24,7 @@ on:
       - "Cargo.lock"
       - "deny.toml"
       - "dashboard/**"
-      - "openapi/**"
+      - "openapi/v1.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
 
