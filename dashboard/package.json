@@ -24,7 +24,8 @@
     "openapi-fetch": "^0.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^6.30.1"
+    "react-router-dom": "^6.30.1",
+    "use-debounce": "^10.1.1"
   },
   "devDependencies": {
     "@storybook/react": "^10.3.6",

@@ -1,0 +1,55 @@
+.analytics-page {
+  padding: 1.5rem 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.analytics-page h1 {
+  margin: 0 0 1rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.analytics-page__panels {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.analytics-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.analytics-filter-bar__group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.analytics-filter-bar__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.analytics-filter-bar__select {
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  color: #111827;
+  cursor: pointer;
+}
+
+.analytics-filter-bar__select:focus {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
