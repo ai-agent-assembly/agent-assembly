@@ -6,6 +6,7 @@ import { AgentDetailPage } from './pages/AgentDetailPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { PoliciesPage } from './pages/PoliciesPage'
+import { PolicyEditorPage } from './pages/PolicyEditorPage'
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/agents/:id" element={<AgentDetailPage />} />
           <Route path="/policies" element={<PoliciesPage />} />
+          <Route path="/policies/editor" element={<PolicyEditorPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
