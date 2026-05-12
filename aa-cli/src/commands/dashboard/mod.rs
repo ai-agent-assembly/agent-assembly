@@ -1,16 +1,20 @@
-//! `aasm dashboard` — interactive TUI dashboard for real-time governance monitoring.
+//! `aasm dashboard` — governance dashboard: interactive TUI and embedded web server.
 
 pub mod dialog;
 pub mod feed;
 pub mod input;
+pub mod open;
+pub mod pid;
+pub mod start;
 pub mod state;
+pub mod stop;
 pub mod ui;
 
 use std::io::{self, stdout};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 use crossterm::event::{self as ct_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -26,18 +30,46 @@ use self::feed::FeedMessage;
 use self::input::InputAction;
 use self::state::DashboardState;
 
-/// Arguments for the `aasm dashboard` subcommand.
-#[derive(Debug, Args)]
-pub struct DashboardArgs {}
-
-/// Entry point for `aasm dashboard`.
-pub fn dispatch(args: DashboardArgs, ctx: &ResolvedContext) -> ExitCode {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    rt.block_on(async { run(args, ctx).await })
+/// Web-server subcommands for `aasm dashboard`.
+#[derive(Debug, Subcommand)]
+pub enum DashboardCommands {
+    /// Serve the embedded SPA at http://127.0.0.1:<port>. Blocks until Ctrl-C.
+    Start(start::StartArgs),
+    /// Open the browser to an already-running dashboard.
+    Open(open::OpenArgs),
+    /// Stop a dashboard server started with `aasm dashboard start`.
+    Stop,
 }
 
-/// Set up the terminal, run the dashboard, and restore the terminal on exit.
-async fn run(_args: DashboardArgs, ctx: &ResolvedContext) -> ExitCode {
+/// Arguments for the `aasm dashboard` subcommand.
+#[derive(Debug, Args)]
+pub struct DashboardArgs {
+    #[command(subcommand)]
+    pub command: Option<DashboardCommands>,
+}
+
+/// Entry point for `aasm dashboard [start|open|stop]`.
+pub fn dispatch(args: DashboardArgs, ctx: &ResolvedContext) -> ExitCode {
+    match args.command {
+        None => {
+            // No subcommand: run the interactive TUI (existing behaviour).
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            rt.block_on(async { run_tui(ctx).await })
+        }
+        Some(DashboardCommands::Start(start_args)) => {
+            let cfg = crate::config::load().unwrap_or_default();
+            start::dispatch(start_args, ctx, &cfg)
+        }
+        Some(DashboardCommands::Open(open_args)) => {
+            let cfg = crate::config::load().unwrap_or_default();
+            open::dispatch(open_args, &cfg)
+        }
+        Some(DashboardCommands::Stop) => stop::dispatch(),
+    }
+}
+
+/// Set up the terminal, run the TUI dashboard, and restore the terminal on exit.
+async fn run_tui(ctx: &ResolvedContext) -> ExitCode {
     // Install a panic hook that restores the terminal before printing the panic.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
