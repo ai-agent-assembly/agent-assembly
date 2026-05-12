@@ -18,9 +18,11 @@
     "build-storybook": "storybook build"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.80.5",
     "openapi-fetch": "^0.17.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^6.30.1"
   },
   "devDependencies": {
     "@storybook/react": "^10.3.6",
