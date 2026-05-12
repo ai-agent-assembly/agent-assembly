@@ -118,7 +118,7 @@ export function ApprovalsPage() {
   const { connected } = useApprovalsStream()
   const approveMutation = useApproveAction()
   const rejectMutation = useRejectAction()
-  const { toast, ToastContainer } = useToast()
+  const { toast } = useToast()
 
   const [tab, setTab] = useState<'pending' | 'decided'>('pending')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -399,7 +399,6 @@ export function ApprovalsPage() {
         />
       )}
 
-      <ToastContainer />
     </main>
   )
 }
