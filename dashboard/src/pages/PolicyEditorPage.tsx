@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCreatePolicy } from '../features/policies/api'
 import { useToast } from '../components/Toast'
@@ -59,9 +59,10 @@ export function PolicyEditorPage() {
   const originalVersion = searchParams.get('version')
 
   const [yaml, setYaml] = useState(EMPTY_POLICY)
-  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const [validationErrors, setValidationErrors] = useState<string[]>(() => validateYaml(EMPTY_POLICY))
   const [showDiff, setShowDiff] = useState(false)
-  const originalYaml = useRef(EMPTY_POLICY)
+  // Store the "before" snapshot for the diff view; never mutated after mount.
+  const [originalYaml] = useState(EMPTY_POLICY)
 
   // Debounced validation
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -73,14 +74,6 @@ export function PolicyEditorPage() {
       setValidationErrors(validateYaml(v))
     }, 400)
   }, [])
-
-  useEffect(() => {
-    // Validate on first render
-    setValidationErrors(validateYaml(yaml))
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasErrors = validationErrors.length > 0
 
@@ -96,7 +89,7 @@ export function PolicyEditorPage() {
   }
 
   function handleDiscard() {
-    if (yaml === originalYaml.current || window.confirm('Discard unsaved changes?')) {
+    if (yaml === originalYaml || window.confirm('Discard unsaved changes?')) {
       navigate('/policies')
     }
   }
@@ -168,7 +161,7 @@ export function PolicyEditorPage() {
             <DiffEditor
               height="60vh"
               language="yaml"
-              original={originalYaml.current}
+              original={originalYaml}
               modified={yaml}
               options={{ readOnly: false, renderSideBySide: true }}
             />
