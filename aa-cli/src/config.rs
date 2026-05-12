@@ -189,7 +189,11 @@ pub fn resolve_context(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample_config() -> CliConfig {
         let mut contexts = BTreeMap::new();
@@ -281,5 +285,47 @@ mod tests {
         let resolved = resolve_context(&cfg, None, None, None).unwrap();
         assert_eq!(resolved.api_url, "http://localhost:8080");
         assert!(resolved.name.is_none());
+    }
+
+    #[test]
+    fn dashboard_config_defaults() {
+        let cfg: DashboardConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.port, 3000);
+        assert!(!cfg.auto_open);
+    }
+
+    #[test]
+    fn dashboard_config_round_trip_yaml() {
+        let yaml = "port: 4000\nauto_open: true\n";
+        let cfg: DashboardConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.port, 4000);
+        assert!(cfg.auto_open);
+        let roundtripped = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2: DashboardConfig = serde_yaml::from_str(&roundtripped).unwrap();
+        assert_eq!(cfg2.port, 4000);
+        assert!(cfg2.auto_open);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_env_overrides_all() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AASM_DASHBOARD_PORT", "9999");
+        let port = resolve_dashboard_port(&CliConfig::default(), Some(5000));
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(port, 9999);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_flag_beats_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(resolve_dashboard_port(&CliConfig::default(), Some(4321)), 4321);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_uses_config_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(resolve_dashboard_port(&CliConfig::default(), None), 3000);
     }
 }
