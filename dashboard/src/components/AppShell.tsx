@@ -47,12 +47,8 @@ const NAV_LINKS = [
 // ── AppShell ───────────────────────────────────────────────────────────────────
 
 export function AppShell() {
-  const { token, setToken } = useAuth()
+  const { token, logout } = useAuth()
   const [navOpen, setNavOpen] = useState(false)
-
-  function handleLogout() {
-    setToken(null)
-  }
 
   return (
     <div className="appshell" data-testid="appshell">
@@ -92,7 +88,7 @@ export function AppShell() {
             <button
               className="appshell__logout"
               data-testid="logout-btn"
-              onClick={handleLogout}
+              onClick={logout}
             >
               Log out
             </button>
