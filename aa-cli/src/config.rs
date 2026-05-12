@@ -70,6 +70,16 @@ pub fn resolve_dashboard_port(config: &CliConfig, port_flag: Option<u16>) -> u16
     port_flag.unwrap_or(config.dashboard.port)
 }
 
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            default_context: None,
+            contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
+        }
+    }
+}
+
 /// Return the config directory path (`~/.aa/`).
 pub fn config_dir() -> PathBuf {
     dirs::home_dir().expect("cannot determine home directory").join(".aa")
