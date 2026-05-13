@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './PayloadModal.css'
@@ -46,6 +46,8 @@ export interface PayloadModalProps {
  * Esc handler, focus trap, and Copy JSON button land in subsequent commits.
  */
 export function PayloadModal({ event, onClose }: PayloadModalProps) {
+  const [copied, setCopied] = useState(false)
+
   useEffect(() => {
     if (!event) return
     const handleKey = (e: KeyboardEvent) => {
@@ -54,6 +56,11 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [event, onClose])
+
+  // Reset the "Copied" feedback whenever the modal opens for a new event.
+  useEffect(() => {
+    setCopied(false)
+  }, [event])
 
   const redactedSet = useMemo(
     () => new Set(event?.redactedFields ?? []),
@@ -64,6 +71,11 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
 
   const formatted = JSON.stringify(event.payload, null, 2)
   const jsonNodes = renderJsonLines(formatted, redactedSet)
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(formatted)
+    setCopied(true)
+  }
 
   return (
     <div
@@ -87,15 +99,25 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
             </h2>
             <div className="payload-modal__subtitle">{event.agent} · {event.durationMs}&nbsp;ms</div>
           </div>
-          <button
-            type="button"
-            className="payload-modal__close"
-            data-testid="payload-modal-close"
-            onClick={onClose}
-            aria-label="Close payload modal"
-          >
-            ✕
-          </button>
+          <div className="payload-modal__actions">
+            <button
+              type="button"
+              className="payload-modal__copy"
+              data-testid="payload-modal-copy"
+              onClick={() => void handleCopy()}
+            >
+              {copied ? 'Copied' : 'Copy JSON'}
+            </button>
+            <button
+              type="button"
+              className="payload-modal__close"
+              data-testid="payload-modal-close"
+              onClick={onClose}
+              aria-label="Close payload modal"
+            >
+              ✕
+            </button>
+          </div>
         </header>
 
         <pre className="payload-modal__json" data-testid="payload-modal-json">{jsonNodes}</pre>

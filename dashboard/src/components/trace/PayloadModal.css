@@ -63,7 +63,14 @@
   color: var(--ink-3);
 }
 
-.payload-modal__close {
+.payload-modal__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.payload-modal__close,
+.payload-modal__copy {
   background: transparent;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -73,7 +80,8 @@
   color: var(--ink-2);
 }
 
-.payload-modal__close:hover {
+.payload-modal__close:hover,
+.payload-modal__copy:hover {
   background: var(--paper-3);
 }
 
