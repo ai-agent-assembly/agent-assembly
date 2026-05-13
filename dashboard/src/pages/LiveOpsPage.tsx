@@ -62,6 +62,15 @@ export function LiveOpsPage() {
     [displayedOps, filters],
   )
 
+  // Scale the pipeline animation intensity with the size of the ops ring as
+  // a rough rate proxy: empty ring → near-idle background animation, full
+  // ring → 5× (matches the hi-fi's spawn-cadence ceiling). 15 was picked so
+  // a typical 30-op steady state lands around the hi-fi baseline of 2.
+  const pipelineIntensity = useMemo(
+    () => Math.max(0.5, Math.min(5, ops.length / 15)),
+    [ops.length],
+  )
+
   return (
     <main className="live-page" data-testid="live-ops-page">
       <header className="live-page__header">
@@ -81,7 +90,7 @@ export function LiveOpsPage() {
             <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
           </header>
           <div className="live-page__pane-body live-page__pane-body--canvas">
-            <PipelineCanvas />
+            <PipelineCanvas intensity={pipelineIntensity} />
           </div>
         </section>
 

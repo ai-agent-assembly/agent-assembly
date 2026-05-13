@@ -51,4 +51,28 @@ describe('PipelineCanvas', () => {
     unmount()
     expect(disconnectSpy).toHaveBeenCalled()
   })
+
+  it('accepts paused / intensity / onCounters props without crashing', () => {
+    const onCounters = vi.fn()
+    const { unmount } = render(
+      <div>
+        <PipelineCanvas paused intensity={3} onCounters={onCounters} />
+      </div>,
+    )
+    expect(screen.getByTestId('pipeline-canvas')).toBeInTheDocument()
+    unmount()
+  })
+
+  it('registers and removes a visibilitychange listener around its lifecycle', () => {
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const { unmount } = render(<PipelineCanvas />)
+    expect(
+      addSpy.mock.calls.some(([type]) => type === 'visibilitychange'),
+    ).toBe(true)
+    unmount()
+    expect(
+      removeSpy.mock.calls.some(([type]) => type === 'visibilitychange'),
+    ).toBe(true)
+  })
 })
