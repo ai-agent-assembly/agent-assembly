@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './PayloadModal.css'
@@ -45,22 +45,48 @@ export interface PayloadModalProps {
  * Builds on the scrim+dialog pattern from `features/capability/CellInspectDrawer`.
  * Esc handler, focus trap, and Copy JSON button land in subsequent commits.
  */
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function PayloadModal({ event, onClose }: PayloadModalProps) {
   const [copied, setCopied] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!event) return
-    const handleKey = (e: KeyboardEvent) => {
+    const handleKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [event, onClose])
 
+  // Focus the Close button on open so keyboard users land inside the modal.
+  useEffect(() => {
+    if (!event) return
+    closeBtnRef.current?.focus()
+  }, [event])
+
   // Reset the "Copied" feedback whenever the modal opens for a new event.
   useEffect(() => {
     setCopied(false)
   }, [event])
+
+  const handleFocusTrap = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab' || !dialogRef.current) return
+    const focusables = dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+    if (focusables.length === 0) return
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
 
   const redactedSet = useMemo(
     () => new Set(event?.redactedFields ?? []),
@@ -84,12 +110,14 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         className="payload-modal"
         role="dialog"
         aria-modal
         aria-label="trace event payload"
         data-testid="payload-modal"
         onClick={e => e.stopPropagation()}
+        onKeyDown={handleFocusTrap}
       >
         <header className="payload-modal__head">
           <div>
@@ -109,6 +137,7 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
               {copied ? 'Copied' : 'Copy JSON'}
             </button>
             <button
+              ref={closeBtnRef}
               type="button"
               className="payload-modal__close"
               data-testid="payload-modal-close"
