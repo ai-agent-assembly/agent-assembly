@@ -89,17 +89,17 @@ function TabBar({
     return {
       padding: '0.5rem 1rem',
       fontWeight: active === t ? 600 : 400,
-      color: active === t ? '#2563eb' : '#6b7280',
+      color: active === t ? 'var(--info)' : 'var(--ink-3)',
       cursor: 'pointer',
       background: 'none',
       border: 'none',
-      borderBottom: `2px solid ${active === t ? '#2563eb' : 'transparent'}`,
+      borderBottom: `2px solid ${active === t ? 'var(--info)' : 'transparent'}`,
       fontSize: '0.875rem',
     } as React.CSSProperties
   }
 
   return (
-    <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginBottom: '1rem' }} data-testid="tab-bar">
+    <div style={{ display: 'flex', borderBottom: '1px solid var(--line)', marginBottom: '1rem' }} data-testid="tab-bar">
       <button style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
         Pending ({pendingCount})
       </button>
