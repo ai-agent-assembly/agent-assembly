@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
 
@@ -120,4 +120,67 @@ export function joinTeamRows(overview: TopologyOverview | undefined, costs: Cost
 
 export function teamCostFor(teamId: string, costs: CostSummary | undefined): TeamCostEntry | undefined {
   return costs?.per_team?.find(entry => entry.team_id === teamId)
+}
+
+async function suspendAgent(agentId: string, reason: string): Promise<void> {
+  const { error } = await api.POST('/api/v1/agents/{id}/suspend', {
+    params: { path: { id: agentId } },
+    body: { reason },
+  })
+  if (error) throw new Error(`Failed to suspend agent ${agentId}`)
+}
+
+async function resumeAgent(agentId: string): Promise<void> {
+  const { error } = await api.POST('/api/v1/agents/{id}/resume', {
+    params: { path: { id: agentId } },
+  })
+  if (error) throw new Error(`Failed to resume agent ${agentId}`)
+}
+
+function applyMemberStatus(client: QueryClient, teamId: string, status: 'active' | 'suspended') {
+  const key = ['topology', 'team', teamId]
+  const previous = client.getQueryData<TeamTopology>(key)
+  if (!previous) return previous
+  client.setQueryData<TeamTopology>(key, {
+    ...previous,
+    members: previous.members.map(m => ({ ...m, status })),
+  })
+  return previous
+}
+
+export interface TeamActionVariables {
+  teamId: string
+  memberIds: string[]
+}
+
+export function useSuspendTeam() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ memberIds }: TeamActionVariables) => {
+      await Promise.all(memberIds.map(id => suspendAgent(id, 'team-level suspend')))
+    },
+    onMutate: ({ teamId }) => ({ previous: applyMemberStatus(client, teamId, 'suspended') }),
+    onError: (_err, { teamId }, context) => {
+      if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
+    },
+    onSettled: (_data, _err, { teamId }) => {
+      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+    },
+  })
+}
+
+export function useResumeTeam() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ memberIds }: TeamActionVariables) => {
+      await Promise.all(memberIds.map(resumeAgent))
+    },
+    onMutate: ({ teamId }) => ({ previous: applyMemberStatus(client, teamId, 'active') }),
+    onError: (_err, { teamId }, context) => {
+      if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
+    },
+    onSettled: (_data, _err, { teamId }) => {
+      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+    },
+  })
 }
