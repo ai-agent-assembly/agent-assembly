@@ -165,6 +165,37 @@
   margin-top: 0;
 }
 
+/* ── Tabs ──────────────────────────────────────────────────── */
+
+.ad-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  padding: 0 24px;
+}
+
+.ad-tabs__tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ad-tabs__tab:hover { color: var(--ink); }
+
+.ad-tabs__tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  font-weight: 600;
+}
+
 /* ── Body containers ───────────────────────────────────────── */
 
 .ad-body {
@@ -172,4 +203,26 @@
   overflow: auto;
   padding: 20px;
   background: var(--paper);
+}
+
+.ad-tab-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--ink-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.ad-tab-empty__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.ad-tab-empty__body {
+  margin: 0 auto;
+  font-size: 12px;
+  max-width: 420px;
+  line-height: 1.5;
 }
