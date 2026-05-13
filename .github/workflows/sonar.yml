@@ -62,6 +62,26 @@ jobs:
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --lcov --output-path lcov.info
 
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 10.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Generate TypeScript coverage report (LCOV for SonarCloud)
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm generate:api
+          pnpm test:coverage
+
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@59db25f34e16620e48ab4bb9e4a5dce155cb5432 # v8.0.0
         env:
