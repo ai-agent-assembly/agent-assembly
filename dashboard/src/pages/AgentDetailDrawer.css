@@ -79,6 +79,49 @@
   color: var(--ink-3);
 }
 
+.ad-head__actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ad-head__btn {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ad-head__btn:hover {
+  background: var(--paper-3);
+  border-color: var(--line-3);
+}
+
+.ad-head__btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ad-head__btn--danger {
+  background: var(--danger);
+  color: var(--paper-2);
+  border-color: var(--danger);
+}
+
+.ad-head__btn--danger:hover {
+  filter: brightness(1.05);
+  background: var(--danger);
+}
+
 /* ── Identity strip (DID / trust / mode-status / blocked / scrubbed) ── */
 
 .ad-identity {
