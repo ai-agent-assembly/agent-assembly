@@ -1,12 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import { ROLES, type Role, type InviteMemberInput } from './types'
+import { isValidEmail } from './validation'
 import './InviteMemberDialog.css'
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-export function isValidEmail(value: string): boolean {
-  return EMAIL_RE.test(value.trim())
-}
 
 export interface InviteMemberDialogProps {
   open: boolean
@@ -16,23 +11,22 @@ export interface InviteMemberDialogProps {
 }
 
 export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: InviteMemberDialogProps) {
+  if (!open) return null
+  return (
+    <InviteMemberDialogBody
+      onClose={onClose}
+      onSubmit={onSubmit}
+      isSubmitting={isSubmitting}
+    />
+  )
+}
+
+function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Omit<InviteMemberDialogProps, 'open'>) {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('Member')
   const [touched, setTouched] = useState(false)
   const emailId = useId()
   const roleId = useId()
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (open) {
-      setEmail('')
-      setRole('Member')
-      setTouched(false)
-      inputRef.current?.focus()
-    }
-  }, [open])
-
-  if (!open) return null
 
   const trimmed = email.trim()
   const emailValid = isValidEmail(trimmed)
@@ -53,7 +47,7 @@ export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: In
         <label htmlFor={emailId} className="iam-dialog__label">Email</label>
         <input
           id={emailId}
-          ref={inputRef}
+          autoFocus
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}

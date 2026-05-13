@@ -130,12 +130,6 @@ export function useUpdateMemberRoleMutation() {
   })
 }
 
-_iamInternal.setUpdateRoleOverride = (
-  fn: ((input: UpdateMemberRoleInput) => Promise<Member>) | null,
-): void => {
-  _updateRoleOverride = fn
-}
-
 /** Test-only helpers — reset the seed between specs. */
 export const _iamInternal: {
   reset: () => void
@@ -152,5 +146,7 @@ export const _iamInternal: {
     return store.members
   },
   store,
-  setUpdateRoleOverride: () => {},
+  setUpdateRoleOverride(fn) {
+    _updateRoleOverride = fn
+  },
 }
