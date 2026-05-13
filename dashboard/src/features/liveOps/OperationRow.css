@@ -1,9 +1,6 @@
 .op-row {
-  display: grid;
-  grid-template-columns: 9rem 12rem 5rem 6rem 4.5rem 1fr;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
   border-bottom: 1px solid var(--line);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11px;
@@ -11,8 +8,49 @@
   color: var(--ink-2);
 }
 
-.op-row:hover {
+.op-row__main {
+  display: grid;
+  grid-template-columns: 1.5rem 9rem 12rem 5rem 6rem 4.5rem 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+}
+
+.op-row__main:hover {
   background: var(--paper-3);
+}
+
+.op-row__chevron {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-3);
+  font: inherit;
+  line-height: 1;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s ease;
+  justify-self: center;
+}
+
+.op-row__chevron[disabled] {
+  visibility: hidden;
+  cursor: default;
+}
+
+.op-row__chevron:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.op-row__chevron--open {
+  transform: rotate(90deg);
 }
 
 .op-row__chip {
@@ -84,4 +122,64 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Inline call-stack tree (AAASM-1328) ─────────────────────── */
+
+.op-row__tree {
+  list-style: none;
+  margin: 0;
+  padding: 4px 12px 8px calc(1.5rem + 12px);
+  background: var(--paper-2);
+  border-top: 1px dashed var(--line);
+}
+
+.op-row__tree--nested {
+  padding: 0 0 0 1rem;
+  background: transparent;
+  border-top: none;
+}
+
+.op-row__tree-node {
+  padding: 2px 0;
+}
+
+.op-row__tree-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.op-row__tree-kind {
+  display: inline-block;
+  min-width: 3.5rem;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.op-row__tree-kind--llm {
+  color: var(--info);
+}
+
+.op-row__tree-kind--tool {
+  color: var(--scrub);
+}
+
+.op-row__tree-kind--result {
+  color: var(--ok);
+}
+
+.op-row__tree-label {
+  flex: 1;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-row__tree-latency {
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
 }
