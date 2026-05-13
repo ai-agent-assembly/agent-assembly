@@ -1,0 +1,165 @@
+/* CSS variables for heatmap color stops — update here for theme switching */
+:root {
+  --heatmap-low: #10b981;
+  --heatmap-mid: #f59e0b;
+  --heatmap-high: #ef4444;
+}
+
+.policy-effectiveness-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+}
+
+.policy-effectiveness-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.policy-effectiveness-panel__title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+/* Skeleton */
+.policy-effectiveness-panel__skeleton {
+  height: 320px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: policy-effectiveness-shimmer 1.5s infinite linear;
+}
+
+@keyframes policy-effectiveness-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Empty / error */
+.policy-effectiveness-panel__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 320px;
+  gap: 0.5rem;
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+
+.policy-effectiveness-panel__empty p {
+  margin: 0;
+}
+
+.policy-effectiveness-panel__empty a {
+  color: #6366f1;
+  text-decoration: underline;
+}
+
+.policy-effectiveness-panel__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 320px;
+  color: #9ca3af;
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+/* Scroll container for wide heatmaps */
+.policy-effectiveness-panel__scroll {
+  overflow-x: auto;
+  position: relative;
+}
+
+/* Grid */
+.policy-effectiveness-panel__grid {
+  display: grid;
+  min-width: max-content;
+}
+
+.policy-effectiveness-panel__header-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 0.25rem 0.5rem 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.policy-effectiveness-panel__sort-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  padding: 0;
+  text-align: left;
+}
+
+.policy-effectiveness-panel__sort-btn:hover {
+  color: #6366f1;
+}
+
+.policy-effectiveness-panel__date-cell {
+  font-size: 0.6875rem;
+  color: #9ca3af;
+  text-align: center;
+  padding-bottom: 0.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.policy-effectiveness-panel__rule-label {
+  font-size: 0.8125rem;
+  color: #374151;
+  padding-right: 0.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  margin-bottom: 3px;
+}
+
+.policy-effectiveness-panel__cell {
+  height: 28px;
+  border-radius: 3px;
+  margin: 0 2px 3px;
+  cursor: default;
+  transition: opacity 0.1s;
+}
+
+.policy-effectiveness-panel__cell:hover {
+  opacity: 0.8;
+  outline: 2px solid #374151;
+  outline-offset: 1px;
+}
+
+/* Tooltip */
+.policy-effectiveness-panel__tooltip {
+  position: fixed;
+  z-index: 100;
+  background: #1f2937;
+  color: #f9fafb;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
