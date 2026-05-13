@@ -270,15 +270,25 @@ export function FleetPage() {
                       onClick={header.column.getToggleSortingHandler()}
                     >
                       {flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getCanSort() && (
-                        <span className="fleet-table__sort" aria-hidden="true">
-                          {header.column.getIsSorted() === 'asc'
-                            ? ' ↑'
-                            : header.column.getIsSorted() === 'desc'
-                              ? ' ↓'
-                              : ''}
-                        </span>
-                      )}
+                      {header.column.getCanSort() && (() => {
+                        const sorted = header.column.getIsSorted()
+                        const glyph = sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : '↕'
+                        return (
+                          <span
+                            className={`fleet-table__sort${sorted ? '' : ' fleet-table__sort--inactive'}`}
+                            data-testid={`fleet-sort-${header.column.id}`}
+                            aria-label={
+                              sorted === 'asc'
+                                ? 'sorted ascending'
+                                : sorted === 'desc'
+                                  ? 'sorted descending'
+                                  : 'not sorted'
+                            }
+                          >
+                            {glyph}
+                          </span>
+                        )
+                      })()}
                     </th>
                   ))}
                 </tr>
