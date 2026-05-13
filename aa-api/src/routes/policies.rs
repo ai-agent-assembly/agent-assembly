@@ -55,19 +55,31 @@ pub async fn list_policies(
 
     let total = all.len() as u64;
 
-    let items: Vec<PolicyResponse> = all
+    let paged: Vec<_> = all
         .into_iter()
         .skip(params.offset())
         .take(params.per_page() as usize)
-        .enumerate()
-        .map(|(i, meta)| PolicyResponse {
+        .collect();
+
+    let mut items: Vec<PolicyResponse> = Vec::with_capacity(paged.len());
+    for (i, meta) in paged.into_iter().enumerate() {
+        // Fetch the YAML body for this version. If the history store cannot
+        // resolve it (rare — corrupted entry), surface an empty string rather
+        // than failing the whole list.
+        let yaml = state
+            .policy_history
+            .get(&meta.sha256)
+            .await
+            .map(|snap| snap.yaml_content)
+            .unwrap_or_default();
+        items.push(PolicyResponse {
             name: meta.sha256[..12].to_string(),
             version: meta.timestamp,
             active: i == 0 && params.page() == 1,
             rule_count: 0,
-            policy_yaml: String::new(),
-        })
-        .collect();
+            policy_yaml: yaml,
+        });
+    }
 
     Ok((
         StatusCode::OK,
