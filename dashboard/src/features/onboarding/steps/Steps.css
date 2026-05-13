@@ -1,0 +1,502 @@
+/* ── Shared step body typography ────────────────────────────────────────── */
+.onb-body-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 4px;
+  letter-spacing: -0.2px;
+}
+
+.onb-body-sub {
+  font-size: 13px;
+  color: var(--ink-3);
+  margin: 0 0 22px;
+  line-height: 1.5;
+}
+
+.onb-body-sub code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: var(--paper-2);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--line-2);
+}
+
+/* ── Step 1: framework cards ─────────────────────────────────────────────── */
+.onb-fw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.onb-fw-card {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all 120ms;
+  position: relative;
+  background: var(--paper);
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.onb-fw-card:hover {
+  border-color: var(--ink-4);
+  background: var(--paper-2);
+}
+
+.onb-fw-card.is-selected {
+  border-color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 0 0 0 1px var(--ink) inset;
+}
+
+.onb-fw-glyph {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--ink);
+  margin-top: 1px;
+}
+
+.onb-fw-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.onb-fw-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.onb-fw-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 3px;
+  letter-spacing: 0.3px;
+}
+
+.onb-fw-pop {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  background: var(--ok);
+  color: var(--paper-2);
+  padding: 1px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.onb-fw-radio {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--ink-4);
+  border-radius: 999px;
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.onb-fw-card.is-selected .onb-fw-radio {
+  border-color: var(--ink);
+}
+
+.onb-fw-card.is-selected .onb-fw-radio::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  background: var(--ink);
+  border-radius: 999px;
+}
+
+/* ── Step 2: install SDK ─────────────────────────────────────────────────── */
+.onb-pkg-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+}
+
+.onb-pkg-tabs {
+  display: flex;
+  gap: 1px;
+  background: var(--line);
+  padding: 1px;
+  border-radius: 2px;
+}
+
+.onb-pkg-tab {
+  padding: 4px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  background: var(--paper);
+  color: var(--ink-3);
+  cursor: pointer;
+  border: none;
+  border-radius: 1px;
+  transition: all 100ms;
+}
+
+.onb-pkg-tab.is-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.onb-pkg-cmd {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  padding: 6px 10px;
+  user-select: all;
+}
+
+.onb-pkg-copy {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 6px 10px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  text-transform: lowercase;
+  letter-spacing: 0.4px;
+}
+
+.onb-pkg-copy.is-copied {
+  background: var(--ok);
+}
+
+.onb-term {
+  background: #0d0e10;
+  color: #d4d4d4;
+  border-radius: 3px;
+  padding: 14px 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 200px;
+  border: 1px solid #1a1b1d;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.onb-term-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.onb-term-prompt { color: #4a9eff; user-select: none; }
+.onb-term-cmd { color: #f0f0f0; }
+.onb-term-out { color: #a0a0a0; }
+.onb-term-ok { color: #5fd17a; }
+.onb-term-faint { color: #6e6e6e; }
+
+.onb-term-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 18px;
+  margin-bottom: 8px;
+}
+
+.onb-term-meta-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+/* ── Step 3: identity ───────────────────────────────────────────────────── */
+.onb-id-card {
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 22px;
+  text-align: center;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.onb-id-glyph {
+  width: 80px;
+  height: 80px;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  background: var(--paper);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 32px;
+  color: var(--ink-4);
+}
+
+.onb-id-glyph.is-done {
+  color: var(--ok);
+  font-size: 36px;
+  font-weight: bold;
+  border-color: var(--ok);
+}
+
+.onb-id-action-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 9px 18px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  text-transform: lowercase;
+  letter-spacing: 0.5px;
+}
+
+.onb-id-action-btn:hover { background: var(--ink-2); }
+
+.onb-id-action-btn:disabled {
+  background: var(--ink-4);
+  cursor: not-allowed;
+}
+
+.onb-id-out {
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: #0d0e10;
+  color: #d4d4d4;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  border-radius: 3px;
+  text-align: left;
+  width: 100%;
+}
+
+.onb-id-row { display: flex; gap: 10px; }
+.onb-id-key { color: #6e94c2; min-width: 90px; }
+.onb-id-val { color: #d4d4d4; word-break: break-all; }
+.onb-id-val.is-fp { color: #5fd17a; }
+
+.onb-id-hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 12px;
+  letter-spacing: 0.4px;
+}
+
+.onb-id-issued {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ok);
+  letter-spacing: 0.5px;
+}
+
+/* ── Step 4: policy preset ──────────────────────────────────────────────── */
+.onb-pp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.onb-pp-card {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 14px;
+  cursor: pointer;
+  background: var(--paper);
+  transition: all 120ms;
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.onb-pp-card:hover {
+  background: var(--paper-2);
+  border-color: var(--ink-4);
+}
+
+.onb-pp-card.is-selected {
+  border-color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 0 0 0 1px var(--ink) inset;
+}
+
+.onb-pp-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.onb-pp-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  color: var(--ink-4);
+  margin-top: 3px;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+}
+
+.onb-pp-risk {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  margin-top: 8px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  align-self: flex-start;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.onb-pp-risk.is-low { background: rgba(70, 180, 110, 0.15); color: var(--ok); }
+.onb-pp-risk.is-medium { background: rgba(220, 180, 60, 0.15); color: var(--warn); }
+.onb-pp-risk.is-high { background: rgba(220, 90, 90, 0.15); color: var(--danger); }
+
+.onb-pp-preview {
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--ink);
+  border-radius: 2px;
+}
+
+.onb-pp-preview-h {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.onb-pp-preview-desc {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+
+.onb-pp-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.onb-pp-col-h {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.onb-pp-rule {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 0;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.onb-pp-rule.is-block::before { content: '⊘'; color: var(--danger); font-weight: bold; }
+.onb-pp-rule.is-allow::before { content: '✓'; color: var(--ok); font-weight: bold; }
+.onb-pp-rule.is-empty {
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+/* ── Step 5: enroll ─────────────────────────────────────────────────────── */
+.onb-enroll-meter {
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.onb-enroll-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.onb-enroll-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.onb-enroll-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: -1px;
+}
+
+.onb-enroll-count.is-live { color: var(--ok); }
+
+.onb-enroll-bar {
+  height: 4px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.onb-enroll-bar-fill {
+  height: 100%;
+  background: var(--ok);
+}
+
+.onb-enroll-pings {
+  background: #0d0e10;
+  color: #d4d4d4;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 12px 14px;
+  border-radius: 3px;
+  height: 130px;
+  overflow-y: auto;
+}
+
+.onb-enroll-pings-empty { color: #6e6e6e; padding: 4px 0; }
+.onb-enroll-ping { padding: 2px 0; }
+.onb-ping-time { color: #6e94c2; }
+.onb-ping-action { color: #d4d4d4; }
+.onb-ping-tag { color: #5fd17a; }
