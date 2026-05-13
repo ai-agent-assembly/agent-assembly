@@ -118,8 +118,9 @@ describe('AgentDetailPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('agent-detail')).toBeInTheDocument())
     expect(screen.getByText('test-agent')).toBeInTheDocument()
-    expect(screen.getByText('langgraph')).toBeInTheDocument()
-    expect(screen.getByText('enforced')).toBeInTheDocument()
+    // Framework chip + recent events table both surface "langgraph" / "enforced".
+    expect(screen.getAllByText('langgraph').length).toBeGreaterThan(0)
+    expect(screen.getByText(/enforced/)).toBeInTheDocument()
     expect(screen.getAllByTestId('event-row')).toHaveLength(1)
   })
 

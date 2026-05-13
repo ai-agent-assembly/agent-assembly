@@ -1,0 +1,175 @@
+/* ============================================================
+   Agent Detail drawer — hi-fi chrome
+   Tokens come from dashboard/src/styles.css (hi-fi palette).
+   ============================================================ */
+
+.ad {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--paper);
+}
+
+/* ── Header (breadcrumb + title + actions) ─────────────────── */
+
+.ad-head {
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.ad-head__crumbs {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-4);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.ad-head__crumb-link {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.ad-head__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ad-head__flag {
+  color: var(--danger);
+}
+
+.ad-head__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  border-radius: 2px;
+}
+
+.ad-head__owner {
+  font-size: 12px;
+  font-weight: 400;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-3);
+}
+
+/* ── Identity strip (DID / trust / mode-status / blocked / scrubbed) ── */
+
+.ad-identity {
+  padding: 14px 24px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr;
+  gap: 16px;
+}
+
+.ad-identity__label {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin: 0 0 4px;
+}
+
+.ad-identity__did {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+.ad-identity__did-meta {
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 4px;
+}
+
+.ad-identity__trust {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ad-identity__trust-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ad-identity__trust-summary {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.ad-identity__chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.ad-identity__last-seen {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+.ad-identity__metric {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 4px;
+}
+
+.ad-identity__metric--scrub {
+  color: var(--scrub);
+}
+
+.ad-identity__metric--danger {
+  color: var(--danger);
+}
+
+.ad-identity__metric-sub {
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 0;
+}
+
+/* ── Body containers ───────────────────────────────────────── */
+
+.ad-body {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+  background: var(--paper);
+}
