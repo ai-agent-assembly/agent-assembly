@@ -1,6 +1,7 @@
 import { useAlertQuery } from './api'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
+import { SilenceAction } from './SilenceAction'
 import type { AlertDetail } from './types'
 
 function ruleYaml(detail: AlertDetail): string {
@@ -130,6 +131,10 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
           {JSON.stringify(data.eventPayload, null, 2)}
         </pre>
       </section>
+
+      {data.status !== 'RESOLVED' && (
+        <SilenceAction alertId={data.id} silenced={data.status === 'SUPPRESSED'} />
+      )}
 
       <section style={sectionStyle}>
         <span style={sectionHeader}>Routing log</span>
