@@ -1,0 +1,64 @@
+/* ============================================================
+   TeamBudgetBar — team-level budget overlay (AAASM-1339)
+   ============================================================
+
+   Threshold buckets resolve to tokens from src/styles.css:
+     ok     → --ok    (< 80%)
+     warn   → --warn  (80–95%)
+     danger → --danger (≥ 95%)
+
+   No hex literals.
+   ============================================================ */
+
+.team-budget-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+}
+
+.team-budget-bar__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.team-budget-bar__team {
+  color: var(--ink-2);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.team-budget-bar__amount {
+  color: var(--ink-4);
+}
+
+.team-budget-bar__track {
+  width: 100%;
+  height: 4px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.team-budget-bar__fill {
+  height: 100%;
+}
+
+.team-budget-bar__fill[data-threshold-bucket='ok'] {
+  background: var(--ok);
+}
+
+.team-budget-bar__fill[data-threshold-bucket='warn'] {
+  background: var(--warn);
+}
+
+.team-budget-bar__fill[data-threshold-bucket='danger'] {
+  background: var(--danger);
+}
