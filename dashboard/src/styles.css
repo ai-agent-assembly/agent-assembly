@@ -1,0 +1,62 @@
+/* ============================================================
+   Agent Assembly Dashboard · Design Tokens
+   ============================================================
+
+   The :root block below mirrors design/v1/hi-fi/styles.css so the
+   hi-fi palette is the single source of truth. Component styles
+   must reference these custom properties rather than embedding
+   hex literals, spacing values, or type sizes directly.
+
+   See AAASM-1322 (the verification finding that introduced this
+   sheet) and AAASM-94 AC #8.
+   ============================================================ */
+
+:root {
+  /* ── Hi-fi base palette (paper / ink / line) ─────────────── */
+  --paper: #f5f4f0;
+  --paper-2: #ffffff;
+  --paper-3: #ebe9e2;
+  --ink: #0e0e0e;
+  --ink-2: #2a2a2a;
+  --ink-3: #5a5a5a;
+  --ink-4: #8a8a8a;
+  --ink-5: #b8b6ae;
+  --line: #d8d4c7;
+  --line-2: #c4bfb0;
+  --line-3: #1a1a1a;
+
+  /* ── Hi-fi semantic palette (status / accent) ────────────── */
+  --danger: #b8291e;
+  --danger-bg: #f6dad6;
+  --warn: #8a5a00;
+  --warn-bg: #f5e6c4;
+  --ok: #22592a;
+  --ok-bg: #d4e4d2;
+  --info: #1d3a7a;
+  --info-bg: #d6dfee;
+  --scrub: #5a1a8a;
+  --scrub-bg: #e0d2ec;
+
+  /* ── App shell semantic tokens ───────────────────────────── */
+  /* These name the colors used by the current AppShell so the
+     stylesheet contains no hex literals. Visual values are kept
+     identical to the pre-tokenisation layout; AAASM-94 follow-up
+     can migrate them to the hi-fi palette above when ready. */
+  --shell-nav-bg: #1e293b;
+  --shell-nav-text: #f1f5f9;
+  --shell-nav-text-muted: #cbd5e1;
+  --shell-nav-border: #334155;
+  --shell-nav-hover-bg: #334155;
+  --shell-nav-active-bg: #1e3a5f;
+  --shell-nav-active-text: #93c5fd;
+  --shell-nav-active-border: #3b82f6;
+
+  --shell-topbar-bg: #ffffff;
+  --shell-topbar-border: #e2e8f0;
+
+  --shell-text-muted: #64748b;
+  --shell-text-dim: #475569;
+  --shell-button-border: #cbd5e1;
+  --shell-button-hover-bg: #f1f5f9;
+  --shell-error-text: #dc2626;
+}
