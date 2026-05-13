@@ -1,0 +1,91 @@
+/* ============================================================
+   PayloadModal — full trace event payload viewer (AAASM-1069)
+   ============================================================
+
+   Uses design tokens from src/styles.css. No hex literals.
+   Pattern mirrors features/capability/CellInspectDrawer but
+   centered as a modal rather than docked as a right-side drawer.
+   ============================================================ */
+
+.payload-modal-scrim {
+  position: fixed;
+  inset: 0;
+  /* Matches the scrim rgba from features/capability/CellInspectDrawer for consistency. */
+  background: rgba(14, 14, 14, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.payload-modal {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: min(720px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+  box-shadow: 0 12px 32px rgba(14, 14, 14, 0.2);
+}
+
+.payload-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.payload-modal__eyebrow {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+}
+
+.payload-modal__title {
+  margin: 0.25rem 0 0.125rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.payload-modal__time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+
+.payload-modal__subtitle {
+  font-size: 0.8rem;
+  color: var(--ink-3);
+}
+
+.payload-modal__close {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  color: var(--ink-2);
+}
+
+.payload-modal__close:hover {
+  background: var(--paper-3);
+}
+
+.payload-modal__json {
+  margin: 0;
+  padding: 1rem 1.25rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--paper);
+  border-radius: 0 0 8px 8px;
+  white-space: pre;
+}
