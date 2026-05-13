@@ -96,4 +96,62 @@ describe('TopologyGraph', () => {
     await userEvent.click(screen.getByTestId('topology-node'))
     // No assertion target — absence of errors is the contract.
   })
+
+  // ── Team grouping (AAASM-1339) ─────────────────────────────────────────────
+  describe('team grouping', () => {
+    const TWO_TEAMS: TopologyNode[] = [
+      { id: 'sa1', name: 'sa1', status: 'active', team: 'support',   owner: 'alice', policyCount: 2, budgetSpend: 1,   budgetLimit: 10 },
+      { id: 'sa2', name: 'sa2', status: 'idle',   team: 'support',   owner: 'alice', policyCount: 2, budgetSpend: 2,   budgetLimit: 10 },
+      { id: 'sa3', name: 'sa3', status: 'active', team: 'support',   owner: 'alice', policyCount: 2, budgetSpend: 4,   budgetLimit: 10 },
+      // Analytics team sits at 95% → danger
+      { id: 'an1', name: 'an1', status: 'active', team: 'analytics', owner: 'bob',   policyCount: 1, budgetSpend: 5,   budgetLimit: 5  },
+      { id: 'an2', name: 'an2', status: 'idle',   team: 'analytics', owner: 'bob',   policyCount: 1, budgetSpend: 3.5, budgetLimit: 5  },
+      { id: 'an3', name: 'an3', status: 'error',  team: 'analytics', owner: 'bob',   policyCount: 1, budgetSpend: 1,   budgetLimit: 5  },
+    ]
+
+    it('renders one team-cluster <g> per team with data-team attribute', () => {
+      render(<TopologyGraph nodes={TWO_TEAMS} edges={[]} />)
+      const clusters = screen.getAllByTestId('team-cluster')
+      expect(clusters).toHaveLength(2)
+      const teams = clusters.map(c => c.getAttribute('data-team')).sort()
+      expect(teams).toEqual(['analytics', 'support'])
+    })
+
+    it('renders one TeamBudgetBar per cluster with aggregated spend/limit', () => {
+      render(<TopologyGraph nodes={TWO_TEAMS} edges={[]} />)
+      const bars = screen.getAllByTestId('team-budget-bar')
+      expect(bars).toHaveLength(2)
+
+      const support = bars.find(b => b.getAttribute('data-team') === 'support')!
+      const analytics = bars.find(b => b.getAttribute('data-team') === 'analytics')!
+
+      // support: spent 1+2+4=7, limit 10+10+10=30 → 23% → ok
+      expect(support).toHaveAttribute('data-threshold-bucket', 'ok')
+      expect(support).toHaveTextContent('$7 / $30 · 23%')
+
+      // analytics: spent 5+3.5+1=9.5, limit 5+5+5=15 → 63% → ok (below 80%)
+      expect(analytics).toHaveAttribute('data-threshold-bucket', 'ok')
+      expect(analytics).toHaveTextContent('63%')
+    })
+
+    it('switches a cluster bar to danger when team spend ≥ 95% of limit', () => {
+      const overspent: TopologyNode[] = [
+        { id: 'a', name: 'a', status: 'active', team: 'team-x', owner: 'a', policyCount: 0, budgetSpend: 9.6, budgetLimit: 10 },
+        { id: 'b', name: 'b', status: 'idle',   team: 'team-x', owner: 'a', policyCount: 0, budgetSpend: 0,   budgetLimit: 0  },
+      ]
+      render(<TopologyGraph nodes={overspent} edges={[]} />)
+      const bar = screen.getByTestId('team-budget-bar')
+      expect(bar).toHaveAttribute('data-team', 'team-x')
+      // 9.6 / 10 = 96% → danger
+      expect(bar).toHaveAttribute('data-threshold-bucket', 'danger')
+    })
+
+    it('renders a team-cluster-label per cluster with the team name', () => {
+      render(<TopologyGraph nodes={TWO_TEAMS} edges={[]} />)
+      const labels = screen.getAllByTestId('team-cluster-label')
+      expect(labels).toHaveLength(2)
+      const texts = labels.map(l => l.textContent).sort()
+      expect(texts).toEqual(['analytics', 'support'])
+    })
+  })
 })
