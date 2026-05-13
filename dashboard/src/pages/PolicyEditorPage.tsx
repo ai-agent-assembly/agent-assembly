@@ -72,7 +72,7 @@ export function PolicyEditorPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
       setValidationErrors(validateYaml(v))
-    }, 400)
+    }, 500)
   }, [])
 
   const hasErrors = validationErrors.length > 0
