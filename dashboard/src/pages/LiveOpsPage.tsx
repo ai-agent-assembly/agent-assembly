@@ -81,7 +81,7 @@ export function LiveOpsPage() {
             <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
           </header>
           <div className="live-page__pane-body live-page__pane-body--canvas">
-            <PipelineCanvas />
+            <PipelineCanvas intensity={2} />
           </div>
         </section>
 
