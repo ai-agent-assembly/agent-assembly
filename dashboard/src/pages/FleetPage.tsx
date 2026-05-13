@@ -1,4 +1,4 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useNavigate } from 'react-router-dom'
 import {
   useReactTable,
   getCoreRowModel,
@@ -453,6 +453,11 @@ export function FleetPage() {
           </table>
         </div>
       )}
+
+      {/* Drawer overlay (Agent Detail) renders via nested route — sits on top
+          of the page via fixed positioning, so the Fleet table stays mounted
+          underneath and filter state is preserved when the drawer closes. */}
+      <Outlet />
     </main>
   )
 }

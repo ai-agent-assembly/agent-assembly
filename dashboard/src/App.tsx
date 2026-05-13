@@ -30,7 +30,10 @@ function App() {
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}
             <Route path="/overview" element={<ComingSoon name="Overview" />} />
-            <Route path="/agents" element={<FleetPage />} />
+            <Route path="/agents" element={<FleetPage />}>
+              {/* Agent Detail drawer overlays the Fleet page so filter state stays mounted. */}
+              <Route path=":id" element={<AgentDetailPage />} />
+            </Route>
             <Route path="/topology" element={<ComingSoon name="Topology" />} />
             <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
@@ -45,7 +48,6 @@ function App() {
             <Route path="/identity" element={<IdentityPage />} />
 
             {/* ── Sub-routes for canonical pages ────────────────────────── */}
-            <Route path="/agents/:id" element={<AgentDetailPage />} />
             <Route path="/agents/:id/trace/:sessionId" element={<TraceViewPage />} />
             <Route path="/teams/:teamId" element={<TeamDetailPage />} />
 
