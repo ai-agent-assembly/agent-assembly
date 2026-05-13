@@ -3,6 +3,10 @@ import { usePoliciesQuery, type Policy } from '../features/policies/api'
 import { EmptyState, ErrorState } from '../components/states'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
+import { useToast } from '../components/Toast'
+import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
+import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
+import type { PolicyEditorOverlayProps } from '../features/policies/editor/types'
 import './PoliciesPage.css'
 
 type FilterTab = 'all' | 'active' | 'proposed'
@@ -13,36 +17,35 @@ const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
   { id: 'proposed', label: 'Proposed' },
 ]
 
-interface PolicyEditorOverlayProps {
-  mode: 'new' | 'edit'
-  name?: string
-  version?: string
-}
-
-function PolicyEditorPlaceholder() {
+function PolicyEditorOverlayContainer() {
   const { props, closeOverlay } = useOverlay('policy-editor')
   const overlayProps = props as unknown as PolicyEditorOverlayProps
+  const { toast } = useToast()
+
+  // Stable initial draft for the lifetime of this overlay open session.
+  // Identity matters because useDraft references it for dirty tracking.
+  const initialDraft = useMemo(() => {
+    if (
+      overlayProps.mode === 'edit' &&
+      overlayProps.name &&
+      overlayProps.version
+    ) {
+      return stubDraftFromIdentity(overlayProps.name, overlayProps.version)
+    }
+    return emptyDraft()
+  }, [overlayProps.mode, overlayProps.name, overlayProps.version])
+
   return (
-    <div className="policy-editor-placeholder" data-testid="policy-editor-placeholder">
-      <h2 className="policy-editor-placeholder__title">
-        {overlayProps.mode === 'edit'
-          ? `Edit ${overlayProps.name ?? ''} v${overlayProps.version ?? ''}`
-          : 'New policy'}
-      </h2>
-      <p className="policy-editor-placeholder__desc">
-        Structured condition-builder form lands in AAASM-1370 (ST-4).
-        For now, this confirms the overlay open/close lifecycle works
-        end-to-end.
-      </p>
-      <button
-        type="button"
-        className="policy-editor-placeholder__close"
-        data-testid="policy-editor-close"
-        onClick={closeOverlay}
-      >
-        Close
-      </button>
-    </div>
+    <PolicyEditorOverlay
+      initialDraft={initialDraft}
+      onSave={() => {
+        // ST-5 (AAASM-1371) replaces this stub with the optimistic
+        // POST + cache update + error rollback flow.
+        toast('Save flow lands in ST-5 (AAASM-1371).', 'info')
+        closeOverlay()
+      }}
+      onClose={closeOverlay}
+    />
   )
 }
 
@@ -217,7 +220,7 @@ export function PoliciesPage() {
       )}
 
       <OverlayHost name="policy-editor">
-        <PolicyEditorPlaceholder />
+        <PolicyEditorOverlayContainer />
       </OverlayHost>
     </main>
   )
