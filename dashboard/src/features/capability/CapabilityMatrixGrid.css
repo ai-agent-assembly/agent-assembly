@@ -55,6 +55,31 @@
   gap: 2px;
 }
 
+.cap-mx-col-h-btn {
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.cap-mx-col-h-btn:disabled {
+  cursor: default;
+}
+
+.cap-mx-col-h-btn.is-sorted {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.cap-mx-sort-ind {
+  color: var(--ink-4);
+  margin-left: 4px;
+}
+
+.cap-mx-col-h-btn.is-sorted .cap-mx-sort-ind {
+  color: var(--ink);
+}
+
 .cap-mx-col-h-group {
   font-size: 9px;
   text-transform: uppercase;

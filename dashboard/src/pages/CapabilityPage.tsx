@@ -3,6 +3,7 @@ import { capabilityClient } from '../api/capability'
 import { CapabilityMatrixGrid } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
 import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
+import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
 import { VERBS } from '../features/capability/types'
 import type { CapabilityMatrix, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
@@ -14,6 +15,7 @@ export function CapabilityPage() {
   const [verb, setVerb] = useState<Verb>('write')
   const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
+  const [sort, setSort] = useState<SortState>(NO_SORT)
 
   useEffect(() => {
     let alive = true
@@ -25,10 +27,11 @@ export function CapabilityPage() {
     }
   }, [])
 
-  const visibleAgents = useMemo(
-    () => (matrix ? applyFilters(matrix.agents, filters) : []),
-    [matrix, filters],
-  )
+  const visibleAgents = useMemo(() => {
+    if (!matrix) return []
+    const filtered = applyFilters(matrix.agents, filters)
+    return sortAgents(filtered, matrix.resources, verb, sort)
+  }, [matrix, filters, verb, sort])
 
   return (
     <div className="capability-page" data-testid="capability-page">
@@ -106,6 +109,8 @@ export function CapabilityPage() {
             agents={visibleAgents}
             resources={matrix.resources}
             verb={verb}
+            sort={sort}
+            onSortChange={(rid) => setSort((prev) => nextSortState(prev, rid))}
           />
         )}
       </section>
