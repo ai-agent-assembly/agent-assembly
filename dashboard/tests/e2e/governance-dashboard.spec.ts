@@ -229,20 +229,18 @@ test.describe('Policy editor page', () => {
     await expect(page.getByTestId('apply-btn')).not.toBeDisabled()
   })
 
-  test('Diff button toggles to diff panel and back', async ({ page }) => {
+  test('Editor and Diff panel render side-by-side', async ({ page }) => {
     await page.goto('/policies/editor')
-    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Diff')
-    await page.getByTestId('toggle-diff-btn').click()
-    // Monaco loads async; confirm the toggle state changed before the editor resolves
-    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Editor')
-    await page.getByTestId('toggle-diff-btn').click()
-    await expect(page.getByTestId('toggle-diff-btn')).toHaveText('Diff')
+    await expect(page.getByTestId('policy-editor-pane')).toBeVisible()
+    await expect(page.getByTestId('policy-diff-pane')).toBeVisible()
   })
 
-  test('Discard navigates back to /policies', async ({ page }) => {
+  test('Discard resets editor without leaving the page', async ({ page }) => {
     await page.goto('/policies/editor')
     await page.getByTestId('discard-btn').click()
-    await expect(page).toHaveURL(/\/policies$/)
+    // Stays on the editor page (no navigation back to /policies)
+    await expect(page).toHaveURL(/\/policies\/editor/)
+    await expect(page.getByTestId('policy-editor')).toBeVisible()
   })
 })
 

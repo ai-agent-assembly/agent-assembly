@@ -1,15 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { DiffEditor } from '@monaco-editor/react'
 import type { OnMount, Monaco } from '@monaco-editor/react'
-import { useCreatePolicy } from '../features/policies/api'
+import { useCreatePolicy, usePolicyByVersion } from '../features/policies/api'
 import { useToast } from '../components/Toast'
 
 type EditorInstance = Parameters<OnMount>[0]
 
 const MonacoEditor = lazy(() => import('@monaco-editor/react'))
-const DiffEditor = lazy(() =>
-  import('@monaco-editor/react').then((m) => ({ default: m.DiffEditor })),
-)
 
 const EMPTY_POLICY = `# Governance policy YAML
 # See: https://docs.agent-assembly.io/policies
@@ -28,16 +26,12 @@ function validateYaml(yaml: string): string[] {
     return errors
   }
   try {
-    // Basic structural checks without importing a full YAML parser.
-    // Real parse validation happens server-side on apply.
     const lines = yaml.split('\n')
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      // Detect tab indentation which YAML forbids
       if (/^\t/.test(line)) {
         errors.push(`Line ${i + 1}: YAML must not use tab indentation.`)
       }
-      // Detect unmatched braces (simple heuristic)
       const opens = (line.match(/\{/g) ?? []).length
       const closes = (line.match(/\}/g) ?? []).length
       if (opens !== closes) {
@@ -61,11 +55,25 @@ export function PolicyEditorPage() {
   const originalName = searchParams.get('name')
   const originalVersion = searchParams.get('version')
 
+  // Fetch the live policy version when name+version are present in the URL.
+  const { data: livePolicy } = usePolicyByVersion(originalName, originalVersion)
+
   const [yaml, setYaml] = useState(EMPTY_POLICY)
+  // The "live" YAML — used as the diff baseline and Discard target.
+  // Mutated only when the hook resolves with a new policy.
+  const [liveYaml, setLiveYaml] = useState(EMPTY_POLICY)
   const [validationErrors, setValidationErrors] = useState<string[]>(() => validateYaml(EMPTY_POLICY))
-  const [showDiff, setShowDiff] = useState(false)
-  // Store the "before" snapshot for the diff view; never mutated after mount.
-  const [originalYaml] = useState(EMPTY_POLICY)
+
+  // When the live policy resolves, sync both the editor and the diff baseline.
+  // Setting state inside this effect is intentional — we need to react to the
+  // async query result. Guarded so it only fires when the live YAML changes.
+  useEffect(() => {
+    if (!livePolicy?.policy_yaml) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setYaml(livePolicy.policy_yaml)
+    setLiveYaml(livePolicy.policy_yaml)
+    setValidationErrors(validateYaml(livePolicy.policy_yaml))
+  }, [livePolicy])
 
   // Debounced validation
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -73,6 +81,7 @@ export function PolicyEditorPage() {
   // Monaco editor + monaco namespace, captured on mount for setModelMarkers
   const editorRef = useRef<EditorInstance | null>(null)
   const monacoRef = useRef<Monaco | null>(null)
+
   const handleChange = useCallback((value: string | undefined) => {
     const v = value ?? ''
     setYaml(v)
@@ -133,13 +142,16 @@ export function PolicyEditorPage() {
   }
 
   function handleDiscard() {
-    if (yaml === originalYaml || window.confirm('Discard unsaved changes?')) {
-      navigate('/policies')
-    }
+    // Reset editor draft back to the live YAML — stay on the page.
+    setYaml(liveYaml)
+    setValidationErrors(validateYaml(liveYaml))
   }
 
   return (
-    <main style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }} data-testid="policy-editor">
+    <main
+      style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+      data-testid="policy-editor"
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ margin: 0 }}>
           {originalName ? `Edit: ${originalName} v${originalVersion ?? ''}` : 'New Policy'}
@@ -151,13 +163,6 @@ export function PolicyEditorPage() {
             style={{ padding: '0.5rem 1rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
           >
             Validate
-          </button>
-          <button
-            data-testid="toggle-diff-btn"
-            onClick={() => setShowDiff((v) => !v)}
-            style={{ padding: '0.5rem 1rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
-          >
-            {showDiff ? 'Editor' : 'Diff'}
           </button>
           <button
             data-testid="discard-btn"
@@ -206,17 +211,12 @@ export function PolicyEditorPage() {
         </ul>
       )}
 
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: '0.375rem', overflow: 'hidden', height: '60vh' }}>
-        <Suspense fallback={<div style={{ padding: '1rem' }} data-testid="editor-loading">Loading editor…</div>}>
-          {showDiff ? (
-            <DiffEditor
-              height="60vh"
-              language="yaml"
-              original={originalYaml}
-              modified={yaml}
-              options={{ readOnly: false, renderSideBySide: true }}
-            />
-          ) : (
+      <Suspense fallback={<div style={{ padding: '1rem' }} data-testid="editor-loading">Loading editor…</div>}>
+        <div style={{ display: 'flex', gap: '0.5rem', height: '60vh' }}>
+          <div
+            data-testid="policy-editor-pane"
+            style={{ flex: 1, border: '1px solid #e5e7eb', borderRadius: '0.375rem', overflow: 'hidden' }}
+          >
             <MonacoEditor
               height="60vh"
               language="yaml"
@@ -230,10 +230,21 @@ export function PolicyEditorPage() {
                 wordWrap: 'on',
               }}
             />
-          )}
-        </Suspense>
-      </div>
-
+          </div>
+          <div
+            data-testid="policy-diff-pane"
+            style={{ flex: 1, border: '1px solid #e5e7eb', borderRadius: '0.375rem', overflow: 'hidden' }}
+          >
+            <DiffEditor
+              height="60vh"
+              language="yaml"
+              original={liveYaml}
+              modified={yaml}
+              options={{ readOnly: true, renderSideBySide: false }}
+            />
+          </div>
+        </div>
+      </Suspense>
     </main>
   )
 }

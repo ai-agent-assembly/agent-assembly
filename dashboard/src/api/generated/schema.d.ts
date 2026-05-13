@@ -1021,6 +1021,12 @@ export interface components {
             active: boolean;
             /** @description Policy name from metadata. */
             name: string;
+            /**
+             * @description Raw YAML content of this policy version. Empty string when the
+             *     underlying snapshot is not retrievable from the history store
+             *     (e.g. a policy loaded at startup before any history entry exists).
+             */
+            policy_yaml: string;
             /** @description Number of rules in this policy version. */
             rule_count: number;
             /** @description Policy version string. */

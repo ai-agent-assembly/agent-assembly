@@ -67,6 +67,7 @@ const MOCK_POLICY: Policy = {
   version: '1.0.0',
   rule_count: 5,
   active: true,
+  policy_yaml: 'metadata:\n  name: default-policy\n  version: "1.0.0"\nrules: []\n',
 }
 
 const MOCK_INACTIVE: Policy = {
@@ -74,6 +75,7 @@ const MOCK_INACTIVE: Policy = {
   version: '0.9.0',
   rule_count: 3,
   active: false,
+  policy_yaml: 'metadata:\n  name: old-policy\n  version: "0.9.0"\nrules: []\n',
 }
 
 describe('PoliciesPage', () => {
@@ -183,11 +185,14 @@ describe('PolicyEditorPage', () => {
     })
   })
 
-  it('shows diff editor when Diff button is clicked', async () => {
+  it('renders editor and diff side-by-side', async () => {
     renderEditor()
     await screen.findByTestId('monaco-editor')
-    fireEvent.click(screen.getByTestId('toggle-diff-btn'))
-    await waitFor(() => expect(screen.getByTestId('diff-editor')).toBeInTheDocument())
+    expect(screen.getByTestId('policy-editor-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('policy-diff-pane')).toBeInTheDocument()
+    // The DiffEditor lazy-loads in a separate Suspense — allow a longer wait
+    // because both lazy components resolve in parallel during the same tick.
+    await screen.findByTestId('diff-editor', {}, { timeout: 5000 })
   })
 
   it('clicking the Validate button triggers validation immediately', async () => {
@@ -200,5 +205,59 @@ describe('PolicyEditorPage', () => {
     fireEvent.click(screen.getByTestId('validate-btn'))
     expect(screen.getByTestId('validation-errors')).toBeInTheDocument()
     expect(screen.getByTestId('validation-errors').textContent).toMatch(/tab indentation|Missing required/)
+  })
+
+  it('loads live YAML into editor when ?name=&version= params are present', async () => {
+    const LIVE = 'metadata:\n  name: prod\n  version: "2.0.0"\nrules: []\n'
+    vi.spyOn(policiesApi, 'usePolicyByVersion').mockReturnValue(
+      mockQuery<Policy | null>({
+        data: { name: 'prod', version: '2.0.0', rule_count: 0, active: true, policy_yaml: LIVE },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(policiesApi, 'useCreatePolicy').mockReturnValue(
+      mockMutation<Policy | undefined, policiesApi.CreatePolicyRequest>({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(
+      <Wrapper path="/policies/editor" initialPath="/policies/editor?name=prod&version=2.0.0">
+        <PolicyEditorPage />
+      </Wrapper>,
+    )
+    const textarea = await screen.findByTestId('monaco-editor')
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+  })
+
+  it('Discard resets editor draft back to live YAML and stays on the page', async () => {
+    const LIVE = 'metadata:\n  name: prod\n  version: "2.0.0"\nrules: []\n'
+    vi.spyOn(policiesApi, 'usePolicyByVersion').mockReturnValue(
+      mockQuery<Policy | null>({
+        data: { name: 'prod', version: '2.0.0', rule_count: 0, active: true, policy_yaml: LIVE },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(policiesApi, 'useCreatePolicy').mockReturnValue(
+      mockMutation<Policy | undefined, policiesApi.CreatePolicyRequest>({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(
+      <Wrapper path="/policies/editor" initialPath="/policies/editor?name=prod&version=2.0.0">
+        <PolicyEditorPage />
+      </Wrapper>,
+    )
+    const textarea = await screen.findByTestId('monaco-editor')
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+
+    // Edit the draft
+    fireEvent.change(textarea, { target: { value: 'metadata:\n  name: edited\nrules: []\n' } })
+    expect((textarea as HTMLTextAreaElement).value).toContain('edited')
+
+    // Discard resets to live YAML
+    fireEvent.click(screen.getByTestId('discard-btn'))
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+    // Page is still the editor (no navigation away)
+    expect(screen.getByTestId('policy-editor')).toBeInTheDocument()
   })
 })

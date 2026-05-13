@@ -1705,6 +1705,7 @@ components:
       - version
       - active
       - rule_count
+      - policy_yaml
       properties:
         active:
           type: boolean
@@ -1712,6 +1713,12 @@ components:
         name:
           type: string
           description: Policy name from metadata.
+        policy_yaml:
+          type: string
+          description: |-
+            Raw YAML content of this policy version. Empty string when the
+            underlying snapshot is not retrievable from the history store
+            (e.g. a policy loaded at startup before any history entry exists).
         rule_count:
           type: integer
           description: Number of rules in this policy version.
