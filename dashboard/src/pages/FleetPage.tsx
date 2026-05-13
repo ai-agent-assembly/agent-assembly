@@ -7,12 +7,14 @@ import {
   createColumnHelper,
   type SortingState,
 } from '@tanstack/react-table'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAgentsQuery, type Agent } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
 import {
-  DEFAULT_FLEET_FILTERS,
   applyFleetFilters,
+  fleetFiltersFromParams,
+  fleetFiltersToParamsRecord,
   frameworkOptions,
   type FleetFilters,
 } from '../features/agents/fleetFilters'
@@ -99,7 +101,18 @@ export function FleetPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
-  const [filters, setFilters] = useState<FleetFilters>(DEFAULT_FLEET_FILTERS)
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filters = useMemo<FleetFilters>(
+    () => fleetFiltersFromParams(searchParams),
+    [searchParams],
+  )
+  const setFilters = useCallback(
+    (next: FleetFilters) => {
+      setSearchParams(fleetFiltersToParamsRecord(next), { replace: true })
+    },
+    [setSearchParams],
+  )
 
   const fleetAgents = useMemo(() => (agents ?? []).map(toFleetAgent), [agents])
   const frameworks = useMemo(() => frameworkOptions(fleetAgents), [fleetAgents])

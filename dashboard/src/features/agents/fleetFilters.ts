@@ -42,3 +42,23 @@ export function applyFleetFilters(
 export function frameworkOptions(agents: readonly FleetAgent[]): string[] {
   return Array.from(new Set(agents.map((a) => a.framework))).sort()
 }
+
+/** Parse `FleetFilters` from a URL `URLSearchParams` instance. */
+export function fleetFiltersFromParams(params: URLSearchParams): FleetFilters {
+  return {
+    q: params.get('q') ?? '',
+    framework: params.get('framework') ?? 'all',
+    status: params.get('status') ?? 'all',
+    flaggedOnly: params.get('flagged') === '1',
+  }
+}
+
+/** Produce a `URLSearchParams`-friendly object; default values are omitted. */
+export function fleetFiltersToParamsRecord(filters: FleetFilters): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (filters.q.trim() !== '') out.q = filters.q
+  if (filters.framework !== 'all') out.framework = filters.framework
+  if (filters.status !== 'all') out.status = filters.status
+  if (filters.flaggedOnly) out.flagged = '1'
+  return out
+}
