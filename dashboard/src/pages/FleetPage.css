@@ -80,3 +80,77 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* ── View tabs ──────────────────────────────────────────────── */
+
+.fleet-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  padding: 0 24px;
+}
+
+.fleet-tabs__tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--ink-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fleet-tabs__tab:hover {
+  color: var(--ink);
+}
+
+.fleet-tabs__tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  font-weight: 600;
+}
+
+.fleet-tabs__count {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  padding: 1px 5px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  color: var(--ink-3);
+}
+
+.fleet-tabs__tab--active .fleet-tabs__count {
+  background: var(--ink);
+  color: var(--paper-2);
+}
+
+/* ── Tab-level empty state ──────────────────────────────────── */
+
+.fleet-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--ink-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.fleet-empty__title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.fleet-empty__body {
+  margin: 0 auto;
+  font-size: 12px;
+  max-width: 420px;
+  line-height: 1.5;
+}

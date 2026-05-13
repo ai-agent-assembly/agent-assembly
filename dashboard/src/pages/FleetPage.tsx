@@ -85,9 +85,12 @@ const columns = [
   }),
 ]
 
+type FleetView = 'agents' | 'sessions'
+
 export function FleetPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
+  const [view, setView] = useState<FleetView>('agents')
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -125,7 +128,41 @@ export function FleetPage() {
         </div>
       </header>
 
-      {isError && (
+      <nav className="fleet-tabs" data-testid="fleet-tabs" role="tablist" aria-label="Fleet views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'agents'}
+          className={`fleet-tabs__tab${view === 'agents' ? ' fleet-tabs__tab--active' : ''}`}
+          onClick={() => setView('agents')}
+          data-testid="fleet-tab-agents"
+        >
+          Agents
+          <span className="fleet-tabs__count">{totalAgents}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'sessions'}
+          className={`fleet-tabs__tab${view === 'sessions' ? ' fleet-tabs__tab--active' : ''}`}
+          onClick={() => setView('sessions')}
+          data-testid="fleet-tab-sessions"
+        >
+          Active Sessions
+        </button>
+      </nav>
+
+      {view === 'sessions' && (
+        <div className="fleet-empty" data-testid="fleet-sessions-empty">
+          <p className="fleet-empty__title">Active sessions view</p>
+          <p className="fleet-empty__body">
+            Wired in a follow-up sub-task. Tracking continues per agent on the Agent
+            Detail drawer (AAASM-1052).
+          </p>
+        </div>
+      )}
+
+      {view === 'agents' && isError && (
         <div
           data-testid="agents-error"
           style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
@@ -135,7 +172,7 @@ export function FleetPage() {
         </div>
       )}
 
-      {!isLoading && !isError && agents?.length === 0 && (
+      {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
         <p data-testid="agents-empty">
           No agents registered yet.{' '}
           <a href="https://docs.agent-assembly.io/quickstart" target="_blank" rel="noreferrer">
@@ -144,6 +181,7 @@ export function FleetPage() {
         </p>
       )}
 
+      {view === 'agents' && (
       <table data-testid="agents-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           {table.getHeaderGroups().map(hg => (
@@ -190,6 +228,7 @@ export function FleetPage() {
           )}
         </tbody>
       </table>
+      )}
     </main>
   )
 }
