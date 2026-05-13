@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useTopologyQuery } from '../features/topology/api'
+import { TopologyGraph } from '../components/topology/TopologyGraph'
 import './TopologyPage.css'
 
 /**
@@ -50,10 +51,10 @@ export function TopologyPage() {
         <div className="topology-page__body">
           <section
             className="topology-page__graph"
-            data-testid="topology-graph-placeholder"
+            data-testid="topology-graph-wrapper"
             aria-label="Topology graph"
           >
-            Graph component lands in AAASM-1335.
+            <TopologyGraph nodes={data?.nodes ?? []} edges={data?.edges ?? []} />
           </section>
           <aside
             className="topology-page__panel"
