@@ -88,6 +88,6 @@ describe('ApprovalsPage', () => {
     setupMocks([MOCK_APPROVAL])
     render(<ApprovalsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
-    expect(screen.getByText('send_email')).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'send_email' })).toBeInTheDocument()
   })
 })

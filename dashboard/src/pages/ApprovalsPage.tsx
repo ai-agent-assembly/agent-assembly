@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
 import { EmptyState } from '../components/EmptyState'
@@ -10,6 +10,13 @@ import {
   useRejectAction,
   type Approval,
 } from '../features/approvals/api'
+import { ApprovalsFilterBar } from '../features/approvals/ApprovalsFilterBar'
+import {
+  EMPTY_FILTER,
+  applyFilter,
+  deriveOptions,
+  type ApprovalsFilter,
+} from '../features/approvals/filter'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import './ApprovalsPage.css'
 
@@ -126,9 +133,12 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [decidedHistory, setDecidedHistory] = useState<Approval[]>([])
   const [rejectFor, setRejectFor] = useState<string[] | null>(null)
+  const [filter, setFilter] = useState<ApprovalsFilter>(EMPTY_FILTER)
 
-  const pending = approvals ?? []
-  const allSelected = pending.length > 0 && pending.every((a) => selected.has(a.id))
+  const pending = useMemo(() => approvals ?? [], [approvals])
+  const filterOptions = useMemo(() => deriveOptions(pending), [pending])
+  const filteredPending = useMemo(() => applyFilter(pending, filter), [pending, filter])
+  const allSelected = filteredPending.length > 0 && filteredPending.every((a) => selected.has(a.id))
 
   function toggleRow(id: string) {
     setSelected((prev) => {
@@ -139,7 +149,7 @@ export function ApprovalsPage() {
   }
 
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(pending.map((a) => a.id)))
+    setSelected(allSelected ? new Set() : new Set(filteredPending.map((a) => a.id)))
   }
 
   async function handleApprove(ids: string[]) {
@@ -217,6 +227,8 @@ export function ApprovalsPage() {
 
       {tab === 'pending' && (
         <>
+          <ApprovalsFilterBar filter={filter} onChange={setFilter} options={filterOptions} />
+
           {/* Bulk toolbar */}
           {selected.size > 0 && (
             <div
@@ -259,7 +271,13 @@ export function ApprovalsPage() {
             <EmptyState page="approvals" />
           )}
 
-          {(isLoading || pending.length > 0) && (
+          {!isLoading && !isError && pending.length > 0 && filteredPending.length === 0 && (
+            <p data-testid="approvals-filtered-empty" className="approvals-state">
+              No approvals match the current filters.
+            </p>
+          )}
+
+          {(isLoading || filteredPending.length > 0) && (
             <table className="approvals-table" data-testid="approvals-table">
               <thead>
                 <tr>
@@ -291,7 +309,7 @@ export function ApprovalsPage() {
                       ))}
                     </tr>
                   ))
-                  : pending.map((row) => (
+                  : filteredPending.map((row) => (
                     <tr key={row.id} data-testid="approval-row" style={{ borderBottom: '1px solid var(--line)' }}>
                       <td style={{ padding: '8px 12px' }}>
                         <input
