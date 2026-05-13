@@ -1,0 +1,86 @@
+/* ============================================================
+   TopologyPage shell (AAASM-1333)
+   ============================================================
+
+   Hi-fi reference: design/v1/hi-fi/topology.jsx — page-head + page-title
+   with a meta subtitle showing agent / team counts, then a body that
+   hosts the graph canvas (left, fluid) and node detail panel (right).
+
+   Subsequent sub-tasks fill the placeholders without changing this
+   shell.
+   ============================================================ */
+
+.topology-page {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  color: var(--ink);
+}
+
+.topology-page__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.topology-page__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.topology-page__meta {
+  color: var(--ink-4);
+  font-weight: 400;
+  font-size: 0.875rem;
+  margin-left: 0.5rem;
+}
+
+.topology-page__body {
+  display: grid;
+  grid-template-columns: 1fr 22rem;
+  gap: 1rem;
+  min-height: 28rem;
+}
+
+.topology-page__graph,
+.topology-page__panel {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--paper-2);
+  color: var(--ink-4);
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.topology-page__loading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.topology-page__skeleton {
+  background: var(--paper-3);
+  height: 2.25rem;
+  border-radius: 4px;
+}
+
+.topology-page__error {
+  color: var(--danger);
+}
+
+.topology-page__error button {
+  margin-top: 0.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.375rem 0.75rem;
+  color: var(--ink-2);
+}

@@ -11,6 +11,7 @@ import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CapabilityPage } from './pages/CapabilityPage'
 import { TraceViewPage } from './pages/TraceViewPage'
+import { TopologyPage } from './pages/TopologyPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ScrubPage } from './pages/ScrubPage'
 import { OnboardingPage } from './pages/OnboardingPage'
@@ -36,7 +37,7 @@ function App() {
               {/* Agent Detail drawer overlays the Fleet page so filter state stays mounted. */}
               <Route path=":id" element={<AgentDetailPage />} />
             </Route>
-            <Route path="/topology" element={<ComingSoon name="Topology" />} />
+            <Route path="/topology" element={<TopologyPage />} />
             <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
