@@ -6,6 +6,7 @@ import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
 import { PolicyEffectivenessPanel } from '../features/analytics/PolicyEffectivenessPanel'
 import { ToolUsagePanel } from '../features/analytics/ToolUsagePanel'
 import { FleetHealthPanel } from '../features/analytics/FleetHealthPanel'
+import { ApprovalAnalyticsPanel } from '../features/analytics/ApprovalAnalyticsPanel'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import '../features/analytics/KpiStrip.css'
@@ -13,6 +14,7 @@ import '../features/analytics/ActionVolumePanel.css'
 import '../features/analytics/CostBreakdownPanel.css'
 import '../features/analytics/PolicyEffectivenessPanel.css'
 import '../features/analytics/ToolUsageFleetHealth.css'
+import '../features/analytics/ApprovalAnalyticsPanel.css'
 import './AnalyticsPage.css'
 
 export function AnalyticsPage() {
@@ -38,7 +40,7 @@ export function AnalyticsPage() {
         <PolicyEffectivenessPanel />
         <ToolUsagePanel />
         <FleetHealthPanel />
-        {/* Remaining chart panels mounted by subsequent sub-tickets */}
+        <ApprovalAnalyticsPanel />
       </div>
     </main>
   )
