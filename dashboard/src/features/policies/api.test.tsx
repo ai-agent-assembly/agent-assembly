@@ -185,11 +185,14 @@ describe('PolicyEditorPage', () => {
     })
   })
 
-  it('shows diff editor when Diff button is clicked', async () => {
+  it('renders editor and diff side-by-side', async () => {
     renderEditor()
     await screen.findByTestId('monaco-editor')
-    fireEvent.click(screen.getByTestId('toggle-diff-btn'))
-    await waitFor(() => expect(screen.getByTestId('diff-editor')).toBeInTheDocument())
+    expect(screen.getByTestId('policy-editor-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('policy-diff-pane')).toBeInTheDocument()
+    // The DiffEditor lazy-loads in a separate Suspense — allow a longer wait
+    // because both lazy components resolve in parallel during the same tick.
+    await screen.findByTestId('diff-editor', {}, { timeout: 5000 })
   })
 
   it('clicking the Validate button triggers validation immediately', async () => {
