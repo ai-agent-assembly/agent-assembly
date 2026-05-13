@@ -10,6 +10,7 @@ import { PoliciesPage } from './pages/PoliciesPage'
 import { PolicyEditorPage } from './pages/PolicyEditorPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AlertsPage } from './pages/AlertsPage'
+import { CapabilityPage } from './pages/CapabilityPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
@@ -33,7 +34,7 @@ function App() {
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
             {/* control */}
-            <Route path="/capability" element={<ComingSoon name="Capability" />} />
+            <Route path="/capability" element={<CapabilityPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
             <Route path="/scrub" element={<ComingSoon name="Secret Scrubbing" />} />
             {/* manage */}
