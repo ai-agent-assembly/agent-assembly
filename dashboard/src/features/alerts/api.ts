@@ -67,3 +67,13 @@ export function useAlertsQuery(
     placeholderData: (prev) => prev,
   })
 }
+
+// ── useAlertQuery (single alert detail) ───────────────────────────────────
+
+export function useAlertQuery(id: string | null | undefined): UseQueryResult<Alert, Error> {
+  return useQuery({
+    queryKey: [alertsQueryKeys.alerts, id ?? ''],
+    queryFn: () => alertsFetch<Alert>(alertsEndpoints.detail(id as string)),
+    enabled: !!id,
+  })
+}
