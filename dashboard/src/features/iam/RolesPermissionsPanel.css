@@ -1,0 +1,48 @@
+.iam-roles-panel {
+  padding: 1rem 0;
+}
+
+.iam-roles-panel__header {
+  margin-bottom: 1rem;
+}
+
+.iam-roles-panel__header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.iam-roles-panel__sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-roles-panel__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  gap: 1rem;
+}
+
+.iam-roles-panel__list {
+  min-width: 0;
+}
+
+.iam-roles-panel__detail {
+  min-width: 0;
+}
+
+.iam-roles-panel__hint {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--shell-text-muted, #71717a);
+  font-size: 0.85rem;
+  border: 1px dashed var(--shell-border, #e4e4e7);
+  border-radius: 0.5rem;
+  background: var(--shell-surface-muted, #fafafa);
+}
+
+@media (max-width: 60rem) {
+  .iam-roles-panel__layout {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,116 @@
+.iam-agent-perm-panel {
+  border: 1px solid var(--shell-border, #e4e4e7);
+  border-radius: 0.5rem;
+  background: var(--shell-surface, #fff);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 16rem;
+}
+
+.iam-agent-perm-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--shell-border, #e4e4e7);
+  padding-bottom: 0.5rem;
+}
+
+.iam-agent-perm-panel__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.iam-agent-perm-panel__sub {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.75rem;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-agent-perm-panel__close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font-size: 1.25rem;
+  color: var(--shell-text-muted, #71717a);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+
+.iam-agent-perm-panel__close:hover {
+  color: var(--shell-text, #18181b);
+}
+
+.iam-agent-perm-panel__loading,
+.iam-agent-perm-panel__error {
+  color: var(--shell-text-muted, #71717a);
+  font-size: 0.85rem;
+}
+
+.iam-agent-perm-panel__error {
+  color: #b91c1c;
+}
+
+.iam-agent-perm-panel__empty {
+  padding: 1rem;
+  text-align: center;
+  color: var(--shell-text-muted, #71717a);
+  font-size: 0.85rem;
+  border: 1px dashed var(--shell-border, #e4e4e7);
+  border-radius: 0.375rem;
+}
+
+.iam-agent-perm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.iam-agent-perm-group__title {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-agent-perm-group__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.iam-agent-perm-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  background: var(--shell-surface-muted, #fafafa);
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.iam-agent-perm-row__permission {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-weight: 600;
+}
+
+.iam-agent-perm-row__source {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.75rem;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-agent-perm-row__granted {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.7rem;
+  color: var(--shell-text-muted, #71717a);
+}

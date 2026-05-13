@@ -64,3 +64,35 @@ export interface GeneratedApiKey {
   prefix: string
   secret: string
 }
+
+export const AGENT_STATUSES = ['online', 'offline', 'degraded'] as const
+export type AgentStatus = (typeof AGENT_STATUSES)[number]
+
+export interface Agent {
+  id: string
+  name: string
+  owner_team: string
+  status: AgentStatus
+  last_seen: string | null
+}
+
+export const INHERITANCE_KINDS = ['team', 'role', 'policy'] as const
+export type InheritanceKind = (typeof INHERITANCE_KINDS)[number]
+
+export interface InheritanceSource {
+  kind: InheritanceKind
+  /** Display name of the team / role / policy that granted this permission. */
+  name: string
+  granted_at: string
+}
+
+export interface EffectivePermission {
+  /** Permission identifier, e.g. `policies.read`, `audit.export`. */
+  permission: string
+  source: InheritanceSource
+}
+
+export interface AgentPermissions {
+  agent_id: string
+  effective: EffectivePermission[]
+}
