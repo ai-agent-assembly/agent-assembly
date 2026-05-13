@@ -75,3 +75,17 @@ export const EMPTY_FILTERS: LiveOpsFilters = {
   opType: null,
   status: null,
 }
+
+/**
+ * Pending row-action intent applied optimistically to a single
+ * operation while its REST call is in flight. The override is
+ * cleared either when the next matching WS event arrives or when
+ * the REST call rejects (rollback).
+ */
+export type OperationOverride = 'pausing' | 'resuming' | 'terminating'
+
+/**
+ * Map of `LiveOperation.id` → pending action. Empty map means no
+ * row actions are in flight.
+ */
+export type OperationOverrides = ReadonlyMap<string, OperationOverride>
