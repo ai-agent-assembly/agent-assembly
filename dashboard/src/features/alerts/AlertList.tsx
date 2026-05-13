@@ -15,6 +15,8 @@ import { SEVERITY_ORDER, type Alert, type AlertStatus, type Severity } from './t
 interface AlertListProps {
   rows: readonly Alert[]
   onSelect?: (alertId: string) => void
+  /** When true, render skeleton placeholder rows instead of `rows`. */
+  loading?: boolean
 }
 
 // CRITICAL > HIGH > MEDIUM > LOW (descending = most severe first).
@@ -101,7 +103,31 @@ const columns = [
   }),
 ]
 
-export function AlertList({ rows, onSelect }: AlertListProps) {
+function SkeletonRows({ columnCount }: { columnCount: number }) {
+  return (
+    <>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <tr key={i} data-testid="alert-row-skeleton" style={{ borderBottom: '1px solid #f3f4f6' }}>
+          {Array.from({ length: columnCount }).map((_, j) => (
+            <td key={j} style={{ padding: '0.5rem' }}>
+              <span
+                style={{
+                  display: 'block',
+                  height: '0.875rem',
+                  background: '#e5e7eb',
+                  borderRadius: '4px',
+                  opacity: 0.6 + (i % 2) * 0.2,
+                }}
+              />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  )
+}
+
+export function AlertList({ rows, onSelect, loading = false }: AlertListProps) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'severity', desc: true },
   ])
@@ -154,23 +180,27 @@ export function AlertList({ rows, onSelect }: AlertListProps) {
         ))}
       </thead>
       <tbody>
-        {table.getRowModel().rows.map((row) => (
-          <tr
-            key={row.id}
-            data-testid="alert-row"
-            onClick={() => onSelect?.(row.original.id)}
-            style={{
-              borderBottom: '1px solid #f3f4f6',
-              cursor: onSelect ? 'pointer' : 'default',
-            }}
-          >
-            {row.getVisibleCells().map((cell) => (
-              <td key={cell.id} style={{ padding: '0.5rem', fontSize: '0.875rem' }}>
-                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-              </td>
-            ))}
-          </tr>
-        ))}
+        {loading ? (
+          <SkeletonRows columnCount={columns.length} />
+        ) : (
+          table.getRowModel().rows.map((row) => (
+            <tr
+              key={row.id}
+              data-testid="alert-row"
+              onClick={() => onSelect?.(row.original.id)}
+              style={{
+                borderBottom: '1px solid #f3f4f6',
+                cursor: onSelect ? 'pointer' : 'default',
+              }}
+            >
+              {row.getVisibleCells().map((cell) => (
+                <td key={cell.id} style={{ padding: '0.5rem', fontSize: '0.875rem' }}>
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              ))}
+            </tr>
+          ))
+        )}
       </tbody>
     </table>
   )
