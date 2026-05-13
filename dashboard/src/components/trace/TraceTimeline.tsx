@@ -1,3 +1,4 @@
+import type React from 'react'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './TraceTimeline.css'
@@ -27,9 +28,10 @@ function truncatePreview(text: string): string {
 
 export interface TraceTimelineProps {
   readonly events: readonly TraceEvent[]
+  readonly onSelectEvent?: (event: TraceEvent) => void
 }
 
-export function TraceTimeline({ events }: TraceTimelineProps) {
+export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
   return (
     <ol className="trace-timeline" data-testid="trace-timeline">
       {events.map(event => {
@@ -40,13 +42,26 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
         const iconNode = (
           <span className="trace-event__icon" aria-hidden="true">{icon}</span>
         )
+        const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
+        const handleKeyDown = onSelectEvent
+          ? (e: React.KeyboardEvent<HTMLLIElement>) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelectEvent(event)
+              }
+            }
+          : undefined
         return (
           <li
             key={event.id}
-            className="trace-event"
+            className={onSelectEvent ? 'trace-event trace-event--clickable' : 'trace-event'}
             data-testid="trace-event"
             data-severity={sev}
             data-event-type={event.type}
+            role={onSelectEvent ? 'button' : undefined}
+            tabIndex={onSelectEvent ? 0 : undefined}
+            onClick={handleClick}
+            onKeyDown={handleKeyDown}
           >
             <span className="trace-event__time">{formatTime(event.timestamp)}</span>
             {tooltipReason ? (

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TraceTimeline } from './TraceTimeline'
 import type { TraceEvent } from '../../features/trace/types'
 
@@ -127,5 +127,32 @@ describe('TraceTimeline', () => {
     const preview = screen.getByTestId('trace-event').querySelector('.trace-event__preview')!
     expect(preview.textContent).toBe(exactlyFiveHundred)
     expect(preview.textContent?.endsWith('…')).toBe(false)
+  })
+
+  it('does not assign clickable role/tabIndex when onSelectEvent is omitted', () => {
+    render(<TraceTimeline events={MIXED_EVENTS} />)
+    const row = screen.getAllByTestId('trace-event')[0]
+    expect(row).not.toHaveAttribute('role')
+    expect(row).not.toHaveAttribute('tabindex')
+    expect(row.className).not.toContain('trace-event--clickable')
+  })
+
+  it('renders rows as buttons and fires onSelectEvent on click + Enter/Space', async () => {
+    const onSelect = vi.fn()
+    render(<TraceTimeline events={[MIXED_EVENTS[0]]} onSelectEvent={onSelect} />)
+
+    const row = screen.getByTestId('trace-event')
+    expect(row).toHaveAttribute('role', 'button')
+    expect(row).toHaveAttribute('tabindex', '0')
+    expect(row.className).toContain('trace-event--clickable')
+
+    await userEvent.click(row)
+    expect(onSelect).toHaveBeenLastCalledWith(MIXED_EVENTS[0])
+
+    row.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onSelect).toHaveBeenCalledTimes(2)
+    await userEvent.keyboard(' ')
+    expect(onSelect).toHaveBeenCalledTimes(3)
   })
 })
