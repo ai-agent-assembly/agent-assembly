@@ -194,4 +194,18 @@ describe('TraceViewPage', () => {
     expect(screen.getByText('All events hidden by filter')).toBeInTheDocument()
     expect(screen.queryByTestId('trace-event')).not.toBeInTheDocument()
   })
+
+  it('opens the PayloadModal when a timeline row is clicked, and closes on the close button', async () => {
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: [MOCK_EVENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    expect(screen.queryByTestId('payload-modal')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('trace-event'))
+    expect(screen.getByTestId('payload-modal')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('payload-modal-close'))
+    expect(screen.queryByTestId('payload-modal')).not.toBeInTheDocument()
+  })
 })

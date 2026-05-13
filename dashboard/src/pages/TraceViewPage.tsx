@@ -5,6 +5,7 @@ import { useTraceQuery } from '../features/trace/api'
 import { TraceTimeline } from '../components/trace/TraceTimeline'
 import { TraceTimelineFilter } from '../components/trace/TraceTimelineFilter'
 import { ALL_ON, type SeverityFilter } from '../components/trace/severityFilter'
+import { PayloadModal } from '../components/trace/PayloadModal'
 import { EmptyState } from '../components/states'
 import type { TraceEvent } from '../features/trace/types'
 
@@ -25,6 +26,7 @@ export function TraceViewPage() {
   const { data, isLoading, isError, refetch } = useTraceQuery(id, sessionId)
   const agentLabel = agent?.name ?? id
   const [filter, setFilter] = useState<SeverityFilter>(ALL_ON)
+  const [selectedEvent, setSelectedEvent] = useState<TraceEvent | null>(null)
   const filteredEvents = useMemo(() => applyFilter(data ?? [], filter), [data, filter])
 
   return (
@@ -76,10 +78,12 @@ export function TraceViewPage() {
               />
             </div>
           ) : (
-            <TraceTimeline events={filteredEvents} />
+            <TraceTimeline events={filteredEvents} onSelectEvent={setSelectedEvent} />
           )}
         </>
       )}
+
+      <PayloadModal event={selectedEvent} onClose={() => setSelectedEvent(null)} />
     </main>
   )
 }

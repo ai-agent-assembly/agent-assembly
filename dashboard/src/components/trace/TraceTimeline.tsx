@@ -1,3 +1,4 @@
+import type React from 'react'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './TraceTimeline.css'
@@ -17,11 +18,20 @@ function formatTime(iso: string): string {
   return iso.replace('T', ' ').replace(/\.\d+Z$/, 'Z').replace(/Z$/, ' UTC')
 }
 
-export interface TraceTimelineProps {
-  readonly events: readonly TraceEvent[]
+const MAX_PREVIEW_CHARS = 500
+
+function truncatePreview(text: string): string {
+  return text.length > MAX_PREVIEW_CHARS
+    ? `${text.slice(0, MAX_PREVIEW_CHARS)}…`
+    : text
 }
 
-export function TraceTimeline({ events }: TraceTimelineProps) {
+export interface TraceTimelineProps {
+  readonly events: readonly TraceEvent[]
+  readonly onSelectEvent?: (event: TraceEvent) => void
+}
+
+export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
   return (
     <ol className="trace-timeline" data-testid="trace-timeline">
       {events.map(event => {
@@ -32,13 +42,26 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
         const iconNode = (
           <span className="trace-event__icon" aria-hidden="true">{icon}</span>
         )
+        const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
+        const handleKeyDown = onSelectEvent
+          ? (e: React.KeyboardEvent<HTMLLIElement>) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelectEvent(event)
+              }
+            }
+          : undefined
         return (
           <li
             key={event.id}
-            className="trace-event"
+            className={onSelectEvent ? 'trace-event trace-event--clickable' : 'trace-event'}
             data-testid="trace-event"
             data-severity={sev}
             data-event-type={event.type}
+            role={onSelectEvent ? 'button' : undefined}
+            tabIndex={onSelectEvent ? 0 : undefined}
+            onClick={handleClick}
+            onKeyDown={handleKeyDown}
           >
             <span className="trace-event__time">{formatTime(event.timestamp)}</span>
             {tooltipReason ? (
@@ -47,7 +70,7 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
               iconNode
             )}
             <span className="trace-event__agent">{event.agent}</span>
-            <span className="trace-event__preview">{event.payloadPreview}</span>
+            <span className="trace-event__preview">{truncatePreview(event.payloadPreview)}</span>
             <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
           </li>
         )

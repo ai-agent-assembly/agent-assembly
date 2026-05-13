@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TraceTimeline } from './TraceTimeline'
 import type { TraceEvent } from '../../features/trace/types'
 
@@ -101,5 +101,58 @@ describe('TraceTimeline', () => {
     const row = screen.getByTestId('trace-event')
     expect(row).toHaveAttribute('data-event-type', 'credential_leak')
     expect(row).toHaveAttribute('data-severity', 'info')
+  })
+
+  it('truncates payloadPreview to 500 characters with an ellipsis when longer', () => {
+    const longText = 'x'.repeat(750)
+    const events: TraceEvent[] = [
+      { ...BASE_EVENT, id: 'long', type: 'llm_call', severity: 'info', payloadPreview: longText },
+    ]
+    render(<TraceTimeline events={events} />)
+
+    const row = screen.getByTestId('trace-event')
+    const preview = row.querySelector('.trace-event__preview')!
+    expect(preview.textContent).toHaveLength(501)
+    expect(preview.textContent?.endsWith('…')).toBe(true)
+    expect(preview.textContent?.slice(0, 500)).toBe('x'.repeat(500))
+  })
+
+  it('leaves payloadPreview untouched when it is ≤ 500 chars', () => {
+    const exactlyFiveHundred = 'y'.repeat(500)
+    const events: TraceEvent[] = [
+      { ...BASE_EVENT, id: 'edge', type: 'llm_call', severity: 'info', payloadPreview: exactlyFiveHundred },
+    ]
+    render(<TraceTimeline events={events} />)
+
+    const preview = screen.getByTestId('trace-event').querySelector('.trace-event__preview')!
+    expect(preview.textContent).toBe(exactlyFiveHundred)
+    expect(preview.textContent?.endsWith('…')).toBe(false)
+  })
+
+  it('does not assign clickable role/tabIndex when onSelectEvent is omitted', () => {
+    render(<TraceTimeline events={MIXED_EVENTS} />)
+    const row = screen.getAllByTestId('trace-event')[0]
+    expect(row).not.toHaveAttribute('role')
+    expect(row).not.toHaveAttribute('tabindex')
+    expect(row.className).not.toContain('trace-event--clickable')
+  })
+
+  it('renders rows as buttons and fires onSelectEvent on click + Enter/Space', async () => {
+    const onSelect = vi.fn()
+    render(<TraceTimeline events={[MIXED_EVENTS[0]]} onSelectEvent={onSelect} />)
+
+    const row = screen.getByTestId('trace-event')
+    expect(row).toHaveAttribute('role', 'button')
+    expect(row).toHaveAttribute('tabindex', '0')
+    expect(row.className).toContain('trace-event--clickable')
+
+    await userEvent.click(row)
+    expect(onSelect).toHaveBeenLastCalledWith(MIXED_EVENTS[0])
+
+    row.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onSelect).toHaveBeenCalledTimes(2)
+    await userEvent.keyboard(' ')
+    expect(onSelect).toHaveBeenCalledTimes(3)
   })
 })
