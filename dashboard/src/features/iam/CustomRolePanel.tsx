@@ -1,5 +1,6 @@
 import { BUILTIN_ROLE_CATALOGUE, IAM_CUSTOM_ROLES_COPY } from './copy'
 import { LockedFeatureCard } from './LockedFeatureCard'
+import { fireUpsellClicked } from './upsellAnalytics'
 import './CustomRolePanel.css'
 
 export function CustomRolePanel() {
@@ -21,6 +22,7 @@ export function CustomRolePanel() {
             rel="noopener noreferrer"
             className="iam-custom-roles__cta"
             data-testid="upgrade-cta"
+            onClick={() => fireUpsellClicked()}
           >
             {IAM_CUSTOM_ROLES_COPY.upgradeCta} →
           </a>
