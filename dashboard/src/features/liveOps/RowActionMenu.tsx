@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import type { LiveOperation, OperationOverride } from './types'
 import './RowActionMenu.css'
 
@@ -28,6 +29,7 @@ export function RowActionMenu({
   onTerminate,
 }: RowActionMenuProps) {
   const [open, setOpen] = useState(false)
+  const [confirmingTerminate, setConfirmingTerminate] = useState(false)
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -61,6 +63,16 @@ export function RowActionMenu({
   function dispatch(action: () => void) {
     setOpen(false)
     action()
+  }
+
+  function handleTerminateClick() {
+    setOpen(false)
+    setConfirmingTerminate(true)
+  }
+
+  function handleConfirmTerminate() {
+    setConfirmingTerminate(false)
+    onTerminate()
   }
 
   return (
@@ -116,13 +128,27 @@ export function RowActionMenu({
               className="row-actions__item row-actions__item--danger"
               disabled={terminateDisabled}
               data-testid="row-action-terminate"
-              onClick={() => dispatch(onTerminate)}
+              onClick={handleTerminateClick}
             >
               Terminate
             </button>
           </li>
         </ul>
       )}
+      <ConfirmDialog
+        open={confirmingTerminate}
+        title="Terminate operation?"
+        body={
+          <p>
+            This will end the operation and free its slot. The agent will see a 499.
+            This cannot be undone.
+          </p>
+        }
+        confirmLabel="Terminate"
+        confirmVariant="danger"
+        onConfirm={handleConfirmTerminate}
+        onCancel={() => setConfirmingTerminate(false)}
+      />
     </div>
   )
 }

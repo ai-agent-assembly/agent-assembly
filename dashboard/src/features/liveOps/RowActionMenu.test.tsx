@@ -91,11 +91,30 @@ describe('RowActionMenu', () => {
     expect(onResume).toHaveBeenCalledTimes(1)
   })
 
-  it('clicking Terminate fires onTerminate', async () => {
+  it('clicking Terminate opens the confirmation dialog without firing onTerminate', async () => {
     const { onTerminate, user } = setup({ status: 'running' })
     await user.click(screen.getByTestId('row-action-trigger'))
     await user.click(screen.getByTestId('row-action-terminate'))
+    expect(onTerminate).not.toHaveBeenCalled()
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument()
+  })
+
+  it('confirming the terminate dialog fires onTerminate and closes the dialog', async () => {
+    const { onTerminate, user } = setup({ status: 'running' })
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-terminate'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
     expect(onTerminate).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull()
+  })
+
+  it('cancelling the terminate dialog does not fire onTerminate', async () => {
+    const { onTerminate, user } = setup({ status: 'running' })
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-terminate'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
+    expect(onTerminate).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull()
   })
 
   it('Escape closes the menu', async () => {
