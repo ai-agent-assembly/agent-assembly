@@ -20,8 +20,34 @@ pub struct ContextConfig {
     pub api_key: Option<String>,
 }
 
-/// Top-level CLI configuration file schema (`~/.aa/config.yaml`).
+/// Dashboard server configuration, stored under `dashboard:` in `~/.aa/config.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardConfig {
+    /// TCP port the embedded SPA server listens on (default: 3000).
+    #[serde(default = "DashboardConfig::default_port")]
+    pub port: u16,
+    /// Open the system browser automatically after `aasm dashboard start` is ready.
+    #[serde(default)]
+    pub auto_open: bool,
+}
+
+impl DashboardConfig {
+    fn default_port() -> u16 {
+        3000
+    }
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            port: 3000,
+            auto_open: false,
+        }
+    }
+}
+
+/// Top-level CLI configuration file schema (`~/.aa/config.yaml`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CliConfig {
     /// Name of the default context to use when `--context` is not specified.
     #[serde(default)]
@@ -29,6 +55,22 @@ pub struct CliConfig {
     /// Named contexts mapping (e.g. `{ "production": { api_url: "..." } }`).
     #[serde(default)]
     pub contexts: BTreeMap<String, ContextConfig>,
+    /// Dashboard server settings (`aasm dashboard start`).
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
+}
+
+/// Resolve the dashboard port from (highest to lowest priority):
+/// 1. `AASM_DASHBOARD_PORT` environment variable
+/// 2. `port_flag` — the `--port` CLI argument
+/// 3. `config.dashboard.port`
+pub fn resolve_dashboard_port(config: &CliConfig, port_flag: Option<u16>) -> u16 {
+    if let Ok(val) = std::env::var("AASM_DASHBOARD_PORT") {
+        if let Ok(p) = val.parse::<u16>() {
+            return p;
+        }
+    }
+    port_flag.unwrap_or(config.dashboard.port)
 }
 
 /// Return the config directory path (`~/.aa/`).
@@ -47,10 +89,7 @@ pub fn config_path() -> PathBuf {
 pub fn load() -> Result<CliConfig, CliError> {
     let path = config_path();
     if !path.exists() {
-        return Ok(CliConfig {
-            default_context: None,
-            contexts: BTreeMap::new(),
-        });
+        return Ok(CliConfig::default());
     }
     let contents = std::fs::read_to_string(&path).map_err(|e| CliError::Config {
         path: path.clone(),
@@ -139,7 +178,11 @@ pub fn resolve_context(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample_config() -> CliConfig {
         let mut contexts = BTreeMap::new();
@@ -160,6 +203,7 @@ mod tests {
         CliConfig {
             default_context: Some("production".to_string()),
             contexts,
+            dashboard: DashboardConfig::default(),
         }
     }
 
@@ -225,9 +269,52 @@ mod tests {
         let cfg = CliConfig {
             default_context: None,
             contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
         };
         let resolved = resolve_context(&cfg, None, None, None).unwrap();
         assert_eq!(resolved.api_url, "http://localhost:8080");
         assert!(resolved.name.is_none());
+    }
+
+    #[test]
+    fn dashboard_config_defaults() {
+        let cfg: DashboardConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.port, 3000);
+        assert!(!cfg.auto_open);
+    }
+
+    #[test]
+    fn dashboard_config_round_trip_yaml() {
+        let yaml = "port: 4000\nauto_open: true\n";
+        let cfg: DashboardConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.port, 4000);
+        assert!(cfg.auto_open);
+        let roundtripped = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2: DashboardConfig = serde_yaml::from_str(&roundtripped).unwrap();
+        assert_eq!(cfg2.port, 4000);
+        assert!(cfg2.auto_open);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_env_overrides_all() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AASM_DASHBOARD_PORT", "9999");
+        let port = resolve_dashboard_port(&CliConfig::default(), Some(5000));
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(port, 9999);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_flag_beats_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(resolve_dashboard_port(&CliConfig::default(), Some(4321)), 4321);
+    }
+
+    #[test]
+    fn resolve_dashboard_port_uses_config_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+        assert_eq!(resolve_dashboard_port(&CliConfig::default(), None), 3000);
     }
 }
