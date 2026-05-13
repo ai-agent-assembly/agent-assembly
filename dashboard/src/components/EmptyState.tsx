@@ -9,6 +9,7 @@ export type EmptyStatePage =
   | 'capability'
   | 'live'
   | 'agent'
+  | 'approvals'
 
 interface CopyEntry {
   icon: string
@@ -102,6 +103,19 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     ),
     cta: 'Copy enrollment command',
     secondary: 'View install docs',
+  },
+  approvals: {
+    icon: '✓',
+    tag: 'queue · 0 pending',
+    title: 'No pending approval requests',
+    msg: (
+      <>
+        All agent actions are currently flowing through policy unchallenged. New approval requests will appear
+        here in real time as the policy engine routes them.
+      </>
+    ),
+    cta: null,
+    secondary: null,
   },
 }
 
