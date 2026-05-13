@@ -7,8 +7,19 @@ import {
   createColumnHelper,
   type SortingState,
 } from '@tanstack/react-table'
-import { useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAgentsQuery, type Agent } from '../features/agents/api'
+import { toFleetAgent } from '../features/agents/fleetTypes'
+import {
+  applyFleetFilters,
+  fleetFiltersFromParams,
+  fleetFiltersToParamsRecord,
+  frameworkOptions,
+  type FleetFilters,
+} from '../features/agents/fleetFilters'
+import { FleetFilterBar } from './FleetFilterBar'
+import './FleetPage.css'
 
 const STATUS_COLOR: Record<string, string> = {
   active: '#16a34a',
@@ -84,13 +95,40 @@ const columns = [
   }),
 ]
 
-export function AgentsPage() {
+type FleetView = 'agents' | 'sessions'
+
+export function FleetPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
+  const [view, setView] = useState<FleetView>('agents')
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filters = useMemo<FleetFilters>(
+    () => fleetFiltersFromParams(searchParams),
+    [searchParams],
+  )
+  const setFilters = useCallback(
+    (next: FleetFilters) => {
+      setSearchParams(fleetFiltersToParamsRecord(next), { replace: true })
+    },
+    [setSearchParams],
+  )
+
+  const fleetAgents = useMemo(() => (agents ?? []).map(toFleetAgent), [agents])
+  const frameworks = useMemo(() => frameworkOptions(fleetAgents), [fleetAgents])
+  const filteredFleet = useMemo(
+    () => applyFleetFilters(fleetAgents, filters),
+    [fleetAgents, filters],
+  )
+  const filteredIds = useMemo(() => new Set(filteredFleet.map((a) => a.id)), [filteredFleet])
+  const tableData = useMemo(
+    () => (agents ?? []).filter((a) => filteredIds.has(a.id)),
+    [agents, filteredIds],
+  )
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: agents ?? [],
+    data: tableData,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -98,11 +136,76 @@ export function AgentsPage() {
     getSortedRowModel: getSortedRowModel(),
   })
 
-  return (
-    <main style={{ padding: '1.5rem' }}>
-      <h1>Agents</h1>
+  const totalAgents = agents?.length ?? 0
+  const filteredCount = filteredFleet.length
 
-      {isError && (
+  return (
+    <main className="fleet-page" data-testid="fleet-page">
+      <header className="fleet-page__head" data-testid="fleet-page-head">
+        <div className="fleet-page__heading">
+          <h1 className="fleet-page__title">
+            Fleet
+            <span className="fleet-page__count" data-testid="fleet-page-count">
+              · {filteredCount} of {totalAgents} agents
+            </span>
+          </h1>
+          <p className="fleet-page__sub">
+            All registered agents across frameworks. Click a row to inspect, or select multiple for bulk actions.
+          </p>
+        </div>
+        <div className="fleet-page__actions">
+          <button type="button" className="fleet-page__btn" disabled data-testid="fleet-action-register">
+            + register agent
+          </button>
+          <button type="button" className="fleet-page__btn" disabled data-testid="fleet-action-export">
+            ⏏ export csv
+          </button>
+        </div>
+      </header>
+
+      <nav className="fleet-tabs" data-testid="fleet-tabs" role="tablist" aria-label="Fleet views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'agents'}
+          className={`fleet-tabs__tab${view === 'agents' ? ' fleet-tabs__tab--active' : ''}`}
+          onClick={() => setView('agents')}
+          data-testid="fleet-tab-agents"
+        >
+          Agents
+          <span className="fleet-tabs__count">{filteredCount}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'sessions'}
+          className={`fleet-tabs__tab${view === 'sessions' ? ' fleet-tabs__tab--active' : ''}`}
+          onClick={() => setView('sessions')}
+          data-testid="fleet-tab-sessions"
+        >
+          Active Sessions
+        </button>
+      </nav>
+
+      {view === 'sessions' && (
+        <div className="fleet-empty" data-testid="fleet-sessions-empty">
+          <p className="fleet-empty__title">Active sessions view</p>
+          <p className="fleet-empty__body">
+            Wired in a follow-up sub-task. Tracking continues per agent on the Agent
+            Detail drawer (AAASM-1052).
+          </p>
+        </div>
+      )}
+
+      {view === 'agents' && (
+        <FleetFilterBar
+          filters={filters}
+          frameworks={frameworks}
+          onChange={setFilters}
+        />
+      )}
+
+      {view === 'agents' && isError && (
         <div
           data-testid="agents-error"
           style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
@@ -112,7 +215,7 @@ export function AgentsPage() {
         </div>
       )}
 
-      {!isLoading && !isError && agents?.length === 0 && (
+      {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
         <p data-testid="agents-empty">
           No agents registered yet.{' '}
           <a href="https://docs.agent-assembly.io/quickstart" target="_blank" rel="noreferrer">
@@ -121,6 +224,7 @@ export function AgentsPage() {
         </p>
       )}
 
+      {view === 'agents' && (
       <table data-testid="agents-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           {table.getHeaderGroups().map(hg => (
@@ -167,6 +271,7 @@ export function AgentsPage() {
           )}
         </tbody>
       </table>
+      )}
     </main>
   )
 }
