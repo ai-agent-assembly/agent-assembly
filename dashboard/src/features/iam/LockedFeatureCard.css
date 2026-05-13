@@ -1,0 +1,42 @@
+.iam-locked-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--shell-border, #e4e4e7);
+  background: var(--shell-surface-muted, #fafafa);
+  border-radius: 0.5rem;
+}
+
+.iam-locked-card__lock-badge {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.iam-locked-card__title {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.iam-locked-card__body {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--shell-text-muted, #71717a);
+  line-height: 1.5;
+}
+
+.iam-locked-card__cta {
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 48rem) {
+  .iam-locked-card {
+    grid-template-columns: auto 1fr;
+  }
+  .iam-locked-card__cta {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
