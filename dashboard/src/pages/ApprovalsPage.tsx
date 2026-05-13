@@ -290,13 +290,13 @@ export function ApprovalsPage() {
                     <tr key={i} data-testid="approval-row-skeleton">
                       {Array.from({ length: 7 }).map((_, j) => (
                         <td key={j} style={{ padding: '8px 12px' }}>
-                          <span style={{ display: 'block', height: '0.875rem', background: '#e5e7eb', borderRadius: '4px' }} />
+                          <span style={{ display: 'block', height: '0.875rem', background: 'var(--line)', borderRadius: '4px' }} />
                         </td>
                       ))}
                     </tr>
                   ))
                   : pending.map((row) => (
-                    <tr key={row.id} data-testid="approval-row" style={{ borderBottom: '1px solid #f3f4f6' }}>
+                    <tr key={row.id} data-testid="approval-row" style={{ borderBottom: '1px solid var(--line)' }}>
                       <td style={{ padding: '8px 12px' }}>
                         <input
                           type="checkbox"
@@ -321,7 +321,7 @@ export function ApprovalsPage() {
                           onClick={() => void handleApprove([row.id])}
                           style={{
                             padding: '0.2rem 0.6rem', borderRadius: '0.25rem',
-                            background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
+                            background: 'var(--ok)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
                           }}
                         >
                           Approve
@@ -331,7 +331,7 @@ export function ApprovalsPage() {
                           onClick={() => setRejectFor([row.id])}
                           style={{
                             padding: '0.2rem 0.6rem', borderRadius: '0.25rem',
-                            background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
+                            background: 'var(--danger)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
                           }}
                         >
                           Reject
