@@ -1,12 +1,17 @@
-import { useMemo, useState } from 'react'
-import { usePoliciesQuery, type Policy } from '../features/policies/api'
+import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
 import { EmptyState, ErrorState } from '../components/states'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
 import { useToast } from '../components/Toast'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
 import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
-import type { PolicyEditorOverlayProps } from '../features/policies/editor/types'
+import { serializeDraft } from '../features/policies/editor/serializeDraft'
+import type {
+  PolicyDraft,
+  PolicyEditorOverlayProps,
+} from '../features/policies/editor/types'
 import './PoliciesPage.css'
 
 type FilterTab = 'all' | 'active' | 'proposed'
@@ -17,10 +22,19 @@ const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
   { id: 'proposed', label: 'Proposed' },
 ]
 
-function PolicyEditorOverlayContainer() {
+interface PolicyEditorOverlayContainerProps {
+  dirtyRef: MutableRefObject<boolean>
+  onRequestClose: () => void
+}
+
+function PolicyEditorOverlayContainer({
+  dirtyRef,
+  onRequestClose,
+}: PolicyEditorOverlayContainerProps) {
   const { props, closeOverlay } = useOverlay('policy-editor')
   const overlayProps = props as unknown as PolicyEditorOverlayProps
   const { toast } = useToast()
+  const { mutateAsync, isPending } = useCreatePolicy()
 
   // Stable initial draft for the lifetime of this overlay open session.
   // Identity matters because useDraft references it for dirty tracking.
@@ -35,16 +49,37 @@ function PolicyEditorOverlayContainer() {
     return emptyDraft()
   }, [overlayProps.mode, overlayProps.name, overlayProps.version])
 
+  const handleDirtyChange = useCallback(
+    (dirty: boolean) => {
+      dirtyRef.current = dirty
+    },
+    [dirtyRef],
+  )
+
+  const handleSave = useCallback(
+    async (draft: PolicyDraft) => {
+      try {
+        const policy_yaml = serializeDraft(draft)
+        await mutateAsync({ policy_yaml, scope: draft.scope })
+        toast('Policy saved', 'success')
+        // We just persisted; bypass the dirty guard.
+        dirtyRef.current = false
+        closeOverlay()
+      } catch {
+        // Leave the overlay open so the user can fix and retry.
+        toast('Failed to save policy', 'error')
+      }
+    },
+    [mutateAsync, toast, closeOverlay, dirtyRef],
+  )
+
   return (
     <PolicyEditorOverlay
       initialDraft={initialDraft}
-      onSave={() => {
-        // ST-5 (AAASM-1371) replaces this stub with the optimistic
-        // POST + cache update + error rollback flow.
-        toast('Save flow lands in ST-5 (AAASM-1371).', 'info')
-        closeOverlay()
-      }}
-      onClose={closeOverlay}
+      onSave={handleSave}
+      onClose={onRequestClose}
+      onDirtyChange={handleDirtyChange}
+      isSaving={isPending}
     />
   )
 }
@@ -98,7 +133,26 @@ function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
 export function PoliciesPage() {
   const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
   const [filter, setFilter] = useState<FilterTab>('all')
-  const { openOverlay } = useOverlay('policy-editor')
+  const { openOverlay, closeOverlay } = useOverlay('policy-editor')
+
+  // Editor publishes its dirty state into this ref so the page can decide
+  // whether Esc / backdrop / Cancel should prompt for confirmation.
+  const editorDirtyRef = useRef(false)
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+
+  const attemptCloseEditor = useCallback(() => {
+    if (editorDirtyRef.current) {
+      setConfirmDiscardOpen(true)
+    } else {
+      closeOverlay()
+    }
+  }, [closeOverlay])
+
+  const handleDiscardConfirm = useCallback(() => {
+    setConfirmDiscardOpen(false)
+    editorDirtyRef.current = false
+    closeOverlay()
+  }, [closeOverlay])
 
   const all = useMemo(() => policies ?? [], [policies])
   const activePolicies = useMemo(() => all.filter((p) => p.active), [all])
@@ -219,9 +273,23 @@ export function PoliciesPage() {
         </ul>
       )}
 
-      <OverlayHost name="policy-editor">
-        <PolicyEditorOverlayContainer />
+      <OverlayHost name="policy-editor" onRequestClose={attemptCloseEditor}>
+        <PolicyEditorOverlayContainer
+          dirtyRef={editorDirtyRef}
+          onRequestClose={attemptCloseEditor}
+        />
       </OverlayHost>
+
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard unsaved changes?"
+        body="Closing the editor now will lose your unsaved edits."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        confirmVariant="danger"
+        onConfirm={handleDiscardConfirm}
+        onCancel={() => setConfirmDiscardOpen(false)}
+      />
     </main>
   )
 }
