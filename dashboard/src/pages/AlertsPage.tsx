@@ -6,7 +6,12 @@ import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
 import { AlertsTabs, type AlertsTab } from '../features/alerts/AlertsTabs'
 import { AlertDetailDrawer } from '../features/alerts/AlertDetailDrawer'
 import { AlertDetailContent } from '../features/alerts/AlertDetailContent'
-import { useAlertsQuery } from '../features/alerts/api'
+import { AlertRuleForm } from '../features/alerts/AlertRuleForm'
+import { DestinationManager } from '../features/alerts/DestinationManager'
+import { EmptyStateNoRules } from '../features/alerts/EmptyStateNoRules'
+import { EmptyStateNoAlerts } from '../features/alerts/EmptyStateNoAlerts'
+import { AlertsErrorBanner } from '../features/alerts/AlertsErrorBanner'
+import { useAlertRulesQuery, useAlertsQuery } from '../features/alerts/api'
 import { useAlertsStream } from '../features/alerts/useAlertsStream'
 import { applyFire, applyResolve, applySilence } from '../features/alerts/alertsStreamSync'
 import {
@@ -50,10 +55,16 @@ export function AlertsPage() {
     [filters, setSearchParams],
   )
 
-  const { data, isLoading, isError, error, refetch } = useAlertsQuery(filters)
-  const rows = useMemo(() => partitionByTab(data ?? [], tab), [data, tab])
+  const alertsQuery = useAlertsQuery(filters)
+  const rulesQuery = useAlertRulesQuery()
+  const rows = useMemo(
+    () => partitionByTab(alertsQuery.data ?? [], tab),
+    [alertsQuery.data, tab],
+  )
 
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
+  const [ruleFormOpen, setRuleFormOpen] = useState(false)
+  const [destinationsOpen, setDestinationsOpen] = useState(false)
 
   const queryClient = useQueryClient()
   const streamStatus = useAlertsStream({
@@ -62,12 +73,54 @@ export function AlertsPage() {
     onSilence: (a) => applySilence(queryClient, a),
   })
 
+  const noRulesConfigured =
+    !rulesQuery.isLoading && !rulesQuery.isError && (rulesQuery.data ?? []).length === 0
+  const noAlertsInWindow =
+    !alertsQuery.isLoading && !alertsQuery.isError && rows.length === 0 && !noRulesConfigured
+
   return (
     <main style={{ padding: '1.5rem' }}>
-      <h1 style={{ marginBottom: '0.25rem' }}>Alerts</h1>
-      <p style={{ color: '#6b7280', marginBottom: '1rem', fontSize: '0.875rem' }}>
-        Policy violations, budget thresholds, and anomaly detections across all governed agents.
-      </p>
+      <header
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          marginBottom: '1rem',
+        }}
+      >
+        <div>
+          <h1 style={{ marginBottom: '0.25rem' }}>Alerts</h1>
+          <p style={{ color: '#6b7280', margin: 0, fontSize: '0.875rem' }}>
+            Policy violations, budget thresholds, and anomaly detections across all governed agents.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            type="button"
+            data-testid="alerts-open-destinations"
+            onClick={() => setDestinationsOpen(true)}
+            style={{ padding: '6px 12px', fontSize: '0.875rem' }}
+          >
+            Destinations
+          </button>
+          <button
+            type="button"
+            data-testid="alerts-open-rule-form"
+            onClick={() => setRuleFormOpen(true)}
+            style={{
+              padding: '6px 12px',
+              background: '#1f2937',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+            }}
+          >
+            New rule
+          </button>
+        </div>
+      </header>
 
       {streamStatus !== 'open' && (
         <div
@@ -92,31 +145,33 @@ export function AlertsPage() {
 
       <AlertFilterBar value={filters} onChange={setFilters} />
 
-      {isError && (
-        <div
-          data-testid="alerts-error"
-          style={{
-            color: '#dc2626',
-            marginTop: '0.75rem',
-            display: 'flex',
-            gap: '1rem',
-            alignItems: 'center',
-            fontSize: '0.875rem',
-          }}
-        >
-          <span>Failed to load alerts: {error?.message ?? 'unknown error'}</span>
-          <button onClick={() => void refetch()}>Retry</button>
-        </div>
+      {alertsQuery.isError && (
+        <AlertsErrorBanner
+          message={alertsQuery.error?.message ?? 'unknown error'}
+          onRetry={() => void alertsQuery.refetch()}
+        />
       )}
 
       <div
         data-testid="alerts-count"
         style={{ fontSize: '0.75rem', color: '#6b7280', padding: '0.5rem 0' }}
       >
-        {isLoading ? 'Loading…' : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
+        {alertsQuery.isLoading
+          ? 'Loading…'
+          : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
       </div>
 
-      <AlertList rows={rows} onSelect={setSelectedAlertId} />
+      {noRulesConfigured ? (
+        <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
+      ) : noAlertsInWindow ? (
+        <EmptyStateNoAlerts />
+      ) : (
+        <AlertList
+          rows={rows}
+          onSelect={setSelectedAlertId}
+          loading={alertsQuery.isLoading && rows.length === 0}
+        />
+      )}
 
       <AlertDetailDrawer
         open={selectedAlertId !== null}
@@ -124,6 +179,13 @@ export function AlertsPage() {
       >
         {selectedAlertId && <AlertDetailContent alertId={selectedAlertId} />}
       </AlertDetailDrawer>
+
+      <AlertRuleForm open={ruleFormOpen} onClose={() => setRuleFormOpen(false)} />
+
+      <DestinationManager
+        open={destinationsOpen}
+        onClose={() => setDestinationsOpen(false)}
+      />
     </main>
   )
 }
