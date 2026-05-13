@@ -17,6 +17,14 @@ function formatTime(iso: string): string {
   return iso.replace('T', ' ').replace(/\.\d+Z$/, 'Z').replace(/Z$/, ' UTC')
 }
 
+const MAX_PREVIEW_CHARS = 500
+
+function truncatePreview(text: string): string {
+  return text.length > MAX_PREVIEW_CHARS
+    ? `${text.slice(0, MAX_PREVIEW_CHARS)}…`
+    : text
+}
+
 export interface TraceTimelineProps {
   readonly events: readonly TraceEvent[]
 }
@@ -47,7 +55,7 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
               iconNode
             )}
             <span className="trace-event__agent">{event.agent}</span>
-            <span className="trace-event__preview">{event.payloadPreview}</span>
+            <span className="trace-event__preview">{truncatePreview(event.payloadPreview)}</span>
             <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
           </li>
         )
