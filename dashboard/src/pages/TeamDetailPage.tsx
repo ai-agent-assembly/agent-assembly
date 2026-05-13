@@ -1,12 +1,16 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   teamCostFor,
   useAgentLineageQuery,
   useCostSummaryQuery,
+  useResumeTeam,
+  useSuspendTeam,
   useTeamTopologyQuery,
   type AgentNode,
+  type TeamTopology,
 } from '../features/teams/api'
+import { useCanManageTeam } from '../features/teams/permissions'
 import { NotFoundPage } from './NotFoundPage'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -79,11 +83,129 @@ function MemberRow({ member }: { member: AgentNode }) {
   )
 }
 
+interface ConfirmDialogProps {
+  title: string
+  body: React.ReactNode
+  confirmLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+  busy: boolean
+}
+
+function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }: ConfirmDialogProps) {
+  return (
+    <div
+      data-testid="confirm-dialog"
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      }}
+    >
+      <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '6px', minWidth: '24rem', maxWidth: '40rem' }}>
+        <h2 style={{ marginTop: 0 }}>{title}</h2>
+        <div style={{ fontSize: '0.875rem', color: '#374151', marginBottom: '1rem' }}>{body}</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+          <button data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface ActionBarProps {
+  team: TeamTopology
+  onError: (msg: string) => void
+}
+
+function ActionBar({ team, onError }: ActionBarProps) {
+  const canManage = useCanManageTeam()
+  const suspend = useSuspendTeam()
+  const resume = useResumeTeam()
+  const [pending, setPending] = useState<'suspend' | 'resume' | null>(null)
+
+  if (!canManage) return null
+
+  const memberIds = team.members.map(m => m.id)
+
+  function runSuspend() {
+    suspend.mutate(
+      { teamId: team.team_id, memberIds },
+      {
+        onError: err => onError((err as Error).message),
+        onSettled: () => setPending(null),
+      },
+    )
+  }
+
+  function runResume() {
+    resume.mutate(
+      { teamId: team.team_id, memberIds },
+      {
+        onError: err => onError((err as Error).message),
+        onSettled: () => setPending(null),
+      },
+    )
+  }
+
+  return (
+    <>
+      <div
+        data-testid="team-action-bar"
+        style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}
+      >
+        <button data-testid="team-suspend-btn" onClick={() => setPending('suspend')} disabled={suspend.isPending || resume.isPending}>
+          Suspend Team
+        </button>
+        <button data-testid="team-resume-btn" onClick={() => setPending('resume')} disabled={suspend.isPending || resume.isPending}>
+          Resume Team
+        </button>
+      </div>
+      {pending === 'suspend' && (
+        <ConfirmDialog
+          title="Suspend entire team?"
+          body={
+            <>
+              <p>The following {team.members.length} member{team.members.length === 1 ? '' : 's'} will be suspended:</p>
+              <ul style={{ maxHeight: '12rem', overflow: 'auto', paddingLeft: '1.25rem' }}>
+                {team.members.map(m => (
+                  <li key={m.id}>
+                    <code>{m.name}</code> (<code>{m.id.slice(0, 8)}…</code>)
+                  </li>
+                ))}
+              </ul>
+            </>
+          }
+          confirmLabel="Suspend"
+          busy={suspend.isPending}
+          onCancel={() => setPending(null)}
+          onConfirm={runSuspend}
+        />
+      )}
+      {pending === 'resume' && (
+        <ConfirmDialog
+          title="Resume entire team?"
+          body={<p>All {team.members.length} members will be resumed to active.</p>}
+          confirmLabel="Resume"
+          busy={resume.isPending}
+          onCancel={() => setPending(null)}
+          onConfirm={runResume}
+        />
+      )}
+    </>
+  )
+}
+
 export function TeamDetailPage() {
   const { teamId: encodedTeamId } = useParams<{ teamId: string }>()
   const teamId = encodedTeamId ? decodeURIComponent(encodedTeamId) : undefined
   const teamQuery = useTeamTopologyQuery(teamId)
   const costsQuery = useCostSummaryQuery()
+  const [toast, setToast] = useState<string | null>(null)
 
   const teamCost = useMemo(() => teamCostFor(teamId ?? '', costsQuery.data), [teamId, costsQuery.data])
 
@@ -103,6 +225,12 @@ export function TeamDetailPage() {
         </div>
       )}
 
+      {toast && (
+        <div data-testid="team-action-toast" role="alert" style={{ color: '#dc2626', marginBottom: '1rem' }}>
+          {toast}
+        </div>
+      )}
+
       {teamQuery.isLoading ? (
         <p data-testid="team-detail-loading">Loading…</p>
       ) : teamQuery.data ? (
@@ -118,6 +246,8 @@ export function TeamDetailPage() {
               <span data-testid="team-created-at" style={{ color: '#9ca3af' }}>Created at: —</span>
             </div>
           </header>
+
+          <ActionBar team={teamQuery.data} onError={setToast} />
 
           {teamQuery.data.members.length === 0 ? (
             <p data-testid="team-members-empty">No members in this team yet.</p>
