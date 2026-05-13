@@ -1,6 +1,66 @@
+import { useMemo, useState } from 'react'
+import { ErrorState } from '../components/states'
+import { useAgentsQuery } from '../features/agents/api'
+import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
+import { applyFilters } from '../features/liveOps/applyFilters'
+import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
+import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
+import { OperationRow } from '../features/liveOps/OperationRow'
+import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
+import { EMPTY_FILTERS, type LiveOpsFilters } from '../features/liveOps/types'
 import './LiveOpsPage.css'
 
 export function LiveOpsPage() {
+  const { ops, status, reconnect } = useLiveOpsStream()
+  const [filters, setFilters] = useState<LiveOpsFilters>(EMPTY_FILTERS)
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [frozenIds, setFrozenIds] = useState<Set<string> | null>(null)
+
+  const agentsQuery = useAgentsQuery()
+  const teamsQuery = useTeamsQuery()
+
+  const agentOptions: FilterOption[] = useMemo(
+    () =>
+      (agentsQuery.data ?? []).map((a) => ({
+        id: a.id,
+        label: a.name && a.name.length > 0 ? a.name : a.id,
+      })),
+    [agentsQuery.data],
+  )
+
+  const teamOptions: FilterOption[] = useMemo(
+    () => (teamsQuery.data ?? []).map((t) => ({ id: t.team_id, label: t.team_id })),
+    [teamsQuery.data],
+  )
+
+  function handleAutoScrollChange(next: boolean) {
+    if (!next) {
+      setFrozenIds(new Set(ops.map((o) => o.id)))
+    } else {
+      setFrozenIds(null)
+    }
+    setAutoScroll(next)
+  }
+
+  function handleFlush() {
+    setFrozenIds(new Set(ops.map((o) => o.id)))
+  }
+
+  const displayedOps = useMemo(() => {
+    if (autoScroll || !frozenIds) return ops
+    return ops.filter((o) => frozenIds.has(o.id))
+  }, [ops, autoScroll, frozenIds])
+
+  const pendingCount = useMemo(() => {
+    if (autoScroll || !frozenIds) return 0
+    return ops.filter((o) => !frozenIds.has(o.id)).length
+  }, [ops, autoScroll, frozenIds])
+
+  const filteredOps = useMemo(
+    () => applyFilters(displayedOps, filters),
+    [displayedOps, filters],
+  )
+
   return (
     <main className="live-page" data-testid="live-ops-page">
       <header className="live-page__header">
@@ -29,8 +89,40 @@ export function LiveOpsPage() {
         >
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">▶ tail -f · event stream</h2>
+            <AutoScrollToggle
+              enabled={autoScroll}
+              onEnabledChange={handleAutoScrollChange}
+              pendingCount={pendingCount}
+              onFlushPending={handleFlush}
+            />
           </header>
-          <div className="live-page__pane-body" />
+          <FilterBar
+            filters={filters}
+            onFiltersChange={setFilters}
+            agentOptions={agentOptions}
+            teamOptions={teamOptions}
+          />
+          {status === 'reconnecting' && (
+            <div
+              className="live-page__reconnecting"
+              data-testid="live-ops-reconnecting"
+              role="status"
+            >
+              Reconnecting…
+            </div>
+          )}
+          <div className="live-page__pane-body live-page__pane-body--stream">
+            {status === 'error' ? (
+              <ErrorState
+                title="Connection lost"
+                description="Lost the connection to the gateway event stream after several attempts."
+                onRetry={reconnect}
+                retryLabel="Reconnect"
+              />
+            ) : (
+              filteredOps.map((op) => <OperationRow key={op.id} op={op} />)
+            )}
+          </div>
         </section>
 
         <section
