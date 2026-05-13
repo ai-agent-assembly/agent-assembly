@@ -40,7 +40,9 @@ const MAX_BACKOFF_MS = 30_000
  */
 export function useAlertsStream(handlers: UseAlertsStreamHandlers): StreamStatus {
   const handlersRef = useRef(handlers)
-  handlersRef.current = handlers
+  useEffect(() => {
+    handlersRef.current = handlers
+  }, [handlers])
   const [status, setStatus] = useState<StreamStatus>('connecting')
 
   useEffect(() => {
