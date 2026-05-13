@@ -1,0 +1,81 @@
+.onb-rail {
+  display: flex;
+  padding: 10px 22px;
+  gap: 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line-2);
+  overflow-x: auto;
+}
+
+.onb-rail-step {
+  flex: 1;
+  min-width: 100px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  text-transform: lowercase;
+  letter-spacing: 0.6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all 120ms;
+  position: relative;
+  text-align: left;
+}
+
+.onb-rail-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  width: 6px;
+  height: 1px;
+  background: var(--line-2);
+  transform: translateY(-50%);
+}
+
+.onb-rail-step.is-done {
+  color: var(--ok);
+}
+
+.onb-rail-step.is-current {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.onb-rail-step.is-future {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.onb-rail-step:disabled {
+  cursor: not-allowed;
+}
+
+.onb-rail-num {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 9px;
+}
+
+.onb-rail-step.is-done .onb-rail-num {
+  background: var(--ok);
+  color: var(--paper-2);
+  border-color: var(--ok);
+}
+
+.onb-rail-step.is-current .onb-rail-num {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}

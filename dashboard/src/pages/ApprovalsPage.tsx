@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
+import { EmptyState } from '../components/EmptyState'
+import { ErrorState } from '../components/ErrorState'
 import { useToast } from '../components/Toast'
 import {
   useApprovalsQuery,
@@ -9,6 +11,13 @@ import {
   type Approval,
 } from '../features/approvals/api'
 import { ApprovalDetailRow } from '../features/approvals/ApprovalDetailRow'
+import { ApprovalsFilterBar } from '../features/approvals/ApprovalsFilterBar'
+import {
+  EMPTY_FILTER,
+  applyFilter,
+  deriveOptions,
+  type ApprovalsFilter,
+} from '../features/approvals/filter'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import './ApprovalsPage.css'
 
@@ -33,7 +42,7 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
       data-testid="reject-dialog"
     >
       <div style={{
-        background: '#fff', borderRadius: '0.5rem', padding: '1.5rem',
+        background: 'var(--paper-2)', borderRadius: '0.5rem', padding: '1.5rem',
         width: '24rem', display: 'flex', flexDirection: 'column', gap: '1rem',
       }}>
         <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>
@@ -46,13 +55,13 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
             rows={3}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            style={{ padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid #d1d5db', resize: 'vertical' }}
+            style={{ padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid var(--line)', resize: 'vertical' }}
           />
         </label>
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button
             onClick={onCancel}
-            style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
+            style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid var(--line)', cursor: 'pointer' }}
           >
             Cancel
           </button>
@@ -62,8 +71,8 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
             onClick={() => onConfirm(reason.trim())}
             style={{
               padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: 'none',
-              background: !reason.trim() ? '#9ca3af' : '#dc2626',
-              color: '#fff', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
+              background: !reason.trim() ? 'var(--ink-4)' : 'var(--danger)',
+              color: 'var(--paper-2)', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
               fontWeight: 600,
             }}
           >
@@ -92,17 +101,17 @@ function TabBar({
     return {
       padding: '0.5rem 1rem',
       fontWeight: active === t ? 600 : 400,
-      color: active === t ? '#2563eb' : '#6b7280',
+      color: active === t ? 'var(--info)' : 'var(--ink-3)',
       cursor: 'pointer',
       background: 'none',
       border: 'none',
-      borderBottom: `2px solid ${active === t ? '#2563eb' : 'transparent'}`,
+      borderBottom: `2px solid ${active === t ? 'var(--info)' : 'transparent'}`,
       fontSize: '0.875rem',
     } as React.CSSProperties
   }
 
   return (
-    <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginBottom: '1rem' }} data-testid="tab-bar">
+    <div style={{ display: 'flex', borderBottom: '1px solid var(--line)', marginBottom: '1rem' }} data-testid="tab-bar">
       <button style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
         Pending ({pendingCount})
       </button>
@@ -127,14 +136,17 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [decidedHistory, setDecidedHistory] = useState<Approval[]>([])
   const [rejectFor, setRejectFor] = useState<string[] | null>(null)
+  const [filter, setFilter] = useState<ApprovalsFilter>(EMPTY_FILTER)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   function toggleExpand(id: string) {
     setExpandedId((cur) => (cur === id ? null : id))
   }
 
-  const pending = approvals ?? []
-  const allSelected = pending.length > 0 && pending.every((a) => selected.has(a.id))
+  const pending = useMemo(() => approvals ?? [], [approvals])
+  const filterOptions = useMemo(() => deriveOptions(pending), [pending])
+  const filteredPending = useMemo(() => applyFilter(pending, filter), [pending, filter])
+  const allSelected = filteredPending.length > 0 && filteredPending.every((a) => selected.has(a.id))
 
   function toggleRow(id: string) {
     setSelected((prev) => {
@@ -145,7 +157,7 @@ export function ApprovalsPage() {
   }
 
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(pending.map((a) => a.id)))
+    setSelected(allSelected ? new Set() : new Set(filteredPending.map((a) => a.id)))
   }
 
   async function handleApprove(ids: string[]) {
@@ -205,8 +217,8 @@ export function ApprovalsPage() {
             data-testid="ws-disconnected-banner"
             style={{
               fontSize: '0.75rem', padding: '0.25rem 0.75rem',
-              background: '#fef9c3', border: '1px solid #fde047',
-              borderRadius: '9999px', color: '#854d0e',
+              background: 'var(--warn-bg)', border: '1px solid var(--warn)',
+              borderRadius: '9999px', color: 'var(--warn)',
             }}
           >
             Live updates disconnected — reconnecting…
@@ -223,23 +235,25 @@ export function ApprovalsPage() {
 
       {tab === 'pending' && (
         <>
+          <ApprovalsFilterBar filter={filter} onChange={setFilter} options={filterOptions} />
+
           {/* Bulk toolbar */}
           {selected.size > 0 && (
             <div
               data-testid="bulk-toolbar"
               style={{
                 display: 'flex', gap: '0.5rem', alignItems: 'center',
-                padding: '0.5rem 0.75rem', background: '#eff6ff',
+                padding: '0.5rem 0.75rem', background: 'var(--info-bg)',
                 borderRadius: '0.375rem', marginBottom: '0.75rem', fontSize: '0.875rem',
               }}
             >
-              <span style={{ color: '#1d4ed8', fontWeight: 500 }}>{selected.size} selected</span>
+              <span style={{ color: 'var(--info)', fontWeight: 500 }}>{selected.size} selected</span>
               <button
                 data-testid="bulk-approve-btn"
                 onClick={() => void handleApprove(Array.from(selected))}
                 style={{
                   padding: '0.25rem 0.75rem', borderRadius: '0.25rem',
-                  background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+                  background: 'var(--ok)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontWeight: 600,
                 }}
               >
                 Approve selected
@@ -249,7 +263,7 @@ export function ApprovalsPage() {
                 onClick={() => setRejectFor(Array.from(selected))}
                 style={{
                   padding: '0.25rem 0.75rem', borderRadius: '0.25rem',
-                  background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+                  background: 'var(--danger)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontWeight: 600,
                 }}
               >
                 Reject selected
@@ -258,20 +272,20 @@ export function ApprovalsPage() {
           )}
 
           {isError && (
-            <div
-              data-testid="approvals-error"
-              style={{ color: '#dc2626', marginBottom: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', fontSize: '0.875rem' }}
-            >
-              <span>Failed to load approvals.</span>
-              <button onClick={() => void refetch()}>Retry</button>
-            </div>
+            <ErrorState kind="generic" onRetry={() => void refetch()} />
           )}
 
           {!isLoading && !isError && pending.length === 0 && (
-            <p data-testid="approvals-empty" className="approvals-state">No pending approval requests.</p>
+            <EmptyState page="approvals" />
           )}
 
-          {(isLoading || pending.length > 0) && (
+          {!isLoading && !isError && pending.length > 0 && filteredPending.length === 0 && (
+            <p data-testid="approvals-filtered-empty" className="approvals-state">
+              No approvals match the current filters.
+            </p>
+          )}
+
+          {(isLoading || filteredPending.length > 0) && (
             <table className="approvals-table" data-testid="approvals-table">
               <thead>
                 <tr>
@@ -298,19 +312,19 @@ export function ApprovalsPage() {
                     <tr key={i} data-testid="approval-row-skeleton">
                       {Array.from({ length: 7 }).map((_, j) => (
                         <td key={j} style={{ padding: '8px 12px' }}>
-                          <span style={{ display: 'block', height: '0.875rem', background: '#e5e7eb', borderRadius: '4px' }} />
+                          <span style={{ display: 'block', height: '0.875rem', background: 'var(--line)', borderRadius: '4px' }} />
                         </td>
                       ))}
                     </tr>
                   ))
-                  : pending.flatMap((row) => [
+                  : filteredPending.flatMap((row) => [
                     <tr
                       key={row.id}
                       data-testid="approval-row"
                       onClick={() => toggleExpand(row.id)}
                       aria-expanded={expandedId === row.id}
                       style={{
-                        borderBottom: '1px solid #f3f4f6',
+                        borderBottom: '1px solid var(--line)',
                         cursor: 'pointer',
                         background: expandedId === row.id ? 'var(--paper-3)' : undefined,
                       }}
@@ -339,7 +353,7 @@ export function ApprovalsPage() {
                           onClick={() => void handleApprove([row.id])}
                           style={{
                             padding: '0.2rem 0.6rem', borderRadius: '0.25rem',
-                            background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
+                            background: 'var(--ok)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
                           }}
                         >
                           Approve
@@ -349,7 +363,7 @@ export function ApprovalsPage() {
                           onClick={() => setRejectFor([row.id])}
                           style={{
                             padding: '0.2rem 0.6rem', borderRadius: '0.25rem',
-                            background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
+                            background: 'var(--danger)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontSize: '0.75rem',
                           }}
                         >
                           Reject
@@ -371,7 +385,7 @@ export function ApprovalsPage() {
           {decidedHistory.length === 0 ? (
             <p data-testid="decided-empty" className="approvals-state">
               No decisions in this session.{' '}
-              <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>
+              <span style={{ color: 'var(--ink-4)', fontSize: '0.8rem' }}>
                 (Historical decided approvals are not available via the current API.)
               </span>
             </p>
@@ -396,8 +410,8 @@ export function ApprovalsPage() {
                       <span
                         style={{
                           display: 'inline-block', padding: '2px 8px', borderRadius: '9999px',
-                          fontSize: '0.75rem', fontWeight: 600, color: '#fff',
-                          background: row.status === 'approved' ? '#16a34a' : '#dc2626',
+                          fontSize: '0.75rem', fontWeight: 600, color: 'var(--paper-2)',
+                          background: row.status === 'approved' ? 'var(--ok)' : 'var(--danger)',
                         }}
                       >
                         {row.status}

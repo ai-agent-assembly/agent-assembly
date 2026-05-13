@@ -12,6 +12,8 @@ import { AlertsPage } from './pages/AlertsPage'
 import { CapabilityPage } from './pages/CapabilityPage'
 import { TraceViewPage } from './pages/TraceViewPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
+import { ScrubPage } from './pages/ScrubPage'
+import { OnboardingPage } from './pages/OnboardingPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
@@ -41,7 +43,7 @@ function App() {
             {/* control */}
             <Route path="/capability" element={<CapabilityPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
-            <Route path="/scrub" element={<ComingSoon name="Secret Scrubbing" />} />
+            <Route path="/scrub" element={<ScrubPage />} />
             {/* manage */}
             <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
             <Route path="/teams" element={<TeamsPage />} />
@@ -54,6 +56,9 @@ function App() {
             {/* ── Non-canonical pages (kept for working features) ───────── */}
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+
+            {/* ── First-run onboarding wizard (AAASM-1351) ────────────────── */}
+            <Route path="/onboarding" element={<OnboardingPage />} />
           </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />

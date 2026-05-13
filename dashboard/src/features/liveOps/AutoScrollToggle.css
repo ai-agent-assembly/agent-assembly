@@ -1,0 +1,100 @@
+.auto-scroll-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.auto-scroll-toggle__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-scroll-toggle__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.auto-scroll-toggle__track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 16px;
+  background: var(--paper-3);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.auto-scroll-toggle__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.auto-scroll-toggle[data-enabled='true'] .auto-scroll-toggle__track {
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+
+.auto-scroll-toggle[data-enabled='true'] .auto-scroll-toggle__thumb {
+  transform: translateX(16px);
+  border-color: var(--ok);
+}
+
+.auto-scroll-toggle__input:focus-visible + .auto-scroll-toggle__track {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.auto-scroll-toggle__label {
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.auto-scroll-toggle[data-enabled='true'] .auto-scroll-toggle__label {
+  color: var(--ok);
+}
+
+.auto-scroll-toggle__pending {
+  appearance: none;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.auto-scroll-toggle__pending:hover {
+  filter: brightness(0.97);
+}
+
+.auto-scroll-toggle__pending:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}

@@ -1,9 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { describe, it, expect } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, beforeEach, describe, it, expect } from 'vitest'
 import { IdentityPage } from './IdentityPage'
 import { IAM_TAB_KEYS } from '../features/iam/tabs'
+import { _iamInternal } from '../features/iam/api'
+import { ToastProvider } from '../components/ToastProvider'
 
 function LocationProbe() {
   const location = useLocation()
@@ -11,16 +14,24 @@ function LocationProbe() {
 }
 
 function renderAt(initialEntries: string[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={initialEntries}>
-      <Routes>
-        <Route path="/identity" element={<IdentityPage />} />
-        <Route path="/audit" element={<div data-testid="audit-page">Audit Log</div>} />
-      </Routes>
-      <LocationProbe />
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={initialEntries}>
+          <Routes>
+            <Route path="/identity" element={<IdentityPage />} />
+            <Route path="/audit" element={<div data-testid="audit-page">Audit Log</div>} />
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
   )
 }
+
+beforeEach(() => { _iamInternal.reset() })
+afterEach(() => { _iamInternal.reset() })
 
 describe('IdentityPage', () => {
   it('renders the four canonical IAM tabs', () => {

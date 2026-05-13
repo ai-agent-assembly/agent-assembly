@@ -1,4 +1,5 @@
 import { Link, useSearchParams } from 'react-router-dom'
+import { MembersPanel } from '../features/iam/MembersPanel'
 import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
@@ -11,6 +12,11 @@ function TabPlaceholder({ tab }: { tab: IamTabKey }) {
       </p>
     </section>
   )
+}
+
+function ActiveTabContent({ tab }: { tab: IamTabKey }) {
+  if (tab === 'members') return <MembersPanel />
+  return <TabPlaceholder tab={tab} />
 }
 
 export function IdentityPage() {
@@ -56,7 +62,7 @@ export function IdentityPage() {
         ))}
       </div>
 
-      <TabPlaceholder tab={activeTab} />
+      <ActiveTabContent tab={activeTab} />
     </main>
   )
 }

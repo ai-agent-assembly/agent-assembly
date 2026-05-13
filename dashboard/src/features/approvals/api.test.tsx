@@ -123,13 +123,13 @@ describe('ApprovalsPage', () => {
   it('renders pending rows for each approval', async () => {
     setup([MOCK_APPROVAL, MOCK_APPROVAL_2])
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(2))
-    expect(screen.getByText('file.write /etc/passwd')).toBeInTheDocument()
-    expect(screen.getByText('network.request external-api.io')).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'file.write /etc/passwd' })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'network.request external-api.io' })).toBeInTheDocument()
   })
 
   it('shows empty state when no pending approvals', async () => {
     setup([])
-    await waitFor(() => expect(screen.getByTestId('approvals-empty')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
   })
 
   it('shows loading skeletons while fetching', () => {
