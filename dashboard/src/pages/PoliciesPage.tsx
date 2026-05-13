@@ -1,126 +1,224 @@
-import { Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
 import { usePoliciesQuery, type Policy } from '../features/policies/api'
+import { EmptyState, ErrorState } from '../components/states'
+import { OverlayHost } from '../components/OverlayHost'
+import { useOverlay } from '../components/useOverlay'
+import './PoliciesPage.css'
 
-function ActiveBadge({ active }: { active: boolean }) {
+type FilterTab = 'all' | 'active' | 'proposed'
+
+const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'active', label: 'Active' },
+  { id: 'proposed', label: 'Proposed' },
+]
+
+interface PolicyEditorOverlayProps {
+  mode: 'new' | 'edit'
+  name?: string
+  version?: string
+}
+
+function PolicyEditorPlaceholder() {
+  const { props, closeOverlay } = useOverlay('policy-editor')
+  const overlayProps = props as unknown as PolicyEditorOverlayProps
   return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '9999px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        color: '#fff',
-        background: active ? '#16a34a' : '#6b7280',
-      }}
-    >
-      {active ? 'active' : 'inactive'}
-    </span>
+    <div className="policy-editor-placeholder" data-testid="policy-editor-placeholder">
+      <h2 className="policy-editor-placeholder__title">
+        {overlayProps.mode === 'edit'
+          ? `Edit ${overlayProps.name ?? ''} v${overlayProps.version ?? ''}`
+          : 'New policy'}
+      </h2>
+      <p className="policy-editor-placeholder__desc">
+        Structured condition-builder form lands in AAASM-1370 (ST-4).
+        For now, this confirms the overlay open/close lifecycle works
+        end-to-end.
+      </p>
+      <button
+        type="button"
+        className="policy-editor-placeholder__close"
+        data-testid="policy-editor-close"
+        onClick={closeOverlay}
+      >
+        Close
+      </button>
+    </div>
   )
 }
 
-function SkeletonRows() {
+function PolicySkeletonRow() {
   return (
-    <>
-      {Array.from({ length: 3 }).map((_, i) => (
-        <tr key={i} data-testid="policy-row-skeleton">
-          {Array.from({ length: 4 }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
-              <span
-                style={{
-                  display: 'block',
-                  height: '1rem',
-                  background: '#e5e7eb',
-                  borderRadius: '4px',
-                }}
-              />
-            </td>
-          ))}
-        </tr>
-      ))}
-    </>
+    <li>
+      <div className="policies-list__skeleton" data-testid="policy-row-skeleton">
+        <span className="policies-list__skeleton-bar" style={{ width: '40%' }} />
+        <span className="policies-list__skeleton-bar" style={{ width: '8rem' }} />
+        <span className="policies-list__skeleton-bar" style={{ width: '5rem' }} />
+      </div>
+    </li>
   )
 }
 
-function PolicyRow({ policy }: { policy: Policy }) {
+function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
+  const proposed = !policy.active
   return (
-    <tr data-testid="policy-row" style={{ borderBottom: '1px solid #f3f4f6' }}>
-      <td style={{ padding: '0.5rem' }}>
-        <Link to={`/policies/editor?name=${encodeURIComponent(policy.name)}&version=${encodeURIComponent(policy.version)}`}>
+    <li>
+      <button
+        type="button"
+        className="policies-list__row"
+        data-testid="policy-row"
+        onClick={onEdit}
+      >
+        <span className="policies-list__row-name">
           {policy.name}
-        </Link>
-      </td>
-      <td style={{ padding: '0.5rem' }}>{policy.version}</td>
-      <td style={{ padding: '0.5rem' }}>{policy.rule_count}</td>
-      <td style={{ padding: '0.5rem' }}>
-        <ActiveBadge active={policy.active} />
-      </td>
-    </tr>
+          {proposed ? (
+            <span className="policies-list__chip-draft">draft</span>
+          ) : null}
+        </span>
+        <span className="policies-list__row-meta">
+          v{policy.version} · {policy.rule_count} {policy.rule_count === 1 ? 'rule' : 'rules'}
+        </span>
+        <span
+          className={
+            policy.active
+              ? 'policies-list__status policies-list__status--active'
+              : 'policies-list__status policies-list__status--proposed'
+          }
+          data-testid="policy-row-status"
+        >
+          {policy.active ? 'active' : 'proposed'}
+        </span>
+      </button>
+    </li>
   )
 }
 
 export function PoliciesPage() {
   const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
+  const [filter, setFilter] = useState<FilterTab>('all')
+  const { openOverlay } = useOverlay('policy-editor')
+
+  const all = useMemo(() => policies ?? [], [policies])
+  const activePolicies = useMemo(() => all.filter((p) => p.active), [all])
+  const proposedPolicies = useMemo(() => all.filter((p) => !p.active), [all])
+
+  const filtered =
+    filter === 'active' ? activePolicies : filter === 'proposed' ? proposedPolicies : all
+
+  const counts: Record<FilterTab, number> = {
+    all: all.length,
+    active: activePolicies.length,
+    proposed: proposedPolicies.length,
+  }
+
+  const handleNew = () => openOverlay({ mode: 'new' })
+  const handleEdit = (policy: Policy) =>
+    openOverlay({ mode: 'edit', name: policy.name, version: policy.version })
 
   return (
-    <main style={{ padding: '1.5rem' }} data-testid="policies-page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h1 style={{ margin: 0 }}>Policies</h1>
-        <Link
-          to="/policies/editor"
-          data-testid="new-policy-btn"
-          style={{
-            padding: '0.5rem 1rem',
-            background: '#2563eb',
-            color: '#fff',
-            borderRadius: '0.375rem',
-            textDecoration: 'none',
-            fontSize: '0.875rem',
-            fontWeight: 600,
-          }}
-        >
-          New policy
-        </Link>
-      </div>
-
-      {isError && (
-        <div
-          data-testid="policies-error"
-          style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
-        >
-          <span>Failed to load policies.</span>
-          <button onClick={() => void refetch()}>Retry</button>
+    <main className="policies-page" data-testid="policies-page">
+      <header className="policies-page__head">
+        <div className="policies-page__heading">
+          <h1 className="policies-page__title">Policies</h1>
+          <p className="policies-page__subtitle">
+            Visual builder for narrowing rules — open one to edit.
+          </p>
         </div>
-      )}
+        <button
+          type="button"
+          className="policies-page__new-btn"
+          data-testid="new-policy-btn"
+          onClick={handleNew}
+        >
+          + new policy
+        </button>
+      </header>
 
-      {!isLoading && !isError && policies?.length === 0 && (
-        <p data-testid="policies-empty">
-          No policies found.{' '}
-          <Link to="/policies/editor">Create your first policy →</Link>
-        </p>
-      )}
-
-      <table data-testid="policies-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            {['Name', 'Version', 'Rules', 'Status'].map((h) => (
-              <th
-                key={h}
-                style={{ textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #e5e7eb' }}
+      <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
+        {FILTER_TABS.map((tab) => {
+          const active = filter === tab.id
+          return (
+            <button
+              type="button"
+              key={tab.id}
+              role="tab"
+              aria-selected={active}
+              data-testid={`policies-tab-${tab.id}`}
+              className={
+                active
+                  ? 'policies-tabs__tab policies-tabs__tab--active'
+                  : 'policies-tabs__tab'
+              }
+              onClick={() => setFilter(tab.id)}
+            >
+              {tab.label}
+              <span
+                className={
+                  tab.id === 'proposed' && counts.proposed > 0
+                    ? 'policies-tabs__count policies-tabs__count--warn'
+                    : 'policies-tabs__count'
+                }
               >
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <SkeletonRows />
-          ) : (
-            policies?.map((policy) => <PolicyRow key={`${policy.name}-${policy.version}`} policy={policy} />)
-          )}
-        </tbody>
-      </table>
+                {counts[tab.id]}
+              </span>
+            </button>
+          )
+        })}
+      </nav>
+
+      {isError ? (
+        <ErrorState
+          title="Failed to load policies"
+          description="The gateway returned an unexpected error."
+          onRetry={() => void refetch()}
+        />
+      ) : isLoading ? (
+        <ul className="policies-list" data-testid="policies-list">
+          <PolicySkeletonRow />
+          <PolicySkeletonRow />
+          <PolicySkeletonRow />
+        </ul>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          title={
+            filter === 'active'
+              ? 'No active policies'
+              : filter === 'proposed'
+                ? 'No proposed policies'
+                : 'No policies yet'
+          }
+          description={
+            filter === 'all'
+              ? 'Create your first policy to get started.'
+              : 'Switch to All to see every policy.'
+          }
+          action={
+            filter === 'all' ? (
+              <button
+                type="button"
+                className="policies-page__new-btn"
+                data-testid="new-policy-empty-btn"
+                onClick={handleNew}
+              >
+                + new policy
+              </button>
+            ) : undefined
+          }
+        />
+      ) : (
+        <ul className="policies-list" data-testid="policies-list">
+          {filtered.map((policy) => (
+            <PolicyRow
+              key={`${policy.name}-${policy.version}`}
+              policy={policy}
+              onEdit={() => handleEdit(policy)}
+            />
+          ))}
+        </ul>
+      )}
+
+      <OverlayHost name="policy-editor">
+        <PolicyEditorPlaceholder />
+      </OverlayHost>
     </main>
   )
 }
