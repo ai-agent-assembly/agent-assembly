@@ -33,7 +33,8 @@ describe('traceExportSchema', () => {
   })
 
   it('rejects an export missing the version literal', () => {
-    const { version: _, ...broken } = VALID_EXPORT
+    const { version: _omit, ...broken } = VALID_EXPORT
+    void _omit
     expect(() => traceExportSchema.parse(broken)).toThrow()
   })
 
