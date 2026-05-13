@@ -56,6 +56,8 @@ async fn create_policy_returns_201_for_valid_yaml() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["active"], true);
     assert!(json["version"].as_str().is_some());
+    // policy_yaml round-trips the request body back to the caller.
+    assert_eq!(json["policy_yaml"], VALID_POLICY_YAML);
 }
 
 #[tokio::test]
@@ -122,6 +124,8 @@ async fn list_policies_returns_created_versions() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["active"], true);
     assert!(items[0]["version"].as_str().is_some());
+    // policy_yaml is loaded from the history store snapshot.
+    assert_eq!(items[0]["policy_yaml"], VALID_POLICY_YAML);
 }
 
 // ── GET /api/v1/policies/active ─────────────────────────────────────────
@@ -201,4 +205,6 @@ async fn get_active_policy_reflects_applied_policy() {
     assert_eq!(json["version"], "2.0.0");
     assert_eq!(json["active"], true);
     assert_eq!(json["rule_count"], 2);
+    // policy_yaml is fetched from history (most-recent entry == active).
+    assert_eq!(json["policy_yaml"], ENVELOPE_POLICY_WITH_TOOLS);
 }
