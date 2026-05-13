@@ -1,0 +1,268 @@
+/* ============================================================
+   PoliciesPage — list surface (AAASM-1369)
+   ============================================================
+
+   Tokens come from src/styles.css. No hex literals — colors are
+   sourced from --paper-*, --ink-*, --line-*, --ok / --warn /
+   --danger families. Mirrors the hi-fi card-list layout from
+   design/v1/hi-fi/policy.jsx without the split-pane (editor is
+   an overlay per AAASM-1281 rule 3).
+   ============================================================ */
+
+.policies-page {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.policies-page__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.policies-page__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.policies-page__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.policies-page__subtitle {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+
+.policies-page__new-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--paper-2);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.policies-page__new-btn:hover {
+  filter: brightness(1.1);
+}
+
+.policies-page__new-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+/* ── Filter tabs ──────────────────────────────────────────── */
+
+.policies-tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+  margin: 0;
+}
+
+.policies-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+
+.policies-tabs__tab:hover {
+  color: var(--ink);
+}
+
+.policies-tabs__tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.policies-tabs__tab:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.policies-tabs__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.25rem;
+  padding: 0 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-3);
+  background: var(--paper-3);
+  border-radius: 9999px;
+}
+
+.policies-tabs__count--warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+/* ── Policy list ─────────────────────────────────────────── */
+
+.policies-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.policies-list__row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.policies-list__row:hover {
+  background: var(--paper-3);
+}
+
+.policies-list__row:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.policies-list__row-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.policies-list__row-meta {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Status chip — readonly mapping from PolicyResponse.active */
+
+.policies-list__status {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+}
+
+.policies-list__status--active {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok-bg);
+}
+
+.policies-list__status--proposed {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+}
+
+.policies-list__chip-draft {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Skeleton loading rows ───────────────────────────────── */
+
+.policies-list__skeleton {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.policies-list__skeleton-bar {
+  height: 0.875rem;
+  background: var(--paper-3);
+  border-radius: 4px;
+}
+
+/* ── Placeholder overlay content (filled in by ST-4) ─────── */
+
+.policy-editor-placeholder {
+  margin: auto;
+  padding: 2rem;
+  max-width: 32rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.policy-editor-placeholder__title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.policy-editor-placeholder__desc {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+
+.policy-editor-placeholder__close {
+  align-self: center;
+  padding: 0.375rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--paper-2);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  cursor: pointer;
+}
