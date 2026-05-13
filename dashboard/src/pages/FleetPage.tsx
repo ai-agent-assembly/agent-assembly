@@ -23,6 +23,8 @@ import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
 import { useToast } from '../components/Toast'
+import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
+import { useSuspendAgent } from '../features/agents/mutations'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
@@ -215,6 +217,8 @@ export function FleetPage() {
   // action bar (next commit). Drop selections for ids that disappear from
   // the data source (e.g. an agent was deregistered).
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [showBulkSuspendDialog, setShowBulkSuspendDialog] = useState(false)
+  const [bulkSuspendPending, setBulkSuspendPending] = useState(false)
   const knownIds = useRef<Set<string>>(new Set())
   useEffect(() => {
     const next = new Set(fleetAgents.map((a) => a.id))
@@ -275,6 +279,38 @@ export function FleetPage() {
 
   const totalAgents = agents?.length ?? 0
   const filteredCount = filteredFleet.length
+
+  const suspend = useSuspendAgent()
+  const onConfirmBulkSuspend = useCallback(
+    async (reason: string) => {
+      const ids = Array.from(selected)
+      setBulkSuspendPending(true)
+      const results = await Promise.allSettled(
+        ids.map((id) => suspend.mutateAsync({ id, reason })),
+      )
+      const okCount = results.filter((r) => r.status === 'fulfilled').length
+      const failCount = results.length - okCount
+      setBulkSuspendPending(false)
+      setShowBulkSuspendDialog(false)
+      if (failCount === 0) {
+        setSelected(new Set())
+        toast(`${okCount} suspended`, 'success')
+      } else if (okCount === 0) {
+        toast(`${failCount} failed`, 'error')
+      } else {
+        // Keep failed ids in the selection so the user can retry without
+        // re-clicking each row.
+        const failedIds = new Set(
+          results
+            .map((r, i) => (r.status === 'rejected' ? ids[i] : null))
+            .filter((x): x is string => Boolean(x)),
+        )
+        setSelected(failedIds)
+        toast(`${okCount} suspended, ${failCount} failed`, 'error')
+      }
+    },
+    [selected, suspend, toast],
+  )
 
   return (
     <main className="fleet-page" data-testid="fleet-page">
@@ -358,7 +394,8 @@ export function FleetPage() {
           <button
             type="button"
             className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
-            onClick={() => toast(`Suspended ${selected.size} agents (mock)`, 'info')}
+            onClick={() => setShowBulkSuspendDialog(true)}
+            disabled={bulkSuspendPending}
             data-testid="fleet-bulkbar-suspend"
           >
             ■ suspend
@@ -458,6 +495,16 @@ export function FleetPage() {
           of the page via fixed positioning, so the Fleet table stays mounted
           underneath and filter state is preserved when the drawer closes. */}
       <Outlet />
+
+      {showBulkSuspendDialog && (
+        <SuspendReasonDialog
+          title={`Suspend ${selected.size} agent${selected.size === 1 ? '' : 's'}`}
+          body="The reason is logged once for the entire batch. Per-agent failures stay selected so you can retry."
+          pending={bulkSuspendPending}
+          onConfirm={onConfirmBulkSuspend}
+          onCancel={() => setShowBulkSuspendDialog(false)}
+        />
+      )}
     </main>
   )
 }
