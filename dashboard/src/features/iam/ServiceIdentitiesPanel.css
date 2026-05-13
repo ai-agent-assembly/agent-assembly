@@ -1,0 +1,36 @@
+.iam-services-panel {
+  padding: 1rem 0;
+}
+
+.iam-services-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.iam-services-panel__header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.iam-services-panel__generate-btn {
+  padding: 0.4rem 0.9rem;
+  background: var(--shell-accent, #2563eb);
+  color: #fff;
+  border: 0;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.iam-shown-once-banner {
+  padding: 0.6rem 0.9rem;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  font-size: 0.8rem;
+  color: #92400e;
+  margin-bottom: 1rem;
+}
