@@ -5,12 +5,26 @@
 }
 
 .iam-page__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
   margin-bottom: 1rem;
 }
 
 .iam-page__header h1 {
   margin: 0;
   font-size: 1.5rem;
+}
+
+.iam-page__audit-link {
+  font-size: 0.875rem;
+  color: var(--shell-accent, #2563eb);
+  text-decoration: none;
+}
+
+.iam-page__audit-link:hover {
+  text-decoration: underline;
 }
 
 .iam-page__tabs {

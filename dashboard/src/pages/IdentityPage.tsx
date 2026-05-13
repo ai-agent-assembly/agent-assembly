@@ -1,4 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
@@ -31,6 +31,13 @@ export function IdentityPage() {
     <main className="iam-page" data-testid="identity-page">
       <header className="iam-page__header">
         <h1>Identity &amp; Access</h1>
+        <Link
+          to="/audit"
+          className="iam-page__audit-link"
+          data-testid="iam-audit-link"
+        >
+          View full audit log →
+        </Link>
       </header>
 
       <div className="iam-page__tabs" role="tablist" data-testid="iam-tabs">
