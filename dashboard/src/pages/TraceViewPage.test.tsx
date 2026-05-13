@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TraceViewPage } from './TraceViewPage'
 import * as traceApi from '../features/trace/api'
 import * as agentsApi from '../features/agents/api'
+import * as traceExport from '../features/trace/export'
+import { traceExportSchema } from '../features/trace/exportSchema'
 import type { TraceEvent } from '../features/trace/types'
 import type { Agent } from '../features/agents/api'
 
@@ -207,5 +209,65 @@ describe('TraceViewPage', () => {
 
     await userEvent.click(screen.getByTestId('payload-modal-close'))
     expect(screen.queryByTestId('payload-modal')).not.toBeInTheDocument()
+  })
+
+  it('renders the Export button only when events exist', () => {
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+    expect(screen.queryByTestId('export-trace')).not.toBeInTheDocument()
+  })
+
+  it('Export button triggers downloadTraceJson with the trace ids and ALL events (not the filtered set)', async () => {
+    const downloadSpy = vi.spyOn(traceExport, 'downloadTraceJson').mockImplementation(() => {})
+    const events: TraceEvent[] = [
+      { ...MOCK_EVENT, id: 'a', severity: 'critical' },
+      { ...MOCK_EVENT, id: 'b', severity: 'info' },
+    ]
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: events, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    // Filter to only critical — Export must still get both events.
+    await userEvent.click(screen.getByTestId('trace-filter-info'))
+    await userEvent.click(screen.getByTestId('export-trace'))
+
+    expect(downloadSpy).toHaveBeenCalledOnce()
+    const [agentId, sessionId, passedEvents] = downloadSpy.mock.calls[0]
+    expect(agentId).toBe('agent-001')
+    expect(sessionId).toBe('session-abc')
+    expect(passedEvents).toHaveLength(2)
+  })
+
+  it('Export pipeline produces JSON that parses against traceExportSchema', async () => {
+    let capturedBlobText = ''
+    const originalCreateObjectURL = URL.createObjectURL
+    const originalRevokeObjectURL = URL.revokeObjectURL
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blob.text().then(text => { capturedBlobText = text })
+      return 'blob:fake'
+    }) as unknown as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL
+
+    const originalCreateElement = document.createElement.bind(document)
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = originalCreateElement(tag)
+      if (tag === 'a') el.click = vi.fn()
+      return el
+    })
+
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: [MOCK_EVENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+    await userEvent.click(screen.getByTestId('export-trace'))
+
+    await new Promise(r => setTimeout(r, 0))
+    expect(() => traceExportSchema.parse(JSON.parse(capturedBlobText))).not.toThrow()
+
+    URL.createObjectURL = originalCreateObjectURL
+    URL.revokeObjectURL = originalRevokeObjectURL
   })
 })
