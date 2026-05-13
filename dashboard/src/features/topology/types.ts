@@ -15,6 +15,10 @@ export interface TopologyNode {
   readonly name: string
   readonly status: TopologyStatus
   readonly team: string
+  /** Operator / engineer who owns the agent. Surfaced in the node detail panel (AAASM-1337). */
+  readonly owner: string
+  /** Number of policies currently applied to this agent. Surfaced in the node detail panel. */
+  readonly policyCount: number
   readonly budgetSpend: number
   readonly budgetLimit: number
   readonly framework?: string

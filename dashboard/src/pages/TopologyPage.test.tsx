@@ -25,9 +25,9 @@ function mockQuery(partial: Partial<UseQueryResult<TopologyGraph, Error>>): UseQ
 
 const GRAPH: TopologyGraph = {
   nodes: [
-    { id: 'a1', name: 'support', status: 'active', team: 'support', budgetSpend: 1, budgetLimit: 10 },
-    { id: 'a2', name: 'analyst', status: 'idle', team: 'analytics', budgetSpend: 0, budgetLimit: 5 },
-    { id: 'a3', name: 'support-2', status: 'active', team: 'support', budgetSpend: 2, budgetLimit: 10 },
+    { id: 'a1', name: 'support', status: 'active', team: 'support', owner: 'alice', policyCount: 2, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'a2', name: 'analyst', status: 'idle', team: 'analytics', owner: 'carol', policyCount: 1, budgetSpend: 0, budgetLimit: 5 },
+    { id: 'a3', name: 'support-2', status: 'active', team: 'support', owner: 'alice', policyCount: 2, budgetSpend: 2, budgetLimit: 10 },
   ],
   edges: [{ source: 'a1', target: 'a2', kind: 'delegation' }],
 }
