@@ -1,0 +1,86 @@
+.cap-filterbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.cap-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  padding: 4px 8px;
+  border-radius: 3px;
+  min-width: 280px;
+}
+
+.cap-search-icon {
+  color: var(--ink-4);
+  font-size: 12px;
+}
+
+.cap-search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  width: 100%;
+}
+
+.cap-filter-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  background: var(--paper);
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.cap-filter-field--em {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.cap-filter-field-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.cap-filter-field--em .cap-filter-field-label {
+  color: var(--warn);
+}
+
+.cap-filter-field select,
+.cap-filter-field input {
+  font-family: inherit;
+  font-size: 11px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cap-filter-field input {
+  width: 48px;
+}
+
+.cap-filter-count {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
