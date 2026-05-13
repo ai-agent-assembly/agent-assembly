@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
+import { EmptyState } from '../components/EmptyState'
+import { ErrorState } from '../components/ErrorState'
 import { useToast } from '../components/Toast'
 import {
   useApprovalsQuery,
@@ -250,17 +252,11 @@ export function ApprovalsPage() {
           )}
 
           {isError && (
-            <div
-              data-testid="approvals-error"
-              style={{ color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', fontSize: '0.875rem' }}
-            >
-              <span>Failed to load approvals.</span>
-              <button onClick={() => void refetch()}>Retry</button>
-            </div>
+            <ErrorState kind="generic" onRetry={() => void refetch()} />
           )}
 
           {!isLoading && !isError && pending.length === 0 && (
-            <p data-testid="approvals-empty" className="approvals-state">No pending approval requests.</p>
+            <EmptyState page="approvals" />
           )}
 
           {(isLoading || pending.length > 0) && (
