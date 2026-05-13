@@ -77,6 +77,11 @@ export function PolicyEditorPage() {
 
   const hasErrors = validationErrors.length > 0
 
+  function handleValidate() {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setValidationErrors(validateYaml(yaml))
+  }
+
   async function handleApply() {
     if (hasErrors) return
     try {
@@ -101,6 +106,13 @@ export function PolicyEditorPage() {
           {originalName ? `Edit: ${originalName} v${originalVersion ?? ''}` : 'New Policy'}
         </h1>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            data-testid="validate-btn"
+            onClick={handleValidate}
+            style={{ padding: '0.5rem 1rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
+          >
+            Validate
+          </button>
           <button
             data-testid="toggle-diff-btn"
             onClick={() => setShowDiff((v) => !v)}
