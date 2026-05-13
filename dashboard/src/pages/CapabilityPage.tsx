@@ -1,10 +1,26 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { capabilityClient } from '../api/capability'
+import { CapabilityMatrixGrid } from '../features/capability/CapabilityMatrixGrid'
+import { VERBS } from '../features/capability/types'
+import type { CapabilityMatrix, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
 
 type Tab = 'matrix' | 'resource' | 'agent'
 
 export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
+  const [verb, setVerb] = useState<Verb>('write')
+  const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    capabilityClient.getMatrix().then((m) => {
+      if (alive) setMatrix(m)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   return (
     <div className="capability-page" data-testid="capability-page">
@@ -48,10 +64,32 @@ export function CapabilityPage() {
         >
           Per-agent
         </button>
+
+        <div className="capability-verbs" role="radiogroup" aria-label="verb">
+          <span className="capability-verbs-label">verb</span>
+          {VERBS.map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={verb === v}
+              className={`capability-verb${verb === v ? ' is-active' : ''}`}
+              onClick={() => setVerb(v)}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
       </nav>
 
       <section className="capability-body" data-active-tab={tab}>
-        {/* Grid, filters, sort, drawer, and bulk override wired in subsequent sub-tasks. */}
+        {tab === 'matrix' && matrix && (
+          <CapabilityMatrixGrid
+            agents={matrix.agents}
+            resources={matrix.resources}
+            verb={verb}
+          />
+        )}
       </section>
     </div>
   )
