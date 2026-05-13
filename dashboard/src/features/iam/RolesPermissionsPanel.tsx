@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AgentRegistryList } from './AgentRegistryList'
 import { AgentPermissionsPanel } from './AgentPermissionsPanel'
+import { CustomRolePanel } from './CustomRolePanel'
 import type { Agent } from './types'
 import './RolesPermissionsPanel.css'
 
@@ -36,6 +37,8 @@ export function RolesPermissionsPanel() {
           )}
         </div>
       </div>
+
+      <CustomRolePanel />
     </section>
   )
 }
