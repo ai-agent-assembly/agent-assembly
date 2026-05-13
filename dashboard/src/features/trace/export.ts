@@ -16,7 +16,12 @@ export function buildTraceExport(
     exportedAt: now.toISOString(),
     agentId,
     sessionId,
-    events: events.map(e => ({ ...e })),
+    // Spread to mutable copies — TraceEvent uses readonly arrays, the
+    // schema-inferred TraceExport uses mutable arrays. Same data, no aliasing.
+    events: events.map(e => ({
+      ...e,
+      redactedFields: e.redactedFields ? [...e.redactedFields] : undefined,
+    })),
   }
 }
 
