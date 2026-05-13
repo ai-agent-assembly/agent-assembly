@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { capabilityClient } from '../api/capability'
+import { useToast } from '../components/Toast'
+import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
 import { CellInspectDrawer } from '../features/capability/CellInspectDrawer'
 import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
+import { applyOverrideLocal } from '../features/capability/override'
 import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
 import { VERBS } from '../features/capability/types'
-import type { CapabilityMatrix, Verb } from '../features/capability/types'
+import type { CapabilityMatrix, Decision, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
 
 type Tab = 'matrix' | 'resource' | 'agent'
@@ -18,6 +21,46 @@ export function CapabilityPage() {
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
   const [sort, setSort] = useState<SortState>(NO_SORT)
   const [inspected, setInspected] = useState<CellSelection | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const { toast } = useToast()
+
+  const toggleSelect = (agentId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      return next
+    })
+  }
+
+  const toggleSelectAll = (next: boolean) => {
+    if (next) setSelected(new Set(visibleAgents.map((a) => a.id)))
+    else setSelected(new Set())
+  }
+
+  const handleBulkApply = async ({
+    resourceId,
+    decision,
+  }: {
+    resourceId: string
+    decision: Decision
+  }) => {
+    if (!matrix) return
+    const agentIds = [...selected]
+    if (agentIds.length === 0) return
+    const prev = matrix
+    const optimistic = applyOverrideLocal(matrix, { agentIds, resourceId, verb, decision })
+    setMatrix(optimistic)
+    setSelected(new Set())
+    try {
+      await capabilityClient.applyOverride({ agentIds, resourceId, verb, decision })
+      toast(`override applied to ${agentIds.length} agent${agentIds.length === 1 ? '' : 's'}`, 'success')
+    } catch (e) {
+      setMatrix(prev)
+      const msg = e instanceof Error ? e.message : 'override failed'
+      toast(`rollback: ${msg}`, 'error')
+    }
+  }
 
   useEffect(() => {
     let alive = true
@@ -29,11 +72,9 @@ export function CapabilityPage() {
     }
   }, [])
 
-  const visibleAgents = useMemo(() => {
-    if (!matrix) return []
-    const filtered = applyFilters(matrix.agents, filters)
-    return sortAgents(filtered, matrix.resources, verb, sort)
-  }, [matrix, filters, verb, sort])
+  const visibleAgents = matrix
+    ? sortAgents(applyFilters(matrix.agents, filters), matrix.resources, verb, sort)
+    : []
 
   return (
     <div className="capability-page" data-testid="capability-page">
@@ -105,6 +146,16 @@ export function CapabilityPage() {
         />
       )}
 
+      {tab === 'matrix' && matrix && (
+        <BulkActionBar
+          count={selected.size}
+          resources={matrix.resources}
+          verb={verb}
+          onApply={handleBulkApply}
+          onClear={() => setSelected(new Set())}
+        />
+      )}
+
       <section className="capability-body" data-active-tab={tab}>
         {tab === 'matrix' && matrix && (
           <CapabilityMatrixGrid
@@ -114,6 +165,9 @@ export function CapabilityPage() {
             sort={sort}
             onSortChange={(rid) => setSort((prev) => nextSortState(prev, rid))}
             onCellClick={setInspected}
+            selectedIds={selected}
+            onToggleSelect={toggleSelect}
+            onToggleSelectAll={toggleSelectAll}
           />
         )}
       </section>

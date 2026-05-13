@@ -10,6 +10,9 @@ export interface CapabilityMatrixGridProps {
   onCellClick?: (cell: CellSelection) => void
   sort?: SortState
   onSortChange?: (resourceId: string) => void
+  selectedIds?: Set<string>
+  onToggleSelect?: (agentId: string) => void
+  onToggleSelectAll?: (next: boolean) => void
 }
 
 export interface CellSelection {
@@ -32,7 +35,13 @@ export function CapabilityMatrixGrid({
   onCellClick,
   sort,
   onSortChange,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
 }: CapabilityMatrixGridProps) {
+  const selectable = Boolean(selectedIds && onToggleSelect)
+  const allSelected =
+    selectable && agents.length > 0 && agents.every((a) => selectedIds?.has(a.id))
   const templateColumns = `260px repeat(${resources.length}, minmax(110px, 1fr))`
 
   function sortIndicator(resourceId: string): string {
@@ -55,7 +64,16 @@ export function CapabilityMatrixGrid({
         style={{ gridTemplateColumns: templateColumns }}
       >
         <div className="cap-mx-corner" role="columnheader">
-          agent ↓ · resource →
+          {selectable && (
+            <input
+              type="checkbox"
+              aria-label="select all agents"
+              checked={allSelected}
+              onChange={(e) => onToggleSelectAll?.(e.target.checked)}
+              className="cap-mx-select-all"
+            />
+          )}
+          <span>agent ↓ · resource →</span>
         </div>
         {resources.map((r) => {
           const sortable = Boolean(onSortChange)
@@ -87,6 +105,8 @@ export function CapabilityMatrixGrid({
             resources={resources}
             verb={verb}
             onCellClick={onCellClick}
+            selected={selectedIds?.has(agent.id) ?? false}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </div>
@@ -99,13 +119,34 @@ interface RowGroupProps {
   resources: Resource[]
   verb: Verb
   onCellClick?: (cell: CellSelection) => void
+  selected?: boolean
+  onToggleSelect?: (agentId: string) => void
 }
 
-function RowGroup({ agent, resources, verb, onCellClick }: RowGroupProps) {
+function RowGroup({
+  agent,
+  resources,
+  verb,
+  onCellClick,
+  selected,
+  onToggleSelect,
+}: RowGroupProps) {
   return (
     <>
-      <div className="cap-mx-row-h" role="rowheader">
+      <div
+        className={`cap-mx-row-h${selected ? ' is-selected' : ''}`}
+        role="rowheader"
+      >
         <div className="cap-mx-row-h-name">
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              aria-label={`select ${agent.name}`}
+              checked={selected ?? false}
+              onChange={() => onToggleSelect(agent.id)}
+              className="cap-mx-row-select"
+            />
+          )}
           {agent.name}
           {agent.flagged && (
             <span className="cap-flag-dot" aria-label="agent flagged">
