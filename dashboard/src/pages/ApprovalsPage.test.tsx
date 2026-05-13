@@ -1,6 +1,6 @@
 // Smoke tests for the refactored ApprovalsPage.
 // Comprehensive feature tests live in src/features/approvals/api.test.tsx.
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
@@ -75,5 +75,40 @@ describe('ApprovalsPage', () => {
     render(<ApprovalsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
     expect(screen.getByText('send_email')).toBeInTheDocument()
+  })
+
+  it('expands and collapses inline detail row on row click', async () => {
+    setupMocks([MOCK_APPROVAL])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
+    expect(screen.queryByTestId('approval-detail-row')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('approval-row'))
+    expect(screen.getByTestId('approval-detail-row')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('approval-row'))
+    expect(screen.queryByTestId('approval-detail-row')).not.toBeInTheDocument()
+  })
+
+  it('only expands one row at a time', async () => {
+    const second = { ...MOCK_APPROVAL, id: 'b2c3d4e5', action: 'exec_shell' }
+    setupMocks([MOCK_APPROVAL, second])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(2))
+
+    fireEvent.click(screen.getAllByTestId('approval-row')[0])
+    expect(screen.getAllByTestId('approval-detail-row')).toHaveLength(1)
+
+    fireEvent.click(screen.getAllByTestId('approval-row')[1])
+    expect(screen.getAllByTestId('approval-detail-row')).toHaveLength(1)
+  })
+
+  it('does not toggle expansion when row checkbox is clicked', async () => {
+    setupMocks([MOCK_APPROVAL])
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
+
+    fireEvent.click(screen.getByTestId('row-checkbox'))
+    expect(screen.queryByTestId('approval-detail-row')).not.toBeInTheDocument()
   })
 })
