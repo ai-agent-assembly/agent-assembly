@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TopologyPage } from './TopologyPage'
+import { TraceDrawerProvider } from '../components/trace/TraceDrawerProvider'
 import * as topologyApi from '../features/topology/api'
 import type { TopologyGraph } from '../features/topology/types'
 
@@ -14,7 +15,9 @@ function makeClient() {
 function renderPage() {
   return render(
     <QueryClientProvider client={makeClient()}>
-      <TopologyPage />
+      <TraceDrawerProvider>
+        <TopologyPage />
+      </TraceDrawerProvider>
     </QueryClientProvider>,
   )
 }

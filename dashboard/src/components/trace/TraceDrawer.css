@@ -1,0 +1,73 @@
+/* ============================================================
+   TraceDrawer — shell-level trace overlay (AAASM-1340)
+   ============================================================
+
+   Right-anchored drawer. Slides in from the right via a CSS keyframe
+   on the drawer panel. All colors via design tokens in src/styles.css.
+   ============================================================ */
+
+.trace-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 14, 14, 0.4);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 250;
+}
+
+.trace-drawer {
+  width: min(640px, 95vw);
+  height: 100vh;
+  background: var(--paper-2);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -12px 0 32px rgba(14, 14, 14, 0.2);
+  animation: trace-drawer-slide-in 200ms ease-out;
+}
+
+@keyframes trace-drawer-slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.trace-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-drawer__eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+}
+
+.trace-drawer__close {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.125rem 0.4rem;
+  color: var(--ink-2);
+}
+
+.trace-drawer__close:hover {
+  background: var(--paper-3);
+}
+
+.trace-drawer__body {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--paper);
+}
+
+.trace-drawer__loading {
+  padding: 1.5rem;
+  color: var(--ink-4);
+}

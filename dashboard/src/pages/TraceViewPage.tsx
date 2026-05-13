@@ -18,12 +18,24 @@ function applyFilter(events: readonly TraceEvent[], filter: SeverityFilter): Tra
   })
 }
 
+export interface TraceViewPageProps {
+  /** Override URL params — used when rendered inside the trace drawer (AAASM-1340). */
+  readonly agentId?: string
+  readonly sessionId?: string
+}
+
 /**
  * Trace view page — header, status states (loading / error / empty / ready),
  * severity filter, and the trace timeline introduced in AAASM-1067.
+ *
+ * Accepts optional `agentId` / `sessionId` props so the same component can
+ * render at the routed `/agents/:id/trace/:sessionId` URL *or* be mounted
+ * directly inside the shell-level trace drawer with no URL change.
  */
-export function TraceViewPage() {
-  const { id = '', sessionId = '' } = useParams<{ id: string; sessionId: string }>()
+export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPageProps = {}) {
+  const params = useParams<{ id: string; sessionId: string }>()
+  const id = agentId ?? params.id ?? ''
+  const sessionId = sessionIdProp ?? params.sessionId ?? ''
   const { data: agent } = useAgentQuery(id)
   const { data, isLoading, isError, refetch } = useTraceQuery(id, sessionId)
   const agentLabel = agent?.name ?? id

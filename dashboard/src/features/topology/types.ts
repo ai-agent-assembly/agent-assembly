@@ -22,6 +22,12 @@ export interface TopologyNode {
   readonly budgetSpend: number
   readonly budgetLimit: number
   readonly framework?: string
+  /**
+   * Most recent session id for this agent. Used to open the trace drawer
+   * from the node detail panel (AAASM-1340). Optional — the View trace
+   * button is disabled when this is missing.
+   */
+  readonly latestSessionId?: string
 }
 
 export interface TopologyEdge {

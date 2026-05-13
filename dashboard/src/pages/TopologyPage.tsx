@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useTopologyQuery } from '../features/topology/api'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
 import { NodeDetailPanel } from '../components/topology/NodeDetailPanel'
+import { useTraceDrawer } from '../components/trace/useTraceDrawer'
 import type { TopologyNode } from '../features/topology/types'
 import './TopologyPage.css'
 
@@ -17,14 +18,15 @@ import './TopologyPage.css'
 export function TopologyPage() {
   const { data, isLoading, isError, refetch } = useTopologyQuery()
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
+  const { open: openTraceDrawer } = useTraceDrawer()
   const teamCount = useMemo(() => {
     if (!data) return 0
     return new Set(data.nodes.map(n => n.team)).size
   }, [data])
   const agentCount = data?.nodes.length ?? 0
 
-  const handleViewTrace = () => {
-    // Wires to the shell-level trace drawer in AAASM-1340.
+  const handleViewTrace = (agentId: string, sessionId: string) => {
+    openTraceDrawer(agentId, sessionId)
   }
 
   return (
