@@ -19,4 +19,6 @@ export interface TraceEvent {
   readonly payload: unknown
   readonly severity?: TraceSeverity
   readonly redactedFields?: readonly string[]
+  /** Human-readable reason the gateway recorded for a policy violation. Surfaced as a hover tooltip on the timeline row. */
+  readonly violationReason?: string
 }

@@ -1,0 +1,28 @@
+/* ============================================================
+   TraceTimelineFilter — severity checkbox group (AAASM-1067)
+   ============================================================ */
+
+.trace-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-2);
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+
+.trace-filter__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.trace-filter__option input[type='checkbox'] {
+  cursor: pointer;
+}

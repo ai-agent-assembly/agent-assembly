@@ -128,23 +128,70 @@ describe('TraceViewPage', () => {
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
-  it('shows empty state when no events', () => {
+  it('shows the shared EmptyState when the session has no events', () => {
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
     )
     renderAt('/agents/agent-001/trace/session-abc')
 
-    expect(screen.getByTestId('trace-empty')).toBeInTheDocument()
+    const empty = screen.getByTestId('empty-state')
+    expect(empty).toBeInTheDocument()
+    expect(empty).toHaveTextContent('No events recorded for this session')
+    // Filter must not render when there are no events to filter.
+    expect(screen.queryByTestId('trace-filter')).not.toBeInTheDocument()
   })
 
-  it('mounts the timeline placeholder slot with event count when ready', () => {
+  it('mounts the timeline + filter when events are present', () => {
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({ data: [MOCK_EVENT], isLoading: false, isError: false, refetch: vi.fn() }),
     )
     renderAt('/agents/agent-001/trace/session-abc')
 
-    const placeholder = screen.getByTestId('trace-timeline-placeholder')
-    expect(placeholder).toBeInTheDocument()
-    expect(placeholder).toHaveTextContent('1 event')
+    expect(screen.getByTestId('trace-filter')).toBeInTheDocument()
+    expect(screen.getByTestId('trace-timeline')).toBeInTheDocument()
+    expect(screen.getAllByTestId('trace-event')).toHaveLength(1)
+  })
+
+  it('hides rows whose severity is unchecked in the filter', async () => {
+    const events: TraceEvent[] = [
+      { ...MOCK_EVENT, id: 'a', severity: 'critical', type: 'policy_violation' },
+      { ...MOCK_EVENT, id: 'b', severity: 'info', type: 'llm_call' },
+    ]
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: events, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    expect(screen.getAllByTestId('trace-event')).toHaveLength(2)
+    await userEvent.click(screen.getByTestId('trace-filter-info'))
+    const remaining = screen.getAllByTestId('trace-event')
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0]).toHaveAttribute('data-severity', 'critical')
+  })
+
+  it('shows the filter-empty state when every severity is unchecked', async () => {
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({
+        data: [
+          { ...MOCK_EVENT, id: 'a', severity: 'critical' },
+          { ...MOCK_EVENT, id: 'b', severity: 'warning' },
+          { ...MOCK_EVENT, id: 'c', severity: 'info' },
+          { ...MOCK_EVENT, id: 'd', severity: undefined },
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    await userEvent.click(screen.getByTestId('trace-filter-critical'))
+    await userEvent.click(screen.getByTestId('trace-filter-warning'))
+    await userEvent.click(screen.getByTestId('trace-filter-info'))
+    await userEvent.click(screen.getByTestId('trace-filter-neutral'))
+
+    expect(screen.getByTestId('trace-filter-empty')).toBeInTheDocument()
+    expect(screen.getByText('All events hidden by filter')).toBeInTheDocument()
+    expect(screen.queryByTestId('trace-event')).not.toBeInTheDocument()
   })
 })
