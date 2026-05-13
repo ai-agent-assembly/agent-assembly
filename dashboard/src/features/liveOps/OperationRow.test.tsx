@@ -115,4 +115,36 @@ describe('OperationRow', () => {
     expect(screen.getByText('tool').className).toContain('op-row__tree-kind--tool')
     expect(screen.getByText('result').className).toContain('op-row__tree-kind--result')
   })
+
+  it('hides the row action menu when callbacks are not supplied', () => {
+    render(<OperationRow op={{ ...FIXTURE, callStack: undefined }} />)
+    expect(screen.queryByTestId('row-action-menu')).toBeNull()
+  })
+
+  it('renders the row action menu when all three callbacks are supplied', () => {
+    render(
+      <OperationRow
+        op={{ ...FIXTURE, callStack: undefined }}
+        onPause={() => {}}
+        onResume={() => {}}
+        onTerminate={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('row-action-menu')).toBeInTheDocument()
+  })
+
+  it('reflects override prop on data-override and surfaces an inline hint', () => {
+    render(
+      <OperationRow
+        op={{ ...FIXTURE, callStack: undefined }}
+        override="pausing"
+        onPause={() => {}}
+        onResume={() => {}}
+        onTerminate={() => {}}
+      />,
+    )
+    const row = screen.getByTestId('op-row')
+    expect(row).toHaveAttribute('data-override', 'pausing')
+    expect(screen.getByTestId('op-row-override')).toHaveTextContent('pausing…')
+  })
 })
