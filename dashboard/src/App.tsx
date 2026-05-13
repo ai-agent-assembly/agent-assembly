@@ -10,6 +10,7 @@ import { PoliciesPage } from './pages/PoliciesPage'
 import { PolicyEditorPage } from './pages/PolicyEditorPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { ComingSoon } from './pages/ComingSoon'
+import { TeamDetailPage } from './pages/TeamDetailPage'
 
 function App() {
   return (
@@ -41,6 +42,7 @@ function App() {
             {/* ── Sub-routes for canonical pages ────────────────────────── */}
             <Route path="/agents/:id" element={<AgentDetailPage />} />
             <Route path="/policies/editor" element={<PolicyEditorPage />} />
+            <Route path="/teams/:teamId" element={<TeamDetailPage />} />
 
             {/* ── Non-canonical pages (kept for working features) ───────── */}
             <Route path="/approvals" element={<ApprovalsPage />} />
