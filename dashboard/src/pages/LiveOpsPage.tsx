@@ -1,14 +1,49 @@
-/**
- * Live Operations page — entry stub for AAASM-1282 (Dashboard PR 9).
- *
- * Renders the page header only; the real content (PipelineCanvas, row
- * stream, ApprovalPool, filters, auto-scroll, WebSocket wiring) lands
- * in follow-up subtasks of AAASM-1282.
- */
+import './LiveOpsPage.css'
+
 export function LiveOpsPage() {
   return (
-    <main data-testid="live-ops-page" style={{ padding: '2rem', maxWidth: '60rem' }}>
-      <h1 style={{ marginTop: 0 }}>Live Operations</h1>
+    <main className="live-page" data-testid="live-ops-page">
+      <header className="live-page__header">
+        <h1 className="live-page__title">Live Operations</h1>
+        <p className="live-page__subtitle">
+          Real-time governance pipeline: traffic flow, event stream, and pending approvals.
+        </p>
+      </header>
+
+      <div className="live-page__grid">
+        <section
+          className="live-page__pane"
+          aria-label="Traffic pipeline"
+          data-testid="live-ops-pipeline-zone"
+        >
+          <header className="live-page__pane-head">
+            <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
+          </header>
+          <div className="live-page__pane-body" />
+        </section>
+
+        <section
+          className="live-page__pane"
+          aria-label="Event stream"
+          data-testid="live-ops-stream-zone"
+        >
+          <header className="live-page__pane-head">
+            <h2 className="live-page__pane-title">▶ tail -f · event stream</h2>
+          </header>
+          <div className="live-page__pane-body" />
+        </section>
+
+        <section
+          className="live-page__pane"
+          aria-label="Approval queue"
+          data-testid="live-ops-approvals-zone"
+        >
+          <header className="live-page__pane-head">
+            <h2 className="live-page__pane-title">⚑ approval queue</h2>
+          </header>
+          <div className="live-page__pane-body" />
+        </section>
+      </div>
     </main>
   )
 }

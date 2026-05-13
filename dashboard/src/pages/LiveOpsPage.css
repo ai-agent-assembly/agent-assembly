@@ -1,0 +1,81 @@
+/* ============================================================
+   Live Ops page — 3-zone layout scaffold (AAASM-1326)
+
+   Mirrors `.live-grid` / `.live-pane*` rules from
+   design/v1/hi-fi/styles.css. All colour, spacing, and type
+   values resolve to the design tokens in dashboard/src/styles.css.
+   ============================================================ */
+
+.live-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--paper);
+}
+
+.live-page__header {
+  padding: 16px 24px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.live-page__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.live-page__subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.live-page__grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1.55fr 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  min-height: 0;
+}
+
+@media (max-width: 1279px) {
+  .live-page__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.live-page__pane {
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.live-page__pane-head {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.live-page__pane-title {
+  margin: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.live-page__pane-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--ink-4);
+}
