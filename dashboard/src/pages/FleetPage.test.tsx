@@ -1,11 +1,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, vi, type Mock } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { FleetPage } from './FleetPage'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
+import * as client from '../api/client'
 import type { Agent } from '../features/agents/api'
 
 function makeClient() {
@@ -369,5 +370,199 @@ describe('FleetPage bulk action bar', () => {
     fireEvent.click(screen.getByTestId('fleet-select-all'))
     await waitFor(() => expect(screen.getByTestId('fleet-bulkbar-shadow')).toBeInTheDocument())
     expect(screen.getByTestId('fleet-bulkbar-suspend')).toBeInTheDocument()
+  })
+})
+
+describe('FleetPage bulk suspend fan-out', () => {
+  it('reports aggregate success when every per-agent call succeeds', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'alpha' }),
+          makeAgent({ id: 'b', name: 'beta' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockResolvedValue({ data: { agent_id: 'x', previous_status: 'active', new_status: 'suspended' } })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-suspend'))
+    fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    await waitFor(() => expect(screen.getByText('2 suspended')).toBeInTheDocument())
+    expect(post).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
+  })
+
+  it('reports "M suspended, N failed" when the fan-out partially fails', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'alpha' }),
+          makeAgent({ id: 'b', name: 'beta' }),
+          makeAgent({ id: 'c', name: 'gamma' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockImplementation((_path: string, opts: { params: { path: { id: string } } }) => {
+      if (opts.params.path.id === 'b') {
+        return Promise.resolve({ error: { message: 'forbidden' } })
+      }
+      return Promise.resolve({
+        data: { agent_id: opts.params.path.id, previous_status: 'active', new_status: 'suspended' },
+      })
+    })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-suspend'))
+    fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    await waitFor(() => expect(screen.getByText('2 suspended, 1 failed')).toBeInTheDocument())
+    expect(post).toHaveBeenCalledTimes(3)
+    expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
+    expect(screen.getByTestId('fleet-select-b')).toBeChecked()
+  })
+
+  it('reports "N failed" when every per-agent call errors out', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a' }),
+          makeAgent({ id: 'b', name: 'beta' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockResolvedValue({ error: { message: 'forbidden' } })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-suspend'))
+    fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'noop' } })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
+  })
+})
+
+describe('FleetPage bulk resume fan-out', () => {
+  it('reports aggregate success when every per-agent resume succeeds', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'alpha', status: 'suspended' }),
+          makeAgent({ id: 'b', name: 'beta',  status: 'suspended' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockResolvedValue({ data: { agent_id: 'x', previous_status: 'suspended', new_status: 'active' } })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
+
+    await waitFor(() => expect(screen.getByText('2 resumed')).toBeInTheDocument())
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(post.mock.calls[0]?.[0]).toBe('/api/v1/agents/{id}/resume')
+    await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
+  })
+
+  it('reports "M resumed, N failed" when the fan-out partially fails', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'alpha', status: 'suspended' }),
+          makeAgent({ id: 'b', name: 'beta',  status: 'suspended' }),
+          makeAgent({ id: 'c', name: 'gamma', status: 'suspended' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockImplementation((_path: string, opts: { params: { path: { id: string } } }) => {
+      if (opts.params.path.id === 'b') {
+        return Promise.resolve({ error: { message: 'gone' } })
+      }
+      return Promise.resolve({
+        data: { agent_id: opts.params.path.id, previous_status: 'suspended', new_status: 'active' },
+      })
+    })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
+
+    await waitFor(() => expect(screen.getByText('2 resumed, 1 failed')).toBeInTheDocument())
+    expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
+    expect(screen.getByTestId('fleet-select-b')).toBeChecked()
+  })
+
+  it('reports "N failed" when every per-agent resume errors out', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', status: 'suspended' }),
+          makeAgent({ id: 'b', name: 'beta', status: 'suspended' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    post.mockResolvedValue({ error: { message: 'gone' } })
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
+
+    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
+  })
+
+  it('disables both bulk Suspend and bulk Resume while a fan-out is in flight', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'a', status: 'suspended' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    const post = vi.spyOn(client.api, 'POST') as unknown as Mock
+    let releaseResolve: (v: unknown) => void = () => {}
+    post.mockImplementation(() => new Promise((resolve) => { releaseResolve = resolve }))
+
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-all'))
+    fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
+
+    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar-resume')).toBeDisabled())
+    expect(screen.getByTestId('fleet-bulkbar-suspend')).toBeDisabled()
+
+    releaseResolve({ data: { agent_id: 'a', previous_status: 'suspended', new_status: 'active' } })
+    await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
   })
 })

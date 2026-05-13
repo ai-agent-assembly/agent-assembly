@@ -1,10 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
+import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { toFleetAgent } from '../features/agents/fleetTypes'
 import { Drawer } from '../components/Drawer'
+import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
+import { useToast } from '../components/Toast'
 import './AgentDetailDrawer.css'
 
 function TrustGauge({ score }: { score: number | null }) {
@@ -166,13 +169,49 @@ export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const location = useLocation()
+  const { toast } = useToast()
   const { data: agent, isLoading: agentLoading, isError: agentError, refetch: refetchAgent } = useAgentQuery(id ?? '')
   const { data: events, isLoading: eventsLoading, isError: eventsError } = useAgentEventsQuery(id ?? '')
   const [tab, setTab] = useState<AgentDetailTab>('overview')
+  const [showSuspendDialog, setShowSuspendDialog] = useState(false)
+
+  const suspend = useSuspendAgent()
+  const resume = useResumeAgent()
 
   const close = useCallback(() => {
     navigate({ pathname: '/agents', search: location.search })
   }, [navigate, location.search])
+
+  const onConfirmSuspend = useCallback(
+    (reason: string) => {
+      if (!agent) return
+      suspend.mutate(
+        { id: agent.id, reason },
+        {
+          onSuccess: () => {
+            setShowSuspendDialog(false)
+            toast(`Suspended ${agent.name}`, 'success')
+          },
+          onError: (e) => {
+            setShowSuspendDialog(false)
+            toast(`Failed to suspend ${agent.name}: ${e.message}`, 'error')
+          },
+        },
+      )
+    },
+    [agent, suspend, toast],
+  )
+
+  const onClickResume = useCallback(() => {
+    if (!agent) return
+    resume.mutate(
+      { id: agent.id },
+      {
+        onSuccess: () => toast(`Resumed ${agent.name}`, 'success'),
+        onError: (e) => toast(`Failed to resume ${agent.name}: ${e.message}`, 'error'),
+      },
+    )
+  }, [agent, resume, toast])
 
   return (
     <Drawer open onClose={close} ariaLabel={agent ? `Agent ${agent.name}` : 'Agent detail'}>
@@ -225,6 +264,29 @@ export function AgentDetailPage() {
                     <span className="ad-head__owner">@{toFleetAgent(agent).owner}</span>
                   )}
                 </h1>
+              </div>
+              <div className="ad-head__actions">
+                {agent.status === 'suspended' ? (
+                  <button
+                    type="button"
+                    className="ad-head__btn"
+                    onClick={onClickResume}
+                    disabled={resume.isPending}
+                    data-testid="agent-detail-resume"
+                  >
+                    {resume.isPending ? 'Resuming…' : '▶ resume'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ad-head__btn ad-head__btn--danger"
+                    onClick={() => setShowSuspendDialog(true)}
+                    disabled={suspend.isPending}
+                    data-testid="agent-detail-suspend"
+                  >
+                    ■ suspend
+                  </button>
+                )}
               </div>
             </header>
 
@@ -330,6 +392,14 @@ export function AgentDetailPage() {
           </>
         )}
       </div>
+      {showSuspendDialog && agent && (
+        <SuspendReasonDialog
+          title={`Suspend ${agent.name}`}
+          pending={suspend.isPending}
+          onConfirm={onConfirmSuspend}
+          onCancel={() => setShowSuspendDialog(false)}
+        />
+      )}
     </Drawer>
   )
 }

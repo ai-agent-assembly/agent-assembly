@@ -1,0 +1,113 @@
+.suspend-dialog__scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 10, 0.4);
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.suspend-dialog {
+  width: 480px;
+  max-width: calc(100vw - 2rem);
+  background: var(--paper-2);
+  border: 1px solid var(--line-3);
+  border-radius: 4px;
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.18);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.suspend-dialog__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.suspend-dialog__body {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+
+.suspend-dialog__label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 4px;
+}
+
+.suspend-dialog__input {
+  width: 100%;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.suspend-dialog__input:focus {
+  outline: none;
+  border-color: var(--ink);
+}
+
+.suspend-dialog__input--invalid {
+  border-color: var(--danger);
+}
+
+.suspend-dialog__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.suspend-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.suspend-dialog__btn {
+  height: 30px;
+  padding: 0 14px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.suspend-dialog__btn:hover {
+  background: var(--paper-3);
+  border-color: var(--line-3);
+}
+
+.suspend-dialog__btn--danger {
+  background: var(--danger);
+  color: var(--paper-2);
+  border-color: var(--danger);
+}
+
+.suspend-dialog__btn--danger:hover {
+  filter: brightness(1.05);
+  background: var(--danger);
+}
+
+.suspend-dialog__btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
