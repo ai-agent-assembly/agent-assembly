@@ -89,3 +89,18 @@
   border-radius: 0 0 8px 8px;
   white-space: pre;
 }
+
+.payload-modal__redacted {
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  display: inline-block;
+  width: 100%;
+  padding-left: 0.25rem;
+}
+
+.payload-modal__lock {
+  display: inline-block;
+  font-size: 0.85em;
+  vertical-align: -1px;
+  cursor: help;
+}

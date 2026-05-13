@@ -1,6 +1,35 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
+import { Tooltip } from '../Tooltip'
 import './PayloadModal.css'
+
+const REDACTED_LINE_RE = /^(\s*)"([^"]+)":\s*(.*?)(,?)\s*$/
+
+function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): ReactNode[] {
+  return formatted.split('\n').map((line, i) => {
+    const match = REDACTED_LINE_RE.exec(line)
+    if (match && redactedSet.has(match[2])) {
+      const [, indent, key, , trailing] = match
+      const sentinel = `"<redacted: ${key}>"`
+      return (
+        <span key={i} data-testid="redacted-field" className="payload-modal__redacted">
+          {indent}&quot;{key}&quot;:{' '}
+          <Tooltip content="Redacted by policy">
+            <span className="payload-modal__lock" aria-label={`${key} is redacted by policy`}>🔒</span>
+          </Tooltip>
+          {' '}{sentinel}{trailing}
+          {'\n'}
+        </span>
+      )
+    }
+    return (
+      <span key={i}>
+        {line}
+        {'\n'}
+      </span>
+    )
+  })
+}
 
 export interface PayloadModalProps {
   readonly event: TraceEvent | null
@@ -26,9 +55,15 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     return () => document.removeEventListener('keydown', handleKey)
   }, [event, onClose])
 
+  const redactedSet = useMemo(
+    () => new Set(event?.redactedFields ?? []),
+    [event?.redactedFields],
+  )
+
   if (!event) return null
 
   const formatted = JSON.stringify(event.payload, null, 2)
+  const jsonNodes = renderJsonLines(formatted, redactedSet)
 
   return (
     <div
@@ -63,7 +98,7 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
           </button>
         </header>
 
-        <pre className="payload-modal__json" data-testid="payload-modal-json">{formatted}</pre>
+        <pre className="payload-modal__json" data-testid="payload-modal-json">{jsonNodes}</pre>
       </div>
     </div>
   )
