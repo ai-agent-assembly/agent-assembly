@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ProtectedRoute } from './pages/ProtectedRoute'
 import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
-import { AgentsPage } from './pages/AgentsPage'
+import { FleetPage } from './pages/FleetPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -25,7 +25,7 @@ function App() {
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}
             <Route path="/overview" element={<ComingSoon name="Overview" />} />
-            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents" element={<FleetPage />} />
             <Route path="/topology" element={<ComingSoon name="Topology" />} />
             <Route path="/live" element={<ComingSoon name="Live Ops" />} />
             <Route path="/alerts" element={<ComingSoon name="Alerts" />} />

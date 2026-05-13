@@ -84,7 +84,7 @@ const columns = [
   }),
 ]
 
-export function AgentsPage() {
+export function FleetPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
 
