@@ -1,17 +1,41 @@
+import { useState } from 'react'
 import {
   useReactTable,
   getCoreRowModel,
+  getSortedRowModel,
   flexRender,
   createColumnHelper,
+  type SortingState,
+  type SortingFn,
 } from '@tanstack/react-table'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
-import type { Alert } from './types'
+import { SEVERITY_ORDER, type Alert, type AlertStatus, type Severity } from './types'
 
 interface AlertListProps {
   rows: readonly Alert[]
   onSelect?: (alertId: string) => void
 }
+
+// CRITICAL > HIGH > MEDIUM > LOW (descending = most severe first).
+const SEVERITY_RANK: Record<Severity, number> = Object.fromEntries(
+  SEVERITY_ORDER.map((s, i) => [s, SEVERITY_ORDER.length - i]),
+) as Record<Severity, number>
+
+const STATUS_RANK: Record<AlertStatus, number> = {
+  FIRING: 3,
+  SUPPRESSED: 2,
+  RESOLVED: 1,
+}
+
+const sortSeverity: SortingFn<Alert> = (a, b) =>
+  SEVERITY_RANK[a.original.severity] - SEVERITY_RANK[b.original.severity]
+
+const sortStatus: SortingFn<Alert> = (a, b) =>
+  STATUS_RANK[a.original.status] - STATUS_RANK[b.original.status]
+
+const sortDuration: SortingFn<Alert> = (a, b) =>
+  Date.parse(a.original.firstFiredAt) - Date.parse(b.original.firstFiredAt)
 
 function formatDuration(firstFiredAt: string, resolvedAt: string | null): string {
   const start = Date.parse(firstFiredAt)
@@ -39,22 +63,27 @@ const columns = [
   columnHelper.accessor('severity', {
     header: 'Severity',
     cell: (info) => <SeverityBadge severity={info.getValue()} />,
+    sortingFn: sortSeverity,
   }),
   columnHelper.accessor('ruleName', {
     header: 'Alert',
     cell: (info) => info.getValue(),
+    enableSorting: false,
   }),
   columnHelper.accessor((row) => row.agentId ?? '—', {
     id: 'agent',
     header: 'Agent / fleet',
+    enableSorting: false,
   }),
   columnHelper.accessor('status', {
     header: 'Status',
     cell: (info) => <StatusBadge status={info.getValue()} />,
+    sortingFn: sortStatus,
   }),
   columnHelper.accessor('firstFiredAt', {
     header: 'First fired',
     cell: (info) => formatFirstFired(info.getValue()),
+    enableSorting: false,
   }),
   columnHelper.accessor(
     (row) => Date.now() - Date.parse(row.firstFiredAt),
@@ -62,19 +91,28 @@ const columns = [
       id: 'duration',
       header: 'Duration',
       cell: (info) => formatDuration(info.row.original.firstFiredAt, info.row.original.resolvedAt),
+      sortingFn: sortDuration,
     },
   ),
   columnHelper.accessor((row) => row.destinationIds.join(', ') || '—', {
     id: 'destination',
     header: 'Destination',
+    enableSorting: false,
   }),
 ]
 
 export function AlertList({ rows, onSelect }: AlertListProps) {
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: 'severity', desc: true },
+  ])
+
   const table = useReactTable({
     data: rows as Alert[],
     columns,
+    state: { sorting },
+    onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
   })
 
   return (
@@ -88,6 +126,7 @@ export function AlertList({ rows, onSelect }: AlertListProps) {
             {hg.headers.map((header) => (
               <th
                 key={header.id}
+                onClick={header.column.getToggleSortingHandler()}
                 style={{
                   textAlign: 'left',
                   padding: '0.5rem',
@@ -96,9 +135,17 @@ export function AlertList({ rows, onSelect }: AlertListProps) {
                   textTransform: 'uppercase',
                   color: '#6b7280',
                   letterSpacing: '0.04em',
+                  cursor: header.column.getCanSort() ? 'pointer' : 'default',
+                  userSelect: 'none',
                 }}
+                data-testid={`alerts-th-${header.column.id}`}
               >
                 {flexRender(header.column.columnDef.header, header.getContext())}
+                {header.column.getIsSorted() === 'asc'
+                  ? ' ↑'
+                  : header.column.getIsSorted() === 'desc'
+                    ? ' ↓'
+                    : ''}
               </th>
             ))}
           </tr>
