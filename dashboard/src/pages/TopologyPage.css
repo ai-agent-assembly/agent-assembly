@@ -57,3 +57,30 @@
   justify-content: center;
   text-align: center;
 }
+
+.topology-page__loading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.topology-page__skeleton {
+  background: var(--paper-3);
+  height: 2.25rem;
+  border-radius: 4px;
+}
+
+.topology-page__error {
+  color: var(--danger);
+}
+
+.topology-page__error button {
+  margin-top: 0.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.375rem 0.75rem;
+  color: var(--ink-2);
+}

@@ -1,3 +1,5 @@
+import { useMemo } from 'react'
+import { useTopologyQuery } from '../features/topology/api'
 import './TopologyPage.css'
 
 /**
@@ -11,33 +13,57 @@ import './TopologyPage.css'
  * with "Topology · N agents · N teams" subtitle.
  */
 export function TopologyPage() {
+  const { data, isLoading, isError, refetch } = useTopologyQuery()
+  const teamCount = useMemo(() => {
+    if (!data) return 0
+    return new Set(data.nodes.map(n => n.team)).size
+  }, [data])
+  const agentCount = data?.nodes.length ?? 0
+
   return (
     <main className="topology-page" data-testid="topology-view">
       <header className="topology-page__head" data-testid="topology-header">
         <h1 className="topology-page__title">
           Topology
           <span className="topology-page__meta" data-testid="topology-meta">
-            · 0 agents · 0 teams
+            · {agentCount} agent{agentCount === 1 ? '' : 's'} · {teamCount} team{teamCount === 1 ? '' : 's'}
           </span>
         </h1>
       </header>
 
-      <div className="topology-page__body">
-        <section
-          className="topology-page__graph"
-          data-testid="topology-graph-placeholder"
-          aria-label="Topology graph"
-        >
-          Graph component lands in AAASM-1335.
-        </section>
-        <aside
-          className="topology-page__panel"
-          data-testid="topology-panel-placeholder"
-          aria-label="Node detail panel"
-        >
-          Node detail panel lands in AAASM-1337.
-        </aside>
-      </div>
+      {isLoading && (
+        <div data-testid="topology-loading" className="topology-page__loading">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} data-testid="topology-row-skeleton" className="topology-page__skeleton" />
+          ))}
+        </div>
+      )}
+
+      {isError && (
+        <div data-testid="topology-error" className="topology-page__error">
+          <p>Failed to load topology.</p>
+          <button onClick={() => void refetch()}>Retry</button>
+        </div>
+      )}
+
+      {!isLoading && !isError && (
+        <div className="topology-page__body">
+          <section
+            className="topology-page__graph"
+            data-testid="topology-graph-placeholder"
+            aria-label="Topology graph"
+          >
+            Graph component lands in AAASM-1335.
+          </section>
+          <aside
+            className="topology-page__panel"
+            data-testid="topology-panel-placeholder"
+            aria-label="Node detail panel"
+          >
+            Node detail panel lands in AAASM-1337.
+          </aside>
+        </div>
+      )}
     </main>
   )
 }
