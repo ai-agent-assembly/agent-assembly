@@ -1,64 +1,28 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { AlertList } from '../features/alerts/AlertList'
 import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
-import { applyClientFilters } from '../features/alerts/alertFilters'
-import { DEFAULT_ALERT_FILTERS, type Alert, type AlertFilters } from '../features/alerts/types'
-
-// Mock data — the live `useAlertsQuery` wiring lands in AAASM-1075.
-const MOCK_ALERTS: readonly Alert[] = [
-  {
-    id: 'alert-001',
-    ruleId: 'rule-budget-90',
-    ruleName: 'Budget threshold > 90%',
-    severity: 'CRITICAL',
-    status: 'FIRING',
-    agentId: 'aa-001',
-    firstFiredAt: '2026-05-13T09:12:00Z',
-    resolvedAt: null,
-    destinationIds: ['slack-ops'],
-  },
-  {
-    id: 'alert-002',
-    ruleId: 'rule-violation-rate',
-    ruleName: 'Policy violation rate > 5',
-    severity: 'HIGH',
-    status: 'FIRING',
-    agentId: 'aa-002',
-    firstFiredAt: '2026-05-13T10:42:00Z',
-    resolvedAt: null,
-    destinationIds: ['pagerduty-primary'],
-  },
-  {
-    id: 'alert-003',
-    ruleId: 'rule-anomaly',
-    ruleName: 'Anomaly score > 0.8',
-    severity: 'MEDIUM',
-    status: 'SUPPRESSED',
-    agentId: 'aa-005',
-    firstFiredAt: '2026-05-12T14:00:00Z',
-    resolvedAt: null,
-    destinationIds: ['webhook-internal'],
-  },
-  {
-    id: 'alert-004',
-    ruleId: 'rule-approval-age',
-    ruleName: 'Approval pending > 30m',
-    severity: 'LOW',
-    status: 'RESOLVED',
-    agentId: null,
-    firstFiredAt: '2026-05-11T08:30:00Z',
-    resolvedAt: '2026-05-11T09:05:00Z',
-    destinationIds: [],
-  },
-]
+import { useAlertsQuery } from '../features/alerts/api'
+import {
+  filtersFromSearchParams,
+  filtersToSearchParams,
+} from '../features/alerts/urlFilters'
+import type { AlertFilters } from '../features/alerts/types'
 
 export function AlertsPage() {
-  const [filters, setFilters] = useState<AlertFilters>(DEFAULT_ALERT_FILTERS)
-
-  const visibleRows = useMemo(
-    () => applyClientFilters(MOCK_ALERTS, filters),
-    [filters],
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filters: AlertFilters = useMemo(
+    () => filtersFromSearchParams(searchParams),
+    [searchParams],
   )
+
+  const setFilters = useCallback(
+    (next: AlertFilters) => setSearchParams(filtersToSearchParams(next)),
+    [setSearchParams],
+  )
+
+  const { data, isLoading, isError, error, refetch } = useAlertsQuery(filters)
+  const rows = data ?? []
 
   return (
     <main style={{ padding: '1.5rem' }}>
@@ -69,11 +33,31 @@ export function AlertsPage() {
 
       <AlertFilterBar value={filters} onChange={setFilters} />
 
-      <div data-testid="alerts-count" style={{ fontSize: '0.75rem', color: '#6b7280', padding: '0.5rem 0' }}>
-        Showing {visibleRows.length} of {MOCK_ALERTS.length}
+      {isError && (
+        <div
+          data-testid="alerts-error"
+          style={{
+            color: '#dc2626',
+            marginTop: '0.75rem',
+            display: 'flex',
+            gap: '1rem',
+            alignItems: 'center',
+            fontSize: '0.875rem',
+          }}
+        >
+          <span>Failed to load alerts: {error?.message ?? 'unknown error'}</span>
+          <button onClick={() => void refetch()}>Retry</button>
+        </div>
+      )}
+
+      <div
+        data-testid="alerts-count"
+        style={{ fontSize: '0.75rem', color: '#6b7280', padding: '0.5rem 0' }}
+      >
+        {isLoading ? 'Loading…' : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
       </div>
 
-      <AlertList rows={visibleRows} />
+      <AlertList rows={rows} />
     </main>
   )
 }
