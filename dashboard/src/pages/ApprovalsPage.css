@@ -10,12 +10,12 @@
 }
 
 .approvals-state {
-  color: #6b7280;
+  color: var(--ink-3);
   font-size: 0.875rem;
 }
 
 .approvals-state--error {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .approvals-table {
@@ -27,24 +27,24 @@
 .approvals-table th {
   text-align: left;
   padding: 8px 12px;
-  border-bottom: 2px solid #e5e7eb;
-  color: #374151;
+  border-bottom: 2px solid var(--line);
+  color: var(--ink-2);
   font-weight: 600;
 }
 
 .approvals-table td {
   padding: 8px 12px;
-  border-bottom: 1px solid #f3f4f6;
-  color: #111827;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
   vertical-align: middle;
 }
 
 .approvals-table__id {
   font-family: monospace;
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--ink-3);
 }
 
 .approvals-table__unrouted {
-  color: #9ca3af;
+  color: var(--ink-4);
 }
