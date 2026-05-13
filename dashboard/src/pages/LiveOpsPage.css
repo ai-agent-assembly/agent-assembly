@@ -60,6 +60,10 @@
   padding: 8px 14px;
   background: var(--paper-2);
   border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
 
 .live-page__pane-title {
@@ -78,4 +82,22 @@
   padding: 12px 14px;
   font-size: 12px;
   color: var(--ink-4);
+}
+
+/* ── Event-stream wiring (AAASM-1332) ──────────────────────── */
+
+.live-page__pane-body--stream {
+  padding: 0;
+}
+
+.live-page__reconnecting {
+  flex-shrink: 0;
+  padding: 4px 14px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom: 1px solid var(--warn);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
 }
