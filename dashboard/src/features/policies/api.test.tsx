@@ -206,4 +206,58 @@ describe('PolicyEditorPage', () => {
     expect(screen.getByTestId('validation-errors')).toBeInTheDocument()
     expect(screen.getByTestId('validation-errors').textContent).toMatch(/tab indentation|Missing required/)
   })
+
+  it('loads live YAML into editor when ?name=&version= params are present', async () => {
+    const LIVE = 'metadata:\n  name: prod\n  version: "2.0.0"\nrules: []\n'
+    vi.spyOn(policiesApi, 'usePolicyByVersion').mockReturnValue(
+      mockQuery<Policy | null>({
+        data: { name: 'prod', version: '2.0.0', rule_count: 0, active: true, policy_yaml: LIVE },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(policiesApi, 'useCreatePolicy').mockReturnValue(
+      mockMutation<Policy | undefined, policiesApi.CreatePolicyRequest>({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(
+      <Wrapper path="/policies/editor" initialPath="/policies/editor?name=prod&version=2.0.0">
+        <PolicyEditorPage />
+      </Wrapper>,
+    )
+    const textarea = await screen.findByTestId('monaco-editor')
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+  })
+
+  it('Discard resets editor draft back to live YAML and stays on the page', async () => {
+    const LIVE = 'metadata:\n  name: prod\n  version: "2.0.0"\nrules: []\n'
+    vi.spyOn(policiesApi, 'usePolicyByVersion').mockReturnValue(
+      mockQuery<Policy | null>({
+        data: { name: 'prod', version: '2.0.0', rule_count: 0, active: true, policy_yaml: LIVE },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(policiesApi, 'useCreatePolicy').mockReturnValue(
+      mockMutation<Policy | undefined, policiesApi.CreatePolicyRequest>({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(
+      <Wrapper path="/policies/editor" initialPath="/policies/editor?name=prod&version=2.0.0">
+        <PolicyEditorPage />
+      </Wrapper>,
+    )
+    const textarea = await screen.findByTestId('monaco-editor')
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+
+    // Edit the draft
+    fireEvent.change(textarea, { target: { value: 'metadata:\n  name: edited\nrules: []\n' } })
+    expect((textarea as HTMLTextAreaElement).value).toContain('edited')
+
+    // Discard resets to live YAML
+    fireEvent.click(screen.getByTestId('discard-btn'))
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(LIVE))
+    // Page is still the editor (no navigation away)
+    expect(screen.getByTestId('policy-editor')).toBeInTheDocument()
+  })
 })
