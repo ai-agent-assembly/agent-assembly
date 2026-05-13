@@ -6,6 +6,7 @@ import { OverlayProvider } from './OverlayProvider'
 import { useOverlay } from './useOverlay'
 import { OVERLAY_NAMES } from './OverlayContext'
 import { AuthProvider } from '../auth/AuthProvider'
+import { CANONICAL_ROUTES, ROUTE_GROUPS } from '../routes'
 
 describe('OverlayProvider + useOverlay', () => {
   function wrapper({ children }: { children: React.ReactNode }) {
@@ -83,5 +84,40 @@ describe('AppShell overlay mount points', () => {
       expect(mount.getAttribute('data-overlay')).toBe(name)
     }
     localStorage.clear()
+  })
+})
+
+describe('AppShell canonical nav', () => {
+  function renderShell() {
+    localStorage.setItem('aa_token', 'test-token')
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <AuthProvider>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="/" element={<div>page</div>} />
+            </Route>
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+    return () => localStorage.clear()
+  }
+
+  it('renders one nav-link-{id} per CANONICAL_ROUTES entry', () => {
+    const cleanup = renderShell()
+    for (const r of CANONICAL_ROUTES) {
+      expect(screen.getByTestId(`nav-link-${r.id}`)).toBeInTheDocument()
+    }
+    cleanup()
+  })
+
+  it('groups the nav into monitor / control / manage sections', () => {
+    const cleanup = renderShell()
+    for (const group of ROUTE_GROUPS) {
+      expect(screen.getByTestId(`nav-group-${group}`)).toBeInTheDocument()
+      expect(screen.getByTestId(`nav-section-${group}`)).toBeInTheDocument()
+    }
+    cleanup()
   })
 })
