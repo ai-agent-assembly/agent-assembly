@@ -12,3 +12,14 @@ export const CHART_CATEGORICAL_PALETTE = [
   '#ec4899', // pink-500
   '#a78bfa', // violet-400
 ]
+
+// Wong (2011) colorblind-safe palette — distinguishable under deuteranopia/protanopia
+export const CHART_COLORBLIND_PALETTE = [
+  '#e69f00', // orange
+  '#56b4e9', // sky blue
+  '#009e73', // bluish green
+  '#f0e442', // yellow
+  '#0072b2', // blue
+  '#d55e00', // vermilion
+  '#cc79a7', // reddish purple
+]
