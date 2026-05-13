@@ -11,6 +11,7 @@ import { PolicyEditorPage } from './pages/PolicyEditorPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CapabilityPage } from './pages/CapabilityPage'
+import { TraceViewPage } from './pages/TraceViewPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
@@ -44,6 +45,7 @@ function App() {
 
             {/* ── Sub-routes for canonical pages ────────────────────────── */}
             <Route path="/agents/:id" element={<AgentDetailPage />} />
+            <Route path="/agents/:id/trace/:sessionId" element={<TraceViewPage />} />
             <Route path="/policies/editor" element={<PolicyEditorPage />} />
             <Route path="/teams/:teamId" element={<TeamDetailPage />} />
 
