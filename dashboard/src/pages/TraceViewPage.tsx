@@ -7,7 +7,9 @@ import { TraceTimelineFilter } from '../components/trace/TraceTimelineFilter'
 import { ALL_ON, type SeverityFilter } from '../components/trace/severityFilter'
 import { PayloadModal } from '../components/trace/PayloadModal'
 import { EmptyState } from '../components/states'
+import { downloadTraceJson } from '../features/trace/export'
 import type { TraceEvent } from '../features/trace/types'
+import './TraceViewPage.css'
 
 function applyFilter(events: readonly TraceEvent[], filter: SeverityFilter): TraceEvent[] {
   return events.filter(event => {
@@ -69,6 +71,15 @@ export function TraceViewPage() {
 
       {!isLoading && !isError && data && data.length > 0 && (
         <>
+          <div className="trace-toolbar" data-testid="trace-toolbar">
+            <button
+              type="button"
+              data-testid="export-trace"
+              onClick={() => downloadTraceJson(id, sessionId, data)}
+            >
+              Export
+            </button>
+          </div>
           <TraceTimelineFilter value={filter} onChange={setFilter} />
           {filteredEvents.length === 0 ? (
             <div data-testid="trace-filter-empty">

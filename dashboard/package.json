@@ -30,7 +30,8 @@
     "react-router-dom": "^7.15.0",
     "recharts": "^3.8.1",
     "use-debounce": "^10.1.1",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
