@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { capabilityClient } from '../api/capability'
 import { CapabilityMatrixGrid } from '../features/capability/CapabilityMatrixGrid'
+import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
+import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
 import { VERBS } from '../features/capability/types'
 import type { CapabilityMatrix, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
@@ -11,6 +13,7 @@ export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
   const [verb, setVerb] = useState<Verb>('write')
   const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
+  const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
 
   useEffect(() => {
     let alive = true
@@ -21,6 +24,11 @@ export function CapabilityPage() {
       alive = false
     }
   }, [])
+
+  const visibleAgents = useMemo(
+    () => (matrix ? applyFilters(matrix.agents, filters) : []),
+    [matrix, filters],
+  )
 
   return (
     <div className="capability-page" data-testid="capability-page">
@@ -82,10 +90,20 @@ export function CapabilityPage() {
         </div>
       </nav>
 
+      {tab === 'matrix' && matrix && (
+        <CapabilityFilterBar
+          filters={filters}
+          onChange={setFilters}
+          totalAgents={matrix.agents.length}
+          visibleAgents={visibleAgents.length}
+          agents={matrix.agents}
+        />
+      )}
+
       <section className="capability-body" data-active-tab={tab}>
         {tab === 'matrix' && matrix && (
           <CapabilityMatrixGrid
-            agents={matrix.agents}
+            agents={visibleAgents}
             resources={matrix.resources}
             verb={verb}
           />
