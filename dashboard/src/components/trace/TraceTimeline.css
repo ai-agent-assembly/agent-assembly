@@ -1,0 +1,81 @@
+/* ============================================================
+   TraceTimeline — severity color tokens (AAASM-1067)
+   ============================================================
+
+   Each row's background is keyed off the data-severity attribute.
+   All colors come from CSS variables defined in src/styles.css.
+   Adding a new severity = adding a new selector here; no other
+   file needs to change.
+   ============================================================ */
+
+.trace-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.trace-event {
+  display: grid;
+  grid-template-columns: 9rem 1.5rem 8rem 1fr 5rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.trace-event[data-severity='critical'] {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.trace-event[data-severity='warning'] {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.trace-event[data-severity='info'] {
+  background: var(--info-bg);
+  border-color: var(--info);
+}
+
+.trace-event[data-severity='neutral'] {
+  background: var(--paper);
+}
+
+.trace-event__time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+.trace-event__icon {
+  font-size: 1rem;
+  text-align: center;
+  color: var(--ink-2);
+}
+
+.trace-event__agent {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.trace-event__preview {
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-event__duration {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-4);
+  text-align: right;
+}

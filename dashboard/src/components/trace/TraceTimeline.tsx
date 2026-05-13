@@ -1,4 +1,5 @@
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+import './TraceTimeline.css'
 
 const ICON_BY_TYPE: Record<string, string> = {
   llm_call: '⌬',
