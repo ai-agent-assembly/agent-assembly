@@ -100,3 +100,9 @@
 .iam-status--active { background: #dcfce7; color: #166534; }
 .iam-status--invited { background: #dbeafe; color: #1e40af; }
 .iam-status--suspended { background: #fee2e2; color: #991b1b; }
+
+.iam-role-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

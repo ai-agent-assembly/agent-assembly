@@ -1,4 +1,5 @@
 import { useMembersQuery } from './api'
+import { RoleSelect } from './RoleSelect'
 import type { Member, Role } from './types'
 import './MemberList.css'
 
@@ -29,7 +30,11 @@ function formatLastActive(value: string | null): string {
   return d.toISOString().slice(0, 16).replace('T', ' ')
 }
 
-export function MemberList() {
+export interface MemberListProps {
+  onBeforeRoleChange?: (member: Member, next: Role) => boolean | Promise<boolean>
+}
+
+export function MemberList({ onBeforeRoleChange }: MemberListProps = {}) {
   const { data, isLoading, isError, refetch } = useMembersQuery()
 
   if (isError) {
@@ -73,7 +78,12 @@ export function MemberList() {
                 </div>
               </div>
             </td>
-            <td><RoleBadge role={m.role} /></td>
+            <td>
+              <div className="iam-role-cell">
+                <RoleBadge role={m.role} />
+                <RoleSelect member={m} onBeforeChange={onBeforeRoleChange} />
+              </div>
+            </td>
             <td className="iam-member-list__mono">{formatLastActive(m.last_active)}</td>
             <td><StatusCell status={m.status} /></td>
           </tr>
