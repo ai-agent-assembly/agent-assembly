@@ -3,7 +3,14 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { OverlayProvider } from './OverlayProvider'
 import { OVERLAY_NAMES } from './OverlayContext'
+import { CANONICAL_ROUTES, ROUTE_GROUPS, type RouteGroup } from '../routes'
 import './AppShell.css'
+
+const GROUP_LABEL: Record<RouteGroup, string> = {
+  monitor: 'monitor',
+  control: 'control',
+  manage: 'manage',
+}
 
 // ── Error boundary ─────────────────────────────────────────────────────────────
 
@@ -38,14 +45,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   }
 }
 
-// ── Nav links config ───────────────────────────────────────────────────────────
-
-const NAV_LINKS = [
-  { to: '/approvals', label: 'Approvals' },
-  { to: '/agents', label: 'Agents' },
-  { to: '/policies', label: 'Policies' },
-] as const
-
 // ── AppShell ───────────────────────────────────────────────────────────────────
 
 export function AppShell() {
@@ -61,17 +60,25 @@ export function AppShell() {
         onClick={() => setNavOpen(false)}
       >
         <div className="appshell__nav-brand">Agent Assembly</div>
-        {NAV_LINKS.map(({ to, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              `appshell__nav-link${isActive ? ' appshell__nav-link--active' : ''}`
-            }
-            data-testid={`nav-link-${label.toLowerCase()}`}
-          >
-            {label}
-          </NavLink>
+        {ROUTE_GROUPS.map((group) => (
+          <div key={group} data-testid={`nav-group-${group}`}>
+            <div className="appshell__nav-section" data-testid={`nav-section-${group}`}>
+              {GROUP_LABEL[group]}
+            </div>
+            {CANONICAL_ROUTES.filter((r) => r.group === group).map((r) => (
+              <NavLink
+                key={r.id}
+                to={r.path}
+                className={({ isActive }) =>
+                  `appshell__nav-link${isActive ? ' appshell__nav-link--active' : ''}`
+                }
+                data-testid={`nav-link-${r.id}`}
+              >
+                <span className="appshell__nav-num">{r.num}</span>
+                {r.label}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 
