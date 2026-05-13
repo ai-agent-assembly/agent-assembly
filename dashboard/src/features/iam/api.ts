@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { iamQueryKeys } from './queryKeys'
-import type { InviteMemberInput, Member, MemberPage } from './types'
+import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } from './types'
 
 /**
  * In-memory member store.
@@ -77,13 +77,80 @@ export function useInviteMemberMutation() {
   })
 }
 
+export class UpdateMemberRoleError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UpdateMemberRoleError'
+  }
+}
+
+/** Override hook for tests — when set, used in place of the in-memory store. */
+let _updateRoleOverride: ((input: UpdateMemberRoleInput) => Promise<Member>) | null = null
+
+function updateMemberRole(input: UpdateMemberRoleInput): Promise<Member> {
+  if (_updateRoleOverride) return _updateRoleOverride(input)
+  const idx = store.members.findIndex((m) => m.id === input.id)
+  if (idx === -1) return Promise.reject(new UpdateMemberRoleError(`member ${input.id} not found`))
+  const next: Member = { ...store.members[idx], role: input.role }
+  store.members = [...store.members.slice(0, idx), next, ...store.members.slice(idx + 1)]
+  return Promise.resolve(next)
+}
+
+export interface UpdateMemberRoleContext {
+  snapshots: [readonly unknown[], MemberPage | undefined][]
+}
+
+export function useUpdateMemberRoleMutation() {
+  const queryClient = useQueryClient()
+  return useMutation<Member, Error, UpdateMemberRoleInput, UpdateMemberRoleContext>({
+    mutationFn: updateMemberRole,
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: iamQueryKeys.members() })
+      const snapshots = queryClient.getQueriesData<MemberPage>({
+        queryKey: iamQueryKeys.members(),
+      })
+      for (const [key, page] of snapshots) {
+        if (!page) continue
+        queryClient.setQueryData<MemberPage>(key, {
+          ...page,
+          items: page.items.map((m) => (m.id === input.id ? { ...m, role: input.role } : m)),
+        })
+      }
+      return { snapshots }
+    },
+    onError: (_err, _input, context) => {
+      if (!context) return
+      for (const [key, snapshot] of context.snapshots) {
+        queryClient.setQueryData(key, snapshot)
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+    },
+  })
+}
+
+_iamInternal.setUpdateRoleOverride = (
+  fn: ((input: UpdateMemberRoleInput) => Promise<Member>) | null,
+): void => {
+  _updateRoleOverride = fn
+}
+
 /** Test-only helpers — reset the seed between specs. */
-export const _iamInternal = {
+export const _iamInternal: {
+  reset: () => void
+  snapshot: () => readonly Member[]
+  store: { members: Member[] }
+  setUpdateRoleOverride: (fn: ((input: UpdateMemberRoleInput) => Promise<Member>) | null) => void
+} = {
   reset(): void {
     store.members = [...SEED_MEMBERS]
+    _updateRoleOverride = null
+    _inviteSeq = 0
   },
   snapshot(): readonly Member[] {
     return store.members
   },
   store,
+  setUpdateRoleOverride: () => {},
 }
