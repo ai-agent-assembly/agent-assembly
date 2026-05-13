@@ -1,11 +1,22 @@
 import { useId, useState } from 'react'
-import type { CallStackNode, LiveOperation, OperationStatus } from './types'
+import { RowActionMenu } from './RowActionMenu'
+import type {
+  CallStackNode,
+  LiveOperation,
+  OperationOverride,
+  OperationStatus,
+} from './types'
 import './OperationRow.css'
 
 interface OperationRowProps {
   op: LiveOperation
   /** Initial expanded state (uncontrolled). Stories + tests use this. */
   defaultExpanded?: boolean
+  /** Pending row-action; renders an "…ing" hint next to the chip. */
+  override?: OperationOverride
+  onPause?: () => void
+  onResume?: () => void
+  onTerminate?: () => void
 }
 
 const STATUS_LABEL: Record<OperationStatus, string> = {
@@ -13,6 +24,12 @@ const STATUS_LABEL: Record<OperationStatus, string> = {
   pending: 'PENDING',
   blocked: 'BLOCKED',
   completing: 'COMPLETING',
+}
+
+const OVERRIDE_LABEL: Record<OperationOverride, string> = {
+  pausing: 'pausing…',
+  resuming: 'resuming…',
+  terminating: 'terminating…',
 }
 
 function formatStartedAt(iso: string): string {
@@ -37,10 +54,19 @@ function formatLatency(ms: number): string {
  * the row, per AAASM-1282 implementation rule #4 (no drawer, no
  * route change). Row actions land in AAASM-1334.
  */
-export function OperationRow({ op, defaultExpanded = false }: OperationRowProps) {
+export function OperationRow({
+  op,
+  defaultExpanded = false,
+  override,
+  onPause,
+  onResume,
+  onTerminate,
+}: OperationRowProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const treeId = useId()
   const canExpand = (op.callStack?.length ?? 0) > 0
+  const showActions =
+    onPause !== undefined && onResume !== undefined && onTerminate !== undefined
 
   return (
     <div
@@ -49,6 +75,7 @@ export function OperationRow({ op, defaultExpanded = false }: OperationRowProps)
       data-op-id={op.id}
       data-status={op.status}
       data-expanded={expanded ? 'true' : 'false'}
+      data-override={override}
     >
       <div className="op-row__main">
         <button
@@ -75,6 +102,20 @@ export function OperationRow({ op, defaultExpanded = false }: OperationRowProps)
         <span className="op-row__resource" title={op.resource}>
           {op.resource}
         </span>
+        {override && (
+          <span className="op-row__override" data-testid="op-row-override">
+            {OVERRIDE_LABEL[override]}
+          </span>
+        )}
+        {showActions && (
+          <RowActionMenu
+            op={op}
+            override={override}
+            onPause={onPause}
+            onResume={onResume}
+            onTerminate={onTerminate}
+          />
+        )}
       </div>
       {expanded && canExpand && (
         <CallStackTree id={treeId} nodes={op.callStack ?? []} />

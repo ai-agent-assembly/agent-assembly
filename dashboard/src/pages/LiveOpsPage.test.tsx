@@ -1,11 +1,17 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ToastProvider } from '../components/ToastProvider'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
+
+function renderWithProviders(ui: ReactElement) {
+  return render(<ToastProvider>{ui}</ToastProvider>)
+}
 
 vi.mock('../features/agents/api', () => ({
   useAgentsQuery: vi.fn(),
@@ -75,7 +81,7 @@ describe('LiveOpsPage', () => {
   })
 
   it('renders the page header and all three zones', () => {
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
     expect(
       screen.getByRole('heading', { name: /live operations/i }),
     ).toBeInTheDocument()
@@ -85,20 +91,20 @@ describe('LiveOpsPage', () => {
   })
 
   it('mounts FilterBar and AutoScrollToggle inside the stream zone', () => {
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
     expect(screen.getByTestId('live-ops-filter-bar')).toBeInTheDocument()
     expect(screen.getByTestId('auto-scroll-toggle')).toBeInTheDocument()
   })
 
   it('renders an OperationRow per streamed op', () => {
     mockStream({ ops: [makeOp('op-1'), makeOp('op-2')] })
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
     expect(screen.getAllByTestId('op-row')).toHaveLength(2)
   })
 
   it('shows the reconnecting strip when hook reports reconnecting', () => {
     mockStream({ status: 'reconnecting' })
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
     expect(screen.getByTestId('live-ops-reconnecting')).toBeInTheDocument()
     expect(screen.queryByTestId('error-state')).toBeNull()
   })
@@ -107,7 +113,7 @@ describe('LiveOpsPage', () => {
     const user = userEvent.setup()
     const reconnect = vi.fn()
     mockStream({ status: 'error', reconnect })
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
     expect(screen.getByTestId('error-state')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /reconnect/i }))
     expect(reconnect).toHaveBeenCalledTimes(1)
@@ -116,7 +122,7 @@ describe('LiveOpsPage', () => {
   it('pauses the displayed list on toggle-off, counts new ops, and flushes on click', async () => {
     const user = userEvent.setup()
     mockStream({ ops: [makeOp('op-1')] })
-    const { rerender } = render(<LiveOpsPage />)
+    const { rerender } = renderWithProviders(<LiveOpsPage />)
     expect(screen.getAllByTestId('op-row')).toHaveLength(1)
 
     // Toggle auto-scroll off — snapshots the currently visible ids.
@@ -124,7 +130,11 @@ describe('LiveOpsPage', () => {
 
     // New op streams in; rendered list stays frozen at 1, pill shows backlog.
     mockStream({ ops: [makeOp('op-2'), makeOp('op-1')] })
-    rerender(<LiveOpsPage />)
+    rerender(
+      <ToastProvider>
+        <LiveOpsPage />
+      </ToastProvider>,
+    )
     expect(screen.getAllByTestId('op-row')).toHaveLength(1)
     expect(screen.getByTestId('auto-scroll-flush')).toHaveTextContent(
       '1 new op — flush',
@@ -139,7 +149,7 @@ describe('LiveOpsPage', () => {
   it('toggling auto-scroll back on clears the frozen snapshot', async () => {
     const user = userEvent.setup()
     mockStream({ ops: [makeOp('op-1')] })
-    render(<LiveOpsPage />)
+    renderWithProviders(<LiveOpsPage />)
 
     // Off → on.
     await user.click(screen.getByTestId('auto-scroll-toggle-input'))

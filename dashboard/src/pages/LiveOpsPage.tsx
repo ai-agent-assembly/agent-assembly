@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
+import { useToast } from '../components/Toast'
 import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
+import { pauseOp, resumeOp, terminateOp } from '../features/liveOps/actions'
 import { applyFilters } from '../features/liveOps/applyFilters'
 import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
@@ -9,17 +11,80 @@ import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
 import { PipelineCanvas } from '../features/liveOps/PipelineCanvas'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
-import { EMPTY_FILTERS, type LiveOpsFilters } from '../features/liveOps/types'
+import {
+  EMPTY_FILTERS,
+  type LiveOpsFilters,
+  type OperationOverride,
+  type OperationStatus,
+} from '../features/liveOps/types'
 import './LiveOpsPage.css'
+
+const OVERRIDE_VERB: Record<OperationOverride, string> = {
+  pausing: 'pause',
+  resuming: 'resume',
+  terminating: 'terminate',
+}
+
+/**
+ * Returns true when the WS-reported `status` reflects the result the
+ * optimistic `intent` was working toward. The override can be cleared
+ * once the wire confirms the action took effect.
+ */
+function matchesIntent(status: OperationStatus, intent: OperationOverride): boolean {
+  if (intent === 'pausing') return status === 'blocked'
+  if (intent === 'resuming') return status === 'running'
+  return status === 'completing'
+}
 
 export function LiveOpsPage() {
   const { ops, status, reconnect } = useLiveOpsStream()
   const [filters, setFilters] = useState<LiveOpsFilters>(EMPTY_FILTERS)
   const [autoScroll, setAutoScroll] = useState(true)
   const [frozenIds, setFrozenIds] = useState<Set<string> | null>(null)
+  const [overrides, setOverrides] = useState<Map<string, OperationOverride>>(
+    () => new Map(),
+  )
+  const { toast } = useToast()
 
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
+
+  // Derived map: every override whose WS-reported status already matches
+  // its intent is hidden from the UI. The raw `overrides` state still
+  // holds them until the next action triggers a state update; the cost
+  // is bounded by the page's ops ring (default 100) so they evaporate
+  // naturally when the ops age out.
+  const liveOverrides = useMemo(() => {
+    if (overrides.size === 0) return overrides
+    let pruned: Map<string, OperationOverride> | null = null
+    for (const op of ops) {
+      const intent = overrides.get(op.id)
+      if (intent && matchesIntent(op.status, intent)) {
+        if (!pruned) pruned = new Map(overrides)
+        pruned.delete(op.id)
+      }
+    }
+    return pruned ?? overrides
+  }, [ops, overrides])
+
+  async function runAction(
+    opId: string,
+    intent: OperationOverride,
+    call: (id: string) => Promise<void>,
+  ) {
+    setOverrides((prev) => new Map(prev).set(opId, intent))
+    try {
+      await call(opId)
+    } catch (err) {
+      setOverrides((prev) => {
+        const next = new Map(prev)
+        next.delete(opId)
+        return next
+      })
+      const detail = err instanceof Error ? err.message : 'unknown error'
+      toast(`Failed to ${OVERRIDE_VERB[intent]} op ${opId}: ${detail}`, 'error')
+    }
+  }
 
   const agentOptions: FilterOption[] = useMemo(
     () =>
@@ -133,7 +198,16 @@ export function LiveOpsPage() {
                 retryLabel="Reconnect"
               />
             ) : (
-              filteredOps.map((op) => <OperationRow key={op.id} op={op} />)
+              filteredOps.map((op) => (
+                <OperationRow
+                  key={op.id}
+                  op={op}
+                  override={liveOverrides.get(op.id)}
+                  onPause={() => runAction(op.id, 'pausing', pauseOp)}
+                  onResume={() => runAction(op.id, 'resuming', resumeOp)}
+                  onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
+                />
+              ))
             )}
           </div>
         </section>
