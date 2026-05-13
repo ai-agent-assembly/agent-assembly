@@ -1,0 +1,35 @@
+.fleet-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.fleet-trust__track {
+  width: 60px;
+  height: 6px;
+  background: #d8d4c7;
+  border-radius: 1px;
+  overflow: hidden;
+  display: inline-block;
+}
+
+.fleet-trust__fill {
+  display: block;
+  height: 100%;
+  background: currentColor;
+}
+
+.fleet-trust__value {
+  font-weight: 600;
+}
+
+.fleet-trust--ok { color: #22592a; }
+.fleet-trust--warn { color: #8a5a00; }
+.fleet-trust--danger { color: #b8291e; }
+
+.fleet-trust--empty {
+  color: #8a8a8a;
+}
