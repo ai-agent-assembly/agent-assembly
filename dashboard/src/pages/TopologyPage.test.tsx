@@ -63,7 +63,7 @@ describe('TopologyPage', () => {
 
     expect(screen.getByTestId('topology-loading')).toBeInTheDocument()
     expect(screen.getAllByTestId('topology-row-skeleton')).toHaveLength(4)
-    expect(screen.queryByTestId('topology-graph-placeholder')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('topology-graph-wrapper')).not.toBeInTheDocument()
   })
 
   it('shows error banner with Retry button on failure and calls refetch on click', async () => {
@@ -78,13 +78,16 @@ describe('TopologyPage', () => {
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
-  it('mounts both placeholder slots when query has data', () => {
+  it('mounts the TopologyGraph (real component) and the panel placeholder when data is present', () => {
     vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
       mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
     )
     renderPage()
 
-    expect(screen.getByTestId('topology-graph-placeholder')).toBeInTheDocument()
+    expect(screen.getByTestId('topology-graph-wrapper')).toBeInTheDocument()
+    // Real graph component renders an SVG with one node per graph entry.
+    expect(screen.getByTestId('topology-graph')).toBeInTheDocument()
+    expect(screen.getAllByTestId('topology-node')).toHaveLength(GRAPH.nodes.length)
     expect(screen.getByTestId('topology-panel-placeholder')).toBeInTheDocument()
   })
 })
