@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AlertFilterBar, applyClientFilters } from './AlertFilterBar'
+import { AlertFilterBar } from './AlertFilterBar'
+import { applyClientFilters } from './alertFilters'
 import { DEFAULT_ALERT_FILTERS, type Alert, type AlertFilters } from './types'
 
 const ROWS: readonly Alert[] = [

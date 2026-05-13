@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AlertList } from '../features/alerts/AlertList'
-import { AlertFilterBar, applyClientFilters } from '../features/alerts/AlertFilterBar'
+import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
+import { applyClientFilters } from '../features/alerts/alertFilters'
 import { DEFAULT_ALERT_FILTERS, type Alert, type AlertFilters } from '../features/alerts/types'
 
 // Mock data — the live `useAlertsQuery` wiring lands in AAASM-1075.
