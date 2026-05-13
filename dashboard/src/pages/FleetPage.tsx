@@ -24,7 +24,7 @@ import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
 import { useToast } from '../components/Toast'
 import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
-import { useSuspendAgent } from '../features/agents/mutations'
+import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
@@ -219,6 +219,7 @@ export function FleetPage() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [showBulkSuspendDialog, setShowBulkSuspendDialog] = useState(false)
   const [bulkSuspendPending, setBulkSuspendPending] = useState(false)
+  const [bulkResumePending, setBulkResumePending] = useState(false)
   const knownIds = useRef<Set<string>>(new Set())
   useEffect(() => {
     const next = new Set(fleetAgents.map((a) => a.id))
@@ -281,20 +282,15 @@ export function FleetPage() {
   const filteredCount = filteredFleet.length
 
   const suspend = useSuspendAgent()
-  const onConfirmBulkSuspend = useCallback(
-    async (reason: string) => {
-      const ids = Array.from(selected)
-      setBulkSuspendPending(true)
-      const results = await Promise.allSettled(
-        ids.map((id) => suspend.mutateAsync({ id, reason })),
-      )
+  const resume = useResumeAgent()
+
+  const reportBulkResult = useCallback(
+    (verb: 'suspended' | 'resumed', ids: string[], results: PromiseSettledResult<unknown>[]) => {
       const okCount = results.filter((r) => r.status === 'fulfilled').length
       const failCount = results.length - okCount
-      setBulkSuspendPending(false)
-      setShowBulkSuspendDialog(false)
       if (failCount === 0) {
         setSelected(new Set())
-        toast(`${okCount} suspended`, 'success')
+        toast(`${okCount} ${verb}`, 'success')
       } else if (okCount === 0) {
         toast(`${failCount} failed`, 'error')
       } else {
@@ -306,11 +302,35 @@ export function FleetPage() {
             .filter((x): x is string => Boolean(x)),
         )
         setSelected(failedIds)
-        toast(`${okCount} suspended, ${failCount} failed`, 'error')
+        toast(`${okCount} ${verb}, ${failCount} failed`, 'error')
       }
     },
-    [selected, suspend, toast],
+    [toast],
   )
+
+  const onConfirmBulkSuspend = useCallback(
+    async (reason: string) => {
+      const ids = Array.from(selected)
+      setBulkSuspendPending(true)
+      const results = await Promise.allSettled(
+        ids.map((id) => suspend.mutateAsync({ id, reason })),
+      )
+      setBulkSuspendPending(false)
+      setShowBulkSuspendDialog(false)
+      reportBulkResult('suspended', ids, results)
+    },
+    [selected, suspend, reportBulkResult],
+  )
+
+  const onClickBulkResume = useCallback(async () => {
+    const ids = Array.from(selected)
+    setBulkResumePending(true)
+    const results = await Promise.allSettled(
+      ids.map((id) => resume.mutateAsync({ id })),
+    )
+    setBulkResumePending(false)
+    reportBulkResult('resumed', ids, results)
+  }, [selected, resume, reportBulkResult])
 
   return (
     <main className="fleet-page" data-testid="fleet-page">
@@ -395,10 +415,19 @@ export function FleetPage() {
             type="button"
             className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
             onClick={() => setShowBulkSuspendDialog(true)}
-            disabled={bulkSuspendPending}
+            disabled={bulkSuspendPending || bulkResumePending}
             data-testid="fleet-bulkbar-suspend"
           >
             ■ suspend
+          </button>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn"
+            onClick={() => void onClickBulkResume()}
+            disabled={bulkSuspendPending || bulkResumePending}
+            data-testid="fleet-bulkbar-resume"
+          >
+            {bulkResumePending ? 'Resuming…' : '▶ resume'}
           </button>
           <button
             type="button"
