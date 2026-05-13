@@ -7,8 +7,16 @@ import {
   createColumnHelper,
   type SortingState,
 } from '@tanstack/react-table'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAgentsQuery, type Agent } from '../features/agents/api'
+import { toFleetAgent } from '../features/agents/fleetTypes'
+import {
+  DEFAULT_FLEET_FILTERS,
+  applyFleetFilters,
+  frameworkOptions,
+  type FleetFilters,
+} from '../features/agents/fleetFilters'
+import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -91,10 +99,23 @@ export function FleetPage() {
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
+  const [filters, setFilters] = useState<FleetFilters>(DEFAULT_FLEET_FILTERS)
+
+  const fleetAgents = useMemo(() => (agents ?? []).map(toFleetAgent), [agents])
+  const frameworks = useMemo(() => frameworkOptions(fleetAgents), [fleetAgents])
+  const filteredFleet = useMemo(
+    () => applyFleetFilters(fleetAgents, filters),
+    [fleetAgents, filters],
+  )
+  const filteredIds = useMemo(() => new Set(filteredFleet.map((a) => a.id)), [filteredFleet])
+  const tableData = useMemo(
+    () => (agents ?? []).filter((a) => filteredIds.has(a.id)),
+    [agents, filteredIds],
+  )
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: agents ?? [],
+    data: tableData,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -103,6 +124,7 @@ export function FleetPage() {
   })
 
   const totalAgents = agents?.length ?? 0
+  const filteredCount = filteredFleet.length
 
   return (
     <main className="fleet-page" data-testid="fleet-page">
@@ -111,7 +133,7 @@ export function FleetPage() {
           <h1 className="fleet-page__title">
             Fleet
             <span className="fleet-page__count" data-testid="fleet-page-count">
-              · {totalAgents} agents
+              · {filteredCount} of {totalAgents} agents
             </span>
           </h1>
           <p className="fleet-page__sub">
@@ -138,7 +160,7 @@ export function FleetPage() {
           data-testid="fleet-tab-agents"
         >
           Agents
-          <span className="fleet-tabs__count">{totalAgents}</span>
+          <span className="fleet-tabs__count">{filteredCount}</span>
         </button>
         <button
           type="button"
@@ -160,6 +182,14 @@ export function FleetPage() {
             Detail drawer (AAASM-1052).
           </p>
         </div>
+      )}
+
+      {view === 'agents' && (
+        <FleetFilterBar
+          filters={filters}
+          frameworks={frameworks}
+          onChange={setFilters}
+        />
       )}
 
       {view === 'agents' && isError && (

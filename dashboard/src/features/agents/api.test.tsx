@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
@@ -72,9 +72,10 @@ describe('FleetPage', () => {
     )
     render(<FleetPage />, { wrapper: ({ children }) => <Wrapper path="/">{children}</Wrapper> })
     await waitFor(() => expect(screen.getAllByTestId('agent-row')).toHaveLength(1))
-    expect(screen.getByText('test-agent')).toBeInTheDocument()
-    expect(screen.getByText('langgraph')).toBeInTheDocument()
-    expect(screen.getByText('active')).toBeInTheDocument()
+    const row = screen.getByTestId('agent-row')
+    expect(within(row).getByText('test-agent')).toBeInTheDocument()
+    expect(within(row).getByText('langgraph')).toBeInTheDocument()
+    expect(within(row).getByText('active')).toBeInTheDocument()
   })
 
   it('shows empty state when no agents', async () => {
