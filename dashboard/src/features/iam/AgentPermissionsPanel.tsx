@@ -1,31 +1,13 @@
 import { useMemo } from 'react'
 import { useAgentPermissionsQuery } from './agents'
-import {
-  INHERITANCE_KINDS,
-  type Agent,
-  type EffectivePermission,
-  type InheritanceKind,
-} from './types'
+import { groupBySourceKind } from './groupBySourceKind'
+import { INHERITANCE_KINDS, type Agent, type InheritanceKind } from './types'
 import './AgentPermissionsPanel.css'
 
 const KIND_LABEL: Record<InheritanceKind, string> = {
   team: 'Team',
   role: 'Role',
   policy: 'Policy',
-}
-
-export function groupBySourceKind(
-  permissions: readonly EffectivePermission[],
-): Record<InheritanceKind, EffectivePermission[]> {
-  const grouped: Record<InheritanceKind, EffectivePermission[]> = {
-    team: [],
-    role: [],
-    policy: [],
-  }
-  for (const p of permissions) {
-    grouped[p.source.kind].push(p)
-  }
-  return grouped
 }
 
 function formatGrantedAt(value: string): string {
@@ -44,7 +26,7 @@ export function AgentPermissionsPanel({ agent, onClose }: AgentPermissionsPanelP
 
   const grouped = useMemo(
     () => (data ? groupBySourceKind(data.effective) : null),
-    [data, agent?.id],
+    [data],
   )
 
   if (!agent) return null
