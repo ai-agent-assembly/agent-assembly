@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { TeamBudgetBar, bucketForBudget } from './TeamBudgetBar'
+import { TeamBudgetBar } from './TeamBudgetBar'
+import { bucketForBudget } from './budgetThreshold'
 
 describe('bucketForBudget', () => {
   it.each([

@@ -1,14 +1,5 @@
+import { bucketForBudget } from './budgetThreshold'
 import './TeamBudgetBar.css'
-
-export type BudgetThresholdBucket = 'ok' | 'warn' | 'danger'
-
-export function bucketForBudget(spent: number, limit: number): BudgetThresholdBucket {
-  if (limit <= 0) return 'ok'
-  const ratio = spent / limit
-  if (ratio < 0.8) return 'ok'
-  if (ratio < 0.95) return 'warn'
-  return 'danger'
-}
 
 export interface TeamBudgetBarProps {
   readonly team: string
