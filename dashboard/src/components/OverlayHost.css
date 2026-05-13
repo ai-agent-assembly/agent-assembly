@@ -1,0 +1,30 @@
+/* ============================================================
+   OverlayHost — full-screen overlay surface (AAASM-1368)
+   ============================================================
+
+   Renders a fixed-position backdrop + content container when a
+   named overlay is open. The backdrop sits above all AppShell
+   content; the container is the editable region the caller's
+   children render into.
+
+   Colors are derived from design tokens in src/styles.css —
+   no hex literals.
+   ============================================================ */
+
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.overlay-container {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-2);
+  color: var(--ink);
+  overflow: auto;
+}
