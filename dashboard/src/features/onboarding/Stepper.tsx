@@ -24,7 +24,7 @@ export function Stepper({ currentStep, onJump }: StepperProps) {
             key={s.id}
             type="button"
             className={`onb-rail-step is-${status}`}
-            data-testid={`onboarding-step-${s.id}`}
+            data-testid={`onboarding-stepper-${s.id}`}
             data-status={status}
             disabled={!reachable}
             aria-current={status === 'current' ? 'step' : undefined}
