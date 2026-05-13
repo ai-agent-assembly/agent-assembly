@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import './PayloadModal.css'
 
@@ -16,6 +17,15 @@ export interface PayloadModalProps {
  * Esc handler, focus trap, and Copy JSON button land in subsequent commits.
  */
 export function PayloadModal({ event, onClose }: PayloadModalProps) {
+  useEffect(() => {
+    if (!event) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [event, onClose])
+
   if (!event) return null
 
   const formatted = JSON.stringify(event.payload, null, 2)
