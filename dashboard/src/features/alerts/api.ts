@@ -11,6 +11,9 @@ import type {
   AlertFilters,
   AlertRule,
   AlertRuleInput,
+  Destination,
+  DestinationInput,
+  DestinationTestResult,
   Silence,
   SilenceInput,
 } from './types'
@@ -142,6 +145,76 @@ export function useDeleteAlertRuleMutation(): UseMutationResult<void, Error, str
     mutationFn: (id) =>
       alertsFetch<void>(alertsEndpoints.rule(id), { method: 'DELETE' }),
     onSuccess: () => invalidateRules(client),
+  })
+}
+
+// ── Destinations — list + create / update / delete / test ────────────────
+
+function invalidateDestinations(
+  client: ReturnType<typeof useQueryClient>,
+): Promise<void> {
+  return client.invalidateQueries({ queryKey: [alertsQueryKeys.destinations] })
+}
+
+export function useDestinationsQuery(): UseQueryResult<readonly Destination[], Error> {
+  return useQuery({
+    queryKey: [alertsQueryKeys.destinations],
+    queryFn: () => alertsFetch<readonly Destination[]>(alertsEndpoints.destinations),
+  })
+}
+
+export function useCreateDestinationMutation(): UseMutationResult<
+  Destination,
+  Error,
+  DestinationInput
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input) =>
+      alertsFetch<Destination>(alertsEndpoints.destinations, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateDestinations(client),
+  })
+}
+
+export function useUpdateDestinationMutation(): UseMutationResult<
+  Destination,
+  Error,
+  { id: string; input: DestinationInput }
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }) =>
+      alertsFetch<Destination>(alertsEndpoints.destination(id), {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateDestinations(client),
+  })
+}
+
+export function useDeleteDestinationMutation(): UseMutationResult<void, Error, string> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (id) =>
+      alertsFetch<void>(alertsEndpoints.destination(id), { method: 'DELETE' }),
+    onSuccess: () => invalidateDestinations(client),
+  })
+}
+
+export function useTestDestinationMutation(): UseMutationResult<
+  DestinationTestResult,
+  Error,
+  { id: string; severity?: string; message?: string }
+> {
+  return useMutation({
+    mutationFn: ({ id, severity, message }) =>
+      alertsFetch<DestinationTestResult>(alertsEndpoints.destinationTest(id), {
+        method: 'POST',
+        body: JSON.stringify({ severity, message }),
+      }),
   })
 }
 
