@@ -1,0 +1,661 @@
+/* ============================================================
+   Policy Editor overlay (AAASM-1370)
+   ============================================================
+
+   Styles for the structured condition-builder mounted inside
+   OverlayHost. Uses only design tokens from src/styles.css.
+   ============================================================ */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: inherit;
+}
+
+/* ── Header ───────────────────────────────────────────────── */
+
+.editor__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.editor__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.editor__chips {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.editor__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-2);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.editor__chip--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok-bg);
+}
+
+.editor__chip--warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+}
+
+.editor__chip--name {
+  color: var(--ink);
+}
+
+.editor__view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--paper-2);
+}
+
+.editor__view-btn {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.editor__view-btn--active {
+  background: var(--ink);
+  color: var(--paper-2);
+}
+
+.editor__view-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
+}
+
+/* ── Body ─────────────────────────────────────────────────── */
+
+.editor__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  padding: 1.25rem;
+  overflow: auto;
+  background: var(--paper);
+}
+
+.editor__callout {
+  padding: 0.75rem 1rem;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  color: var(--warn);
+  font-size: 0.875rem;
+}
+
+.editor__callout-title {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.editor__callout-body {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+/* ── Section card (scope + rule cards) ───────────────────── */
+
+.editor__section {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.editor__section--dirty {
+  border-left-width: 3px;
+  border-left-color: var(--warn);
+}
+
+.editor__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.editor__section-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.editor__rule-num {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--paper-3);
+  color: var(--ink-2);
+  border-radius: 4px;
+}
+
+.editor__dirty-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--warn);
+  border-radius: 50%;
+}
+
+.editor__btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.editor__btn-sm:hover {
+  background: var(--paper-3);
+}
+
+.editor__btn-sm:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.editor__section-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+/* ── Clauses ──────────────────────────────────────────────── */
+
+.editor__clause {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.editor__clause-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-4);
+  min-width: 3.5rem;
+}
+
+.editor__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.editor__select:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.editor__verb-group {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.editor__verb {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.editor__verb--active {
+  color: var(--paper-2);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.editor__verb--danger.editor__verb--active {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ── Action picker ────────────────────────────────────────── */
+
+.editor__action-picker {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.editor__action-btn {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--ink-3);
+  background: var(--paper-2);
+  border: 0;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.editor__action-btn:last-child {
+  border-right: 0;
+}
+
+.editor__action-btn--active {
+  color: var(--paper-2);
+  background: var(--ink);
+}
+
+.editor__action-btn--active.editor__action-btn--deny {
+  background: var(--danger);
+}
+
+.editor__action-btn--active.editor__action-btn--ok {
+  background: var(--ok);
+}
+
+/* ── Condition list ──────────────────────────────────────── */
+
+.editor__condition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-left: 4rem;
+}
+
+.editor__condition-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.editor__condition-and {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6875rem;
+  color: var(--ink-4);
+  padding-left: 0.25rem;
+}
+
+.editor__remove-cond {
+  font-size: 0.75rem;
+  color: var(--ink-4);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.editor__remove-cond:hover {
+  color: var(--danger);
+}
+
+.editor__add-condition {
+  align-self: flex-start;
+  font-size: 0.8125rem;
+  color: var(--info);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.editor__add-condition:hover {
+  text-decoration: underline;
+}
+
+/* ── Sub-clauses ─────────────────────────────────────────── */
+
+.editor__sub-clause {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-left: 4rem;
+}
+
+.editor__sub-clause-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.editor__help-text {
+  font-size: 0.75rem;
+  color: var(--ink-4);
+}
+
+.editor__chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.editor__chip-editable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink);
+  background: var(--paper-3);
+  border-radius: 4px;
+}
+
+.editor__chip-remove {
+  background: transparent;
+  border: 0;
+  font-size: 0.875rem;
+  color: var(--ink-4);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.editor__chip-remove:hover {
+  color: var(--danger);
+}
+
+.editor__chip-add-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.editor__chip-add-input {
+  width: 12rem;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.editor__chip-add-input:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 0;
+}
+
+.editor__chip-add-btn {
+  padding: 0.125rem 0.375rem;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  background: var(--paper-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.editor__tag-toggle {
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.editor__tag-toggle--active {
+  color: var(--scrub);
+  background: var(--scrub-bg);
+  border-color: var(--scrub);
+}
+
+/* ── Severity pills ──────────────────────────────────────── */
+
+.editor__pill-group {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.editor__pill {
+  padding: 0.125rem 0.625rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 9999px;
+  cursor: pointer;
+}
+
+.editor__pill--warn.editor__pill--active {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.editor__pill--block.editor__pill--active {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+/* ── Validation panel ────────────────────────────────────── */
+
+.editor__validation {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.editor__validation-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.editor__validation-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--paper-3);
+  color: var(--ink-3);
+  border-radius: 4px;
+}
+
+.editor__validation-count--error {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.editor__validation-count--warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.editor__validation-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+
+.editor__validation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 50%;
+}
+
+.editor__validation-row--error .editor__validation-badge {
+  color: var(--paper-2);
+  background: var(--danger);
+}
+
+.editor__validation-row--warn .editor__validation-badge {
+  color: var(--paper-2);
+  background: var(--warn);
+}
+
+.editor__validation-row--info .editor__validation-badge {
+  color: var(--paper-2);
+  background: var(--info);
+}
+
+.editor__validation-row--ok {
+  color: var(--ok);
+}
+
+.editor__validation-row--ok .editor__validation-badge {
+  color: var(--paper-2);
+  background: var(--ok);
+}
+
+.editor__validation-rule {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-4);
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+
+.editor__add-rule {
+  align-self: flex-start;
+  padding: 0.375rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.editor__add-rule:hover {
+  background: var(--paper-3);
+}
+
+.editor__footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--paper-2);
+  border-top: 1px solid var(--line);
+}
+
+.editor__footer-status {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.editor__footer-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.editor__btn {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.editor__btn:hover {
+  background: var(--paper-3);
+}
+
+.editor__btn--primary {
+  color: var(--paper-2);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.editor__btn--primary:hover {
+  filter: brightness(1.1);
+  background: var(--ink);
+}
+
+.editor__btn--disabled,
+.editor__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

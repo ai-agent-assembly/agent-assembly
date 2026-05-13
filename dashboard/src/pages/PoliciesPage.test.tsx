@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { PoliciesPage } from './PoliciesPage'
 import { OverlayProvider } from '../components/OverlayProvider'
+import { ToastProvider } from '../components/ToastProvider'
 import * as policiesApi from '../features/policies/api'
 import type { Policy } from '../features/policies/api'
 
@@ -15,13 +16,15 @@ function makeClient() {
 function Wrapper({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={makeClient()}>
-      <OverlayProvider>
-        {/* AppShell normally renders the overlay mount divs; in tests we
-            inline just the one this page uses so OverlayHost has a portal
-            target. */}
-        <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
-        {children}
-      </OverlayProvider>
+      <ToastProvider>
+        <OverlayProvider>
+          {/* AppShell normally renders the overlay mount divs; in tests we
+              inline just the one this page uses so OverlayHost has a portal
+              target. */}
+          <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
+          {children}
+        </OverlayProvider>
+      </ToastProvider>
     </QueryClientProvider>
   )
 }
@@ -157,36 +160,39 @@ describe('PoliciesPage — overlay wiring', () => {
     vi.restoreAllMocks()
   })
 
-  it('opens the policy-editor overlay in new mode when "+ new policy" is clicked', async () => {
+  it('opens the policy-editor overlay in new mode (proposed status) when "+ new policy" is clicked', async () => {
     const user = userEvent.setup()
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
-    expect(screen.queryByTestId('policy-editor-placeholder')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('new-policy-btn'))
-    const placeholder = await screen.findByTestId('policy-editor-placeholder')
-    expect(placeholder).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'New policy' })).toBeInTheDocument()
+    const overlay = await screen.findByTestId('policy-editor-overlay')
+    expect(overlay).toBeInTheDocument()
+    expect(screen.getByTestId('editor-status-chip')).toHaveTextContent('proposed')
+    // emptyDraft() defaults to an empty name → "(unnamed)" placeholder chip
+    expect(screen.getByTestId('editor-meta-chips')).toHaveTextContent('(unnamed)')
   })
 
-  it('opens the policy-editor overlay in edit mode with the row\'s name and version', async () => {
+  it('opens the editor in edit mode populated with the row\'s name and version', async () => {
     const user = userEvent.setup()
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('policy-row'))
-    expect(
-      await screen.findByRole('heading', { name: 'Edit default-policy v1.0.0' }),
-    ).toBeInTheDocument()
+    await screen.findByTestId('policy-editor-overlay')
+    const chips = screen.getByTestId('editor-meta-chips')
+    expect(chips).toHaveTextContent('default-policy')
+    expect(chips).toHaveTextContent('v1.0.0')
   })
 
-  it('closes the overlay when the placeholder Close button is clicked', async () => {
+  it('closes the overlay when the editor Cancel button is clicked', async () => {
     const user = userEvent.setup()
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('new-policy-btn'))
-    await screen.findByTestId('policy-editor-placeholder')
-    await user.click(screen.getByTestId('policy-editor-close'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-cancel-btn'))
     await waitFor(() =>
-      expect(screen.queryByTestId('policy-editor-placeholder')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
     )
   })
 
@@ -195,6 +201,6 @@ describe('PoliciesPage — overlay wiring', () => {
     mockPolicies({ data: [], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('new-policy-empty-btn'))
-    expect(await screen.findByTestId('policy-editor-placeholder')).toBeInTheDocument()
+    expect(await screen.findByTestId('policy-editor-overlay')).toBeInTheDocument()
   })
 })
