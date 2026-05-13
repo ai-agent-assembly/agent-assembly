@@ -146,3 +146,28 @@ export interface SilenceInput {
   durationSeconds: number
   reason?: string
 }
+
+// ── AlertDetail (AAASM-1385 response) ──────────────────────────────────────
+
+/** One entry in the routing log returned by `GET /alerts/{id}`. */
+export interface RoutingLogEntry {
+  destinationId: string
+  deliveredAt: string
+  status: 'ok' | 'failed' | 'retrying'
+  errorMessage?: string | null
+}
+
+/**
+ * Richer payload returned by `GET /api/v1/alerts/{id}` — superset of the
+ * `Alert` shape returned by the list endpoint. The drawer reads everything
+ * here so the list payload can stay slim.
+ */
+export interface AlertDetail extends Alert {
+  /** Snapshot of the rule that was active when the alert fired. */
+  ruleSnapshot: AlertRule
+  /** Event payload that triggered the rule. */
+  eventPayload: Record<string, unknown>
+  routingLog: readonly RoutingLogEntry[]
+  /** Active silence if any. */
+  silence: Silence | null
+}
