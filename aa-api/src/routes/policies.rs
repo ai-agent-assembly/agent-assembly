@@ -25,6 +25,10 @@ pub struct PolicyResponse {
     pub active: bool,
     /// Number of rules in this policy version.
     pub rule_count: usize,
+    /// Raw YAML content of this policy version. Empty string when the
+    /// underlying snapshot is not retrievable from the history store
+    /// (e.g. a policy loaded at startup before any history entry exists).
+    pub policy_yaml: String,
 }
 
 /// `GET /api/v1/policies` — list all policy versions.
@@ -61,6 +65,7 @@ pub async fn list_policies(
             version: meta.timestamp,
             active: i == 0 && params.page() == 1,
             rule_count: 0,
+            policy_yaml: String::new(),
         })
         .collect();
 
@@ -148,6 +153,7 @@ pub async fn create_policy(
             version: meta.timestamp,
             active: true,
             rule_count: 0,
+            policy_yaml: String::new(),
         }),
     ))
 }
@@ -191,6 +197,7 @@ pub async fn get_active_policy(
             version: info.policy_version.unwrap_or_else(|| "unknown".to_string()),
             active: true,
             rule_count: info.rule_count,
+            policy_yaml: String::new(),
         }),
     ))
 }
