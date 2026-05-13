@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../../../components/Toast'
 import { useDraft } from './useDraft'
 import { countBySeverity, validate } from './validation'
@@ -12,20 +12,33 @@ interface PolicyEditorOverlayProps {
   initialDraft: PolicyDraft
   onSave: (draft: PolicyDraft) => void
   onClose: () => void
+  /**
+   * Published whenever the draft's dirty flag changes. The page consumes
+   * this to decide whether Esc / backdrop / Cancel should prompt a
+   * "Discard unsaved changes?" dialog.
+   */
+  onDirtyChange?: (dirty: boolean) => void
+  /**
+   * When true, the Save button shows a "Saving…" label and is disabled
+   * for the duration of the mutation. Falsy in tests + stub flows.
+   */
+  isSaving?: boolean
 }
 
 /**
  * The editor surface mounted inside <OverlayHost name="policy-editor">.
  * Composes the section components and wires draft state via useDraft.
  *
- * The Save button is wired through a stub `onSave` prop — AAASM-1371
- * (ST-5) will replace that stub with the optimistic mutation flow and
- * the unsaved-changes confirmation dialog on dismiss.
+ * The actual save flow (serialize → POST → optimistic update) lives one
+ * level up in the page-side container; this component just calls
+ * `onSave(draft)` when Save is clicked and validation is clean.
  */
 export function PolicyEditorOverlay({
   initialDraft,
   onSave,
   onClose,
+  onDirtyChange,
+  isSaving = false,
 }: PolicyEditorOverlayProps) {
   const {
     draft,
@@ -43,8 +56,22 @@ export function PolicyEditorOverlay({
   const { toast } = useToast()
   const [viewMode, setViewMode] = useState<'form' | 'dsl'>('form')
 
+  // Publish isDirty so the page-side container can wire Esc / backdrop /
+  // Cancel through a "Discard unsaved changes?" prompt when needed.
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
+
+  // On unmount, clear the dirty flag — otherwise a successful save +
+  // close leaks "still dirty" into the next time the overlay opens.
+  useEffect(() => {
+    return () => {
+      onDirtyChange?.(false)
+    }
+  }, [onDirtyChange])
+
   const handleSave = () => {
-    if (errors > 0) return
+    if (errors > 0 || isSaving) return
     onSave(draft)
   }
 
@@ -192,15 +219,15 @@ export function PolicyEditorOverlay({
           <button
             type="button"
             className={
-              errors > 0
+              errors > 0 || isSaving
                 ? 'editor__btn editor__btn--primary editor__btn--disabled'
                 : 'editor__btn editor__btn--primary'
             }
-            disabled={errors > 0}
+            disabled={errors > 0 || isSaving}
             data-testid="editor-save-btn"
             onClick={handleSave}
           >
-            Save draft
+            {isSaving ? 'Saving…' : 'Save draft'}
           </button>
           <button
             type="button"

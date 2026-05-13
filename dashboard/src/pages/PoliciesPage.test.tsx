@@ -7,7 +7,9 @@ import { PoliciesPage } from './PoliciesPage'
 import { OverlayProvider } from '../components/OverlayProvider'
 import { ToastProvider } from '../components/ToastProvider'
 import * as policiesApi from '../features/policies/api'
-import type { Policy } from '../features/policies/api'
+import type { CreatePolicyRequest, Policy } from '../features/policies/api'
+
+type UseCreatePolicyResult = ReturnType<typeof policiesApi.useCreatePolicy>
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -52,6 +54,19 @@ const PROPOSED_POLICY: Policy = {
 function mockPolicies(partial: Partial<UseQueryResult<Policy[], Error>>) {
   return vi.spyOn(policiesApi, 'usePoliciesQuery').mockReturnValue(
     mockQuery<Policy[]>(partial),
+  )
+}
+
+function mockMutation(partial: Partial<UseCreatePolicyResult>): UseCreatePolicyResult {
+  return partial as unknown as UseCreatePolicyResult
+}
+
+function mockCreatePolicy(
+  mutateAsync: UseCreatePolicyResult['mutateAsync'],
+  isPending = false,
+) {
+  return vi.spyOn(policiesApi, 'useCreatePolicy').mockReturnValue(
+    mockMutation({ mutateAsync, isPending }),
   )
 }
 
@@ -202,5 +217,181 @@ describe('PoliciesPage — overlay wiring', () => {
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('new-policy-empty-btn'))
     expect(await screen.findByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+})
+
+describe('PoliciesPage — save flow', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('Save button is disabled when validation has errors and never calls mutateAsync', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mockPolicies({ data: [], isLoading: false, isError: false, refetch: vi.fn() })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    // emptyDraft has name === '' → validation error → Save disabled
+    expect(screen.getByTestId('editor-save-btn')).toBeDisabled()
+    await user.click(screen.getByTestId('editor-save-btn'))
+    expect(mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('Save success: edit-mode row → Save → mutation called → overlay closes', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-row'))
+    await screen.findByTestId('policy-editor-overlay')
+    expect(screen.getByTestId('editor-save-btn')).not.toBeDisabled()
+    await user.click(screen.getByTestId('editor-save-btn'))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
+    const body = mutateAsync.mock.calls[0][0] as CreatePolicyRequest
+    expect(body.policy_yaml).toContain('apiVersion: agent-assembly/v1')
+    expect(body.policy_yaml).toContain('default-policy')
+    expect(body.scope).toBe('global')
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('Save error path: error toast appears and overlay stays open', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockRejectedValue(new Error('boom'))
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-row'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-save-btn'))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByText('Failed to save policy')).toBeInTheDocument())
+    // Overlay is still mounted
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+
+  it('Save bypasses the dismiss guard even when the draft is dirty', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-row'))
+    await screen.findByTestId('policy-editor-overlay')
+    // Make a dirty change first
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    expect(screen.getByTestId('editor-dirty-chip')).toBeInTheDocument()
+    // Save should close cleanly — no ConfirmDialog
+    await user.click(screen.getByTestId('editor-save-btn'))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('PoliciesPage — unsaved-changes dismiss guard', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('Cancel on a clean draft closes the overlay without prompting', async () => {
+    const user = userEvent.setup()
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(vi.fn())
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    // No changes made yet
+    await user.click(screen.getByTestId('editor-cancel-btn'))
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('Cancel on a dirty draft opens the discard ConfirmDialog', async () => {
+    const user = userEvent.setup()
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(vi.fn())
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    await user.click(screen.getByTestId('editor-cancel-btn'))
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Discard unsaved changes?' })).toBeInTheDocument()
+    // Overlay is still open behind the dialog
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+
+  it('"Keep editing" on the ConfirmDialog closes the dialog and keeps the overlay open', async () => {
+    const user = userEvent.setup()
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(vi.fn())
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    await user.click(screen.getByTestId('editor-cancel-btn'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+
+  it('"Discard" on the ConfirmDialog closes the overlay', async () => {
+    const user = userEvent.setup()
+    mockPolicies({
+      data: [ACTIVE_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    mockCreatePolicy(vi.fn())
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    await user.click(screen.getByTestId('editor-cancel-btn'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
   })
 })
