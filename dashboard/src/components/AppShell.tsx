@@ -1,6 +1,8 @@
 import { useState, Component, type ReactNode, type ErrorInfo } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { OverlayProvider } from './OverlayProvider'
+import { OVERLAY_NAMES } from './OverlayContext'
 import './AppShell.css'
 
 // ── Error boundary ─────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ export function AppShell() {
   const [navOpen, setNavOpen] = useState(false)
 
   return (
+    <OverlayProvider>
     <div className="appshell" data-testid="appshell">
       <nav
         className={`appshell__nav${navOpen ? ' appshell__nav--open' : ''}`}
@@ -101,6 +104,14 @@ export function AppShell() {
           </ErrorBoundary>
         </main>
       </div>
+
+      {/* Global overlay mount points (AAASM-94 AC #7).
+          Empty by default; future overlay components portal into the
+          matching surface via `useOverlay(name)` from `useOverlay.ts`. */}
+      {OVERLAY_NAMES.map((name) => (
+        <div key={name} data-overlay={name} data-testid={`overlay-mount-${name}`} />
+      ))}
     </div>
+    </OverlayProvider>
   )
 }
