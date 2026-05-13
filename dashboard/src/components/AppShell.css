@@ -6,8 +6,8 @@
 .appshell__nav {
   width: 220px;
   flex-shrink: 0;
-  background: #1e293b;
-  color: #f1f5f9;
+  background: var(--shell-nav-bg);
+  color: var(--shell-nav-text);
   display: flex;
   flex-direction: column;
   padding: 1rem 0;
@@ -17,7 +17,7 @@
   font-size: 1rem;
   font-weight: 700;
   padding: 0 1.25rem 1.25rem;
-  border-bottom: 1px solid #334155;
+  border-bottom: 1px solid var(--shell-nav-border);
   margin-bottom: 0.5rem;
   letter-spacing: 0.02em;
 }
@@ -25,7 +25,7 @@
 .appshell__nav-link {
   display: block;
   padding: 0.625rem 1.25rem;
-  color: #cbd5e1;
+  color: var(--shell-nav-text-muted);
   text-decoration: none;
   font-size: 0.875rem;
   border-left: 3px solid transparent;
@@ -33,14 +33,14 @@
 }
 
 .appshell__nav-link:hover {
-  background: #334155;
-  color: #f1f5f9;
+  background: var(--shell-nav-hover-bg);
+  color: var(--shell-nav-text);
 }
 
 .appshell__nav-link--active {
-  border-left-color: #3b82f6;
-  background: #1e3a5f;
-  color: #93c5fd;
+  border-left-color: var(--shell-nav-active-border);
+  background: var(--shell-nav-active-bg);
+  color: var(--shell-nav-active-text);
   font-weight: 600;
 }
 
@@ -57,8 +57,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 1.5rem;
-  background: #fff;
-  border-bottom: 1px solid #e2e8f0;
+  background: var(--shell-topbar-bg);
+  border-bottom: 1px solid var(--shell-topbar-border);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -70,13 +70,13 @@
   border: none;
   cursor: pointer;
   padding: 0.25rem;
-  color: #475569;
+  color: var(--shell-text-dim);
   font-size: 1.25rem;
 }
 
 .appshell__user {
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--shell-text-muted);
 }
 
 .appshell__logout {
@@ -84,14 +84,14 @@
   font-size: 0.75rem;
   padding: 0.25rem 0.625rem;
   border-radius: 0.25rem;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--shell-button-border);
   background: none;
   cursor: pointer;
-  color: #475569;
+  color: var(--shell-text-dim);
 }
 
 .appshell__logout:hover {
-  background: #f1f5f9;
+  background: var(--shell-button-hover-bg);
 }
 
 .appshell__content {
@@ -101,7 +101,7 @@
 
 .appshell__error {
   padding: 2rem;
-  color: #dc2626;
+  color: var(--shell-error-text);
 }
 
 @media (max-width: 1024px) {
