@@ -30,7 +30,7 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
       data-testid="reject-dialog"
     >
       <div style={{
-        background: '#fff', borderRadius: '0.5rem', padding: '1.5rem',
+        background: 'var(--paper-2)', borderRadius: '0.5rem', padding: '1.5rem',
         width: '24rem', display: 'flex', flexDirection: 'column', gap: '1rem',
       }}>
         <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>
@@ -43,13 +43,13 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
             rows={3}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            style={{ padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid #d1d5db', resize: 'vertical' }}
+            style={{ padding: '0.5rem', borderRadius: '0.25rem', border: '1px solid var(--line)', resize: 'vertical' }}
           />
         </label>
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button
             onClick={onCancel}
-            style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
+            style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid var(--line)', cursor: 'pointer' }}
           >
             Cancel
           </button>
@@ -59,8 +59,8 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
             onClick={() => onConfirm(reason.trim())}
             style={{
               padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: 'none',
-              background: !reason.trim() ? '#9ca3af' : '#dc2626',
-              color: '#fff', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
+              background: !reason.trim() ? 'var(--ink-4)' : 'var(--danger)',
+              color: 'var(--paper-2)', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
               fontWeight: 600,
             }}
           >
