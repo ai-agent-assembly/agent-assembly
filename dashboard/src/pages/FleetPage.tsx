@@ -1,16 +1,17 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
   flexRender,
   createColumnHelper,
+  type ColumnDef,
   type SortingState,
 } from '@tanstack/react-table'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useAgentsQuery, type Agent } from '../features/agents/api'
-import { toFleetAgent } from '../features/agents/fleetTypes'
+import { useAgentsQuery } from '../features/agents/api'
+import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
 import {
   applyFleetFilters,
   fleetFiltersFromParams,
@@ -18,51 +19,23 @@ import {
   frameworkOptions,
   type FleetFilters,
 } from '../features/agents/fleetFilters'
+import { StatusChip } from '../components/fleet/StatusChip'
+import { ModeChip } from '../components/fleet/ModeChip'
+import { TrustBar } from '../components/fleet/TrustBar'
+import { useToast } from '../components/Toast'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
-const STATUS_COLOR: Record<string, string> = {
-  active: '#16a34a',
-  idle: '#ca8a04',
-  suspended: '#d97706',
-  error: '#dc2626',
-  deregistered: '#6b7280',
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLOR[status] ?? '#6b7280'
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '9999px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        color: '#fff',
-        background: color,
-      }}
-    >
-      {status}
-    </span>
-  )
-}
+const COLUMN_COUNT = 11
 
 function SkeletonRows() {
   return (
     <>
       {Array.from({ length: 5 }).map((_, i) => (
         <tr key={i} data-testid="agent-row-skeleton">
-          {Array.from({ length: 5 }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
-              <span
-                style={{
-                  display: 'block',
-                  height: '1rem',
-                  background: '#e5e7eb',
-                  borderRadius: '4px',
-                }}
-              />
+          {Array.from({ length: COLUMN_COUNT }).map((_, j) => (
+            <td key={j} className="fleet-table__cell fleet-table__cell--skeleton">
+              <span className="fleet-table__skeleton" />
             </td>
           ))}
         </tr>
@@ -71,33 +44,150 @@ function SkeletonRows() {
   )
 }
 
-const columnHelper = createColumnHelper<Agent>()
+function NumericCell({ value }: { value: number | null }) {
+  return (
+    <span className="fleet-table__numeric">
+      {value === null ? '—' : value}
+    </span>
+  )
+}
 
-const columns = [
-  columnHelper.accessor('name', {
-    header: 'Name',
-    cell: info => (
-      <Link to={`/agents/${info.row.original.id}`}>{info.getValue()}</Link>
+const columnHelper = createColumnHelper<FleetAgent>()
+
+interface SelectColumnControls {
+  selected: ReadonlySet<string>
+  allSelected: boolean
+  someSelected: boolean
+  toggleAll: () => void
+  toggleSelect: (id: string) => void
+}
+
+function buildSelectColumn(ctrl: SelectColumnControls): ColumnDef<FleetAgent> {
+  return columnHelper.display({
+    id: 'select',
+    header: () => (
+      <input
+        type="checkbox"
+        checked={ctrl.allSelected}
+        ref={(el) => {
+          if (el) el.indeterminate = !ctrl.allSelected && ctrl.someSelected
+        }}
+        onChange={ctrl.toggleAll}
+        data-testid="fleet-select-all"
+        aria-label="Select all agents"
+      />
     ),
+    cell: ({ row }) => (
+      <input
+        type="checkbox"
+        checked={ctrl.selected.has(row.original.id)}
+        onChange={() => ctrl.toggleSelect(row.original.id)}
+        data-testid={`fleet-select-${row.original.id}`}
+        aria-label={`Select ${row.original.name}`}
+      />
+    ),
+  })
+}
+
+const baseColumns: ColumnDef<FleetAgent>[] = [
+  columnHelper.accessor('name', {
+    header: 'Agent',
+    enableSorting: true,
+    cell: (info) => {
+      const agent = info.row.original
+      return (
+        <div className="fleet-table__agent">
+          {agent.flagged && (
+            <span className="fleet-table__flag" aria-label="flagged" title="flagged">●</span>
+          )}
+          <Link
+            to={`/agents/${agent.id}`}
+            className="fleet-table__agent-name"
+            data-testid="fleet-row-name"
+          >
+            {agent.name}
+          </Link>
+          {agent.note && <span className="fleet-table__agent-note">{agent.note}</span>}
+        </div>
+      )
+    },
   }),
-  columnHelper.accessor('framework', { header: 'Framework' }),
+  columnHelper.accessor('framework', {
+    header: 'Framework',
+    enableSorting: true,
+    cell: (info) => <span className="fleet-table__chip">{info.getValue()}</span>,
+  }),
+  columnHelper.accessor('owner', {
+    header: 'Owner',
+    enableSorting: true,
+    cell: (info) => {
+      const owner = info.getValue()
+      return <span className="fleet-table__owner">{owner ? `@${owner}` : '—'}</span>
+    },
+  }),
+  columnHelper.accessor('mode', {
+    id: 'mode',
+    header: 'Mode',
+    enableSorting: false,
+    cell: (info) => <ModeChip mode={info.getValue()} />,
+  }),
   columnHelper.accessor('status', {
     header: 'Status',
-    cell: info => <StatusBadge status={info.getValue()} />,
+    enableSorting: true,
+    cell: (info) => <StatusChip status={info.getValue()} />,
   }),
-  columnHelper.accessor('last_event', {
+  columnHelper.accessor('trust', {
+    header: 'Trust',
+    enableSorting: true,
+    cell: (info) => <TrustBar score={info.getValue()} />,
+  }),
+  columnHelper.accessor('blocked24h', {
+    header: 'Blocked / 24h',
+    enableSorting: true,
+    cell: (info) => <NumericCell value={info.getValue()} />,
+  }),
+  columnHelper.accessor('scrubbed24h', {
+    header: 'Scrubbed / 24h',
+    enableSorting: true,
+    cell: (info) => <NumericCell value={info.getValue()} />,
+  }),
+  columnHelper.accessor('lastSeen', {
     header: 'Last seen',
-    cell: info => info.getValue() ?? '—',
+    enableSorting: true,
+    cell: (info) => (
+      <span className="fleet-table__last-seen">{info.getValue() ?? '—'}</span>
+    ),
   }),
-  columnHelper.accessor(row => row.recent_events.length, {
-    id: 'recent_events_count',
-    header: 'Recent events',
+  columnHelper.display({
+    id: 'actions',
+    header: '',
+    cell: (info) => (
+      <Link
+        to={`/agents/${info.row.original.id}`}
+        className="fleet-table__action"
+        data-testid="fleet-row-action"
+      >
+        caps →
+      </Link>
+    ),
   }),
-]
+] as ColumnDef<FleetAgent>[]
 
 type FleetView = 'agents' | 'sessions'
 
+/**
+ * `true` when the click landed on an interactive element inside the row
+ * (link, button, input, label). Used to suppress the row-level navigation
+ * so the inner control's own handler stays authoritative.
+ */
+function clickOnInteractive(e: MouseEvent<HTMLTableRowElement>): boolean {
+  const target = e.target as HTMLElement | null
+  return target?.closest('a, button, input, label') !== null
+}
+
 export function FleetPage() {
+  const navigate = useNavigate()
+  const { toast } = useToast()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
@@ -120,15 +210,62 @@ export function FleetPage() {
     () => applyFleetFilters(fleetAgents, filters),
     [fleetAgents, filters],
   )
-  const filteredIds = useMemo(() => new Set(filteredFleet.map((a) => a.id)), [filteredFleet])
-  const tableData = useMemo(
-    () => (agents ?? []).filter((a) => filteredIds.has(a.id)),
-    [agents, filteredIds],
+
+  // Selection state: persists across filter / sort; cleared via the bulk
+  // action bar (next commit). Drop selections for ids that disappear from
+  // the data source (e.g. an agent was deregistered).
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const knownIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const next = new Set(fleetAgents.map((a) => a.id))
+    knownIds.current = next
+    setSelected((prev) => {
+      let changed = false
+      const filtered = new Set<string>()
+      for (const id of prev) {
+        if (next.has(id)) filtered.add(id)
+        else changed = true
+      }
+      return changed ? filtered : prev
+    })
+  }, [fleetAgents])
+
+  const visibleIds = useMemo(() => filteredFleet.map((a) => a.id), [filteredFleet])
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id))
+  const someSelected = !allSelected && visibleIds.some((id) => selected.has(id))
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleAll = useCallback(() => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (visibleIds.every((id) => prev.has(id))) {
+        for (const id of visibleIds) next.delete(id)
+      } else {
+        for (const id of visibleIds) next.add(id)
+      }
+      return next
+    })
+  }, [visibleIds])
+
+  const columns = useMemo<ColumnDef<FleetAgent>[]>(
+    () => [
+      buildSelectColumn({ selected, allSelected, someSelected, toggleAll, toggleSelect }),
+      ...baseColumns,
+    ],
+    [selected, allSelected, someSelected, toggleAll, toggleSelect],
   )
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: tableData,
+    data: filteredFleet,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -205,18 +342,47 @@ export function FleetPage() {
         />
       )}
 
+      {view === 'agents' && selected.size > 0 && (
+        <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
+          <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
+            {selected.size} selected
+          </span>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn"
+            onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
+            data-testid="fleet-bulkbar-shadow"
+          >
+            → shadow mode
+          </button>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
+            onClick={() => toast(`Suspended ${selected.size} agents (mock)`, 'info')}
+            data-testid="fleet-bulkbar-suspend"
+          >
+            ■ suspend
+          </button>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
+            onClick={() => setSelected(new Set())}
+            data-testid="fleet-bulkbar-clear"
+          >
+            clear
+          </button>
+        </div>
+      )}
+
       {view === 'agents' && isError && (
-        <div
-          data-testid="agents-error"
-          style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
-        >
+        <div className="fleet-error" data-testid="agents-error">
           <span>Failed to load agents.</span>
           <button onClick={() => void refetch()}>Retry</button>
         </div>
       )}
 
       {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
-        <p data-testid="agents-empty">
+        <p className="fleet-empty fleet-empty--inline" data-testid="agents-empty">
           No agents registered yet.{' '}
           <a href="https://docs.agent-assembly.io/quickstart" target="_blank" rel="noreferrer">
             Read the quickstart guide →
@@ -225,52 +391,67 @@ export function FleetPage() {
       )}
 
       {view === 'agents' && (
-      <table data-testid="agents-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          {table.getHeaderGroups().map(hg => (
-            <tr key={hg.id}>
-              {hg.headers.map(header => (
-                <th
-                  key={header.id}
-                  style={{
-                    textAlign: 'left',
-                    padding: '0.5rem',
-                    borderBottom: '2px solid #e5e7eb',
-                    cursor: header.column.getCanSort() ? 'pointer' : undefined,
-                  }}
-                  onClick={header.column.getToggleSortingHandler()}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                  {header.column.getIsSorted() === 'asc'
-                    ? ' ↑'
-                    : header.column.getIsSorted() === 'desc'
-                      ? ' ↓'
-                      : ''}
-                </th>
+        <div className="fleet-table__wrap">
+          <table className="fleet-table" data-testid="agents-table">
+            <thead>
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id}>
+                  {hg.headers.map((header) => (
+                    <th
+                      key={header.id}
+                      className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}`}
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.column.getCanSort() && (() => {
+                        const sorted = header.column.getIsSorted()
+                        const glyph = sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : '↕'
+                        return (
+                          <span
+                            className={`fleet-table__sort${sorted ? '' : ' fleet-table__sort--inactive'}`}
+                            data-testid={`fleet-sort-${header.column.id}`}
+                            aria-label={
+                              sorted === 'asc'
+                                ? 'sorted ascending'
+                                : sorted === 'desc'
+                                  ? 'sorted descending'
+                                  : 'not sorted'
+                            }
+                          >
+                            {glyph}
+                          </span>
+                        )
+                      })()}
+                    </th>
+                  ))}
+                </tr>
               ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <SkeletonRows />
-          ) : (
-            table.getRowModel().rows.map(row => (
-              <tr
-                key={row.id}
-                data-testid="agent-row"
-                style={{ borderBottom: '1px solid #f3f4f6' }}
-              >
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} style={{ padding: '0.5rem' }}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <SkeletonRows />
+              ) : (
+                table.getRowModel().rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    data-testid="agent-row"
+                    className={`fleet-table__row${row.original.flagged ? ' fleet-table__row--flagged' : ''}`}
+                    onClick={(e) => {
+                      if (clickOnInteractive(e)) return
+                      navigate(`/agents/${row.original.id}`)
+                    }}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <td key={cell.id} className="fleet-table__cell">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </main>
   )
