@@ -5,6 +5,8 @@ import { OverlayProvider } from './OverlayProvider'
 import { OVERLAY_NAMES } from './OverlayContext'
 import { ApprovalsBellButton } from '../features/approvals/ApprovalsBellButton'
 import { CANONICAL_ROUTES, ROUTE_GROUPS, type RouteGroup } from '../routes'
+import { TraceDrawerProvider } from './trace/TraceDrawerProvider'
+import { TraceDrawer } from './trace/TraceDrawer'
 import './AppShell.css'
 
 const GROUP_LABEL: Record<RouteGroup, string> = {
@@ -54,6 +56,7 @@ export function AppShell() {
 
   return (
     <OverlayProvider>
+    <TraceDrawerProvider>
     <div className="appshell" data-testid="appshell">
       <nav
         className={`appshell__nav${navOpen ? ' appshell__nav--open' : ''}`}
@@ -120,7 +123,9 @@ export function AppShell() {
       {OVERLAY_NAMES.map((name) => (
         <div key={name} data-overlay={name} data-testid={`overlay-mount-${name}`} />
       ))}
+      <TraceDrawer />
     </div>
+    </TraceDrawerProvider>
     </OverlayProvider>
   )
 }
