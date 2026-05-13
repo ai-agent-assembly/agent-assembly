@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { TraceTimelineFilter, ALL_ON } from './TraceTimelineFilter'
-import type { SeverityFilter } from './TraceTimelineFilter'
+import { TraceTimelineFilter } from './TraceTimelineFilter'
+import { ALL_ON, type SeverityFilter } from './severityFilter'
 
 function setup(initial: SeverityFilter = ALL_ON) {
   const onChange = vi.fn<(next: SeverityFilter) => void>()
