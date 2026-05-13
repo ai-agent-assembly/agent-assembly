@@ -1,0 +1,88 @@
+.iam-api-key-list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.iam-api-key-list th,
+.iam-api-key-list td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--shell-border, #e4e4e7);
+}
+
+.iam-api-key-list th {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-api-key-list__loading,
+.iam-api-key-list__empty {
+  text-align: center;
+  color: var(--shell-text-muted, #71717a);
+  padding: 1.5rem 0;
+}
+
+.iam-api-key-list__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.8rem;
+  color: var(--shell-text-muted, #71717a);
+}
+
+.iam-api-key-list__label {
+  font-weight: 600;
+}
+
+.iam-api-key-list__scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.iam-scope-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.7rem;
+  background: var(--shell-surface-muted, #f4f4f5);
+  border: 1px solid var(--shell-border, #e4e4e7);
+  border-radius: 0.25rem;
+  color: var(--shell-text, #18181b);
+}
+
+.iam-api-key-list__revoke-btn {
+  border: 1px solid #ef4444;
+  background: transparent;
+  color: #ef4444;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.iam-api-key-list__revoke-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.iam-api-key-list__row--revoked {
+  opacity: 0.55;
+}
+
+.iam-api-key-list__error {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: #b91c1c;
+  padding: 0.75rem 0;
+}
+
+.iam-dialog__btn--danger {
+  background: #dc2626;
+  color: #fff;
+  border-color: transparent;
+}
