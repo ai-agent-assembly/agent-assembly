@@ -8,6 +8,8 @@ import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
 import { CellInspectDrawer } from '../features/capability/CellInspectDrawer'
+import { PerAgentTab } from '../features/capability/PerAgentTab'
+import { PerResourceTab } from '../features/capability/PerResourceTab'
 import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
 import { applyOverrideLocal } from '../features/capability/override'
 import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
@@ -27,6 +29,8 @@ export function CapabilityPage() {
   const [sort, setSort] = useState<SortState>(NO_SORT)
   const [inspected, setInspected] = useState<CellSelection | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [perResourceId, setPerResourceId] = useState<string | null>(null)
+  const [perAgentId, setPerAgentId] = useState<string | null>(null)
   const { toast } = useToast()
 
   const toggleSelect = (agentId: string) => {
@@ -208,6 +212,25 @@ export function CapabilityPage() {
             selectedIds={selected}
             onToggleSelect={toggleSelect}
             onToggleSelectAll={toggleSelectAll}
+          />
+        )}
+        {tab === 'resource' && matrix && (
+          <PerResourceTab
+            resources={matrix.resources}
+            agents={visibleAgents}
+            verb={verb}
+            selectedResourceId={perResourceId ?? matrix.resources[0]?.id ?? ''}
+            onSelectResource={setPerResourceId}
+            onCellClick={setInspected}
+          />
+        )}
+        {tab === 'agent' && matrix && (
+          <PerAgentTab
+            agents={visibleAgents}
+            resources={matrix.resources}
+            selectedAgentId={perAgentId ?? visibleAgents[0]?.id ?? ''}
+            onSelectAgent={setPerAgentId}
+            onCellClick={setInspected}
           />
         )}
       </section>

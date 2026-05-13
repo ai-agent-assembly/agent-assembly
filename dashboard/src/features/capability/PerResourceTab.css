@@ -1,0 +1,233 @@
+.cap-prt {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 1px;
+  background: var(--line);
+  min-height: 480px;
+}
+
+.cap-prt-tree {
+  background: var(--paper-2);
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+
+.cap-prt-tree-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.cap-prt-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cap-prt-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 3px;
+  text-align: left;
+}
+
+.cap-prt-tree-node:hover {
+  background: var(--paper-3);
+}
+
+.cap-prt-tree-node.is-active {
+  background: var(--ink);
+  color: var(--paper-2);
+}
+
+.cap-prt-tree-caret {
+  color: var(--ink-4);
+  font-size: 10px;
+}
+
+.cap-prt-tree-node.is-active .cap-prt-tree-caret {
+  color: var(--paper-3);
+}
+
+.cap-prt-tree-name {
+  flex: 1;
+}
+
+.cap-prt-tree-count {
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+.cap-prt-tree-node.is-active .cap-prt-tree-count {
+  color: var(--paper-3);
+}
+
+.cap-prt-body {
+  background: var(--paper);
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+
+.cap-prt-head {
+  margin-bottom: 16px;
+}
+
+.cap-prt-title {
+  margin: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.cap-prt-title-verb {
+  color: var(--warn);
+  text-transform: uppercase;
+}
+
+.cap-prt-title-resource {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--ink);
+}
+
+.cap-prt-meta {
+  margin: 4px 0 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.cap-prt-empty {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--ink-4);
+  padding: 24px;
+  text-align: center;
+  background: var(--paper-2);
+  border: 1px dashed var(--line-2);
+  border-radius: 3px;
+}
+
+.cap-prt-table-wrap {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cap-prt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.cap-prt-table th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--paper-3);
+  color: var(--ink-3);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cap-prt-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.cap-prt-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cap-prt-flag-dot {
+  color: var(--danger);
+}
+
+.cap-prt-trust {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cap-prt-trust-num {
+  width: 24px;
+  color: var(--ink-2);
+}
+
+.cap-prt-trust-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+  max-width: 80px;
+}
+
+.cap-prt-trust-bar-fill {
+  display: block;
+  height: 100%;
+}
+
+.cap-prt-trust--danger { background: var(--danger); }
+.cap-prt-trust--warn { background: var(--warn); }
+.cap-prt-trust--ok { background: var(--ok); }
+
+.cap-prt-decision {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.cap-prt-decision--allow { color: var(--ink-2); background: var(--paper-3); }
+.cap-prt-decision--narrow { color: var(--warn); background: var(--warn-bg); }
+.cap-prt-decision--approval { color: var(--info); background: var(--info-bg); }
+.cap-prt-decision--deny { color: var(--danger); background: var(--danger-bg); }
+.cap-prt-decision--na { color: var(--ink-5); background: var(--paper-3); }
+
+.cap-prt-last-seen {
+  color: var(--ink-4);
+  font-size: 11px;
+}
+
+.cap-prt-inspect-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.cap-prt-inspect-btn:hover {
+  background: var(--paper-3);
+}
+
+.cap-prt-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
