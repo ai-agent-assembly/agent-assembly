@@ -19,6 +19,7 @@ pnpm install
 
 ```bash
 # Start dev server at http://localhost:3000 (proxies /api/* to http://localhost:8080)
+# `pnpm start` is an alias for the same command.
 pnpm dev
 
 # Type-check without emitting
@@ -48,9 +49,20 @@ pnpm test:coverage
 pnpm build
 ```
 
-## Serving the built dashboard
+## Serving the built dashboard locally
 
-After `pnpm build` produces `dist/`, use the `aasm` CLI to serve it:
+After `pnpm build` produces `dist/`, you can serve it directly with Vite's preview server:
+
+```bash
+# Serve dist/ at http://localhost:3000 (fails loudly if 3000 is taken)
+pnpm serve
+```
+
+This is the production-build counterpart to `pnpm dev` — useful for smoke-testing the bundle without going through the `aasm` CLI.
+
+## Serving via the embedded aasm CLI
+
+For production-style serving with the `/api/*` proxy baked in, use the `aasm` CLI:
 
 ```bash
 # Start the embedded SPA server (default port 3000)

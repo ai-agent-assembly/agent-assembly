@@ -6,7 +6,9 @@
   "description": "Community web UI for Agent Assembly governance dashboard",
   "scripts": {
     "dev": "vite",
+    "start": "vite",
     "build": "tsc --noEmit && vite build",
+    "serve": "vite preview --port 3000 --strictPort",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "type-check": "tsc --noEmit",
