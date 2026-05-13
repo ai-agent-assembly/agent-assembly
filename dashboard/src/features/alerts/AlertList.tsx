@@ -111,6 +111,7 @@ export function AlertList({ rows, onSelect }: AlertListProps) {
     columns,
     state: { sorting },
     onSortingChange: setSorting,
+    enableSortingRemoval: false,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
   })
