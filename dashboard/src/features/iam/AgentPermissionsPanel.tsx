@@ -78,6 +78,12 @@ export function AgentPermissionsPanel({ agent, onClose }: AgentPermissionsPanelP
         </div>
       )}
 
+      {grouped && !isLoading && data && data.effective.length === 0 && (
+        <div className="iam-agent-perm-panel__empty" data-testid="agent-permissions-empty">
+          This agent has no effective permissions.
+        </div>
+      )}
+
       {grouped && INHERITANCE_KINDS.map((kind) => {
         const rows = grouped[kind]
         if (rows.length === 0) return null
