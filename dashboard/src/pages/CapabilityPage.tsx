@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { capabilityClient } from '../api/capability'
-import { CapabilityMatrixGrid } from '../features/capability/CapabilityMatrixGrid'
+import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
+import { CellInspectDrawer } from '../features/capability/CellInspectDrawer'
 import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
 import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
 import { VERBS } from '../features/capability/types'
@@ -16,6 +17,7 @@ export function CapabilityPage() {
   const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
   const [sort, setSort] = useState<SortState>(NO_SORT)
+  const [inspected, setInspected] = useState<CellSelection | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -111,9 +113,18 @@ export function CapabilityPage() {
             verb={verb}
             sort={sort}
             onSortChange={(rid) => setSort((prev) => nextSortState(prev, rid))}
+            onCellClick={setInspected}
           />
         )}
       </section>
+      {matrix && (
+        <CellInspectDrawer
+          cell={inspected}
+          policies={matrix.policies}
+          sampleCalls={matrix.sampleCalls}
+          onClose={() => setInspected(null)}
+        />
+      )}
     </div>
   )
 }
