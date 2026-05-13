@@ -113,6 +113,30 @@ pnpm generate:api
 The dashboard reads an API token from `localStorage` key `aa_token` and sends it as
 `Authorization: Bearer <token>` on every request. Navigate to `/login` to enter a token.
 
+## Shared empty / error states
+
+Pages that fetch async data must use the shared surfaces in `src/components/states/`
+so empty and error UIs stay consistent across the dashboard:
+
+```tsx
+import { EmptyState, ErrorState } from '../components/states'
+
+<EmptyState
+  title="No policies yet"
+  description="Create your first policy to get started."
+  action={<Link to="/policies/editor">New policy →</Link>}
+/>
+
+<ErrorState
+  title="Failed to load policies"
+  description="The gateway returned an error."
+  onRetry={refetch}
+/>
+```
+
+Both components consume only design tokens from `src/styles.css`; do not pass
+inline color or spacing styles.
+
 ## Design reference
 
 Hi-fi prototypes are in `../design/v1/hi-fi/`. Open `index.html` directly in a browser.
