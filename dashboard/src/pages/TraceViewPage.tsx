@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
+import { useAgentQuery } from '../features/agents/api'
 import { useTraceQuery } from '../features/trace/api'
 
 /**
@@ -7,13 +8,15 @@ import { useTraceQuery } from '../features/trace/api'
  */
 export function TraceViewPage() {
   const { id = '', sessionId = '' } = useParams<{ id: string; sessionId: string }>()
+  const { data: agent } = useAgentQuery(id)
   const { data, isLoading, isError, refetch } = useTraceQuery(id, sessionId)
+  const agentLabel = agent?.name ?? id
 
   return (
     <main style={{ padding: '1.5rem' }} data-testid="trace-view">
       <Link to={`/agents/${id}`} style={{ fontSize: '0.875rem' }}>← Back to agent</Link>
-      <h1 style={{ margin: '0.75rem 0' }}>
-        Trace · <code style={{ fontSize: '1rem' }}>{id}</code> / <code style={{ fontSize: '1rem' }}>{sessionId}</code>
+      <h1 style={{ margin: '0.75rem 0' }} data-testid="trace-header">
+        Trace · <span data-testid="trace-agent-label">{agentLabel}</span> / <code style={{ fontSize: '1rem' }}>{sessionId}</code>
       </h1>
 
       {isLoading && (
