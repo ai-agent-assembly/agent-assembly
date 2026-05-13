@@ -8,7 +8,12 @@ const RECENT_EVENT_LIMIT = 5
 export interface NodeDetailPanelProps {
   readonly node: TopologyNode | null
   readonly onClose: () => void
-  readonly onViewTrace: (agentId: string) => void
+  /**
+   * Fired only when the agent has a `latestSessionId`. When absent, the
+   * View-trace button is disabled and renders a tooltip explaining why,
+   * so this handler never sees a null session id. (AAASM-1340)
+   */
+  readonly onViewTrace: (agentId: string, sessionId: string) => void
 }
 
 /**
@@ -159,7 +164,15 @@ export function NodeDetailPanel({ node, onClose, onViewTrace }: NodeDetailPanelP
           type="button"
           className="node-detail-panel__action node-detail-panel__action--primary"
           data-testid="node-detail-view-trace"
-          onClick={() => onViewTrace(node.id)}
+          disabled={!node.latestSessionId}
+          title={
+            node.latestSessionId
+              ? undefined
+              : 'No recent session for this agent yet — run a trace to enable.'
+          }
+          onClick={() => {
+            if (node.latestSessionId) onViewTrace(node.id, node.latestSessionId)
+          }}
         >
           View trace →
         </button>

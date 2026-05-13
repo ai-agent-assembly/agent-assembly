@@ -18,6 +18,7 @@ const NODE: TopologyNode = {
   budgetSpend: 4.1,
   budgetLimit: 10,
   framework: 'langgraph',
+  latestSessionId: 'sess-7',
 }
 
 const RECENT: RecentEvent[] = [
@@ -107,7 +108,7 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('No recent activity.')).toBeInTheDocument()
   })
 
-  it('View trace button fires onViewTrace with the node id', async () => {
+  it('View trace button fires onViewTrace with the node id and latest session id', async () => {
     vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
       mockRecent({ data: [], isLoading: false, isError: false }),
     )
@@ -115,7 +116,26 @@ describe('NodeDetailPanel', () => {
     renderPanel(NODE, vi.fn(), onViewTrace)
 
     await userEvent.click(screen.getByTestId('node-detail-view-trace'))
-    expect(onViewTrace).toHaveBeenCalledWith('agent-001')
+    expect(onViewTrace).toHaveBeenCalledWith('agent-001', 'sess-7')
+  })
+
+  it('disables View trace and shows a tooltip when latestSessionId is missing', async () => {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+    const onViewTrace = vi.fn()
+    const nodeWithoutSession: TopologyNode = { ...NODE, latestSessionId: undefined }
+    renderPanel(nodeWithoutSession, vi.fn(), onViewTrace)
+
+    const btn = screen.getByTestId('node-detail-view-trace') as HTMLButtonElement
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute(
+      'title',
+      'No recent session for this agent yet — run a trace to enable.',
+    )
+
+    await userEvent.click(btn)
+    expect(onViewTrace).not.toHaveBeenCalled()
   })
 
   it('Close button + Esc key both fire onClose', async () => {
