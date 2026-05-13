@@ -72,3 +72,29 @@
   font-size: 8px;
   fill: var(--ink-3);
 }
+
+/* ── Team clusters (AAASM-1339) ─────────────────────────────── */
+
+.topology-cluster__outline {
+  fill: var(--paper);
+  stroke: var(--line-2);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+
+.topology-cluster__overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.topology-cluster__label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  cursor: help;
+}
