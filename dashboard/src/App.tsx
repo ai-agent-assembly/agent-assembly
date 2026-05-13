@@ -10,6 +10,7 @@ import { PoliciesPage } from './pages/PoliciesPage'
 import { PolicyEditorPage } from './pages/PolicyEditorPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { ComingSoon } from './pages/ComingSoon'
+import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 
 function App() {
@@ -37,7 +38,7 @@ function App() {
             {/* manage */}
             <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
             <Route path="/teams" element={<ComingSoon name="Agent Groups" />} />
-            <Route path="/identity" element={<ComingSoon name="Members & Access" />} />
+            <Route path="/identity" element={<IdentityPage />} />
 
             {/* ── Sub-routes for canonical pages ────────────────────────── */}
             <Route path="/agents/:id" element={<AgentDetailPage />} />
