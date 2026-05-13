@@ -238,14 +238,14 @@ test.describe('AAASM-1341 — Topology AC evidence capture', () => {
     await expect(events.first()).toContainText('tool_call')
     await expect(events.last()).toContainText('refund > $100')
 
-    // Budget section: 9.2 / 10 → 92 % → danger bucket fill.
+    // Budget section: 9.2 / 10 → 92 % → warn bucket fill (danger is ≥ 95 %).
     await expect(page.getByTestId('node-detail-progress')).toHaveAttribute(
       'aria-valuenow',
       '92',
     )
     await expect(
       page.locator('.node-detail-panel__progress-fill'),
-    ).toHaveAttribute('data-ratio-bucket', 'danger')
+    ).toHaveAttribute('data-ratio-bucket', 'warn')
 
     await page.screenshot({ path: `${EVIDENCE_DIR}/03-node-detail-panel.png`, fullPage: true })
   })
