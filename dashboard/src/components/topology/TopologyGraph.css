@@ -1,0 +1,74 @@
+/* ============================================================
+   TopologyGraph — status-keyed node styling (AAASM-1335)
+   ============================================================
+
+   Mirrors design/v1/hi-fi/topology.jsx TopoNodeEl:
+   - Rectangular card with a status stripe on the left
+   - Card background matches --paper
+   - Status stripe color keyed off data-status:
+       active → --ok (green)
+       idle   → --ink-4 (mid grey, no --neutral token exists)
+       error  → --danger (red)
+
+   All colors come from CSS variables in src/styles.css. No hex.
+   ============================================================ */
+
+.topology-graph {
+  width: 100%;
+  height: 100%;
+  background: var(--paper-2);
+}
+
+.topology-node__card {
+  fill: var(--paper);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.topology-node__stripe {
+  fill: var(--ink-4);
+}
+
+.topology-node[data-status='active'] .topology-node__stripe {
+  fill: var(--ok);
+}
+
+.topology-node[data-status='idle'] .topology-node__stripe {
+  fill: var(--ink-4);
+}
+
+.topology-node[data-status='error'] .topology-node__stripe {
+  fill: var(--danger);
+}
+
+.topology-node[data-status='error'] .topology-node__card {
+  stroke: var(--danger);
+}
+
+.topology-node:hover .topology-node__card {
+  stroke: var(--ink-2);
+}
+
+.topology-node:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.topology-node__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  fill: var(--ink);
+}
+
+.topology-node__framework {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8.5px;
+  fill: var(--ink-4);
+}
+
+.topology-node__budget {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--ink-3);
+}

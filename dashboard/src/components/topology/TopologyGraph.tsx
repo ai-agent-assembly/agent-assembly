@@ -1,4 +1,5 @@
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import './TopologyGraph.css'
 
 const CARD_WIDTH = 96
 const CARD_HEIGHT = 56
