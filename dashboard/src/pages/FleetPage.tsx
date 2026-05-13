@@ -9,6 +9,7 @@ import {
 } from '@tanstack/react-table'
 import { useState } from 'react'
 import { useAgentsQuery, type Agent } from '../features/agents/api'
+import './FleetPage.css'
 
 const STATUS_COLOR: Record<string, string> = {
   active: '#16a34a',
@@ -98,9 +99,31 @@ export function FleetPage() {
     getSortedRowModel: getSortedRowModel(),
   })
 
+  const totalAgents = agents?.length ?? 0
+
   return (
-    <main style={{ padding: '1.5rem' }}>
-      <h1>Agents</h1>
+    <main className="fleet-page" data-testid="fleet-page">
+      <header className="fleet-page__head" data-testid="fleet-page-head">
+        <div className="fleet-page__heading">
+          <h1 className="fleet-page__title">
+            Fleet
+            <span className="fleet-page__count" data-testid="fleet-page-count">
+              · {totalAgents} agents
+            </span>
+          </h1>
+          <p className="fleet-page__sub">
+            All registered agents across frameworks. Click a row to inspect, or select multiple for bulk actions.
+          </p>
+        </div>
+        <div className="fleet-page__actions">
+          <button type="button" className="fleet-page__btn" disabled data-testid="fleet-action-register">
+            + register agent
+          </button>
+          <button type="button" className="fleet-page__btn" disabled data-testid="fleet-action-export">
+            ⏏ export csv
+          </button>
+        </div>
+      </header>
 
       {isError && (
         <div
