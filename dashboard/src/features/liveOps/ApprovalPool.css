@@ -1,0 +1,81 @@
+.approval-pool {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--info-bg);
+  border: 1.5px dashed var(--info);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.approval-pool__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.approval-pool__count {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--info);
+}
+
+.approval-pool__link {
+  color: var(--info);
+  text-decoration: none;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.approval-pool__link:hover,
+.approval-pool__link:focus-visible {
+  text-decoration: underline;
+}
+
+.approval-pool__link:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.approval-pool__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+
+.approval-pool__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+}
+
+.approval-pool__agent {
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-pool__op {
+  flex: 1;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
