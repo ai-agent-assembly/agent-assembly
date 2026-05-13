@@ -115,6 +115,31 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
       </section>
 
       <section style={sectionStyle}>
+        <span style={sectionHeader}>Dedup status</span>
+        <p
+          data-testid="alert-detail-dedup-status"
+          style={{ margin: 0, fontSize: '0.75rem' }}
+        >
+          {data.dedupOccurrenceCount > 1
+            ? `${data.dedupOccurrenceCount} occurrences within current window`
+            : 'No deduplication active (first occurrence)'}
+          {data.dedupWindowExpiresAt && ` · window expires ${data.dedupWindowExpiresAt}`}
+        </p>
+      </section>
+
+      <section style={sectionStyle}>
+        <span style={sectionHeader}>Suppression status</span>
+        <p
+          data-testid="alert-detail-suppression-status"
+          style={{ margin: 0, fontSize: '0.75rem' }}
+        >
+          {data.silence
+            ? `Silenced by ${data.silence.silenceId} until ${data.silence.expiresAt}`
+            : 'Not silenced'}
+        </p>
+      </section>
+
+      <section style={sectionStyle}>
         <span style={sectionHeader}>Event payload</span>
         <pre
           data-testid="alert-detail-event-payload"

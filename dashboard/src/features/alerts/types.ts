@@ -170,4 +170,15 @@ export interface AlertDetail extends Alert {
   routingLog: readonly RoutingLogEntry[]
   /** Active silence if any. */
   silence: Silence | null
+  /**
+   * Number of times this alert has fired within the current dedup window
+   * (including the fire that opened the window). `1` when no deduplication
+   * has happened yet.
+   */
+  dedupOccurrenceCount: number
+  /**
+   * Timestamp when the active dedup window expires. `null` when the alert
+   * is not currently inside a dedup window.
+   */
+  dedupWindowExpiresAt: string | null
 }
