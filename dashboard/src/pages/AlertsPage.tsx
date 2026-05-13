@@ -2,12 +2,22 @@ import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AlertList } from '../features/alerts/AlertList'
 import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
+import { AlertsTabs, type AlertsTab } from '../features/alerts/AlertsTabs'
 import { useAlertsQuery } from '../features/alerts/api'
 import {
   filtersFromSearchParams,
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
-import type { AlertFilters } from '../features/alerts/types'
+import type { Alert, AlertFilters } from '../features/alerts/types'
+
+function partitionByTab(rows: readonly Alert[], tab: AlertsTab): readonly Alert[] {
+  if (tab === 'incidents') return rows.filter((r) => r.status === 'RESOLVED')
+  return rows.filter((r) => r.status === 'FIRING' || r.status === 'SUPPRESSED')
+}
+
+function readTab(sp: URLSearchParams): AlertsTab {
+  return sp.get('tab') === 'incidents' ? 'incidents' : 'active'
+}
 
 export function AlertsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -15,14 +25,28 @@ export function AlertsPage() {
     () => filtersFromSearchParams(searchParams),
     [searchParams],
   )
+  const tab: AlertsTab = readTab(searchParams)
 
   const setFilters = useCallback(
-    (next: AlertFilters) => setSearchParams(filtersToSearchParams(next)),
-    [setSearchParams],
+    (next: AlertFilters) => {
+      const sp = filtersToSearchParams(next)
+      if (tab !== 'active') sp.set('tab', tab)
+      setSearchParams(sp)
+    },
+    [setSearchParams, tab],
+  )
+
+  const setTab = useCallback(
+    (next: AlertsTab) => {
+      const sp = filtersToSearchParams(filters)
+      if (next !== 'active') sp.set('tab', next)
+      setSearchParams(sp)
+    },
+    [filters, setSearchParams],
   )
 
   const { data, isLoading, isError, error, refetch } = useAlertsQuery(filters)
-  const rows = data ?? []
+  const rows = useMemo(() => partitionByTab(data ?? [], tab), [data, tab])
 
   return (
     <main style={{ padding: '1.5rem' }}>
@@ -30,6 +54,8 @@ export function AlertsPage() {
       <p style={{ color: '#6b7280', marginBottom: '1rem', fontSize: '0.875rem' }}>
         Policy violations, budget thresholds, and anomaly detections across all governed agents.
       </p>
+
+      <AlertsTabs value={tab} onChange={setTab} />
 
       <AlertFilterBar value={filters} onChange={setFilters} />
 
