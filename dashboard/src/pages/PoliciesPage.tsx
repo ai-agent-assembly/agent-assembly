@@ -21,7 +21,7 @@ interface PolicyEditorOverlayProps {
 
 function PolicyEditorPlaceholder() {
   const { props, closeOverlay } = useOverlay('policy-editor')
-  const overlayProps = props as PolicyEditorOverlayProps
+  const overlayProps = props as unknown as PolicyEditorOverlayProps
   return (
     <div className="policy-editor-placeholder" data-testid="policy-editor-placeholder">
       <h2 className="policy-editor-placeholder__title">
@@ -97,7 +97,7 @@ export function PoliciesPage() {
   const [filter, setFilter] = useState<FilterTab>('all')
   const { openOverlay } = useOverlay('policy-editor')
 
-  const all = policies ?? []
+  const all = useMemo(() => policies ?? [], [policies])
   const activePolicies = useMemo(() => all.filter((p) => p.active), [all])
   const proposedPolicies = useMemo(() => all.filter((p) => !p.active), [all])
 
