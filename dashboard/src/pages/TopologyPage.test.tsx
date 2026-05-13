@@ -78,7 +78,7 @@ describe('TopologyPage', () => {
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
-  it('mounts the TopologyGraph (real component) and the panel placeholder when data is present', () => {
+  it('mounts the TopologyGraph (real component) and panel empty hint when no node is selected', () => {
     vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
       mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
     )
@@ -88,6 +88,25 @@ describe('TopologyPage', () => {
     // Real graph component renders an SVG with one node per graph entry.
     expect(screen.getByTestId('topology-graph')).toBeInTheDocument()
     expect(screen.getAllByTestId('topology-node')).toHaveLength(GRAPH.nodes.length)
-    expect(screen.getByTestId('topology-panel-placeholder')).toBeInTheDocument()
+    // Until a node is clicked, the panel slot shows the empty hint, not the detail panel.
+    expect(screen.getByTestId('topology-panel-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-panel')).not.toBeInTheDocument()
+  })
+
+  it('opens the NodeDetailPanel when a graph node is clicked, and closes via Close button', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+
+    expect(screen.queryByTestId('node-detail-panel')).not.toBeInTheDocument()
+    // Click the first topology node — page should reflect the selection.
+    await userEvent.click(screen.getAllByTestId('topology-node')[0])
+    expect(screen.getByTestId('node-detail-panel')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('support')
+
+    await userEvent.click(screen.getByTestId('node-detail-close'))
+    expect(screen.queryByTestId('node-detail-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('topology-panel-empty')).toBeInTheDocument()
   })
 })
