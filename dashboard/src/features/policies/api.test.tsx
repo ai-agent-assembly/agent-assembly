@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import { PoliciesPage } from '../../pages/PoliciesPage'
 import { PolicyEditorPage } from '../../pages/PolicyEditorPage'
+import { ToastProvider } from '../../components/ToastProvider'
 import * as policiesApi from './api'
 import type { Policy } from './api'
 import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query'
@@ -40,11 +41,13 @@ function Wrapper({
 }) {
   return (
     <QueryClientProvider client={makeClient()}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path={path} element={children} />
-        </Routes>
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path={path} element={children} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   )
 }

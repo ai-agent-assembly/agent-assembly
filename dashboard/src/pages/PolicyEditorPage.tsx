@@ -52,7 +52,7 @@ function validateYaml(yaml: string): string[] {
 export function PolicyEditorPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const { toast, ToastContainer } = useToast()
+  const { toast } = useToast()
   const createPolicy = useCreatePolicy()
 
   const originalName = searchParams.get('name')
@@ -182,7 +182,6 @@ export function PolicyEditorPage() {
         </Suspense>
       </div>
 
-      <ToastContainer />
     </main>
   )
 }

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import { ApprovalsPage } from './ApprovalsPage'
+import { ToastProvider } from '../components/ToastProvider'
 import * as approvalsApi from '../features/approvals/api'
 import type { Approval } from '../features/approvals/api'
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query'
@@ -29,7 +30,9 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter>{children}</MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter>{children}</MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   )
 }
