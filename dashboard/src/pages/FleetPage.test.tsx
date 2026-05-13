@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { FleetPage } from './FleetPage'
+import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import type { Agent } from '../features/agents/api'
 
@@ -24,12 +25,14 @@ function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
 function renderFleet(initialPath = '/agents', onLocation?: (search: string) => void) {
   return render(
     <QueryClientProvider client={makeClient()}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/agents" element={<FleetPage />} />
-        </Routes>
-        {onLocation && <LocationProbe onChange={onLocation} />}
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/agents" element={<FleetPage />} />
+          </Routes>
+          {onLocation && <LocationProbe onChange={onLocation} />}
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   )
 }

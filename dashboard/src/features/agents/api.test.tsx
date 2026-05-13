@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import { FleetPage } from '../../pages/FleetPage'
 import { AgentDetailPage } from '../../pages/AgentDetailPage'
+import { ToastProvider } from '../../components/ToastProvider'
 import * as agentsApi from './api'
 import type { Agent, LogEntry } from './api'
 import type { UseQueryResult } from '@tanstack/react-query'
@@ -15,11 +16,13 @@ function makeClient() {
 function Wrapper({ children, path = '/', initialPath = '/' }: { children: React.ReactNode; path?: string; initialPath?: string }) {
   return (
     <QueryClientProvider client={makeClient()}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path={path} element={children} />
-        </Routes>
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path={path} element={children} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>
   )
 }

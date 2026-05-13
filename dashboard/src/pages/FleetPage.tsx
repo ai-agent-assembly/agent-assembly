@@ -22,6 +22,7 @@ import {
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
+import { useToast } from '../components/Toast'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
@@ -186,6 +187,7 @@ function clickOnInteractive(e: MouseEvent<HTMLTableRowElement>): boolean {
 
 export function FleetPage() {
   const navigate = useNavigate()
+  const { toast } = useToast()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
@@ -338,6 +340,38 @@ export function FleetPage() {
           frameworks={frameworks}
           onChange={setFilters}
         />
+      )}
+
+      {view === 'agents' && selected.size > 0 && (
+        <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
+          <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
+            {selected.size} selected
+          </span>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn"
+            onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
+            data-testid="fleet-bulkbar-shadow"
+          >
+            → shadow mode
+          </button>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
+            onClick={() => toast(`Suspended ${selected.size} agents (mock)`, 'info')}
+            data-testid="fleet-bulkbar-suspend"
+          >
+            ■ suspend
+          </button>
+          <button
+            type="button"
+            className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
+            onClick={() => setSelected(new Set())}
+            data-testid="fleet-bulkbar-clear"
+          >
+            clear
+          </button>
+        </div>
       )}
 
       {view === 'agents' && isError && (
