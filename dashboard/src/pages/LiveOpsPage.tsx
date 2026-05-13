@@ -6,6 +6,7 @@ import { applyFilters } from '../features/liveOps/applyFilters'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
 import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
+import { PipelineCanvas } from '../features/liveOps/PipelineCanvas'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import { EMPTY_FILTERS, type LiveOpsFilters } from '../features/liveOps/types'
 import './LiveOpsPage.css'
@@ -79,7 +80,9 @@ export function LiveOpsPage() {
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
           </header>
-          <div className="live-page__pane-body" />
+          <div className="live-page__pane-body live-page__pane-body--canvas">
+            <PipelineCanvas />
+          </div>
         </section>
 
         <section

@@ -84,6 +84,13 @@
   color: var(--ink-4);
 }
 
+/* ── Pipeline canvas mount (AAASM-1336) ────────────────────── */
+
+.live-page__pane-body--canvas {
+  padding: 0;
+  position: relative;
+}
+
 /* ── Event-stream wiring (AAASM-1332) ──────────────────────── */
 
 .live-page__pane-body--stream {
