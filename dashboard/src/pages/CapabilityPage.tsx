@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { capabilityClient } from '../api/capability'
+import { EmptyState } from '../components/EmptyState'
+import { ErrorState } from '../components/ErrorState'
+import { LoadingState } from '../components/LoadingState'
 import { useToast } from '../components/Toast'
 import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
@@ -18,6 +21,8 @@ export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
   const [verb, setVerb] = useState<Verb>('write')
   const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
+  const [loadError, setLoadError] = useState<Error | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
   const [sort, setSort] = useState<SortState>(NO_SORT)
   const [inspected, setInspected] = useState<CellSelection | null>(null)
@@ -64,17 +69,52 @@ export function CapabilityPage() {
 
   useEffect(() => {
     let alive = true
-    capabilityClient.getMatrix().then((m) => {
-      if (alive) setMatrix(m)
-    })
+    capabilityClient.getMatrix().then(
+      (m) => {
+        if (alive) setMatrix(m)
+      },
+      (e: unknown) => {
+        if (alive) setLoadError(e instanceof Error ? e : new Error('failed to load matrix'))
+      },
+    )
     return () => {
       alive = false
     }
-  }, [])
+  }, [reloadKey])
+
+  const handleRetry = () => {
+    setMatrix(null)
+    setLoadError(null)
+    setReloadKey((k) => k + 1)
+  }
 
   const visibleAgents = matrix
     ? sortAgents(applyFilters(matrix.agents, filters), matrix.resources, verb, sort)
     : []
+
+  if (loadError) {
+    return (
+      <div className="capability-page" data-testid="capability-page">
+        <ErrorState kind="generic" onRetry={handleRetry} />
+      </div>
+    )
+  }
+
+  if (!matrix) {
+    return (
+      <div className="capability-page" data-testid="capability-page">
+        <LoadingState page="capability" />
+      </div>
+    )
+  }
+
+  if (matrix.agents.length === 0) {
+    return (
+      <div className="capability-page" data-testid="capability-page">
+        <EmptyState page="capability" />
+      </div>
+    )
+  }
 
   return (
     <div className="capability-page" data-testid="capability-page">
