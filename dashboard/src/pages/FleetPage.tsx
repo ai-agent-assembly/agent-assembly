@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   useReactTable,
   getCoreRowModel,
@@ -7,7 +7,7 @@ import {
   createColumnHelper,
   type SortingState,
 } from '@tanstack/react-table'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type MouseEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAgentsQuery } from '../features/agents/api'
 import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
@@ -138,7 +138,18 @@ const fleetColumns = [
 
 type FleetView = 'agents' | 'sessions'
 
+/**
+ * `true` when the click landed on an interactive element inside the row
+ * (link, button, input, label). Used to suppress the row-level navigation
+ * so the inner control's own handler stays authoritative.
+ */
+function clickOnInteractive(e: MouseEvent<HTMLTableRowElement>): boolean {
+  const target = e.target as HTMLElement | null
+  return target?.closest('a, button, input, label') !== null
+}
+
 export function FleetPage() {
+  const navigate = useNavigate()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
@@ -303,6 +314,10 @@ export function FleetPage() {
                     key={row.id}
                     data-testid="agent-row"
                     className={`fleet-table__row${row.original.flagged ? ' fleet-table__row--flagged' : ''}`}
+                    onClick={(e) => {
+                      if (clickOnInteractive(e)) return
+                      navigate(`/agents/${row.original.id}`)
+                    }}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <td key={cell.id} className="fleet-table__cell">

@@ -303,6 +303,7 @@
 
 .fleet-table__row {
   border-bottom: 1px solid var(--line);
+  cursor: pointer;
 }
 
 .fleet-table__row:hover { background: var(--paper-3); }
