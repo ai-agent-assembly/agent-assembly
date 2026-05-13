@@ -3,6 +3,7 @@ import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import { applyFilters } from '../features/liveOps/applyFilters'
+import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
 import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
@@ -145,7 +146,9 @@ export function LiveOpsPage() {
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">⚑ approval queue</h2>
           </header>
-          <div className="live-page__pane-body" />
+          <div className="live-page__pane-body">
+            <ApprovalPool ops={ops} />
+          </div>
         </section>
       </div>
     </main>
