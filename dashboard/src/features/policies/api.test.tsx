@@ -67,6 +67,7 @@ const MOCK_POLICY: Policy = {
   version: '1.0.0',
   rule_count: 5,
   active: true,
+  policy_yaml: 'metadata:\n  name: default-policy\n  version: "1.0.0"\nrules: []\n',
 }
 
 const MOCK_INACTIVE: Policy = {
@@ -74,6 +75,7 @@ const MOCK_INACTIVE: Policy = {
   version: '0.9.0',
   rule_count: 3,
   active: false,
+  policy_yaml: 'metadata:\n  name: old-policy\n  version: "0.9.0"\nrules: []\n',
 }
 
 describe('PoliciesPage', () => {
