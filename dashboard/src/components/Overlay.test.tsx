@@ -1,12 +1,18 @@
 import { render, screen, act, renderHook } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { describe, it, expect } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from './AppShell'
 import { OverlayProvider } from './OverlayProvider'
 import { useOverlay } from './useOverlay'
 import { OVERLAY_NAMES } from './OverlayContext'
 import { AuthProvider } from '../auth/AuthProvider'
 import { CANONICAL_ROUTES, ROUTE_GROUPS } from '../routes'
+
+function withQueryClient(children: React.ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+}
 
 describe('OverlayProvider + useOverlay', () => {
   function wrapper({ children }: { children: React.ReactNode }) {
@@ -67,7 +73,7 @@ describe('OverlayProvider + useOverlay', () => {
 describe('AppShell overlay mount points', () => {
   it('renders one <div data-overlay={name}> per OVERLAY_NAMES entry', () => {
     localStorage.setItem('aa_token', 'test-token')
-    render(
+    render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
           <Routes>
@@ -77,7 +83,7 @@ describe('AppShell overlay mount points', () => {
           </Routes>
         </AuthProvider>
       </MemoryRouter>,
-    )
+    ))
     for (const name of OVERLAY_NAMES) {
       const mount = screen.getByTestId(`overlay-mount-${name}`)
       expect(mount).toBeInTheDocument()
@@ -90,7 +96,7 @@ describe('AppShell overlay mount points', () => {
 describe('AppShell canonical nav', () => {
   function renderShell() {
     localStorage.setItem('aa_token', 'test-token')
-    render(
+    render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
           <Routes>
@@ -100,7 +106,7 @@ describe('AppShell canonical nav', () => {
           </Routes>
         </AuthProvider>
       </MemoryRouter>,
-    )
+    ))
     return () => localStorage.clear()
   }
 

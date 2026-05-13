@@ -3,6 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { OverlayProvider } from './OverlayProvider'
 import { OVERLAY_NAMES } from './OverlayContext'
+import { ApprovalsBellButton } from '../features/approvals/ApprovalsBellButton'
 import { CANONICAL_ROUTES, ROUTE_GROUPS, type RouteGroup } from '../routes'
 import './AppShell.css'
 
@@ -94,6 +95,7 @@ export function AppShell() {
           </button>
           <div />
           <div className="appshell__user">
+            <ApprovalsBellButton />
             <span data-testid="appshell-user">{token ?? ''}</span>
             <button
               className="appshell__logout"
