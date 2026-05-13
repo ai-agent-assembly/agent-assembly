@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, type IamTabKey } from '../features/iam/tabs'
+import { useSearchParams } from 'react-router-dom'
+import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
 function TabPlaceholder({ tab }: { tab: IamTabKey }) {
@@ -14,7 +14,18 @@ function TabPlaceholder({ tab }: { tab: IamTabKey }) {
 }
 
 export function IdentityPage() {
-  const [activeTab, setActiveTab] = useState<IamTabKey>(IAM_DEFAULT_TAB)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = parseIamTab(searchParams)
+
+  const selectTab = (tab: IamTabKey) => {
+    const next = new URLSearchParams(searchParams)
+    if (tab === IAM_DEFAULT_TAB) {
+      next.delete('tab')
+    } else {
+      next.set('tab', tab)
+    }
+    setSearchParams(next, { replace: true })
+  }
 
   return (
     <main className="iam-page" data-testid="identity-page">
@@ -31,7 +42,7 @@ export function IdentityPage() {
             aria-selected={activeTab === tab}
             data-testid={`iam-tab-${tab}`}
             className={`iam-page__tab${activeTab === tab ? ' iam-page__tab--active' : ''}`}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => selectTab(tab)}
           >
             {IAM_TAB_LABELS[tab]}
           </button>
