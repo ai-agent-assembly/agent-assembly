@@ -15,6 +15,24 @@ export const OPERATION_STATUSES: readonly OperationStatus[] = [
   'completing',
 ] as const
 
+/** Step kind inside a live-operation call stack. */
+export type CallStackNodeKind = 'llm' | 'tool' | 'result'
+
+/**
+ * One step of the mini call-stack rendered inline beneath an
+ * expanded `OperationRow`. The tree is a list of root nodes; each
+ * node can have nested `children` (e.g. tool calls inside an LLM
+ * call) which the renderer walks recursively.
+ */
+export interface CallStackNode {
+  id: string
+  kind: CallStackNodeKind
+  label: string
+  /** Optional latency for this step in milliseconds. */
+  latencyMs?: number
+  children?: CallStackNode[]
+}
+
 export interface LiveOperation {
   /** Stable identifier from the gateway event stream. */
   id: string
@@ -30,4 +48,6 @@ export interface LiveOperation {
   startedAt: string
   /** Wall-clock latency observed so far, in milliseconds. */
   latencyMs: number
+  /** Optional call-stack tree shown inline when the row is expanded. */
+  callStack?: CallStackNode[]
 }
