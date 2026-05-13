@@ -94,31 +94,30 @@ Vitest coverage: 7 cases in `mutations.test.tsx` (empty-reason
 rejection, POST shape on success, gateway-error surfacing, cache
 invalidation for both hooks).
 
-### ✅ Bulk select + bulk suspend works for multiple agents
+### ✅ Bulk select + bulk suspend / resume works for multiple agents
 
 Selection state is held in a `Set<string>` keyed by agent id with
 indeterminate header checkbox handling. The bulk action bar appears
-when `selected.size > 0` and the Suspend button opens the same
-reason dialog with a pluralised title and a per-batch body.
+when `selected.size > 0` with both Suspend (red, opens the reason
+dialog) and Resume (neutral, fires directly — no reason needed).
 
-`Promise.allSettled` fans out the per-agent calls so one failing
-agent does not roll back its peers. Aggregate result reporting:
+`Promise.allSettled` fans out the per-agent calls for both verbs so
+one failing agent does not roll back its peers. A shared
+`reportBulkResult(verb, ids, results)` helper drives the toast for
+each path so they stay in lock-step:
 
-* all OK → `N suspended`, selection cleared
-* mixed → `M suspended, N failed`, failed ids stay selected
+* all OK → `N suspended` / `N resumed`, selection cleared
+* mixed → `M suspended/resumed, N failed`, failed ids stay selected
 * all failed → `N failed`, full selection preserved
+
+Suspend and Resume disable each other while either is in flight to
+avoid racing dialogs / fan-outs.
 
 Evidence: `AAASM-217-evidence/06-bulk-bar-selected.png`
 
-Vitest coverage: 3 cases in `FleetPage.test.tsx` "FleetPage bulk
-suspend fan-out" describe block.
-
-**Partial — bulk resume**: the AC reads "bulk suspend/resume". The
-selection bar currently only ships Suspend (matching the hi-fi at
-`design/v1/fleet.jsx` lines 212-219 which shows Suspend + Shadow +
-Clear, no Resume). Bulk-resume can be added behind the same fan-out
-machinery in a single follow-up commit if/when there's a workflow
-that needs it.
+Vitest coverage: 7 cases under `FleetPage.test.tsx` — 3 bulk-suspend
+fan-out cases + 3 bulk-resume fan-out cases + 1 regression case for
+the mutual-disable behaviour while a fan-out is pending.
 
 ### ✅ Agent Detail deep-link renders the correct agent
 
@@ -145,8 +144,6 @@ Vitest coverage: 3 deep-link cases in `AgentDetailPage.test.tsx`
 * Inline Capability matrix / Policies assignment / Lineage / Traffic /
   Config (per AAASM-1052 sub-task scope; existing dashboard pages
   cover the same data today)
-* Bulk Resume (symmetric add behind the same fan-out machinery once
-  there's a workflow that needs it)
 
 None of these constitute Bug Sub-tasks; they are documented scope
 calls in the relevant sub-task descriptions.
