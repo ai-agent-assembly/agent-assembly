@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { iamQueryKeys } from './queryKeys'
-import type { Member, MemberPage } from './types'
+import type { InviteMemberInput, Member, MemberPage } from './types'
 
 /**
  * In-memory member store.
@@ -36,6 +36,44 @@ export function useMembersQuery(page = 1, pageSize = DEFAULT_PAGE_SIZE) {
   return useQuery({
     queryKey: iamQueryKeys.membersPage(page, pageSize),
     queryFn: () => fetchMembersPage(page, pageSize),
+  })
+}
+
+export class InviteMemberError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InviteMemberError'
+  }
+}
+
+let _inviteSeq = 0
+
+function inviteMember(input: InviteMemberInput): Promise<Member> {
+  const exists = store.members.some(
+    (m) => m.email.toLowerCase() === input.email.toLowerCase(),
+  )
+  if (exists) {
+    return Promise.reject(new InviteMemberError(`${input.email} is already a member`))
+  }
+  const created: Member = {
+    id: `mbr-invite-${++_inviteSeq}`,
+    email: input.email,
+    name: input.email.split('@')[0],
+    role: input.role,
+    status: 'invited',
+    last_active: null,
+  }
+  store.members = [...store.members, created]
+  return Promise.resolve(created)
+}
+
+export function useInviteMemberMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: InviteMemberInput) => inviteMember(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+    },
   })
 }
 
