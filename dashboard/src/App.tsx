@@ -9,6 +9,7 @@ import { NotFoundPage } from './pages/NotFoundPage'
 import { PoliciesPage } from './pages/PoliciesPage'
 import { PolicyEditorPage } from './pages/PolicyEditorPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
+import { AlertsPage } from './pages/AlertsPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 
@@ -28,7 +29,7 @@ function App() {
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/topology" element={<ComingSoon name="Topology" />} />
             <Route path="/live" element={<ComingSoon name="Live Ops" />} />
-            <Route path="/alerts" element={<ComingSoon name="Alerts" />} />
+            <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
             {/* control */}
             <Route path="/capability" element={<ComingSoon name="Capability" />} />
