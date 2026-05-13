@@ -1,6 +1,12 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query'
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query'
 import { alertsEndpoints, alertsQueryKeys } from './endpoints'
-import type { Alert, AlertFilters } from './types'
+import type { Alert, AlertFilters, AlertRule, AlertRuleInput } from './types'
 
 // ── Fetch helper ──────────────────────────────────────────────────────────
 //
@@ -75,5 +81,59 @@ export function useAlertQuery(id: string | null | undefined): UseQueryResult<Ale
     queryKey: [alertsQueryKeys.alerts, id ?? ''],
     queryFn: () => alertsFetch<Alert>(alertsEndpoints.detail(id as string)),
     enabled: !!id,
+  })
+}
+
+// ── Alert rules — list + create / update / delete ─────────────────────────
+
+export function useAlertRulesQuery(): UseQueryResult<readonly AlertRule[], Error> {
+  return useQuery({
+    queryKey: [alertsQueryKeys.alertRules],
+    queryFn: () => alertsFetch<readonly AlertRule[]>(alertsEndpoints.rules),
+  })
+}
+
+function invalidateRules(client: ReturnType<typeof useQueryClient>): Promise<void> {
+  return client.invalidateQueries({ queryKey: [alertsQueryKeys.alertRules] })
+}
+
+export function useCreateAlertRuleMutation(): UseMutationResult<
+  AlertRule,
+  Error,
+  AlertRuleInput
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input) =>
+      alertsFetch<AlertRule>(alertsEndpoints.rules, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateRules(client),
+  })
+}
+
+export function useUpdateAlertRuleMutation(): UseMutationResult<
+  AlertRule,
+  Error,
+  { id: string; input: AlertRuleInput }
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }) =>
+      alertsFetch<AlertRule>(alertsEndpoints.rule(id), {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => invalidateRules(client),
+  })
+}
+
+export function useDeleteAlertRuleMutation(): UseMutationResult<void, Error, string> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (id) =>
+      alertsFetch<void>(alertsEndpoints.rule(id), { method: 'DELETE' }),
+    onSuccess: () => invalidateRules(client),
   })
 }
