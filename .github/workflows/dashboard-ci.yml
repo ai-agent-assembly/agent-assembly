@@ -70,6 +70,43 @@ jobs:
           path: dashboard/dist/
           retention-days: 1
 
+
+  test:
+    name: Dashboard tests + coverage
+    runs-on: ubuntu-latest
+    needs: [typecheck-and-lint]
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate API types from OpenAPI spec
+        run: pnpm generate:api
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+      - name: Cache coverage report for SonarCloud
+        uses: actions/cache/save@v5
+        with:
+          path: dashboard/coverage/lcov.info
+          key: dashboard-lcov-${{ github.sha }}
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          files: dashboard/coverage/lcov.info
+          name: Dashboard (TypeScript)
+          flags: dashboard
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   codegen-drift:
     name: Dashboard codegen drift check
     runs-on: ubuntu-latest
