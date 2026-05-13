@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
+import { EmptyState } from '../components/EmptyState'
 import { useToast } from '../components/Toast'
 import {
   useApprovalsQuery,
@@ -260,7 +261,7 @@ export function ApprovalsPage() {
           )}
 
           {!isLoading && !isError && pending.length === 0 && (
-            <p data-testid="approvals-empty" className="approvals-state">No pending approval requests.</p>
+            <EmptyState page="approvals" />
           )}
 
           {(isLoading || pending.length > 0) && (
