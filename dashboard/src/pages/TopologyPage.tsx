@@ -1,25 +1,31 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useTopologyQuery } from '../features/topology/api'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
+import { NodeDetailPanel } from '../components/topology/NodeDetailPanel'
+import type { TopologyNode } from '../features/topology/types'
 import './TopologyPage.css'
 
 /**
- * Topology page shell — header + slots for the D3 force graph and the
- * right-side node-detail panel. Lands as the entry point for AAASM-95's
- * topology half; the graph itself (AAASM-1335), node panel (AAASM-1337),
- * team grouping (AAASM-1339), and View-trace wiring (AAASM-1340) plug
- * into the placeholders below.
+ * Topology page shell — header, D3 force graph (AAASM-1335), and
+ * node-detail panel (AAASM-1337) docked on the right when a node is
+ * selected. Team grouping (AAASM-1339) and View-trace drawer wiring
+ * (AAASM-1340) plug in next.
  *
  * Hi-fi reference: design/v1/hi-fi/topology.jsx — page-head + page-title
- * with "Topology · N agents · N teams" subtitle.
+ * with "Topology · N agents · N teams" subtitle, canvas left, panel right.
  */
 export function TopologyPage() {
   const { data, isLoading, isError, refetch } = useTopologyQuery()
+  const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
   const teamCount = useMemo(() => {
     if (!data) return 0
     return new Set(data.nodes.map(n => n.team)).size
   }, [data])
   const agentCount = data?.nodes.length ?? 0
+
+  const handleViewTrace = () => {
+    // Wires to the shell-level trace drawer in AAASM-1340.
+  }
 
   return (
     <main className="topology-page" data-testid="topology-view">
@@ -54,14 +60,28 @@ export function TopologyPage() {
             data-testid="topology-graph-wrapper"
             aria-label="Topology graph"
           >
-            <TopologyGraph nodes={data?.nodes ?? []} edges={data?.edges ?? []} />
+            <TopologyGraph
+              nodes={data?.nodes ?? []}
+              edges={data?.edges ?? []}
+              onNodeClick={setSelectedNode}
+            />
           </section>
           <aside
             className="topology-page__panel"
-            data-testid="topology-panel-placeholder"
+            data-testid="topology-panel-wrapper"
             aria-label="Node detail panel"
           >
-            Node detail panel lands in AAASM-1337.
+            {selectedNode ? (
+              <NodeDetailPanel
+                node={selectedNode}
+                onClose={() => setSelectedNode(null)}
+                onViewTrace={handleViewTrace}
+              />
+            ) : (
+              <div className="topology-page__panel-empty" data-testid="topology-panel-empty">
+                Click an agent in the graph to see its details.
+              </div>
+            )}
           </aside>
         </div>
       )}

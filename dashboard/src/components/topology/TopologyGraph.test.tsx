@@ -6,15 +6,15 @@ import type { TopologyNode } from '../../features/topology/types'
 
 const NODES: TopologyNode[] = [
   // ratio 0.1 → small
-  { id: 'n1', name: 'support-1', status: 'active', team: 'a', budgetSpend: 1, budgetLimit: 10 },
+  { id: 'n1', name: 'support-1', status: 'active', team: 'a', owner: 'alice', policyCount: 2, budgetSpend: 1, budgetLimit: 10 },
   // ratio 0.4 → small
-  { id: 'n2', name: 'support-2', status: 'idle', team: 'a', budgetSpend: 4, budgetLimit: 10 },
+  { id: 'n2', name: 'support-2', status: 'idle', team: 'a', owner: 'alice', policyCount: 2, budgetSpend: 4, budgetLimit: 10 },
   // ratio 0.7 → medium
-  { id: 'n3', name: 'analyst', status: 'active', team: 'b', budgetSpend: 7, budgetLimit: 10 },
+  { id: 'n3', name: 'analyst', status: 'active', team: 'b', owner: 'bob', policyCount: 3, budgetSpend: 7, budgetLimit: 10 },
   // ratio 0.8 → medium (inclusive upper)
-  { id: 'n4', name: 'audit', status: 'idle', team: 'b', budgetSpend: 8, budgetLimit: 10 },
+  { id: 'n4', name: 'audit', status: 'idle', team: 'b', owner: 'bob', policyCount: 1, budgetSpend: 8, budgetLimit: 10 },
   // ratio 0.95 → large; also error
-  { id: 'n5', name: 'deploy', status: 'error', team: 'c', budgetSpend: 9.5, budgetLimit: 10 },
+  { id: 'n5', name: 'deploy', status: 'error', team: 'c', owner: 'carol', policyCount: 0, budgetSpend: 9.5, budgetLimit: 10 },
 ]
 
 describe('TopologyGraph', () => {
@@ -45,7 +45,7 @@ describe('TopologyGraph', () => {
 
   it('handles budgetLimit=0 gracefully (no division by zero, defaults to small)', () => {
     const edge: TopologyNode[] = [
-      { id: 'edge', name: 'noisy', status: 'idle', team: 'a', budgetSpend: 0, budgetLimit: 0 },
+      { id: 'edge', name: 'noisy', status: 'idle', team: 'a', owner: 'alice', policyCount: 0, budgetSpend: 0, budgetLimit: 0 },
     ]
     render(<TopologyGraph nodes={edge} edges={[]} />)
     expect(screen.getByTestId('topology-node')).toHaveAttribute('data-size-bucket', 'small')
@@ -53,7 +53,7 @@ describe('TopologyGraph', () => {
 
   it('renders the node name, framework, and budget summary', () => {
     const single: TopologyNode[] = [
-      { id: 'x', name: 'long-agent-name-truncated', status: 'active', team: 'a', budgetSpend: 4.1, budgetLimit: 10, framework: 'langgraph' },
+      { id: 'x', name: 'long-agent-name-truncated', status: 'active', team: 'a', owner: 'alice', policyCount: 1, budgetSpend: 4.1, budgetLimit: 10, framework: 'langgraph' },
     ]
     render(<TopologyGraph nodes={single} edges={[]} />)
     const card = screen.getByTestId('topology-node')
