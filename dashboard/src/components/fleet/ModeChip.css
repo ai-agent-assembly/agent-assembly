@@ -1,0 +1,33 @@
+.fleet-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 2px 7px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 2px;
+  border: 1px solid;
+}
+
+.fleet-mode--enforce {
+  background-color: #d4e4d2;
+  border-color: #22592a;
+  color: #22592a;
+}
+
+.fleet-mode--shadow {
+  background-color: #f5e6c4;
+  border-color: #8a5a00;
+  color: #8a5a00;
+}
+
+.fleet-mode--off {
+  background-color: #ffffff;
+  border-color: #c4bfb0;
+  color: #5a5a5a;
+}
