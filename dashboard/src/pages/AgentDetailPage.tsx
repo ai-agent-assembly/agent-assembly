@@ -116,6 +116,52 @@ function TabEmpty({ title, body }: { title: string; body: string }) {
   )
 }
 
+interface MiniBarProps {
+  label: string
+  value: number
+  max: number
+  tone: 'ok' | 'warn' | 'deny' | 'info'
+}
+
+function MiniBar({ label, value, max, tone }: MiniBarProps) {
+  const pct = max === 0 ? 0 : Math.min(100, Math.max(0, (value / max) * 100))
+  return (
+    <div className="ad-minibar" data-testid={`ad-minibar-${tone}`}>
+      <div className="ad-minibar__label">{label}</div>
+      <div className="ad-minibar__track">
+        <span
+          className={`ad-minibar__fill ad-minibar__fill--${tone}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="ad-minibar__value">{value}</div>
+    </div>
+  )
+}
+
+interface PostureSummaryProps {
+  agent: Agent
+}
+
+function PostureSummary({ agent }: PostureSummaryProps) {
+  // The dashboard has not yet wired a per-decision breakdown endpoint
+  // (cf. AAASM-1280 capability matrix). Until that lands, the panel
+  // derives an approximate decisions-this-session view from the two
+  // counters the API exposes today: total sessions handled and
+  // policy violations recorded.
+  const denyCount = agent.policy_violations_count
+  const allowCount = Math.max(0, agent.session_count - denyCount)
+  const max = Math.max(allowCount, denyCount, 1)
+  return (
+    <div data-testid="agent-detail-posture">
+      <MiniBar label="Allow"    value={allowCount} max={max} tone="ok" />
+      <MiniBar label="Narrow"   value={0}          max={max} tone="warn" />
+      <MiniBar label="Deny"     value={denyCount}  max={max} tone="deny" />
+      <MiniBar label="Approval" value={0}          max={max} tone="info" />
+    </div>
+  )
+}
+
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -202,43 +248,44 @@ export function AgentDetailPage() {
 
             <div className="ad-body" data-testid="agent-detail-body">
               {tab === 'overview' && (
-                <>
-                  <section
-                    data-testid="agent-profile"
-                    style={{ background: 'var(--paper-2)', border: '1px solid var(--line)', borderRadius: 4, padding: '1rem', marginBottom: '1rem' }}
-                  >
-                    <h2 style={{ marginTop: 0 }}>Identity Profile</h2>
-                    <p><b>Version</b> {agent.version}</p>
-                    <p><b>Sessions</b> {agent.session_count}</p>
-                    <p><b>Policy violations</b> {agent.policy_violations_count}</p>
-                    {agent.tool_names.length > 0 && (
-                      <p><b>Tools</b> {agent.tool_names.join(', ')}</p>
-                    )}
+                <div className="ad-overview" data-testid="agent-profile">
+                  <section className="ad-card">
+                    <h2 className="ad-card__title">posture summary</h2>
+                    <PostureSummary agent={agent} />
                   </section>
 
-                  <section data-testid="agent-events">
-                    <h2>Recent Events</h2>
+                  <section className="ad-card">
+                    <h2 className="ad-card__title">traffic mix · last 24h</h2>
+                    <div className="ad-traffic-mix" data-testid="agent-detail-traffic-mix">
+                      <div className="ad-traffic-mix__seg ad-traffic-mix__seg--placeholder">
+                        wired in a follow-up sub-task
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="ad-card ad-card--span-2" data-testid="agent-events">
+                    <h2 className="ad-card__title">recent events</h2>
                     {eventsLoading && <p>Loading events…</p>}
                     {eventsError && <p style={{ color: 'var(--danger)' }}>Failed to load events.</p>}
                     {!eventsLoading && !eventsError && (!events || events.length === 0) && (
-                      <p>No events recorded for this agent.</p>
+                      <p style={{ color: 'var(--ink-4)', fontSize: 12 }}>No events recorded for this agent.</p>
                     )}
                     {events && events.length > 0 && (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
+                      <table className="ad-events">
                         <thead>
                           <tr>
-                            <th style={{ textAlign: 'left', padding: '0.4rem', borderBottom: '2px solid var(--line)' }}>Timestamp</th>
-                            <th style={{ textAlign: 'left', padding: '0.4rem', borderBottom: '2px solid var(--line)' }}>Type</th>
-                            <th style={{ textAlign: 'left', padding: '0.4rem', borderBottom: '2px solid var(--line)' }}>Session</th>
+                            <th>Timestamp</th>
+                            <th>Type</th>
+                            <th>Session</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {events.map(ev => (
-                            <tr key={`${ev.seq}-${ev.session_id}`} data-testid="event-row" style={{ borderBottom: '1px solid var(--line)' }}>
-                              <td style={{ padding: '0.4rem' }}>{ev.timestamp}</td>
-                              <td style={{ padding: '0.4rem' }}>{ev.event_type}</td>
-                              <td style={{ padding: '0.4rem' }}>
-                                <code style={{ fontSize: '0.75rem' }}>{ev.session_id.slice(0, 12)}…</code>
+                          {events.map((ev) => (
+                            <tr key={`${ev.seq}-${ev.session_id}`} data-testid="event-row">
+                              <td>{ev.timestamp}</td>
+                              <td>{ev.event_type}</td>
+                              <td>
+                                <code className="ad-events__code">{ev.session_id.slice(0, 12)}…</code>
                               </td>
                             </tr>
                           ))}
@@ -246,7 +293,7 @@ export function AgentDetailPage() {
                       </table>
                     )}
                   </section>
-                </>
+                </div>
               )}
 
               {tab === 'capability' && (
