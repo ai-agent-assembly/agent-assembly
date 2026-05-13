@@ -68,11 +68,6 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     closeBtnRef.current?.focus()
   }, [event])
 
-  // Reset the "Copied" feedback whenever the modal opens for a new event.
-  useEffect(() => {
-    setCopied(false)
-  }, [event])
-
   const handleFocusTrap = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Tab' || !dialogRef.current) return
     const focusables = dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
