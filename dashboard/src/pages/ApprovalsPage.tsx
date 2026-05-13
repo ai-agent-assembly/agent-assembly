@@ -221,17 +221,17 @@ export function ApprovalsPage() {
               data-testid="bulk-toolbar"
               style={{
                 display: 'flex', gap: '0.5rem', alignItems: 'center',
-                padding: '0.5rem 0.75rem', background: '#eff6ff',
+                padding: '0.5rem 0.75rem', background: 'var(--info-bg)',
                 borderRadius: '0.375rem', marginBottom: '0.75rem', fontSize: '0.875rem',
               }}
             >
-              <span style={{ color: '#1d4ed8', fontWeight: 500 }}>{selected.size} selected</span>
+              <span style={{ color: 'var(--info)', fontWeight: 500 }}>{selected.size} selected</span>
               <button
                 data-testid="bulk-approve-btn"
                 onClick={() => void handleApprove(Array.from(selected))}
                 style={{
                   padding: '0.25rem 0.75rem', borderRadius: '0.25rem',
-                  background: '#16a34a', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+                  background: 'var(--ok)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontWeight: 600,
                 }}
               >
                 Approve selected
@@ -241,7 +241,7 @@ export function ApprovalsPage() {
                 onClick={() => setRejectFor(Array.from(selected))}
                 style={{
                   padding: '0.25rem 0.75rem', borderRadius: '0.25rem',
-                  background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+                  background: 'var(--danger)', color: 'var(--paper-2)', border: 'none', cursor: 'pointer', fontWeight: 600,
                 }}
               >
                 Reject selected
