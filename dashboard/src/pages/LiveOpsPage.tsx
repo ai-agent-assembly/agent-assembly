@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useToast } from '../components/Toast'
 import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
@@ -49,22 +49,23 @@ export function LiveOpsPage() {
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
 
-  useEffect(() => {
-    if (overrides.size === 0) return
-    setOverrides((prev) => {
-      let changed = false
-      const next = new Map(prev)
-      for (const op of ops) {
-        const intent = next.get(op.id)
-        if (!intent) continue
-        if (matchesIntent(op.status, intent)) {
-          next.delete(op.id)
-          changed = true
-        }
+  // Derived map: every override whose WS-reported status already matches
+  // its intent is hidden from the UI. The raw `overrides` state still
+  // holds them until the next action triggers a state update; the cost
+  // is bounded by the page's ops ring (default 100) so they evaporate
+  // naturally when the ops age out.
+  const liveOverrides = useMemo(() => {
+    if (overrides.size === 0) return overrides
+    let pruned: Map<string, OperationOverride> | null = null
+    for (const op of ops) {
+      const intent = overrides.get(op.id)
+      if (intent && matchesIntent(op.status, intent)) {
+        if (!pruned) pruned = new Map(overrides)
+        pruned.delete(op.id)
       }
-      return changed ? next : prev
-    })
-  }, [ops, overrides.size])
+    }
+    return pruned ?? overrides
+  }, [ops, overrides])
 
   async function runAction(
     opId: string,
@@ -201,7 +202,7 @@ export function LiveOpsPage() {
                 <OperationRow
                   key={op.id}
                   op={op}
-                  override={overrides.get(op.id)}
+                  override={liveOverrides.get(op.id)}
                   onPause={() => runAction(op.id, 'pausing', pauseOp)}
                   onResume={() => runAction(op.id, 'resuming', resumeOp)}
                   onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
