@@ -165,7 +165,7 @@ pub async fn create_policy(
             version: meta.timestamp,
             active: true,
             rule_count: 0,
-            policy_yaml: String::new(),
+            policy_yaml: body.policy_yaml,
         }),
     ))
 }
