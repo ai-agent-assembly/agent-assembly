@@ -1,0 +1,21 @@
+.iam-scope-checklist {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--shell-border, #d4d4d8);
+  border-radius: 0.375rem;
+  background: var(--shell-surface-muted, #fafafa);
+}
+
+.iam-scope-checklist__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.iam-scope-checklist__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.8rem;
+}
