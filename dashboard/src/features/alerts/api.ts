@@ -8,6 +8,7 @@ import {
 import { alertsEndpoints, alertsQueryKeys } from './endpoints'
 import type {
   Alert,
+  AlertDetail,
   AlertFilters,
   AlertRule,
   AlertRuleInput,
@@ -86,10 +87,12 @@ export function useAlertsQuery(
 
 // ── useAlertQuery (single alert detail) ───────────────────────────────────
 
-export function useAlertQuery(id: string | null | undefined): UseQueryResult<Alert, Error> {
+export function useAlertQuery(
+  id: string | null | undefined,
+): UseQueryResult<AlertDetail, Error> {
   return useQuery({
     queryKey: [alertsQueryKeys.alerts, id ?? ''],
-    queryFn: () => alertsFetch<Alert>(alertsEndpoints.detail(id as string)),
+    queryFn: () => alertsFetch<AlertDetail>(alertsEndpoints.detail(id as string)),
     enabled: !!id,
   })
 }
