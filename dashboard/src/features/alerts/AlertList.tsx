@@ -106,6 +106,7 @@ export function AlertList({ rows, onSelect }: AlertListProps) {
     { id: 'severity', desc: true },
   ])
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: rows as Alert[],
     columns,
