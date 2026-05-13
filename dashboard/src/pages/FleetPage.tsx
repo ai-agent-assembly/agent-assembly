@@ -5,9 +5,10 @@ import {
   getSortedRowModel,
   flexRender,
   createColumnHelper,
+  type ColumnDef,
   type SortingState,
 } from '@tanstack/react-table'
-import { useCallback, useMemo, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAgentsQuery } from '../features/agents/api'
 import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
@@ -24,7 +25,7 @@ import { TrustBar } from '../components/fleet/TrustBar'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
-const COLUMN_COUNT = 10
+const COLUMN_COUNT = 11
 
 function SkeletonRows() {
   return (
@@ -52,7 +53,42 @@ function NumericCell({ value }: { value: number | null }) {
 
 const columnHelper = createColumnHelper<FleetAgent>()
 
-const fleetColumns = [
+interface SelectColumnControls {
+  selected: ReadonlySet<string>
+  allSelected: boolean
+  someSelected: boolean
+  toggleAll: () => void
+  toggleSelect: (id: string) => void
+}
+
+function buildSelectColumn(ctrl: SelectColumnControls): ColumnDef<FleetAgent> {
+  return columnHelper.display({
+    id: 'select',
+    header: () => (
+      <input
+        type="checkbox"
+        checked={ctrl.allSelected}
+        ref={(el) => {
+          if (el) el.indeterminate = !ctrl.allSelected && ctrl.someSelected
+        }}
+        onChange={ctrl.toggleAll}
+        data-testid="fleet-select-all"
+        aria-label="Select all agents"
+      />
+    ),
+    cell: ({ row }) => (
+      <input
+        type="checkbox"
+        checked={ctrl.selected.has(row.original.id)}
+        onChange={() => ctrl.toggleSelect(row.original.id)}
+        data-testid={`fleet-select-${row.original.id}`}
+        aria-label={`Select ${row.original.name}`}
+      />
+    ),
+  })
+}
+
+const baseColumns: ColumnDef<FleetAgent>[] = [
   columnHelper.accessor('name', {
     header: 'Agent',
     enableSorting: true,
@@ -134,7 +170,7 @@ const fleetColumns = [
       </Link>
     ),
   }),
-]
+] as ColumnDef<FleetAgent>[]
 
 type FleetView = 'agents' | 'sessions'
 
@@ -173,10 +209,62 @@ export function FleetPage() {
     [fleetAgents, filters],
   )
 
+  // Selection state: persists across filter / sort; cleared via the bulk
+  // action bar (next commit). Drop selections for ids that disappear from
+  // the data source (e.g. an agent was deregistered).
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const knownIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const next = new Set(fleetAgents.map((a) => a.id))
+    knownIds.current = next
+    setSelected((prev) => {
+      let changed = false
+      const filtered = new Set<string>()
+      for (const id of prev) {
+        if (next.has(id)) filtered.add(id)
+        else changed = true
+      }
+      return changed ? filtered : prev
+    })
+  }, [fleetAgents])
+
+  const visibleIds = useMemo(() => filteredFleet.map((a) => a.id), [filteredFleet])
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id))
+  const someSelected = !allSelected && visibleIds.some((id) => selected.has(id))
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const toggleAll = useCallback(() => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (visibleIds.every((id) => prev.has(id))) {
+        for (const id of visibleIds) next.delete(id)
+      } else {
+        for (const id of visibleIds) next.add(id)
+      }
+      return next
+    })
+  }, [visibleIds])
+
+  const columns = useMemo<ColumnDef<FleetAgent>[]>(
+    () => [
+      buildSelectColumn({ selected, allSelected, someSelected, toggleAll, toggleSelect }),
+      ...baseColumns,
+    ],
+    [selected, allSelected, someSelected, toggleAll, toggleSelect],
+  )
+
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: filteredFleet,
-    columns: fleetColumns,
+    columns,
     state: { sorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
