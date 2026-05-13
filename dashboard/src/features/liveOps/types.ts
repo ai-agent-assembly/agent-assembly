@@ -38,6 +38,8 @@ export interface LiveOperation {
   id: string
   /** Owning agent id (matches `Agent.id` from the fleet view-model). */
   agent: string
+  /** Owning team id (the agent's team). Optional until the WS feed wires it. */
+  team?: string
   /** Operation verb — e.g. `read`, `write`, `delete`, `exec`. */
   opType: string
   /** Target resource — e.g. `gmail.send`, `pg.users`. */
@@ -50,4 +52,26 @@ export interface LiveOperation {
   latencyMs: number
   /** Optional call-stack tree shown inline when the row is expanded. */
   callStack?: CallStackNode[]
+}
+
+/**
+ * Filter selection for the Live Ops event-stream zone.
+ *
+ * `null` / `undefined` on any axis means "no filter on this axis"; all
+ * non-null axes are AND-combined when applied to a list of operations.
+ * Mirrors the four filter dimensions called out in AAASM-1282 #6.
+ */
+export interface LiveOpsFilters {
+  agent?: string | null
+  team?: string | null
+  opType?: string | null
+  status?: OperationStatus | null
+}
+
+/** Convenience sentinel for "no filters active". */
+export const EMPTY_FILTERS: LiveOpsFilters = {
+  agent: null,
+  team: null,
+  opType: null,
+  status: null,
 }

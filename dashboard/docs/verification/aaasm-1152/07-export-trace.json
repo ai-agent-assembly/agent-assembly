@@ -1,0 +1,63 @@
+{
+  "version": "1",
+  "exportedAt": "2026-05-13T15:20:56.851Z",
+  "agentId": "agent-aaasm-1152",
+  "sessionId": "session-aaasm-1152",
+  "events": [
+    {
+      "id": "evt-llm",
+      "timestamp": "2026-04-23T14:23:01Z",
+      "type": "llm_call",
+      "agent": "support-agent",
+      "durationMs": 834,
+      "payloadPreview": "GPT-4o · \"查詢用戶 #4521 的帳單\"",
+      "payload": {
+        "model": "gpt-4o",
+        "prompt": "lookup billing for user 4521"
+      },
+      "severity": "info"
+    },
+    {
+      "id": "evt-tool",
+      "timestamp": "2026-04-23T14:23:02Z",
+      "type": "tool_call",
+      "agent": "support-agent",
+      "durationMs": 45,
+      "payloadPreview": "query_db | SELECT * FROM billing...",
+      "payload": {
+        "table": "billing",
+        "user_id": 4521
+      }
+    },
+    {
+      "id": "evt-violation",
+      "timestamp": "2026-04-23T14:23:16Z",
+      "type": "policy_violation",
+      "agent": "support-agent",
+      "durationMs": 12,
+      "payloadPreview": "process_refund | amount=250",
+      "payload": {
+        "action": "process_refund",
+        "amount": 250,
+        "user_id": 4521
+      },
+      "severity": "critical",
+      "redactedFields": [
+        "user_id"
+      ],
+      "violationReason": "refund > $100 requires human approval"
+    },
+    {
+      "id": "evt-leak",
+      "timestamp": "2026-04-23T14:23:30Z",
+      "type": "credential_leak",
+      "agent": "support-agent",
+      "durationMs": 5,
+      "payloadPreview": "detected AWS_SECRET_ACCESS_KEY in outbound payload",
+      "payload": {
+        "matched_rule": "aws-secret-access-key"
+      },
+      "severity": "warning"
+    }
+  ]
+}

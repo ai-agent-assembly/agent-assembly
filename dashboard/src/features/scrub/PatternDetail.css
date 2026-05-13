@@ -1,0 +1,99 @@
+.scrub-detail {
+  background: var(--paper-2);
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.scrub-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.scrub-detail-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.scrub-detail-title {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scrub-detail-sev {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.scrub-detail-sev--critical { color: var(--danger); }
+.scrub-detail-sev--high { color: var(--warn); }
+.scrub-detail-sev--medium { color: var(--info); }
+.scrub-detail-sev--low { color: var(--ink-3); }
+
+.scrub-detail-collapse-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.scrub-detail-collapse-btn:hover {
+  background: var(--paper-3);
+}
+
+.scrub-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.scrub-detail-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 3px;
+}
+
+.scrub-detail-code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 2px;
+  display: block;
+  word-break: break-all;
+}
+
+.scrub-detail-code--regex {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.scrub-detail-code--example {
+  background: var(--danger-bg);
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.scrub-detail-code--replace {
+  background: var(--scrub-bg);
+  color: var(--scrub);
+}

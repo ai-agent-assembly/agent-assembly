@@ -129,7 +129,7 @@ describe('ApprovalsPage', () => {
 
   it('shows empty state when no pending approvals', async () => {
     setup([])
-    await waitFor(() => expect(screen.getByTestId('approvals-empty')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
   })
 
   it('shows loading skeletons while fetching', () => {

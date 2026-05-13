@@ -64,10 +64,24 @@ describe('ApprovalsPage', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Approvals' })).toBeInTheDocument())
   })
 
-  it('shows empty state when no pending approvals', async () => {
+  it('shows shared empty state when no pending approvals', async () => {
     setupMocks([])
     render(<ApprovalsPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('approvals-empty')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
+  })
+
+  it('shows shared error state on query failure', async () => {
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      mockQuery<Approval[]>({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() }),
+    )
+    vi.spyOn(approvalsApi, 'useApproveAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    vi.spyOn(approvalsApi, 'useRejectAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByTestId('error-state-generic')).toBeInTheDocument())
   })
 
   it('renders a row for each pending approval', async () => {
