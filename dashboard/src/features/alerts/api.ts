@@ -6,7 +6,14 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { alertsEndpoints, alertsQueryKeys } from './endpoints'
-import type { Alert, AlertFilters, AlertRule, AlertRuleInput } from './types'
+import type {
+  Alert,
+  AlertFilters,
+  AlertRule,
+  AlertRuleInput,
+  Silence,
+  SilenceInput,
+} from './types'
 
 // ── Fetch helper ──────────────────────────────────────────────────────────
 //
@@ -135,5 +142,27 @@ export function useDeleteAlertRuleMutation(): UseMutationResult<void, Error, str
     mutationFn: (id) =>
       alertsFetch<void>(alertsEndpoints.rule(id), { method: 'DELETE' }),
     onSuccess: () => invalidateRules(client),
+  })
+}
+
+// ── useSilenceAlertMutation ───────────────────────────────────────────────
+
+export function useSilenceAlertMutation(): UseMutationResult<
+  Silence,
+  Error,
+  SilenceInput
+> {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: (input) =>
+      alertsFetch<Silence>(alertsEndpoints.silence, {
+        method: 'POST',
+        body: JSON.stringify({
+          alert_id: input.alertId,
+          duration_seconds: input.durationSeconds,
+          reason: input.reason,
+        }),
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: [alertsQueryKeys.alerts] }),
   })
 }
