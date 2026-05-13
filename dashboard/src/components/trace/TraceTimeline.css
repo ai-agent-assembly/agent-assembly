@@ -49,6 +49,14 @@
   background: var(--paper);
 }
 
+/* Credential leak events always render with the warning tone regardless
+   of the severity the gateway assigns. Severity remains on
+   data-severity for filtering; only the visual is overridden. */
+.trace-event[data-event-type='credential_leak'] {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
 .trace-event__time {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;

@@ -1,4 +1,5 @@
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+import { Tooltip } from '../Tooltip'
 import './TraceTimeline.css'
 
 const ICON_BY_TYPE: Record<string, string> = {
@@ -26,6 +27,11 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
       {events.map(event => {
         const sev = severityKey(event)
         const icon = ICON_BY_TYPE[event.type] ?? '·'
+        const tooltipReason =
+          event.type === 'policy_violation' ? event.violationReason : undefined
+        const iconNode = (
+          <span className="trace-event__icon" aria-hidden="true">{icon}</span>
+        )
         return (
           <li
             key={event.id}
@@ -35,7 +41,11 @@ export function TraceTimeline({ events }: TraceTimelineProps) {
             data-event-type={event.type}
           >
             <span className="trace-event__time">{formatTime(event.timestamp)}</span>
-            <span className="trace-event__icon" aria-hidden="true">{icon}</span>
+            {tooltipReason ? (
+              <Tooltip content={tooltipReason}>{iconNode}</Tooltip>
+            ) : (
+              iconNode
+            )}
             <span className="trace-event__agent">{event.agent}</span>
             <span className="trace-event__preview">{event.payloadPreview}</span>
             <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
