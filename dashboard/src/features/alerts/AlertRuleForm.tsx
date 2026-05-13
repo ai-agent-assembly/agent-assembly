@@ -7,6 +7,7 @@ import { DestinationsPicker } from './DestinationsPicker'
 import { DedupAndSuppressionFields } from './DedupAndSuppressionFields'
 import { useCreateAlertRuleMutation, useUpdateAlertRuleMutation } from './api'
 import { ruleFormSchema, type RuleFormValues } from './ruleFormSchema'
+import { useToast } from '../../components/Toast'
 import type { AlertRule, AlertRuleInput } from './types'
 
 interface AlertRuleFormProps {
@@ -89,16 +90,23 @@ export function AlertRuleForm({
 
   const create = useCreateAlertRuleMutation()
   const update = useUpdateAlertRuleMutation()
+  const { toast } = useToast()
 
   const submitting = create.isPending || update.isPending
 
   const handleSubmit = methods.handleSubmit(async (values) => {
     const input = toRuleInput(values)
-    const saved = initialValue
-      ? await update.mutateAsync({ id: initialValue.id, input })
-      : await create.mutateAsync(input)
-    onSaved?.(saved)
-    onClose()
+    try {
+      const saved = initialValue
+        ? await update.mutateAsync({ id: initialValue.id, input })
+        : await create.mutateAsync(input)
+      toast(initialValue ? `Updated rule "${saved.name}"` : `Created rule "${saved.name}"`, 'success')
+      onSaved?.(saved)
+      onClose()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to save rule'
+      toast(message, 'error')
+    }
   })
 
   if (!open) return null
