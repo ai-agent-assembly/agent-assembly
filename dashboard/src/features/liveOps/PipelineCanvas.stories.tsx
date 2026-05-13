@@ -53,3 +53,48 @@ export const Tall: Story = {
     </div>
   ),
 }
+
+export const LowIntensity: Story = {
+  render: () => (
+    <div
+      style={{
+        width: 800,
+        height: 480,
+        position: 'relative',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <PipelineCanvas intensity={0.5} />
+    </div>
+  ),
+}
+
+export const HighIntensity: Story = {
+  render: () => (
+    <div
+      style={{
+        width: 800,
+        height: 480,
+        position: 'relative',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <PipelineCanvas intensity={5} />
+    </div>
+  ),
+}
+
+export const Paused: Story = {
+  render: () => (
+    <div
+      style={{
+        width: 800,
+        height: 480,
+        position: 'relative',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <PipelineCanvas paused intensity={3} />
+    </div>
+  ),
+}
