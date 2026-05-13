@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useAgentPermissionsQuery } from './agents'
 import {
   INHERITANCE_KINDS,
@@ -41,9 +42,12 @@ export interface AgentPermissionsPanelProps {
 export function AgentPermissionsPanel({ agent, onClose }: AgentPermissionsPanelProps) {
   const { data, isLoading, isError } = useAgentPermissionsQuery(agent?.id ?? null)
 
-  if (!agent) return null
+  const grouped = useMemo(
+    () => (data ? groupBySourceKind(data.effective) : null),
+    [data, agent?.id],
+  )
 
-  const grouped = data ? groupBySourceKind(data.effective) : null
+  if (!agent) return null
 
   return (
     <aside className="iam-agent-perm-panel" data-testid="agent-permissions-panel" aria-label={`Permissions for ${agent.name}`}>
