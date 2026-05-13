@@ -197,8 +197,8 @@ export function ApprovalsPage() {
             data-testid="ws-disconnected-banner"
             style={{
               fontSize: '0.75rem', padding: '0.25rem 0.75rem',
-              background: '#fef9c3', border: '1px solid #fde047',
-              borderRadius: '9999px', color: '#854d0e',
+              background: 'var(--warn-bg)', border: '1px solid var(--warn)',
+              borderRadius: '9999px', color: 'var(--warn)',
             }}
           >
             Live updates disconnected — reconnecting…
@@ -252,7 +252,7 @@ export function ApprovalsPage() {
           {isError && (
             <div
               data-testid="approvals-error"
-              style={{ color: '#dc2626', marginBottom: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', fontSize: '0.875rem' }}
+              style={{ color: 'var(--danger)', marginBottom: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', fontSize: '0.875rem' }}
             >
               <span>Failed to load approvals.</span>
               <button onClick={() => void refetch()}>Retry</button>
@@ -350,7 +350,7 @@ export function ApprovalsPage() {
           {decidedHistory.length === 0 ? (
             <p data-testid="decided-empty" className="approvals-state">
               No decisions in this session.{' '}
-              <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>
+              <span style={{ color: 'var(--ink-4)', fontSize: '0.8rem' }}>
                 (Historical decided approvals are not available via the current API.)
               </span>
             </p>
@@ -375,8 +375,8 @@ export function ApprovalsPage() {
                       <span
                         style={{
                           display: 'inline-block', padding: '2px 8px', borderRadius: '9999px',
-                          fontSize: '0.75rem', fontWeight: 600, color: '#fff',
-                          background: row.status === 'approved' ? '#16a34a' : '#dc2626',
+                          fontSize: '0.75rem', fontWeight: 600, color: 'var(--paper-2)',
+                          background: row.status === 'approved' ? 'var(--ok)' : 'var(--danger)',
                         }}
                       >
                         {row.status}
