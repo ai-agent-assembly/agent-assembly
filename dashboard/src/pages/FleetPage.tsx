@@ -9,8 +9,8 @@ import {
 } from '@tanstack/react-table'
 import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useAgentsQuery, type Agent } from '../features/agents/api'
-import { toFleetAgent } from '../features/agents/fleetTypes'
+import { useAgentsQuery } from '../features/agents/api'
+import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
 import {
   applyFleetFilters,
   fleetFiltersFromParams,
@@ -18,51 +18,22 @@ import {
   frameworkOptions,
   type FleetFilters,
 } from '../features/agents/fleetFilters'
+import { StatusChip } from '../components/fleet/StatusChip'
+import { ModeChip } from '../components/fleet/ModeChip'
+import { TrustBar } from '../components/fleet/TrustBar'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
-const STATUS_COLOR: Record<string, string> = {
-  active: '#16a34a',
-  idle: '#ca8a04',
-  suspended: '#d97706',
-  error: '#dc2626',
-  deregistered: '#6b7280',
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLOR[status] ?? '#6b7280'
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '9999px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        color: '#fff',
-        background: color,
-      }}
-    >
-      {status}
-    </span>
-  )
-}
+const COLUMN_COUNT = 10
 
 function SkeletonRows() {
   return (
     <>
       {Array.from({ length: 5 }).map((_, i) => (
         <tr key={i} data-testid="agent-row-skeleton">
-          {Array.from({ length: 5 }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
-              <span
-                style={{
-                  display: 'block',
-                  height: '1rem',
-                  background: '#e5e7eb',
-                  borderRadius: '4px',
-                }}
-              />
+          {Array.from({ length: COLUMN_COUNT }).map((_, j) => (
+            <td key={j} className="fleet-table__cell fleet-table__cell--skeleton">
+              <span className="fleet-table__skeleton" />
             </td>
           ))}
         </tr>
@@ -71,27 +42,97 @@ function SkeletonRows() {
   )
 }
 
-const columnHelper = createColumnHelper<Agent>()
+function NumericCell({ value }: { value: number | null }) {
+  return (
+    <span className="fleet-table__numeric">
+      {value === null ? '—' : value}
+    </span>
+  )
+}
 
-const columns = [
+const columnHelper = createColumnHelper<FleetAgent>()
+
+const fleetColumns = [
   columnHelper.accessor('name', {
-    header: 'Name',
-    cell: info => (
-      <Link to={`/agents/${info.row.original.id}`}>{info.getValue()}</Link>
-    ),
+    header: 'Agent',
+    enableSorting: true,
+    cell: (info) => {
+      const agent = info.row.original
+      return (
+        <div className="fleet-table__agent">
+          {agent.flagged && (
+            <span className="fleet-table__flag" aria-label="flagged" title="flagged">●</span>
+          )}
+          <Link
+            to={`/agents/${agent.id}`}
+            className="fleet-table__agent-name"
+            data-testid="fleet-row-name"
+          >
+            {agent.name}
+          </Link>
+          {agent.note && <span className="fleet-table__agent-note">{agent.note}</span>}
+        </div>
+      )
+    },
   }),
-  columnHelper.accessor('framework', { header: 'Framework' }),
+  columnHelper.accessor('framework', {
+    header: 'Framework',
+    enableSorting: true,
+    cell: (info) => <span className="fleet-table__chip">{info.getValue()}</span>,
+  }),
+  columnHelper.accessor('owner', {
+    header: 'Owner',
+    enableSorting: true,
+    cell: (info) => {
+      const owner = info.getValue()
+      return <span className="fleet-table__owner">{owner ? `@${owner}` : '—'}</span>
+    },
+  }),
+  columnHelper.accessor('mode', {
+    id: 'mode',
+    header: 'Mode',
+    enableSorting: false,
+    cell: (info) => <ModeChip mode={info.getValue()} />,
+  }),
   columnHelper.accessor('status', {
     header: 'Status',
-    cell: info => <StatusBadge status={info.getValue()} />,
+    enableSorting: true,
+    cell: (info) => <StatusChip status={info.getValue()} />,
   }),
-  columnHelper.accessor('last_event', {
+  columnHelper.accessor('trust', {
+    header: 'Trust',
+    enableSorting: true,
+    cell: (info) => <TrustBar score={info.getValue()} />,
+  }),
+  columnHelper.accessor('blocked24h', {
+    header: 'Blocked / 24h',
+    enableSorting: true,
+    cell: (info) => <NumericCell value={info.getValue()} />,
+  }),
+  columnHelper.accessor('scrubbed24h', {
+    header: 'Scrubbed / 24h',
+    enableSorting: true,
+    cell: (info) => <NumericCell value={info.getValue()} />,
+  }),
+  columnHelper.accessor('lastSeen', {
     header: 'Last seen',
-    cell: info => info.getValue() ?? '—',
+    enableSorting: true,
+    cell: (info) => (
+      <span className="fleet-table__last-seen">{info.getValue() ?? '—'}</span>
+    ),
   }),
-  columnHelper.accessor(row => row.recent_events.length, {
-    id: 'recent_events_count',
-    header: 'Recent events',
+  columnHelper.display({
+    id: 'actions',
+    header: '',
+    cell: (info) => (
+      <Link
+        to={`/agents/${info.row.original.id}`}
+        className="fleet-table__action"
+        data-testid="fleet-row-action"
+      >
+        caps →
+      </Link>
+    ),
   }),
 ]
 
@@ -120,16 +161,11 @@ export function FleetPage() {
     () => applyFleetFilters(fleetAgents, filters),
     [fleetAgents, filters],
   )
-  const filteredIds = useMemo(() => new Set(filteredFleet.map((a) => a.id)), [filteredFleet])
-  const tableData = useMemo(
-    () => (agents ?? []).filter((a) => filteredIds.has(a.id)),
-    [agents, filteredIds],
-  )
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: tableData,
-    columns,
+    data: filteredFleet,
+    columns: fleetColumns,
     state: { sorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
@@ -206,17 +242,14 @@ export function FleetPage() {
       )}
 
       {view === 'agents' && isError && (
-        <div
-          data-testid="agents-error"
-          style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
-        >
+        <div className="fleet-error" data-testid="agents-error">
           <span>Failed to load agents.</span>
           <button onClick={() => void refetch()}>Retry</button>
         </div>
       )}
 
       {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
-        <p data-testid="agents-empty">
+        <p className="fleet-empty fleet-empty--inline" data-testid="agents-empty">
           No agents registered yet.{' '}
           <a href="https://docs.agent-assembly.io/quickstart" target="_blank" rel="noreferrer">
             Read the quickstart guide →
@@ -225,52 +258,53 @@ export function FleetPage() {
       )}
 
       {view === 'agents' && (
-      <table data-testid="agents-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          {table.getHeaderGroups().map(hg => (
-            <tr key={hg.id}>
-              {hg.headers.map(header => (
-                <th
-                  key={header.id}
-                  style={{
-                    textAlign: 'left',
-                    padding: '0.5rem',
-                    borderBottom: '2px solid #e5e7eb',
-                    cursor: header.column.getCanSort() ? 'pointer' : undefined,
-                  }}
-                  onClick={header.column.getToggleSortingHandler()}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                  {header.column.getIsSorted() === 'asc'
-                    ? ' ↑'
-                    : header.column.getIsSorted() === 'desc'
-                      ? ' ↓'
-                      : ''}
-                </th>
+        <div className="fleet-table__wrap">
+          <table className="fleet-table" data-testid="agents-table">
+            <thead>
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id}>
+                  {hg.headers.map((header) => (
+                    <th
+                      key={header.id}
+                      className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}`}
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.column.getCanSort() && (
+                        <span className="fleet-table__sort" aria-hidden="true">
+                          {header.column.getIsSorted() === 'asc'
+                            ? ' ↑'
+                            : header.column.getIsSorted() === 'desc'
+                              ? ' ↓'
+                              : ''}
+                        </span>
+                      )}
+                    </th>
+                  ))}
+                </tr>
               ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <SkeletonRows />
-          ) : (
-            table.getRowModel().rows.map(row => (
-              <tr
-                key={row.id}
-                data-testid="agent-row"
-                style={{ borderBottom: '1px solid #f3f4f6' }}
-              >
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} style={{ padding: '0.5rem' }}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <SkeletonRows />
+              ) : (
+                table.getRowModel().rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    data-testid="agent-row"
+                    className={`fleet-table__row${row.original.flagged ? ' fleet-table__row--flagged' : ''}`}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <td key={cell.id} className="fleet-table__cell">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </main>
   )
