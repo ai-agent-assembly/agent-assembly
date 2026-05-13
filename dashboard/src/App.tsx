@@ -12,6 +12,7 @@ import { AnalyticsPage } from './pages/AnalyticsPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CapabilityPage } from './pages/CapabilityPage'
 import { TraceViewPage } from './pages/TraceViewPage'
+import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
@@ -31,7 +32,7 @@ function App() {
             <Route path="/overview" element={<ComingSoon name="Overview" />} />
             <Route path="/agents" element={<FleetPage />} />
             <Route path="/topology" element={<ComingSoon name="Topology" />} />
-            <Route path="/live" element={<ComingSoon name="Live Ops" />} />
+            <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
             {/* control */}
