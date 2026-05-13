@@ -6,7 +6,14 @@ import { createContext } from 'react'
  * rendered by `AppShell` so pages can trigger global panels/drawers
  * without re-mounting them.
  */
-export const OVERLAY_NAMES = ['tweaks', 'alerts', 'trace', 'identity', 'teams'] as const
+export const OVERLAY_NAMES = [
+  'tweaks',
+  'alerts',
+  'trace',
+  'identity',
+  'teams',
+  'policy-editor',
+] as const
 
 export type OverlayName = (typeof OVERLAY_NAMES)[number]
 
