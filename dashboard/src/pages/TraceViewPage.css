@@ -1,0 +1,24 @@
+/* ============================================================
+   TraceViewPage toolbar (AAASM-1071)
+   ============================================================ */
+
+.trace-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.trace-toolbar button {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.375rem 0.75rem;
+  color: var(--ink-2);
+}
+
+.trace-toolbar button:hover {
+  background: var(--paper-3);
+}
