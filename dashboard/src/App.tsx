@@ -16,6 +16,7 @@ import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
+import { TeamsPage } from './pages/TeamsPage'
 
 function App() {
   return (
@@ -41,7 +42,7 @@ function App() {
             <Route path="/scrub" element={<ComingSoon name="Secret Scrubbing" />} />
             {/* manage */}
             <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
-            <Route path="/teams" element={<ComingSoon name="Agent Groups" />} />
+            <Route path="/teams" element={<TeamsPage />} />
             <Route path="/identity" element={<IdentityPage />} />
 
             {/* ── Sub-routes for canonical pages ────────────────────────── */}
