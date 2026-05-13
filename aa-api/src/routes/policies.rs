@@ -202,6 +202,24 @@ pub async fn get_active_policy(
     Extension(state): Extension<AppState>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), ProblemDetail> {
     let info = state.policy_engine.active_policy_info();
+
+    // The active policy's YAML lives in the history store. We treat the
+    // most-recent history entry as the active one (apply_yaml always
+    // saves to history before swapping the engine). A startup-loaded
+    // policy with no history entry yields an empty string.
+    let policy_yaml = match state.policy_history.list(1).await {
+        Ok(metas) => match metas.first() {
+            Some(m) => state
+                .policy_history
+                .get(&m.sha256)
+                .await
+                .map(|snap| snap.yaml_content)
+                .unwrap_or_default(),
+            None => String::new(),
+        },
+        Err(_) => String::new(),
+    };
+
     Ok((
         StatusCode::OK,
         Json(PolicyResponse {
@@ -209,7 +227,7 @@ pub async fn get_active_policy(
             version: info.policy_version.unwrap_or_else(|| "unknown".to_string()),
             active: true,
             rule_count: info.rule_count,
-            policy_yaml: String::new(),
+            policy_yaml,
         }),
     ))
 }
