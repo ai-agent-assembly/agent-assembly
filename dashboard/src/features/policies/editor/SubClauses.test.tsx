@@ -10,7 +10,7 @@ function ruleWith(patch: Partial<RuleDraft>): RuleDraft {
 
 describe('SubClauses — render gating per action', () => {
   it('renders nothing when action is "allow"', () => {
-    render(<SubClauses ruleIndex={0} rule={ruleWith({ action: 'allow' })} onChange={() => {}} />)
+    render(<SubClauses rule={ruleWith({ action: 'allow' })} onChange={() => {}} />)
     expect(screen.queryByTestId('editor-narrow')).not.toBeInTheDocument()
     expect(screen.queryByTestId('editor-approver')).not.toBeInTheDocument()
     expect(screen.queryByTestId('editor-scrub')).not.toBeInTheDocument()
@@ -20,7 +20,6 @@ describe('SubClauses — render gating per action', () => {
   it('narrow shows the narrow paths sub-clause and the except list', () => {
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'narrow', narrowPaths: ['s3://foo'] })}
         onChange={() => {}}
       />,
@@ -32,7 +31,6 @@ describe('SubClauses — render gating per action', () => {
   it('approval shows the three approver popovers and the except list', () => {
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({
           action: 'approval',
           approver: { who: 'security-oncall', nOfM: '1-of-1', sla: '30m' },
@@ -49,7 +47,6 @@ describe('SubClauses — render gating per action', () => {
   it('scrub-then-allow shows scrub tag toggles plus the except list', () => {
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'scrub-then-allow', scrubFields: ['emails'] })}
         onChange={() => {}}
       />,
@@ -61,7 +58,7 @@ describe('SubClauses — render gating per action', () => {
 
   it('deny shows only the except list', () => {
     render(
-      <SubClauses ruleIndex={0} rule={ruleWith({ action: 'deny' })} onChange={() => {}} />,
+      <SubClauses rule={ruleWith({ action: 'deny' })} onChange={() => {}} />,
     )
     expect(screen.getByTestId('editor-except')).toBeInTheDocument()
     expect(screen.queryByTestId('editor-narrow')).not.toBeInTheDocument()
@@ -74,7 +71,6 @@ describe('SubClauses — narrow paths', () => {
     const onChange = vi.fn()
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'narrow', narrowPaths: ['s3://foo'] })}
         onChange={onChange}
       />,
@@ -89,7 +85,6 @@ describe('SubClauses — narrow paths', () => {
     const onChange = vi.fn()
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'narrow', narrowPaths: ['s3://foo', 's3://bar'] })}
         onChange={onChange}
       />,
@@ -105,7 +100,6 @@ describe('SubClauses — approver', () => {
     const onChange = vi.fn()
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({
           action: 'approval',
           approver: { who: 'security-oncall', nOfM: '1-of-1', sla: '30m' },
@@ -126,7 +120,6 @@ describe('SubClauses — scrub', () => {
     const onChange = vi.fn()
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'scrub-then-allow', scrubFields: ['emails'] })}
         onChange={onChange}
       />,
@@ -141,7 +134,7 @@ describe('SubClauses — scrub', () => {
 describe('SubClauses — except', () => {
   it('shows the no-exceptions help text when the list is empty', () => {
     render(
-      <SubClauses ruleIndex={0} rule={ruleWith({ action: 'deny' })} onChange={() => {}} />,
+      <SubClauses rule={ruleWith({ action: 'deny' })} onChange={() => {}} />,
     )
     expect(screen.getByText(/No exceptions/)).toBeInTheDocument()
   })
@@ -149,7 +142,6 @@ describe('SubClauses — except', () => {
   it('shows the count help text when non-empty', () => {
     render(
       <SubClauses
-        ruleIndex={0}
         rule={ruleWith({ action: 'deny', exceptions: ['ops@', 'leads@'] })}
         onChange={() => {}}
       />,

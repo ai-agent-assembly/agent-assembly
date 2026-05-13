@@ -16,7 +16,6 @@ import type {
 } from './types'
 
 interface SubClausesProps {
-  ruleIndex: number
   rule: RuleDraft
   onChange: (patch: Partial<RuleDraft>) => void
 }
@@ -253,7 +252,7 @@ function ExceptionsSubClause({
  *   - scrub-then-allow: scrub tags + except list
  *   - deny:             except list only
  */
-export function SubClauses({ ruleIndex: _ruleIndex, rule, onChange }: SubClausesProps) {
+export function SubClauses({ rule, onChange }: SubClausesProps) {
   const action: ActionKind = rule.action
 
   return (

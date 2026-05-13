@@ -115,7 +115,7 @@ export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: RuleC
         <ActionPicker value={rule.action} onChange={handleActionChange} />
       </div>
 
-      <SubClauses ruleIndex={index} rule={rule} onChange={onChange} />
+      <SubClauses rule={rule} onChange={onChange} />
 
       <WindowSeverityRow
         window={rule.timeWindow}

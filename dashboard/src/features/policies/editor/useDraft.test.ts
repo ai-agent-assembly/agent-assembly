@@ -65,14 +65,16 @@ describe('useDraft', () => {
     expect(result.current.draft).toEqual(initial)
   })
 
-  it('isDirty stays true after a no-op-back-to-initial mutation chain', () => {
+  it('isDirty drops back to false when the draft is reverted to its initial values', () => {
     // Demonstrates that the comparison is value-based (JSON), not change-counted.
-    const { result } = renderHook(() => useDraft(makeInitial()))
+    // The initial draft is captured outside the render closure so re-renders see
+    // the same reference (otherwise emptyDraft() would generate a new rule.id
+    // each render and the JSON comparison would never match).
+    const initial = makeInitial()
+    const { result } = renderHook(() => useDraft(initial))
     act(() => result.current.updateMeta({ name: 'A' }))
     expect(result.current.isDirty).toBe(true)
     act(() => result.current.updateMeta({ name: '' }))
-    // Original draft has name === ''. Setting it back to '' should be considered
-    // not-dirty again because the values match.
     expect(result.current.isDirty).toBe(false)
   })
 })
