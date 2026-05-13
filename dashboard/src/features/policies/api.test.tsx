@@ -189,4 +189,16 @@ describe('PolicyEditorPage', () => {
     fireEvent.click(screen.getByTestId('toggle-diff-btn'))
     await waitFor(() => expect(screen.getByTestId('diff-editor')).toBeInTheDocument())
   })
+
+  it('clicking the Validate button triggers validation immediately', async () => {
+    renderEditor()
+    const textarea = await screen.findByTestId('monaco-editor')
+    // Change to invalid YAML but do not wait for the 500ms debounce
+    fireEvent.change(textarea, { target: { value: INVALID_YAML } })
+    expect(screen.queryByTestId('validation-errors')).not.toBeInTheDocument()
+    // Clicking Validate should bypass the debounce and run validation now
+    fireEvent.click(screen.getByTestId('validate-btn'))
+    expect(screen.getByTestId('validation-errors')).toBeInTheDocument()
+    expect(screen.getByTestId('validation-errors').textContent).toMatch(/tab indentation|Missing required/)
+  })
 })

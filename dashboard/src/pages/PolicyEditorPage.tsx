@@ -1,7 +1,10 @@
-import { lazy, Suspense, useCallback, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import type { OnMount, Monaco } from '@monaco-editor/react'
 import { useCreatePolicy } from '../features/policies/api'
 import { useToast } from '../components/Toast'
+
+type EditorInstance = Parameters<OnMount>[0]
 
 const MonacoEditor = lazy(() => import('@monaco-editor/react'))
 const DiffEditor = lazy(() =>
@@ -66,16 +69,57 @@ export function PolicyEditorPage() {
 
   // Debounced validation
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Monaco editor + monaco namespace, captured on mount for setModelMarkers
+  const editorRef = useRef<EditorInstance | null>(null)
+  const monacoRef = useRef<Monaco | null>(null)
   const handleChange = useCallback((value: string | undefined) => {
     const v = value ?? ''
     setYaml(v)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
       setValidationErrors(validateYaml(v))
-    }, 400)
+    }, 500)
   }, [])
 
   const hasErrors = validationErrors.length > 0
+
+  const applyMarkers = useCallback((errors: string[], source: string) => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    if (!editor || !monaco) return
+    const model = editor.getModel()
+    if (!model) return
+    const lines = source.split('\n')
+    const markers = errors.map((msg) => {
+      const lineMatch = msg.match(/^Line (\d+):/)
+      const lineNum = lineMatch ? Math.max(1, parseInt(lineMatch[1], 10)) : 1
+      const lineContent = lines[lineNum - 1] ?? ''
+      return {
+        startLineNumber: lineNum,
+        endLineNumber: lineNum,
+        startColumn: 1,
+        endColumn: Math.max(lineContent.length + 1, 2),
+        message: msg,
+        severity: monaco.MarkerSeverity.Error,
+      }
+    })
+    monaco.editor.setModelMarkers(model, 'policy-validator', markers)
+  }, [])
+
+  useEffect(() => {
+    applyMarkers(validationErrors, yaml)
+  }, [validationErrors, yaml, applyMarkers])
+
+  const handleEditorMount: OnMount = useCallback((editor, monaco) => {
+    editorRef.current = editor
+    monacoRef.current = monaco
+  }, [])
+
+  function handleValidate() {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    setValidationErrors(validateYaml(yaml))
+  }
 
   async function handleApply() {
     if (hasErrors) return
@@ -101,6 +145,13 @@ export function PolicyEditorPage() {
           {originalName ? `Edit: ${originalName} v${originalVersion ?? ''}` : 'New Policy'}
         </h1>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            data-testid="validate-btn"
+            onClick={handleValidate}
+            style={{ padding: '0.5rem 1rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', cursor: 'pointer' }}
+          >
+            Validate
+          </button>
           <button
             data-testid="toggle-diff-btn"
             onClick={() => setShowDiff((v) => !v)}
@@ -171,6 +222,7 @@ export function PolicyEditorPage() {
               language="yaml"
               value={yaml}
               onChange={handleChange}
+              onMount={handleEditorMount}
               options={{
                 minimap: { enabled: false },
                 fontSize: 14,
