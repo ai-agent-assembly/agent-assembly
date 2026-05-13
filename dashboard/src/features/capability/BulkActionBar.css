@@ -1,0 +1,67 @@
+.cap-bulk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.cap-bulk-count {
+  font-weight: 600;
+}
+
+.cap-bulk-sep {
+  color: var(--ink-5);
+}
+
+.cap-bulk-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-5);
+}
+
+.cap-bulk-verb {
+  font-size: 11px;
+  background: var(--paper-3);
+  color: var(--ink);
+  padding: 2px 8px;
+  border-radius: 2px;
+  text-transform: lowercase;
+}
+
+.cap-bulk-select {
+  font-family: inherit;
+  font-size: 11px;
+  background: var(--paper-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.cap-bulk-btn {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--paper-2);
+  color: var(--ink);
+  border: 1px solid var(--paper-2);
+}
+
+.cap-bulk-btn--primary {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
+  font-weight: 600;
+}
+
+.cap-bulk-btn:hover {
+  filter: brightness(0.95);
+}
