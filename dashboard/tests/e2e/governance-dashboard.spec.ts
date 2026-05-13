@@ -72,12 +72,26 @@ test.describe('AppShell', () => {
     await page.route('/api/v1/ws/events**', (route) => route.abort())
   })
 
-  test('shows nav with Approvals, Agents, Policies links', async ({ page }) => {
+  test('shows canonical 12-route nav grouped by monitor/control/manage', async ({ page }) => {
     await page.goto('/approvals')
     await expect(page.getByTestId('appshell-nav')).toBeVisible()
-    await expect(page.getByTestId('nav-link-approvals')).toBeVisible()
-    await expect(page.getByTestId('nav-link-agents')).toBeVisible()
-    await expect(page.getByTestId('nav-link-policies')).toBeVisible()
+
+    // Three section headers
+    await expect(page.getByTestId('nav-group-monitor')).toBeVisible()
+    await expect(page.getByTestId('nav-group-control')).toBeVisible()
+    await expect(page.getByTestId('nav-group-manage')).toBeVisible()
+
+    // Spot-check a few canonical entries across the three groups
+    await expect(page.getByTestId('nav-link-overview')).toBeVisible()
+    await expect(page.getByTestId('nav-link-fleet')).toBeVisible()
+    await expect(page.getByTestId('nav-link-policy')).toBeVisible()
+    await expect(page.getByTestId('nav-link-identity')).toBeVisible()
+  })
+
+  test('navigating to an unimplemented canonical route renders ComingSoon (no 404)', async ({ page }) => {
+    await page.goto('/topology')
+    await expect(page.getByTestId('coming-soon')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Topology' })).toBeVisible()
   })
 
   test('shows top bar with logout button', async ({ page }) => {
