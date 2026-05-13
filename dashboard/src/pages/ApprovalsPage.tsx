@@ -10,6 +10,7 @@ import {
   useRejectAction,
   type Approval,
 } from '../features/approvals/api'
+import { ApprovalDetailRow } from '../features/approvals/ApprovalDetailRow'
 import { ApprovalsFilterBar } from '../features/approvals/ApprovalsFilterBar'
 import {
   EMPTY_FILTER,
@@ -19,6 +20,8 @@ import {
 } from '../features/approvals/filter'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import './ApprovalsPage.css'
+
+const APPROVAL_ROW_COL_COUNT = 7
 
 // ── Reject dialog ─────────────────────────────────────────────────────────────
 
@@ -134,6 +137,11 @@ export function ApprovalsPage() {
   const [decidedHistory, setDecidedHistory] = useState<Approval[]>([])
   const [rejectFor, setRejectFor] = useState<string[] | null>(null)
   const [filter, setFilter] = useState<ApprovalsFilter>(EMPTY_FILTER)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  function toggleExpand(id: string) {
+    setExpandedId((cur) => (cur === id ? null : id))
+  }
 
   const pending = useMemo(() => approvals ?? [], [approvals])
   const filterOptions = useMemo(() => deriveOptions(pending), [pending])
@@ -309,9 +317,19 @@ export function ApprovalsPage() {
                       ))}
                     </tr>
                   ))
-                  : filteredPending.map((row) => (
-                    <tr key={row.id} data-testid="approval-row" style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td style={{ padding: '8px 12px' }}>
+                  : filteredPending.flatMap((row) => [
+                    <tr
+                      key={row.id}
+                      data-testid="approval-row"
+                      onClick={() => toggleExpand(row.id)}
+                      aria-expanded={expandedId === row.id}
+                      style={{
+                        borderBottom: '1px solid var(--line)',
+                        cursor: 'pointer',
+                        background: expandedId === row.id ? 'var(--paper-3)' : undefined,
+                      }}
+                    >
+                      <td style={{ padding: '8px 12px' }} onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           data-testid="row-checkbox"
@@ -329,7 +347,7 @@ export function ApprovalsPage() {
                           : <span className="approvals-table__unrouted">—</span>}
                       </td>
                       <td>{row.created_at}</td>
-                      <td style={{ display: 'flex', gap: '0.375rem' }}>
+                      <td style={{ display: 'flex', gap: '0.375rem' }} onClick={(e) => e.stopPropagation()}>
                         <button
                           data-testid="approve-btn"
                           onClick={() => void handleApprove([row.id])}
@@ -351,8 +369,11 @@ export function ApprovalsPage() {
                           Reject
                         </button>
                       </td>
-                    </tr>
-                  ))}
+                    </tr>,
+                    expandedId === row.id ? (
+                      <ApprovalDetailRow key={`${row.id}-detail`} approval={row} colSpan={APPROVAL_ROW_COL_COUNT} />
+                    ) : null,
+                  ])}
               </tbody>
             </table>
           )}
