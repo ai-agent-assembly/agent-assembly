@@ -60,6 +60,11 @@ export function ServiceIdentitiesPanel() {
         </button>
       </header>
 
+      <div className="iam-shown-once-banner" data-testid="api-keys-shown-once-banner">
+        <strong>API keys are shown once at creation.</strong> Copy the secret immediately —
+        Agent Assembly does not store it in cleartext and cannot show it again.
+      </div>
+
       <ApiKeyList />
 
       <GenerateKeyDialog
