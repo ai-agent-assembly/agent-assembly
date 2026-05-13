@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 import { TopologyGraph } from './TopologyGraph'
 import type { TopologyNode } from '../../features/topology/types'
 
@@ -70,5 +71,29 @@ describe('TopologyGraph', () => {
     rerender(<TopologyGraph nodes={NODES.slice(0, 1)} edges={[]} onNodeClick={() => {}} />)
     expect(screen.getByTestId('topology-node')).toHaveAttribute('role', 'button')
     expect(screen.getByTestId('topology-node')).toHaveAttribute('tabindex', '0')
+  })
+
+  it('fires onNodeClick with the right node on click + Enter + Space', async () => {
+    const onClick = vi.fn()
+    render(<TopologyGraph nodes={[NODES[2]]} edges={[]} onNodeClick={onClick} />)
+    const node = screen.getByTestId('topology-node')
+
+    await userEvent.click(node)
+    expect(onClick).toHaveBeenLastCalledWith(NODES[2])
+
+    node.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onClick).toHaveBeenCalledTimes(2)
+    await userEvent.keyboard(' ')
+    expect(onClick).toHaveBeenCalledTimes(3)
+    // Same node every time.
+    expect(onClick.mock.calls.every(call => call[0].id === 'n3')).toBe(true)
+  })
+
+  it('does not fire onNodeClick when callback is omitted', async () => {
+    render(<TopologyGraph nodes={[NODES[0]]} edges={[]} />)
+    // The handler should not even attach — clicks just no-op.
+    await userEvent.click(screen.getByTestId('topology-node'))
+    // No assertion target — absence of errors is the contract.
   })
 })
