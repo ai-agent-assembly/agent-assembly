@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { STEPS } from './fixtures'
 import { Stepper } from './Stepper'
 import { Step1Framework } from './steps/Step1Framework'
@@ -16,6 +16,12 @@ export interface OnboardingWizardProps {
   initialState?: WizardState
   onFinish: (state: WizardState) => void
   onSkipAll: () => void
+  /**
+   * Called whenever the current step or wizard state changes — wired by the
+   * page to persist the mid-wizard session to localStorage so the user can
+   * close the modal and resume at the same step + selections later.
+   */
+  onPersist?: (snapshot: { step: StepId; state: WizardState }) => void
 }
 
 export function OnboardingWizard({
@@ -23,9 +29,14 @@ export function OnboardingWizard({
   initialState = EMPTY_STATE,
   onFinish,
   onSkipAll,
+  onPersist,
 }: OnboardingWizardProps) {
   const [current, setCurrent] = useState<StepId>(initialStep)
   const [state, setState] = useState<WizardState>(initialState)
+
+  useEffect(() => {
+    onPersist?.({ step: current, state })
+  }, [current, state, onPersist])
 
   const ready = canAdvance(state, current)
   const ci = stepIndex(current)
