@@ -102,4 +102,30 @@ describe('TraceTimeline', () => {
     expect(row).toHaveAttribute('data-event-type', 'credential_leak')
     expect(row).toHaveAttribute('data-severity', 'info')
   })
+
+  it('truncates payloadPreview to 500 characters with an ellipsis when longer', () => {
+    const longText = 'x'.repeat(750)
+    const events: TraceEvent[] = [
+      { ...BASE_EVENT, id: 'long', type: 'llm_call', severity: 'info', payloadPreview: longText },
+    ]
+    render(<TraceTimeline events={events} />)
+
+    const row = screen.getByTestId('trace-event')
+    const preview = row.querySelector('.trace-event__preview')!
+    expect(preview.textContent).toHaveLength(501)
+    expect(preview.textContent?.endsWith('…')).toBe(true)
+    expect(preview.textContent?.slice(0, 500)).toBe('x'.repeat(500))
+  })
+
+  it('leaves payloadPreview untouched when it is ≤ 500 chars', () => {
+    const exactlyFiveHundred = 'y'.repeat(500)
+    const events: TraceEvent[] = [
+      { ...BASE_EVENT, id: 'edge', type: 'llm_call', severity: 'info', payloadPreview: exactlyFiveHundred },
+    ]
+    render(<TraceTimeline events={events} />)
+
+    const preview = screen.getByTestId('trace-event').querySelector('.trace-event__preview')!
+    expect(preview.textContent).toBe(exactlyFiveHundred)
+    expect(preview.textContent?.endsWith('…')).toBe(false)
+  })
 })
