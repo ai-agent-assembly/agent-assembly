@@ -1,0 +1,181 @@
+.cap-matrix-wrap {
+  padding: 16px 24px;
+}
+
+.cap-matrix-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cap-matrix-meta strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.cap-matrix-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.cap-mx-corner,
+.cap-mx-col-h,
+.cap-mx-row-h,
+.cap-mx-cell {
+  background: var(--paper-2);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.cap-mx-corner {
+  background: var(--paper-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.cap-mx-col-h {
+  background: var(--paper-3);
+  color: var(--ink-2);
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cap-mx-col-h-group {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+  font-weight: 500;
+}
+
+.cap-mx-row-h {
+  background: var(--paper-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--line);
+}
+
+.cap-mx-row-h-name {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cap-mx-row-h-meta {
+  font-size: 10px;
+  color: var(--ink-4);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.cap-mx-row-h-trust {
+  margin-left: auto;
+}
+
+.cap-trust-bar {
+  height: 3px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.cap-trust-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.cap-trust--ok {
+  background: var(--ok);
+}
+
+.cap-trust--warn {
+  background: var(--warn);
+}
+
+.cap-trust--danger {
+  background: var(--danger);
+}
+
+.cap-flag-dot {
+  color: var(--danger);
+  font-size: 10px;
+}
+
+.cap-mx-cell {
+  text-align: center;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 600;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cap-mx-cell[aria-disabled='true'] {
+  cursor: default;
+}
+
+.cap-mx-cell--allow {
+  background: var(--paper-2);
+  color: var(--ink-3);
+}
+
+.cap-mx-cell--narrow {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+}
+
+.cap-mx-cell--approval {
+  background: var(--info-bg);
+  color: var(--info);
+  border: 1px solid var(--info);
+}
+
+.cap-mx-cell--deny {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cap-mx-cell--na {
+  background: var(--paper-3);
+  color: var(--ink-5);
+}
+
+.cap-mx-cell:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.cap-mx-cell-flag {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  background: var(--danger);
+  border-radius: 50%;
+}
