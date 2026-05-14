@@ -4,7 +4,21 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use serde_json::json;
 use tower::ServiceExt;
+
+/// Build a POST /capability/override request with the given body and an
+/// optional Bearer token.
+fn post_override_request(body: serde_json::Value, token: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/capability/override")
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    builder.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
+}
 
 #[tokio::test]
 async fn get_matrix_returns_200_with_dashboard_shape() {
@@ -72,4 +86,34 @@ async fn get_matrix_returns_200_with_dashboard_shape() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn apply_override_returns_only_updated_rows() {
+    let app = common::test_app(); // auth off → caller is OrgAdmin, RBAC pass
+
+    let response = app
+        .oneshot(post_override_request(
+            json!({
+                "agentIds": ["support-triage"],
+                "resourceId": "pg",
+                "verb": "write",
+                "decision": "deny"
+            }),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let updated = json["updated"].as_array().unwrap();
+    assert_eq!(updated.len(), 1, "only one row should change");
+    assert_eq!(updated[0]["id"], "support-triage");
+    assert_eq!(
+        updated[0]["caps"]["pg"]["write"], "deny",
+        "the targeted cell must reflect the new decision"
+    );
 }
