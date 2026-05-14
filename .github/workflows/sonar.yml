@@ -96,7 +96,60 @@ jobs:
           pnpm generate:api
           pnpm test:coverage
 
-      - name: SonarCloud scan
+      # Cache Sonar's analysis-state directory across runs. This is the
+      # cache pattern recommended by SonarCloud's own docs — it stores
+      # per-file analysis state so subsequent runs skip work on unchanged
+      # files. Doesn't address the binary download (the action manages that
+      # internally), but trims ~30s off steady-state runs.
+      - name: Cache SonarCloud analysis state
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-sonar-
+
+      # Three-attempt retry pattern. The scanner CLI is downloaded from
+      # `binaries.sonarsource.com` on every run and has been observed to
+      # 403 transiently (AAASM-1406 root cause on PR #421). Attempts 1
+      # and 2 use `continue-on-error: true` so a failure falls through to
+      # the next attempt; attempt 3 has no escape hatch, so all-three-fail
+      # surfaces as job failure.
+      #
+      # Native GitHub Actions retry (instead of a third-party wrapper like
+      # `Wandalen/wretry.action`) keeps SONAR_TOKEN handling on first-party
+      # actions only — the token never crosses an unaudited action boundary.
+      - name: SonarCloud scan (attempt 1)
+        id: sonar-scan-attempt-1
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@59db25f34e16620e48ab4bb9e4a5dce155cb5432 # v8.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Wait before retry (attempt 2)
+        if: steps.sonar-scan-attempt-1.outcome == 'failure'
+        run: |
+          echo "::warning::SonarCloud scanner failed on attempt 1 (likely transient CDN flake); waiting 30s before retry."
+          sleep 30
+
+      - name: SonarCloud scan (attempt 2)
+        id: sonar-scan-attempt-2
+        if: steps.sonar-scan-attempt-1.outcome == 'failure'
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@59db25f34e16620e48ab4bb9e4a5dce155cb5432 # v8.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Wait before retry (attempt 3)
+        if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
+        run: |
+          echo "::warning::SonarCloud scanner failed twice; waiting 30s before final retry."
+          sleep 30
+
+      - name: SonarCloud scan (attempt 3 — final)
+        if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@59db25f34e16620e48ab4bb9e4a5dce155cb5432 # v8.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
