@@ -295,11 +295,13 @@ test.describe('AAASM-1384 — Topology UI design fidelity', () => {
     await expect(clusters).toHaveCount(2)
 
     // Cluster outline must use the documented dashed stroke.
+    // getComputedStyle returns dash array with px units + comma separator,
+    // unlike the raw SVG attribute (which is "4 3").
     const dash = await page
       .locator('[data-testid="team-cluster"] .topology-cluster__outline')
       .first()
       .evaluate(el => getComputedStyle(el).strokeDasharray)
-    expect(dash).toBe('4 3')
+    expect(dash).toBe('4px, 3px')
 
     // Team label sits in the foreignObject at the top of the cluster — pick
     // the first label and assert it is above the first node card.
