@@ -98,4 +98,13 @@ describe('AutoScrollToggle', () => {
     await user.click(pill)
     expect(screen.queryByTestId('auto-scroll-flush')).toBeNull()
   })
+
+  it('exposes the enabled state via the checkbox input', () => {
+    const { rerender } = render(<StaticHarness enabled pendingCount={0} />)
+    const input = screen.getByTestId('auto-scroll-toggle-input') as HTMLInputElement
+    expect(input.type).toBe('checkbox')
+    expect(input.checked).toBe(true)
+    rerender(<StaticHarness enabled={false} pendingCount={0} />)
+    expect(input.checked).toBe(false)
+  })
 })
