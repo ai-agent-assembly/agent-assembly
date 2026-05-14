@@ -166,22 +166,48 @@ test.describe('AAASM-1383 — Trace UI design fidelity', () => {
     await page.screenshot({ path: `${EVIDENCE_DIR}/01-severity-tokens.png`, fullPage: true })
   })
 
-  test('row grid uses the documented 5-column layout', async ({ page }) => {
+  test('step-card structure: rail (icon + line) on the left, body on the right', async ({ page }) => {
     await gotoTrace(page)
+    // Pick a non-last row so it carries the connecting line below the icon.
     const row = page.getByTestId('trace-event').first()
 
-    // CSS: grid-template-columns: 9rem 1.5rem 8rem 1fr 5rem
-    // At default browser font size (16px), 1rem = 16px:
-    //   9rem = 144px, 1.5rem = 24px, 8rem = 128px, fluid, 5rem = 80px.
-    const gridCols = await row.evaluate(el => getComputedStyle(el).gridTemplateColumns)
-    const tracks = gridCols.split(' ').filter(t => t.length > 0)
-    expect(tracks).toHaveLength(5)
+    // Top-level <li> is a flex row (rail + body) per the hi-fi step-card layout.
+    const display = await row.evaluate(el => getComputedStyle(el).display)
+    expect(display).toBe('flex')
 
-    // First and last cells exist with the expected child classes.
-    await expect(row.locator('.trace-event__time')).toBeVisible()
-    await expect(row.locator('.trace-event__duration')).toBeVisible()
+    // Left rail: circular icon + vertical connector to the next step.
+    const rail = row.locator('.trace-event__rail')
+    await expect(rail).toBeVisible()
+    const icon = rail.locator('.trace-event__icon-circle')
+    await expect(icon).toBeVisible()
+    // 24×24 circle from the hi-fi spec. boundingBox() includes the 1px
+    // border on each side (24 content + 2 borders = 26). Assert the
+    // *declared* width directly to enforce the contract precisely.
+    const declared = await icon.evaluate(el => ({
+      w: parseFloat(getComputedStyle(el).width),
+      h: parseFloat(getComputedStyle(el).height),
+      radius: getComputedStyle(el).borderRadius,
+    }))
+    expect(declared.w).toBe(24)
+    expect(declared.h).toBe(24)
+    expect(declared.radius).toBe('50%')
+    // Connecting line exists on every event except the last.
+    await expect(rail.locator('.trace-event__rail-line')).toBeVisible()
 
-    await page.screenshot({ path: `${EVIDENCE_DIR}/02-row-grid.png`, fullPage: true })
+    // Right body: head (label + time + duration), detail, meta.
+    const body = row.locator('.trace-event__body')
+    await expect(body).toBeVisible()
+    await expect(body.locator('.trace-event__head .trace-event__label')).toBeVisible()
+    await expect(body.locator('.trace-event__head .trace-event__time')).toBeVisible()
+    await expect(body.locator('.trace-event__head .trace-event__duration')).toBeVisible()
+    await expect(body.locator('.trace-event__detail')).toBeVisible()
+    await expect(body.locator('.trace-event__meta')).toBeVisible()
+
+    // The last row must NOT have a rail-line — terminates the timeline.
+    const last = page.getByTestId('trace-event').last()
+    await expect(last.locator('.trace-event__rail-line')).toHaveCount(0)
+
+    await page.screenshot({ path: `${EVIDENCE_DIR}/02-step-card-structure.png`, fullPage: true })
   })
 
   test('PayloadModal stays within hi-fi proportions (width ≤ 720, max-height ≤ 80vh)', async ({ page }) => {
@@ -249,7 +275,7 @@ test.describe('AAASM-1383 — Trace UI design fidelity', () => {
 
   test('tooltip on policy violation icon surfaces violation reason in role=tooltip', async ({ page }) => {
     await gotoTrace(page)
-    await page.locator('.trace-event[data-event-type="policy_violation"]').locator('.trace-event__icon').hover()
+    await page.locator('.trace-event[data-event-type="policy_violation"]').locator('.trace-event__icon-circle').hover()
     const tip = page.getByRole('tooltip')
     await expect(tip).toBeVisible()
     await expect(tip).toHaveText('refund > $100 requires human approval')
