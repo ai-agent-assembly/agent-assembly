@@ -1398,9 +1398,28 @@ export interface components {
             kind: "audit";
             /**
              * Format: int64
+             * @description Observed latency in milliseconds. Optional today — populated once
+             *     the audit pipeline tracks per-action duration end-to-end.
+             */
+            latency_ms?: number | null;
+            /**
+             * @description Operation kind from the underlying `AuditEvent.action_type` — one of
+             *     `"llm_call"`, `"tool_call"`, `"file_op"`, `"network"`, `"process"`,
+             *     `"spawn"`, or `"unknown"` when unspecified. Drives the Live Ops
+             *     dashboard's per-row "op type" column.
+             */
+            op_type?: string | null;
+            /**
+             * Format: int64
              * @description Unix milliseconds when the pipeline received the event.
              */
             received_at_ms: number;
+            /**
+             * @description Target resource derived from the action's `detail` variant — e.g.
+             *     `LLMCallDetail.model_name`, `ToolCallDetail.tool_name`,
+             *     `FileOpDetail.path`. Drives the Live Ops "resource" column.
+             */
+            resource?: string | null;
             /**
              * Format: int64
              * @description Monotonic sequence number assigned by the pipeline.
@@ -1408,6 +1427,17 @@ export interface components {
             sequence_number: number;
             /** @description Source that delivered the event: `"sdk"`, `"ebpf"`, or `"proxy"`. */
             source: string;
+            /**
+             * @description Operation lifecycle status mapped from the proto `Decision`:
+             *     `"running"` (allow / redact), `"blocked"` (deny), `"pending"`
+             *     (awaiting human approval).
+             */
+            status?: string | null;
+            /**
+             * @description Team identifier from the agent's lineage context. Empty for
+             *     legacy events and root agents without a team set.
+             */
+            team?: string | null;
         } | {
             /** @enum {string} */
             kind: "layer_degradation";
