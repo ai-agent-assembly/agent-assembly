@@ -109,6 +109,34 @@ describe('LiveOpsPage', () => {
     expect(screen.queryByTestId('error-state')).toBeNull()
   })
 
+  it('renders the live EmptyState when stream is connected and ops list is empty', () => {
+    mockStream({ ops: [], status: 'connected' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.getByTestId('empty-state-live')).toBeInTheDocument()
+    expect(screen.queryByTestId('op-row')).toBeNull()
+  })
+
+  it('hides the EmptyState as soon as the first op arrives', () => {
+    mockStream({ ops: [makeOp('op-1')], status: 'connected' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.queryByTestId('empty-state-live')).toBeNull()
+    expect(screen.getByTestId('op-row')).toBeInTheDocument()
+  })
+
+  it('does not render the EmptyState while reconnecting', () => {
+    mockStream({ ops: [], status: 'reconnecting' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.queryByTestId('empty-state-live')).toBeNull()
+    expect(screen.getByTestId('live-ops-reconnecting')).toBeInTheDocument()
+  })
+
+  it('does not render the EmptyState while errored — ErrorState wins', () => {
+    mockStream({ ops: [], status: 'error' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.queryByTestId('empty-state-live')).toBeNull()
+    expect(screen.getByTestId('error-state')).toBeInTheDocument()
+  })
+
   it('renders ErrorState with a working reconnect retry when hook errors', async () => {
     const user = userEvent.setup()
     const reconnect = vi.fn()
