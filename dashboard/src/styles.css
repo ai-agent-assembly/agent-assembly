@@ -65,9 +65,11 @@
      KPI strip, badges, and admin pages. */
   --surface-card: #ffffff;
   --surface-card-border: #e5e7eb;
+  --surface-subtle-bg: #f9fafb;
   --surface-skeleton-base: #f3f4f6;
   --surface-skeleton-shimmer: #e5e7eb;
   --surface-hover-bg: #f3f4f6;
+  --form-input-border: #d1d5db;
 
   /* ── Text scale (analytics / admin pages) ────────────────── */
   --text-primary: #111827;
