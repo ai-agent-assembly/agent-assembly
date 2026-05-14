@@ -7,6 +7,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
+use aa_api::auth::scope::Scope;
+
 /// Build a POST /capability/override request with the given body and an
 /// optional Bearer token.
 fn post_override_request(body: serde_json::Value, token: Option<&str>) -> Request<Body> {
@@ -115,5 +117,38 @@ async fn apply_override_returns_only_updated_rows() {
     assert_eq!(
         updated[0]["caps"]["pg"]["write"], "deny",
         "the targeted cell must reflect the new decision"
+    );
+}
+
+#[tokio::test]
+async fn apply_override_rejects_viewer_scope_with_403() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(post_override_request(
+            json!({
+                "agentIds": ["support-triage"],
+                "resourceId": "pg",
+                "verb": "write",
+                "decision": "deny"
+            }),
+            Some(&token),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "Viewer (Read-only scope) must be denied"
+    );
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let detail = json["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("policy mutation denied"),
+        "ProblemDetail body should describe the deny; got: {detail}"
     );
 }
