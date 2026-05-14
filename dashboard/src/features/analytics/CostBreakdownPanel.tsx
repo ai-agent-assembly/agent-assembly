@@ -95,16 +95,16 @@ export function CostBreakdownPanel() {
         <>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--surface-card-border)" vertical={false} />
               <XAxis
                 dataKey="label"
-                tick={{ fontSize: 12, fill: '#6b7280' }}
+                tick={{ fontSize: 12, fill: 'var(--text-muted)' }}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
                 tickFormatter={USD_TICK}
-                tick={{ fontSize: 12, fill: '#6b7280' }}
+                tick={{ fontSize: 12, fill: 'var(--text-muted)' }}
                 axisLine={false}
                 tickLine={false}
                 width={56}
