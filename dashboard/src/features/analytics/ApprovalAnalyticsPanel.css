@@ -1,6 +1,6 @@
 .approval-analytics-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
   padding: 1.25rem 1.5rem;
 }
@@ -12,7 +12,7 @@
 .approval-analytics-panel__title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
@@ -21,7 +21,12 @@
 .approval-analytics-panel__skeleton {
   height: 260px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-skeleton-base) 25%,
+    var(--surface-skeleton-shimmer) 50%,
+    var(--surface-skeleton-base) 75%
+  );
   background-size: 200% 100%;
   animation: approval-analytics-shimmer 1.5s infinite linear;
 }
@@ -36,7 +41,7 @@
   align-items: center;
   justify-content: center;
   height: 260px;
-  color: #9ca3af;
+  color: var(--text-disabled);
   font-size: 0.875rem;
   margin: 0;
 }
@@ -63,13 +68,13 @@
 .approval-analytics-panel__stat-value {
   font-size: 1.375rem;
   font-weight: 700;
-  color: #111827;
+  color: var(--text-primary);
   line-height: 1.2;
 }
 
 .approval-analytics-panel__stat-label {
   font-size: 0.75rem;
-  color: #6b7280;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -93,7 +98,7 @@
   align-items: center;
   gap: 0.5rem;
   font-size: 0.8125rem;
-  color: #374151;
+  color: var(--text-secondary);
 }
 
 .approval-analytics-panel__legend-swatch {
@@ -106,6 +111,6 @@
 
 .approval-analytics-panel__legend-count {
   margin-left: auto;
-  color: #6b7280;
+  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }

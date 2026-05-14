@@ -59,4 +59,57 @@
   --shell-button-border: #cbd5e1;
   --shell-button-hover-bg: #f1f5f9;
   --shell-error-text: #dc2626;
+
+  /* ── Analytics / admin surface tokens ────────────────────── */
+  /* Cards and skeleton loaders used across analytics panels,
+     KPI strip, badges, and admin pages. */
+  --surface-card: #ffffff;
+  --surface-card-border: #e5e7eb;
+  --surface-subtle-bg: #f9fafb;
+  --surface-skeleton-base: #f3f4f6;
+  --surface-skeleton-shimmer: #e5e7eb;
+  --surface-hover-bg: #f3f4f6;
+  --form-input-border: #d1d5db;
+
+  /* ── Text scale (analytics / admin pages) ────────────────── */
+  --text-primary: #111827;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
+  --text-disabled: #9ca3af;
+
+  /* ── Accent (indigo) for primary controls in analytics ───── */
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+
+  /* ── Status palette (charts / badges / toasts) ───────────── */
+  --status-success: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #ef4444;
+  --status-success-solid: #16a34a;
+  --status-danger-solid: #dc2626;
+  --status-info-solid: #2563eb;
+
+  /* ── Heatmap stops (PolicyEffectivenessPanel) ────────────── */
+  --heatmap-low: var(--status-success);
+  --heatmap-mid: var(--status-warning);
+  --heatmap-high: var(--status-danger);
+
+  /* ── Tooltip ─────────────────────────────────────────────── */
+  --tooltip-bg: #1f2937;
+  --tooltip-text: #f9fafb;
+  --tooltip-outline: #374151;
+
+  /* ── Badge variants (Badge.tsx) ──────────────────────────── */
+  --badge-blue-bg: #dbeafe;
+  --badge-blue-text: #1d4ed8;
+  --badge-amber-bg: #fef3c7;
+  --badge-amber-text: #b45309;
+  --badge-neutral-bg: #f3f4f6;
+  --badge-neutral-text: #6b7280;
+
+  /* ── Toast (white text on solid status bg) ───────────────── */
+  --toast-text: #ffffff;
+
+  /* ── Text on solid accent backgrounds (segmented controls, badges) */
+  --text-on-accent: #ffffff;
 }

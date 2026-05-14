@@ -10,16 +10,16 @@
 }
 
 .badge--blue {
-  background-color: #dbeafe;
-  color: #1d4ed8;
+  background-color: var(--badge-blue-bg);
+  color: var(--badge-blue-text);
 }
 
 .badge--amber {
-  background-color: #fef3c7;
-  color: #b45309;
+  background-color: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
 }
 
 .badge--neutral {
-  background-color: #f3f4f6;
-  color: #6b7280;
+  background-color: var(--badge-neutral-bg);
+  color: var(--badge-neutral-text);
 }

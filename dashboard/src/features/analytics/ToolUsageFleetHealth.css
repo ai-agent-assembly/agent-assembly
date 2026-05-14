@@ -1,8 +1,8 @@
 /* ── ToolUsagePanel ─────────────────────────────────────────────────────────── */
 
 .tool-usage-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
   padding: 1.25rem 1.5rem;
 }
@@ -14,7 +14,7 @@
 .tool-usage-panel__title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
@@ -23,7 +23,12 @@
 .tool-usage-panel__skeleton {
   height: 200px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-skeleton-base) 25%,
+    var(--surface-skeleton-shimmer) 50%,
+    var(--surface-skeleton-base) 75%
+  );
   background-size: 200% 100%;
   animation: tool-usage-shimmer 1.5s infinite linear;
 }
@@ -39,7 +44,7 @@
   align-items: center;
   justify-content: center;
   height: 120px;
-  color: #9ca3af;
+  color: var(--text-disabled);
   font-size: 0.875rem;
   margin: 0;
 }
@@ -51,8 +56,8 @@
 /* ── FleetHealthPanel ───────────────────────────────────────────────────────── */
 
 .fleet-health-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
   padding: 1.25rem 1.5rem;
 }
@@ -64,7 +69,7 @@
 .fleet-health-panel__title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
@@ -73,7 +78,12 @@
 .fleet-health-panel__skeleton {
   height: 200px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-skeleton-base) 25%,
+    var(--surface-skeleton-shimmer) 50%,
+    var(--surface-skeleton-base) 75%
+  );
   background-size: 200% 100%;
   animation: fleet-health-shimmer 1.5s infinite linear;
 }
@@ -88,7 +98,7 @@
   align-items: center;
   justify-content: center;
   height: 120px;
-  color: #9ca3af;
+  color: var(--text-disabled);
   font-size: 0.875rem;
 }
 
@@ -101,7 +111,7 @@
   align-items: center;
   justify-content: center;
   height: 120px;
-  color: #9ca3af;
+  color: var(--text-disabled);
   font-size: 0.875rem;
   margin: 0;
 }
@@ -126,7 +136,7 @@
   flex: 1;
   min-width: 0;
   font-size: 0.8125rem;
-  color: #374151;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -147,9 +157,9 @@
   border-radius: 10px;
   font-size: 0.6875rem;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
-.fleet-health-panel__badge--green { background: #10b981; }
-.fleet-health-panel__badge--amber { background: #f59e0b; }
-.fleet-health-panel__badge--red   { background: #ef4444; }
+.fleet-health-panel__badge--green { background: var(--status-success); }
+.fleet-health-panel__badge--amber { background: var(--status-warning); }
+.fleet-health-panel__badge--red   { background: var(--status-danger); }

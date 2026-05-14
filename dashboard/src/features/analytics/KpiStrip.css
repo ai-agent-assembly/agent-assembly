@@ -21,8 +21,8 @@
   flex-direction: column;
   gap: 0.25rem;
   padding: 1rem 1.25rem;
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
   min-height: 90px;
 }
@@ -30,7 +30,7 @@
 .kpi-card__label {
   font-size: 0.75rem;
   font-weight: 500;
-  color: #6b7280;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -38,14 +38,14 @@
 .kpi-card__value {
   font-size: 1.5rem;
   font-weight: 700;
-  color: #111827;
+  color: var(--text-primary);
   line-height: 1.2;
 }
 
 .kpi-card__unit {
   font-size: 0.875rem;
   font-weight: 400;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .kpi-card__delta {
@@ -55,7 +55,7 @@
 
 .kpi-card__error {
   font-size: 1.5rem;
-  color: #9ca3af;
+  color: var(--text-disabled);
 }
 
 /* Skeleton shimmer */
@@ -66,7 +66,12 @@
 
 .kpi-card__skeleton {
   border-radius: 4px;
-  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-skeleton-base) 25%,
+    var(--surface-skeleton-shimmer) 50%,
+    var(--surface-skeleton-base) 75%
+  );
   background-size: 200% 100%;
   animation: kpi-shimmer 1.5s infinite linear;
 }
