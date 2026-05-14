@@ -5,8 +5,9 @@ use utoipa::openapi::ComponentsBuilder;
 use utoipa::{Modify, OpenApi};
 
 use crate::models::capability::{
-    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, ChangeType, Decision, Policy, PolicyRule,
-    PolicyStatus, Resource, ResourceGroup, SampleCall, Verb,
+    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
+    CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
+    SampleCall, Verb,
 };
 use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
@@ -73,6 +74,7 @@ use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, l
         ops::resume_op,
         ops::terminate_op,
         capability::get_matrix,
+        capability::apply_override,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -133,6 +135,8 @@ use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, l
         ChangeType,
         SampleCall,
         CapabilityMatrix,
+        CapabilityOverrideRequest,
+        CapabilityOverrideResponse,
     )),
     modifiers(&SecurityAddon),
 )]
