@@ -1,11 +1,12 @@
 /* ============================================================
-   TraceTimeline — severity color tokens (AAASM-1067)
+   TraceTimeline — hi-fi step-card layout (AAASM-1391)
    ============================================================
 
-   Each row's background is keyed off the data-severity attribute.
-   All colors come from CSS variables defined in src/styles.css.
-   Adding a new severity = adding a new selector here; no other
-   file needs to change.
+   Each event renders as a step-card: a circular icon + vertical
+   connecting line on the left (`.trace-event__rail`), and a 3-line
+   body (`.__head` / `.__detail` / `.__meta`) on the right. Severity
+   backgrounds key off `data-severity` as before; only the layout
+   changed from the original row-grid (AAASM-1067).
    ============================================================ */
 
 .trace-timeline {
@@ -14,20 +15,21 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
 }
 
 .trace-event {
-  display: grid;
-  grid-template-columns: 9rem 1.5rem 8rem 1fr 5rem;
-  align-items: center;
-  gap: 0.5rem;
+  display: flex;
+  gap: 12px;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--line);
   border-radius: 6px;
   font-size: 0.875rem;
   background: var(--paper-2);
   color: var(--ink);
+}
+
+.trace-event + .trace-event {
+  margin-top: 0.375rem;
 }
 
 .trace-event[data-severity='critical'] {
@@ -57,33 +59,101 @@
   border-color: var(--warn);
 }
 
+/* ── Left rail (icon + connecting line) ─────────────────────── */
+
+.trace-event__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 26px;
+  flex-shrink: 0;
+}
+
+.trace-event__icon-circle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--paper-3);
+  color: var(--ink-2);
+}
+
+.trace-event__rail-line {
+  flex: 1;
+  width: 1px;
+  background: var(--line);
+  min-height: 8px;
+  margin: 3px 0;
+}
+
+/* ── Right body (head + detail + meta) ──────────────────────── */
+
+.trace-event__body {
+  flex: 1;
+  padding-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.trace-event__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-event__label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--ink-2);
+  text-transform: uppercase;
+}
+
 .trace-event__time {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
   color: var(--ink-3);
 }
 
-.trace-event__icon {
-  font-size: 1rem;
-  text-align: center;
-  color: var(--ink-2);
-}
-
-.trace-event__agent {
-  font-weight: 600;
-  color: var(--ink-2);
-}
-
-.trace-event__preview {
-  color: var(--ink-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .trace-event__duration {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
+  font-size: 9px;
   color: var(--ink-4);
-  text-align: right;
+  padding: 1px 5px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  margin-left: auto;
+}
+
+.trace-event__detail {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.trace-event__meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 2px;
+}
+
+.trace-event--clickable {
+  cursor: pointer;
+}
+
+.trace-event--clickable:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
 }

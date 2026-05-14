@@ -121,12 +121,13 @@ test.describe('AAASM-1152 — Trace AC evidence capture', () => {
     const rows = page.getByTestId('trace-event')
     await expect(rows).toHaveCount(TRACE_EVENTS.length)
 
-    // Verify row anatomy on the first row.
+    // Verify row anatomy on the first row. Step-card layout (AAASM-1391):
+    // left rail has the circular icon, body has head/detail/meta.
     const first = rows.first()
     await expect(first.locator('.trace-event__time')).toBeVisible()
-    await expect(first.locator('.trace-event__icon')).toBeVisible()
-    await expect(first.locator('.trace-event__agent')).toContainText('support-agent')
-    await expect(first.locator('.trace-event__preview')).toBeVisible()
+    await expect(first.locator('.trace-event__icon-circle')).toBeVisible()
+    await expect(first.locator('.trace-event__meta')).toContainText('support-agent')
+    await expect(first.locator('.trace-event__detail')).toBeVisible()
     await expect(first.locator('.trace-event__duration')).toContainText('ms')
 
     await page.screenshot({ path: `${EVIDENCE_DIR}/01-timeline-full.png`, fullPage: true })
@@ -137,7 +138,7 @@ test.describe('AAASM-1152 — Trace AC evidence capture', () => {
     const violationRow = page.locator('[data-event-type="policy_violation"]')
     await expect(violationRow).toHaveAttribute('data-severity', 'critical')
 
-    await violationRow.locator('.trace-event__icon').hover()
+    await violationRow.locator('.trace-event__icon-circle').hover()
     const tooltip = page.getByRole('tooltip')
     await expect(tooltip).toHaveText('refund > $100 requires human approval')
     await page.screenshot({ path: `${EVIDENCE_DIR}/02-policy-violation-tooltip.png`, fullPage: true })
