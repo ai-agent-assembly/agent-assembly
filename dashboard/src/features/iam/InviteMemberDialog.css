@@ -9,8 +9,8 @@
 }
 
 .iam-dialog {
-  background: var(--shell-surface, #fff);
-  color: var(--shell-text, #18181b);
+  background: var(--shell-surface);
+  color: var(--shell-text);
   border-radius: 0.5rem;
   padding: 1.5rem;
   width: min(28rem, 92vw);
@@ -29,28 +29,28 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
   margin-top: 0.75rem;
   margin-bottom: 0.25rem;
 }
 
 .iam-dialog__input {
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--shell-border, #d4d4d8);
+  border: 1px solid var(--shell-border);
   border-radius: 0.375rem;
   font-size: 0.9rem;
-  background: var(--shell-surface, #fff);
+  background: var(--shell-surface);
   color: inherit;
 }
 
 .iam-dialog__input[aria-invalid='true'] {
-  border-color: #dc2626;
+  border-color: var(--status-danger-solid);
 }
 
 .iam-dialog__error {
   margin-top: 0.25rem;
   font-size: 0.75rem;
-  color: #dc2626;
+  color: var(--status-danger-solid);
 }
 
 .iam-dialog__actions {
@@ -63,8 +63,8 @@
 .iam-dialog__btn {
   padding: 0.5rem 1rem;
   border-radius: 0.375rem;
-  border: 1px solid var(--shell-border, #d4d4d8);
-  background: var(--shell-surface, #fff);
+  border: 1px solid var(--shell-border);
+  background: var(--shell-surface);
   font-size: 0.875rem;
   cursor: pointer;
 }
@@ -75,7 +75,7 @@
 }
 
 .iam-dialog__btn--primary {
-  background: var(--shell-accent, #2563eb);
-  color: #fff;
+  background: var(--shell-accent);
+  color: var(--text-on-accent);
   border-color: transparent;
 }
