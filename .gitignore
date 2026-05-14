@@ -35,6 +35,8 @@ codecov.xml
 # Node / dashboard
 node_modules/
 dashboard/dist/
+dashboard/playwright-report/
+dashboard/test-results/
 *.db
 
 # Claude Design handoff export (canonical artefacts are at design/v1/)
