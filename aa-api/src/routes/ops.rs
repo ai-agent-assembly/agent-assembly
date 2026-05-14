@@ -59,9 +59,10 @@ fn ack(op_id: String, action: &'static str) -> impl IntoResponse {
     )
 }
 
-/// `POST /api/v1/ops/{id}/pause` — request that an in-flight operation
-/// be paused. Stub today: returns 202 and logs the request without
-/// updating any state.
+/// `POST /api/v1/ops/{id}/pause` — request that an in-flight operation be paused.
+///
+/// Stub today: returns 202 Accepted and logs the request without updating
+/// any state. Real enforcement awaits the in-flight-ops registry architecture.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/pause",
@@ -78,9 +79,10 @@ pub async fn pause_op(Path(id): Path<String>) -> Result<impl IntoResponse, Probl
     Ok(ack(validate_op_id(&id)?, "pause"))
 }
 
-/// `POST /api/v1/ops/{id}/resume` — request that a paused operation
-/// resume. Stub today: returns 202 and logs the request without
-/// updating any state.
+/// `POST /api/v1/ops/{id}/resume` — request that a paused operation resume.
+///
+/// Stub today: returns 202 Accepted and logs the request without updating
+/// any state. Real enforcement awaits the in-flight-ops registry architecture.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/resume",
@@ -97,9 +99,10 @@ pub async fn resume_op(Path(id): Path<String>) -> Result<impl IntoResponse, Prob
     Ok(ack(validate_op_id(&id)?, "resume"))
 }
 
-/// `POST /api/v1/ops/{id}/terminate` — request that an in-flight
-/// operation be terminated. Stub today: returns 202 and logs the
-/// request without updating any state.
+/// `POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.
+///
+/// Stub today: returns 202 Accepted and logs the request without updating
+/// any state. Real enforcement awaits the in-flight-ops registry architecture.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/terminate",
