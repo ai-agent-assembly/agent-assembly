@@ -173,12 +173,24 @@ resolves to the `--danger` RGB token. `N selected` counter present.
 | **Hi-fi** | `design/v1/hi-fi/agent-detail.jsx` lines 200-220 |
 | **Implementation** | `AgentDetailPage.tsx` lines 205-260 |
 | **Screenshot** | `07-detail-head.png` |
-| **Verdict** | ✅ Matches (AAASM-1405 portal fix landed) |
+| **Verdict** | ✅ Matches (AAASM-1405 portal fix + AAASM-1409 button group landed) |
 
-The head's structural elements (breadcrumb, flag dot, title, framework
-chip, owner @-handle, action buttons) render in the correct order with
-the hi-fi class palette and are no longer obscured by the AppShell
-topbar — see the resolved Findings entry above.
+The head's structural elements all render in the correct hi-fi order:
+
+* Breadcrumb `← fleet › <id>` (left)
+* Flag dot (when `policy_violations_count ≥ FLEET_FLAGGED_THRESHOLD`)
+* Title with agent name + framework chip + owner @-handle
+* Three-button action group (right): `⎈ trace last call` · `→ shadow mode`
+  · `■ suspend` / `▶ resume` (status-conditional)
+
+Two earlier deltas have been resolved:
+
+* **AAASM-1405** — the AppShell topbar no longer obscures the drawer head
+  (Drawer portalled to `document.body`, `z-index: 1000`).
+* **AAASM-1409** — the trace + shadow buttons that were missing from the
+  original sub-task implementation are now present and wired to toasts.
+  Real wiring (navigation to the trace page, gateway mode-change mutation)
+  is deferred to follow-up Stories.
 
 ### 08 — Agent Detail identity strip
 
