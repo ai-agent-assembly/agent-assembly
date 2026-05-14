@@ -41,6 +41,10 @@ impl CapabilityStore {
 
 /// `GET /api/v1/capability/matrix` — return the full agent × resource ×
 /// verb × decision matrix that backs the dashboard Capability Matrix page.
+///
+/// Returns the full snapshot — resources, agents (each with a `caps` map),
+/// policies, and sample calls — in the exact shape the dashboard's
+/// `CapabilityClient.getMatrix()` consumes.
 #[utoipa::path(
     get,
     path = "/api/v1/capability/matrix",
