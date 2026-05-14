@@ -1,7 +1,7 @@
 import { useFieldArray, useFormContext } from 'react-hook-form'
 import type { RuleFormValues } from './ruleFormSchema'
 
-const errorStyle = { color: '#dc2626', fontSize: '0.75rem' }
+const errorStyle = { color: 'var(--status-danger-solid)', fontSize: '0.75rem' }
 
 export function DedupAndSuppressionFields() {
   const { register, control, formState } = useFormContext<RuleFormValues>()
@@ -18,12 +18,12 @@ export function DedupAndSuppressionFields() {
         display: 'flex',
         flexDirection: 'column',
         gap: '0.75rem',
-        border: '1px solid #e5e7eb',
+        border: '1px solid var(--surface-card-border)',
         borderRadius: '6px',
         padding: '0.75rem',
       }}
     >
-      <legend style={{ padding: '0 0.5rem', color: '#6b7280', fontSize: '0.75rem' }}>
+      <legend style={{ padding: '0 0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
         Deduplication &amp; suppression
       </legend>
 
@@ -60,9 +60,9 @@ export function DedupAndSuppressionFields() {
             onClick={() => append({ key: '', value: '' })}
             style={{
               padding: '2px 8px',
-              border: '1px solid #d1d5db',
+              border: '1px solid var(--form-input-border)',
               borderRadius: '4px',
-              background: '#fff',
+              background: 'var(--surface-card)',
               cursor: 'pointer',
               fontSize: '0.75rem',
             }}
@@ -72,7 +72,7 @@ export function DedupAndSuppressionFields() {
         </div>
 
         {fields.length === 0 && (
-          <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
             No suppression labels — the rule will fire regardless of labels.
           </span>
         )}
@@ -93,7 +93,7 @@ export function DedupAndSuppressionFields() {
                 <span style={errorStyle}>{errors.suppressionLabels[idx]?.key?.message}</span>
               )}
             </div>
-            <span style={{ alignSelf: 'center', color: '#6b7280' }}>=</span>
+            <span style={{ alignSelf: 'center', color: 'var(--text-muted)' }}>=</span>
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
               <input
                 placeholder="prod"
@@ -111,9 +111,9 @@ export function DedupAndSuppressionFields() {
               aria-label="Remove suppression label"
               style={{
                 padding: '0 8px',
-                border: '1px solid #d1d5db',
+                border: '1px solid var(--form-input-border)',
                 borderRadius: '4px',
-                background: '#fff',
+                background: 'var(--surface-card)',
                 cursor: 'pointer',
                 fontSize: '0.875rem',
               }}

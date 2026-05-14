@@ -133,7 +133,7 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
           width: 'min(720px, 100%)',
           maxHeight: '90vh',
           overflow: 'auto',
-          background: '#fff',
+          background: 'var(--surface-card)',
           borderRadius: '8px',
           boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
           padding: '1.25rem',
@@ -158,7 +158,7 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
               background: 'transparent',
               fontSize: '1.25rem',
               cursor: 'pointer',
-              color: '#6b7280',
+              color: 'var(--text-muted)',
             }}
           >
             ✕
@@ -166,18 +166,18 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
         </header>
 
         {isLoading && (
-          <p data-testid="destination-manager-loading" style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+          <p data-testid="destination-manager-loading" style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
             Loading destinations…
           </p>
         )}
         {isError && (
-          <p data-testid="destination-manager-error" style={{ color: '#dc2626', fontSize: '0.875rem' }}>
+          <p data-testid="destination-manager-error" style={{ color: 'var(--status-danger-solid)', fontSize: '0.875rem' }}>
             Failed to load destinations: {error?.message ?? 'unknown error'}
           </p>
         )}
 
         {!isLoading && !isError && destinations.length === 0 && (
-          <p data-testid="destination-manager-empty" style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+          <p data-testid="destination-manager-empty" style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
             No destinations configured yet.
           </p>
         )}
@@ -189,13 +189,13 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
           >
             <thead>
               <tr>
-                <th style={{ textAlign: 'left', padding: '0.25rem', borderBottom: '1px solid #e5e7eb' }}>
+                <th style={{ textAlign: 'left', padding: '0.25rem', borderBottom: '1px solid var(--surface-card-border)' }}>
                   Kind
                 </th>
-                <th style={{ textAlign: 'left', padding: '0.25rem', borderBottom: '1px solid #e5e7eb' }}>
+                <th style={{ textAlign: 'left', padding: '0.25rem', borderBottom: '1px solid var(--surface-card-border)' }}>
                   Name
                 </th>
-                <th style={{ textAlign: 'right', padding: '0.25rem', borderBottom: '1px solid #e5e7eb' }}>
+                <th style={{ textAlign: 'right', padding: '0.25rem', borderBottom: '1px solid var(--surface-card-border)' }}>
                   Actions
                 </th>
               </tr>
@@ -230,7 +230,7 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
                       data-testid={`destination-delete-${d.id}`}
                       onClick={() => void remove(d)}
                       disabled={deleteMut.isPending}
-                      style={{ padding: '2px 8px', fontSize: '0.75rem', color: '#991b1b' }}
+                      style={{ padding: '2px 8px', fontSize: '0.75rem', color: 'var(--status-danger-text-strong)' }}
                     >
                       Delete
                     </button>
@@ -247,7 +247,7 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
             display: 'flex',
             flexDirection: 'column',
             gap: '0.5rem',
-            border: '1px solid #e5e7eb',
+            border: '1px solid var(--surface-card-border)',
             borderRadius: '6px',
             padding: '0.75rem',
           }}
@@ -311,8 +311,8 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
               disabled={createMut.isPending || updateMut.isPending}
               style={{
                 padding: '4px 12px',
-                background: '#1f2937',
-                color: '#fff',
+                background: 'var(--button-primary-bg)',
+                color: 'var(--text-on-accent)',
                 border: 'none',
                 borderRadius: '4px',
                 fontSize: '0.75rem',

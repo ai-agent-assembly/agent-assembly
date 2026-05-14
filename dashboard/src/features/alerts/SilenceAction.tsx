@@ -57,7 +57,7 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
     return (
       <p
         data-testid="silence-action-already"
-        style={{ fontSize: '0.75rem', color: '#6b7280' }}
+        style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}
       >
         Alert is currently silenced.
       </p>
@@ -72,7 +72,7 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
         flexDirection: 'column',
         gap: '0.5rem',
         padding: '0.75rem',
-        border: '1px solid #e5e7eb',
+        border: '1px solid var(--surface-card-border)',
         borderRadius: '6px',
       }}
     >
@@ -81,7 +81,7 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
           fontSize: '0.75rem',
           textTransform: 'uppercase',
           letterSpacing: '0.04em',
-          color: '#6b7280',
+          color: 'var(--text-muted)',
         }}
       >
         Silence this alert
@@ -100,9 +100,9 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
               style={{
                 padding: '4px 10px',
                 borderRadius: '4px',
-                border: '1px solid #d1d5db',
-                background: active ? '#1f2937' : '#fff',
-                color: active ? '#fff' : '#1f2937',
+                border: '1px solid var(--form-input-border)',
+                background: active ? 'var(--button-primary-bg)' : 'var(--surface-card)',
+                color: active ? 'var(--text-on-accent)' : 'var(--button-primary-bg)',
                 cursor: 'pointer',
                 fontSize: '0.75rem',
               }}
@@ -130,14 +130,14 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
             onChange={(e) => setCustomMinutes(e.target.value)}
             style={{ width: '5rem' }}
           />
-          <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>minutes</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>minutes</span>
         </label>
       )}
 
       <label
         style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.875rem' }}
       >
-        <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>Reason (optional)</span>
+        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Reason (optional)</span>
         <input
           data-testid="silence-action-reason"
           value={reason}
@@ -154,8 +154,8 @@ export function SilenceAction({ alertId, silenced = false }: SilenceActionProps)
         style={{
           alignSelf: 'flex-end',
           padding: '6px 14px',
-          background: '#1f2937',
-          color: '#fff',
+          background: 'var(--button-primary-bg)',
+          color: 'var(--text-on-accent)',
           border: 'none',
           borderRadius: '4px',
           cursor: silence.isPending ? 'wait' : 'pointer',

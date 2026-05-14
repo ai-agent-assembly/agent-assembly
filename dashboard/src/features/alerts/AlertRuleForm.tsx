@@ -134,7 +134,7 @@ export function AlertRuleForm({
       <div
         style={{
           width: 'min(720px, 100%)',
-          background: '#fff',
+          background: 'var(--surface-card)',
           borderRadius: '8px',
           boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
           padding: '1.25rem',
@@ -163,7 +163,7 @@ export function AlertRuleForm({
               background: 'transparent',
               fontSize: '1.25rem',
               cursor: 'pointer',
-              color: '#6b7280',
+              color: 'var(--text-muted)',
             }}
           >
             ✕
@@ -185,7 +185,7 @@ export function AlertRuleForm({
                 {...methods.register('name')}
               />
               {methods.formState.errors.name && (
-                <span style={{ color: '#dc2626', fontSize: '0.75rem' }}>
+                <span style={{ color: 'var(--status-danger-solid)', fontSize: '0.75rem' }}>
                   {methods.formState.errors.name.message}
                 </span>
               )}
@@ -242,8 +242,8 @@ export function AlertRuleForm({
                 disabled={submitting}
                 style={{
                   padding: '6px 14px',
-                  background: '#1f2937',
-                  color: '#fff',
+                  background: 'var(--button-primary-bg)',
+                  color: 'var(--text-on-accent)',
                   border: 'none',
                   borderRadius: '4px',
                   cursor: submitting ? 'wait' : 'pointer',

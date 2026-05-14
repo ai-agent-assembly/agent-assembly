@@ -202,4 +202,13 @@
   /* ── Trend indicators (Kpi delta) ────────────────────────── */
   --trend-positive: #10b981;
   --trend-negative: #f43f5e;
+
+  /* ── Severity palette (alert badges) ─────────────────────── */
+  /* Ordered from highest to lowest severity. CRITICAL matches
+     --status-danger-solid; HIGH matches --chart-cat-8; MEDIUM/LOW
+     introduce new yellow-500 / blue-400 tokens for alerts only. */
+  --severity-critical: #dc2626;
+  --severity-high: #f97316;
+  --severity-medium: #eab308;
+  --severity-low: #60a5fa;
 }

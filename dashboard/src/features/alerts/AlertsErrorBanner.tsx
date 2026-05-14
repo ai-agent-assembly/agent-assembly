@@ -14,8 +14,8 @@ export function AlertsErrorBanner({ message, onRetry }: AlertsErrorBannerProps) 
         alignItems: 'center',
         marginTop: '0.75rem',
         padding: '8px 12px',
-        background: '#fee2e2',
-        color: '#991b1b',
+        background: 'var(--status-danger-bg)',
+        color: 'var(--status-danger-text-strong)',
         borderRadius: '4px',
         fontSize: '0.875rem',
       }}
@@ -27,8 +27,8 @@ export function AlertsErrorBanner({ message, onRetry }: AlertsErrorBannerProps) 
         onClick={onRetry}
         style={{
           padding: '4px 10px',
-          background: '#991b1b',
-          color: '#fff',
+          background: 'var(--status-danger-text-strong)',
+          color: 'var(--text-on-accent)',
           border: 'none',
           borderRadius: '4px',
           cursor: 'pointer',

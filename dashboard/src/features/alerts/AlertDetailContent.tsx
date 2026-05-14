@@ -32,7 +32,7 @@ const sectionHeader = {
   fontSize: '0.75rem',
   textTransform: 'uppercase' as const,
   letterSpacing: '0.04em',
-  color: '#6b7280',
+  color: 'var(--text-muted)',
 }
 
 interface AlertDetailContentProps {
@@ -44,7 +44,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
 
   if (isLoading) {
     return (
-      <p data-testid="alert-detail-loading" style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+      <p data-testid="alert-detail-loading" style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
         Loading alert…
       </p>
     )
@@ -52,7 +52,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
 
   if (isError || !data) {
     return (
-      <p data-testid="alert-detail-error" style={{ color: '#dc2626', fontSize: '0.875rem' }}>
+      <p data-testid="alert-detail-error" style={{ color: 'var(--status-danger-solid)', fontSize: '0.875rem' }}>
         Failed to load alert: {error?.message ?? 'unknown error'}
       </p>
     )
@@ -66,7 +66,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
           <StatusBadge status={data.status} />
         </div>
         <h3 style={{ margin: 0, fontSize: '1rem' }}>{data.ruleName}</h3>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: '0.75rem' }}>
+        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.75rem' }}>
           Fired {data.firstFiredAt}
           {data.resolvedAt && ` · Resolved ${data.resolvedAt}`}
           {data.agentId && ` · Agent ${data.agentId}`}
@@ -78,7 +78,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
         <pre
           data-testid="alert-detail-rule-yaml"
           style={{
-            background: '#f3f4f6',
+            background: 'var(--surface-hover-bg)',
             padding: '0.75rem',
             borderRadius: '4px',
             fontSize: '0.75rem',
@@ -144,7 +144,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
         <pre
           data-testid="alert-detail-event-payload"
           style={{
-            background: '#f3f4f6',
+            background: 'var(--surface-hover-bg)',
             padding: '0.75rem',
             borderRadius: '4px',
             fontSize: '0.75rem',
@@ -164,7 +164,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
       <section style={sectionStyle}>
         <span style={sectionHeader}>Routing log</span>
         {data.routingLog.length === 0 ? (
-          <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>No deliveries recorded.</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No deliveries recorded.</span>
         ) : (
           <ul
             data-testid="alert-detail-routing-log"
@@ -173,7 +173,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
             {data.routingLog.map((entry, i) => (
               <li key={i}>
                 <strong>{entry.deliveredAt}</strong> → {entry.destinationId} ·{' '}
-                <span style={{ color: entry.status === 'ok' ? '#166534' : '#991b1b' }}>
+                <span style={{ color: entry.status === 'ok' ? 'var(--status-success-text-strong)' : 'var(--status-danger-text-strong)' }}>
                   {entry.status}
                 </span>
                 {entry.errorMessage && ` (${entry.errorMessage})`}

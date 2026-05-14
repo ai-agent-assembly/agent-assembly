@@ -40,7 +40,7 @@ export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawer
         style={{
           width: 'min(520px, 95vw)',
           height: '100%',
-          background: '#fff',
+          background: 'var(--surface-card)',
           boxShadow: '-10px 0 25px rgba(0, 0, 0, 0.15)',
           padding: '1.25rem',
           overflowY: 'auto',
@@ -54,7 +54,7 @@ export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawer
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            borderBottom: '1px solid #e5e7eb',
+            borderBottom: '1px solid var(--surface-card-border)',
             paddingBottom: '0.5rem',
           }}
         >
@@ -69,7 +69,7 @@ export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawer
               background: 'transparent',
               fontSize: '1.25rem',
               cursor: 'pointer',
-              color: '#6b7280',
+              color: 'var(--text-muted)',
             }}
           >
             ✕

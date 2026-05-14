@@ -16,12 +16,12 @@ export function SeveritySelect() {
         display: 'flex',
         flexDirection: 'column',
         gap: '0.5rem',
-        border: '1px solid #e5e7eb',
+        border: '1px solid var(--surface-card-border)',
         borderRadius: '6px',
         padding: '0.75rem',
       }}
     >
-      <legend style={{ padding: '0 0.5rem', color: '#6b7280', fontSize: '0.75rem' }}>
+      <legend style={{ padding: '0 0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
         Severity
       </legend>
       <div style={{ display: 'flex', gap: '0.75rem' }}>
@@ -41,7 +41,7 @@ export function SeveritySelect() {
         ))}
       </div>
       {error && (
-        <span style={{ color: '#dc2626', fontSize: '0.75rem' }}>{error.message}</span>
+        <span style={{ color: 'var(--status-danger-solid)', fontSize: '0.75rem' }}>{error.message}</span>
       )}
     </fieldset>
   )

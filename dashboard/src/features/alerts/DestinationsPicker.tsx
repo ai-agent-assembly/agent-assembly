@@ -15,25 +15,25 @@ export function DestinationsPicker() {
         display: 'flex',
         flexDirection: 'column',
         gap: '0.5rem',
-        border: '1px solid #e5e7eb',
+        border: '1px solid var(--surface-card-border)',
         borderRadius: '6px',
         padding: '0.75rem',
       }}
     >
-      <legend style={{ padding: '0 0.5rem', color: '#6b7280', fontSize: '0.75rem' }}>
+      <legend style={{ padding: '0 0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
         Routing destinations
       </legend>
 
-      {isLoading && <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>Loading…</span>}
+      {isLoading && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Loading…</span>}
       {isError && (
-        <span data-testid="rule-destinations-error" style={{ fontSize: '0.75rem', color: '#dc2626' }}>
+        <span data-testid="rule-destinations-error" style={{ fontSize: '0.75rem', color: 'var(--status-danger-solid)' }}>
           Failed to load destinations
         </span>
       )}
       {!isLoading && !isError && destinations.length === 0 && (
         <span
           data-testid="rule-destinations-empty"
-          style={{ fontSize: '0.75rem', color: '#6b7280' }}
+          style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}
         >
           No destinations configured yet — add one in the Destination Registry.
         </span>
@@ -64,9 +64,9 @@ export function DestinationsPicker() {
                       gap: '0.35rem',
                       padding: '4px 10px',
                       borderRadius: '6px',
-                      border: '1px solid #d1d5db',
-                      background: active ? '#1f2937' : '#fff',
-                      color: active ? '#fff' : '#1f2937',
+                      border: '1px solid var(--form-input-border)',
+                      background: active ? 'var(--button-primary-bg)' : 'var(--surface-card)',
+                      color: active ? 'var(--text-on-accent)' : 'var(--button-primary-bg)',
                       cursor: 'pointer',
                       fontSize: '0.75rem',
                     }}
@@ -88,7 +88,7 @@ export function DestinationsPicker() {
       />
 
       {error && (
-        <span style={{ color: '#dc2626', fontSize: '0.75rem' }}>{error.message}</span>
+        <span style={{ color: 'var(--status-danger-solid)', fontSize: '0.75rem' }}>{error.message}</span>
       )}
     </fieldset>
   )

@@ -107,14 +107,14 @@ function SkeletonRows({ columnCount }: { columnCount: number }) {
   return (
     <>
       {Array.from({ length: 5 }).map((_, i) => (
-        <tr key={i} data-testid="alert-row-skeleton" style={{ borderBottom: '1px solid #f3f4f6' }}>
+        <tr key={i} data-testid="alert-row-skeleton" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
           {Array.from({ length: columnCount }).map((_, j) => (
             <td key={j} style={{ padding: '0.5rem' }}>
               <span
                 style={{
                   display: 'block',
                   height: '0.875rem',
-                  background: '#e5e7eb',
+                  background: 'var(--surface-card-border)',
                   borderRadius: '4px',
                   opacity: 0.6 + (i % 2) * 0.2,
                 }}
@@ -158,10 +158,10 @@ export function AlertList({ rows, onSelect, loading = false }: AlertListProps) {
                 style={{
                   textAlign: 'left',
                   padding: '0.5rem',
-                  borderBottom: '2px solid #e5e7eb',
+                  borderBottom: '2px solid var(--surface-card-border)',
                   fontSize: '0.75rem',
                   textTransform: 'uppercase',
-                  color: '#6b7280',
+                  color: 'var(--text-muted)',
                   letterSpacing: '0.04em',
                   cursor: header.column.getCanSort() ? 'pointer' : 'default',
                   userSelect: 'none',
@@ -189,7 +189,7 @@ export function AlertList({ rows, onSelect, loading = false }: AlertListProps) {
               data-testid="alert-row"
               onClick={() => onSelect?.(row.original.id)}
               style={{
-                borderBottom: '1px solid #f3f4f6',
+                borderBottom: '1px solid var(--surface-hover-bg)',
                 cursor: onSelect ? 'pointer' : 'default',
               }}
             >
