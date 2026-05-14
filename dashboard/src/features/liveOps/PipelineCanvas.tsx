@@ -5,10 +5,13 @@ import './PipelineCanvas.css'
  * Pipeline lane geometry — relative coordinates as fractions of the
  * canvas width. Mirrors `laneCols` in `design/v1/hi-fi/live-ops.jsx`
  * so the dashboard backdrop matches the hi-fi exactly. The lane fills
- * (`#fafaf7 / #fbf2dc / #f0e3f7`) sit slightly off the project token
- * palette by design — the hi-fi picked tinted papers that are softer
- * than `--paper-2 / --warn-bg / --scrub-bg`. Border + label colours
- * map to design tokens.
+ * (`--lane-bg-default / --lane-bg-warn / --lane-bg-scrub`) are tinted
+ * papers that sit slightly off the hi-fi palette by design. Border +
+ * label colours come from the standard hi-fi tokens (`--line`, `--ink-3`).
+ *
+ * All colours are stored as CSS variable NAMES and resolved at draw time
+ * via `getComputedStyle` because the Canvas 2D API does not understand
+ * `var(--…)` directly.
  */
 interface Lane {
   id: 'agents' | 'l1' | 'l2' | 'l3' | 'ext'
@@ -17,45 +20,47 @@ interface Lane {
   x: number
   /** Lane width as a fraction of the canvas width. */
   w: number
-  fill: string
+  /** CSS custom-property name resolved at draw time (e.g. `--lane-bg-default`). */
+  fillVar: string
   gateHint?: string
-  gateColor?: string
+  /** CSS custom-property name resolved at draw time. */
+  gateColorVar?: string
 }
 
 const LANES: readonly Lane[] = [
-  { id: 'agents', label: 'AGENTS', x: 0.04, w: 0.1, fill: '#fafaf7' },
+  { id: 'agents', label: 'AGENTS', x: 0.04, w: 0.1, fillVar: '--lane-bg-default' },
   {
     id: 'l1',
     label: 'L1 · IDENTITY',
     x: 0.22,
     w: 0.13,
-    fill: '#fafaf7',
+    fillVar: '--lane-bg-default',
     gateHint: 'verify DID',
-    gateColor: '#1a1a1a',
+    gateColorVar: '--line-3',
   },
   {
     id: 'l2',
     label: 'L2 · CAPABILITY',
     x: 0.43,
     w: 0.13,
-    fill: '#fbf2dc',
+    fillVar: '--lane-bg-warn',
     gateHint: 'policy enforce',
-    gateColor: '#8a5a00',
+    gateColorVar: '--warn',
   },
   {
     id: 'l3',
     label: 'L3 · SCRUB',
     x: 0.64,
     w: 0.13,
-    fill: '#f0e3f7',
+    fillVar: '--lane-bg-scrub',
     gateHint: 'sanitize',
-    gateColor: '#5a1a8a',
+    gateColorVar: '--scrub',
   },
-  { id: 'ext', label: '→ EXTERNAL', x: 0.85, w: 0.1, fill: '#fafaf7' },
+  { id: 'ext', label: '→ EXTERNAL', x: 0.85, w: 0.1, fillVar: '--lane-bg-default' },
 ]
 
-const LANE_BORDER = '#d8d4c7'
-const LANE_LABEL = '#5a5a5a'
+const LANE_BORDER_VAR = '--line'
+const LANE_LABEL_VAR = '--ink-3'
 const PADDING_Y = 28
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 300
@@ -117,19 +122,24 @@ export interface PipelineCanvasProps {
   onCounters?: (c: PipelineCanvasCounters) => void
 }
 
-function colorForFate(fate: Fate): string {
+/**
+ * Returns the CSS custom-property NAME for a particle fate. The caller
+ * resolves the name to a hex value via `getComputedStyle` at draw time
+ * because the Canvas 2D API does not understand `var(--…)`.
+ */
+function colorVarForFate(fate: Fate): string {
   switch (fate) {
     case 'allow':
-      return '#1a1a1a'
+      return '--line-3'
     case 'narrow':
-      return '#8a5a00'
+      return '--warn'
     case 'scrub':
-      return '#5a1a8a'
+      return '--scrub'
     case 'approval':
-      return '#1d3a7a'
+      return '--info'
     case 'deny':
     case 'identity-fail':
-      return '#b8291e'
+      return '--danger'
   }
 }
 
@@ -175,6 +185,13 @@ export function PipelineCanvas({
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
+
+    // Resolve design-token names → hex values via getComputedStyle.
+    // styles.css is imported in main.tsx so :root vars are available
+    // by the time this effect runs.
+    const rootStyle = getComputedStyle(document.documentElement)
+    const css = (varName: string): string =>
+      rootStyle.getPropertyValue(varName).trim()
 
     let sizeW = MIN_WIDTH
     let sizeH = MIN_HEIGHT
@@ -225,17 +242,20 @@ export function PipelineCanvas({
       if (!ctx) return
       ctx.clearRect(0, 0, sizeW, sizeH)
 
+      const laneBorder = css(LANE_BORDER_VAR)
+      const laneLabel = css(LANE_LABEL_VAR)
+
       LANES.forEach((lane) => {
         const x = lane.x * sizeW
         const lw = lane.w * sizeW
-        ctx.fillStyle = lane.fill
+        ctx.fillStyle = css(lane.fillVar)
         ctx.fillRect(x, PADDING_Y, lw, sizeH - PADDING_Y * 2)
-        ctx.strokeStyle = LANE_BORDER
+        ctx.strokeStyle = laneBorder
         ctx.lineWidth = 1
         ctx.strokeRect(x, PADDING_Y, lw, sizeH - PADDING_Y * 2)
       })
 
-      ctx.fillStyle = LANE_LABEL
+      ctx.fillStyle = laneLabel
       ctx.font = '9px "JetBrains Mono", ui-monospace, monospace'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'alphabetic'
@@ -247,7 +267,7 @@ export function PipelineCanvas({
       ctx.textBaseline = 'middle'
       LANES.forEach((lane) => {
         if (!lane.gateHint) return
-        ctx.fillStyle = lane.gateColor ?? LANE_LABEL
+        ctx.fillStyle = lane.gateColorVar ? css(lane.gateColorVar) : laneLabel
         ctx.fillText(lane.gateHint, (lane.x + lane.w / 2) * sizeW, 50)
       })
     }
@@ -339,7 +359,7 @@ export function PipelineCanvas({
 
     function drawParticle(p: Particle, ts: number) {
       if (!ctx) return
-      const color = colorForFate(p.fate)
+      const color = css(colorVarForFate(p.fate))
       ctx.fillStyle = color
       ctx.globalAlpha =
         p.phase === 'blocked' ? Math.max(0, 1 - (p.fadeAge ?? 0) / 50) : 1

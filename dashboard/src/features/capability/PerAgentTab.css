@@ -72,7 +72,7 @@
 }
 
 .cap-pat-tree-node.is-active .cap-pat-flag-dot {
-  color: #fca5a5;
+  color: var(--danger-soft);
 }
 
 .cap-pat-flag-dot--head {

@@ -15,19 +15,19 @@
 }
 
 .fleet-mode--enforce {
-  background-color: #d4e4d2;
-  border-color: #22592a;
-  color: #22592a;
+  background-color: var(--ok-bg);
+  border-color: var(--ok);
+  color: var(--ok);
 }
 
 .fleet-mode--shadow {
-  background-color: #f5e6c4;
-  border-color: #8a5a00;
-  color: #8a5a00;
+  background-color: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 .fleet-mode--off {
-  background-color: #ffffff;
-  border-color: #c4bfb0;
-  color: #5a5a5a;
+  background-color: var(--paper-2);
+  border-color: var(--line-2);
+  color: var(--ink-3);
 }

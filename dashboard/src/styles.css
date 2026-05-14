@@ -151,4 +151,26 @@
   --badge-blue-text-strong: #1e40af;
   --badge-warning-border: #fcd34d;
   --role-admin-bg: #a16207;
+
+  /* ── Terminal palette (onboarding step bodies) ───────────── */
+  /* Used by SDK install + identity / enroll terminal panels. */
+  --term-bg: #0d0e10;
+  --term-border: #1a1b1d;
+  --term-text: #d4d4d4;
+  --term-prompt: #4a9eff;
+  --term-cmd: #f0f0f0;
+  --term-out: #a0a0a0;
+  --term-ok: #5fd17a;
+  --term-faint: #6e6e6e;
+  --term-key: #6e94c2;
+
+  /* ── Lane fills (LiveOps PipelineCanvas SVG) ─────────────── */
+  /* Soft pastel lane backgrounds; intentionally sit slightly off
+     the warm hi-fi palette to read as a separate visual concept. */
+  --lane-bg-default: #fafaf7;
+  --lane-bg-warn: #fbf2dc;
+  --lane-bg-scrub: #f0e3f7;
+
+  /* ── Soft danger (red-300) for hover/active overlays ─────── */
+  --danger-soft: #fca5a5;
 }
