@@ -86,6 +86,40 @@ pub enum AgentStatus {
     Suspended,
 }
 
+/// Lifecycle status of a policy version in the capability view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyStatus {
+    Active,
+    Proposed,
+    Archived,
+}
+
+/// A single rule inside a policy — resource, verbs scoped, action, and an
+/// optional condition expression.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PolicyRule {
+    pub resource: String,
+    pub verb: Vec<Verb>,
+    pub action: String,
+    pub condition: String,
+}
+
+/// A policy version shown in the dashboard Capability Matrix's policies tab.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Policy {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub scope: String,
+    pub status: PolicyStatus,
+    /// Number of times this policy fired in the last 24 hours.
+    #[serde(rename = "hits24h")]
+    pub hits_24h: u64,
+    pub affects: Vec<String>,
+    pub rules: Vec<PolicyRule>,
+}
+
 /// One agent row in the dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -185,6 +219,30 @@ mod tests {
         };
         let json = serde_json::to_value(&cell).unwrap();
         assert_eq!(json["flag"], true);
+    }
+
+    #[test]
+    fn policy_serializes_hits_24h_field_name() {
+        let p = Policy {
+            id: "policy-1".to_string(),
+            name: "Default Policy".to_string(),
+            version: "1".to_string(),
+            scope: "global".to_string(),
+            status: PolicyStatus::Active,
+            hits_24h: 1234,
+            affects: vec!["support-triage".to_string()],
+            rules: vec![PolicyRule {
+                resource: "pg".to_string(),
+                verb: vec![Verb::Write, Verb::Delete],
+                action: "approval".to_string(),
+                condition: "amount > 100".to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["status"], "active");
+        assert_eq!(json["hits24h"], 1234, "field must be `hits24h`, not `hits_24h`");
+        assert!(json.get("hits_24h").is_none());
+        assert_eq!(json["rules"][0]["verb"][0], "write");
     }
 
     #[test]
