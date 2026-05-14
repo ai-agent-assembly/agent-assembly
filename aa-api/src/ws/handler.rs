@@ -335,21 +335,39 @@ fn decision_label(raw: i32) -> Option<String> {
 /// is the most-identifying string per variant (model / tool name /
 /// path / host / command / blocked action); latency comes from the
 /// variants that carry an end-to-end duration.
+///
+/// `FileOpDetail.latency_ms` and `PolicyViolation.latency_ms` are
+/// read here so the wire path is ready for when measurement
+/// instrumentation lands (AAASM-1424 for eBPF FileOp timing,
+/// AAASM-1425 for gateway-side PolicyViolation timing). Until those
+/// land, both fields default to `0` and we surface them as `None`
+/// so the dashboard keeps its existing placeholder behaviour.
 fn detail_op_fields(
     detail: Option<&aa_proto::assembly::audit::v1::audit_event::Detail>,
 ) -> (Option<String>, Option<u64>) {
     use aa_proto::assembly::audit::v1::audit_event::Detail;
 
+    /// Returns `Some(ms)` when the proto latency field is positive,
+    /// or `None` when zero (default / unmeasured) — keeps the
+    /// dashboard's existing zero-as-placeholder semantics intact.
+    fn nonzero_latency(latency_ms: i64) -> Option<u64> {
+        if latency_ms > 0 {
+            u64::try_from(latency_ms).ok()
+        } else {
+            None
+        }
+    }
+
     let Some(detail) = detail else {
         return (None, None);
     };
     match detail {
-        Detail::LlmCall(d) => (Some(d.model.clone()), u64::try_from(d.latency_ms).ok()),
-        Detail::ToolCall(d) => (Some(d.tool_name.clone()), u64::try_from(d.latency_ms).ok()),
-        Detail::FileOp(d) => (Some(d.path.clone()), None),
-        Detail::Network(d) => (Some(format!("{}:{}", d.host, d.port)), u64::try_from(d.latency_ms).ok()),
-        Detail::Process(d) => (Some(d.command.clone()), u64::try_from(d.duration_ms).ok()),
-        Detail::Violation(d) => (Some(d.blocked_action.clone()), None),
+        Detail::LlmCall(d) => (Some(d.model.clone()), nonzero_latency(d.latency_ms)),
+        Detail::ToolCall(d) => (Some(d.tool_name.clone()), nonzero_latency(d.latency_ms)),
+        Detail::FileOp(d) => (Some(d.path.clone()), nonzero_latency(d.latency_ms)),
+        Detail::Network(d) => (Some(format!("{}:{}", d.host, d.port)), nonzero_latency(d.latency_ms)),
+        Detail::Process(d) => (Some(d.command.clone()), nonzero_latency(d.duration_ms)),
+        Detail::Violation(d) => (Some(d.blocked_action.clone()), nonzero_latency(d.latency_ms)),
         Detail::Approval(_) => (None, None),
     }
 }
@@ -516,6 +534,7 @@ mod tests {
                 path: "/etc/passwd".into(),
                 bytes: 1024,
                 source: "sdk_hook".into(),
+                latency_ms: 0,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
@@ -574,11 +593,47 @@ mod tests {
                 policy_rule: "no-secrets".into(),
                 blocked_action: "read /etc/shadow".into(),
                 reason: "policy denied".into(),
+                latency_ms: 0,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
         assert_eq!(fields.resource.as_deref(), Some("read /etc/shadow"));
         assert_eq!(fields.status.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn audit_file_op_with_nonzero_latency_maps_through() {
+        let ev = pipeline_audit(
+            ActionType::FileOperation,
+            Decision::Allow,
+            "",
+            Some(Detail::FileOp(FileOpDetail {
+                operation: "read".into(),
+                path: "/etc/passwd".into(),
+                bytes: 1024,
+                source: "ebpf".into(),
+                latency_ms: 42,
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.latency_ms, Some(42));
+    }
+
+    #[test]
+    fn audit_policy_violation_with_nonzero_latency_maps_through() {
+        let ev = pipeline_audit(
+            ActionType::ToolCall,
+            Decision::Deny,
+            "",
+            Some(Detail::Violation(PolicyViolation {
+                policy_rule: "no-secrets".into(),
+                blocked_action: "read /etc/shadow".into(),
+                reason: "policy denied".into(),
+                latency_ms: 7,
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.latency_ms, Some(7));
     }
 
     #[test]

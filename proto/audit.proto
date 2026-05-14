@@ -111,13 +111,18 @@ message ToolCallDetail {
 // FileOpDetail records the outcome of a filesystem operation.
 message FileOpDetail {
   // Operation type: "read", "write", "delete", or "create".
-  string operation = 1;
+  string operation  = 1;
   // Absolute path of the file that was accessed.
-  string path      = 2;
+  string path       = 2;
   // Number of bytes read or written (0 for delete/create).
-  int64  bytes     = 3;
+  int64  bytes      = 3;
   // Detection source: "sdk_hook" (interceptor) or "ebpf" (kernel-level).
-  string source    = 4;
+  string source     = 4;
+  // End-to-end syscall latency in milliseconds. Currently `0` (default)
+  // until the eBPF probes are extended to record enter/exit timestamps —
+  // tracked under AAASM-1424. Schema lives here so the wire path is
+  // ready when the kernel-side instrumentation lands.
+  int64  latency_ms = 5;
 }
 
 // NetworkCallDetail records the outcome of an outbound network request.
@@ -158,6 +163,13 @@ message PolicyViolation {
   string blocked_action = 2;
   // Human-readable reason for the block (copied from CheckActionResponse).
   string reason         = 3;
+  // Policy-engine evaluation latency in milliseconds. Currently `0`
+  // (default) — no production code in this repo constructs
+  // `Detail::Violation` today; the gateway tracks the verdict as a
+  // string in its audit reader. Schema lives here so when the gateway
+  // is wired to emit structured `PolicyViolation` events with timing
+  // (tracked under AAASM-1425), the wire path is ready.
+  int64  latency_ms     = 4;
 }
 
 // ApprovalEvent records the resolution of a human-in-the-loop approval request.
