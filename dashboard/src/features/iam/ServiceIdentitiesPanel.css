@@ -16,8 +16,8 @@
 
 .iam-services-panel__generate-btn {
   padding: 0.4rem 0.9rem;
-  background: var(--shell-accent, #2563eb);
-  color: #fff;
+  background: var(--shell-accent);
+  color: var(--text-on-accent);
   border: 0;
   border-radius: 0.375rem;
   font-size: 0.875rem;
@@ -27,10 +27,10 @@
 
 .iam-shown-once-banner {
   padding: 0.6rem 0.9rem;
-  background: #fef3c7;
-  border: 1px solid #fcd34d;
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-warning-border);
   border-radius: 0.375rem;
   font-size: 0.8rem;
-  color: #92400e;
+  color: var(--alert-banner-text);
   margin-bottom: 1rem;
 }

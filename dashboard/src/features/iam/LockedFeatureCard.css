@@ -4,8 +4,8 @@
   gap: 1rem;
   align-items: center;
   padding: 1rem 1.25rem;
-  border: 1px solid var(--shell-border, #e4e4e7);
-  background: var(--shell-surface-muted, #fafafa);
+  border: 1px solid var(--shell-border-subtle);
+  background: var(--shell-surface-subtle);
   border-radius: 0.5rem;
 }
 
@@ -22,7 +22,7 @@
 .iam-locked-card__body {
   margin: 0;
   font-size: 0.875rem;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
   line-height: 1.5;
 }
 

@@ -130,4 +130,25 @@
 
   /* ── Alert banner (amber-100 bg + amber-800 text) ────────── */
   --alert-banner-text: #92400e;
+
+  /* ── Shell surface/border extensions (IAM panels) ────────── */
+  /* The IAM pages and panels use a Tailwind zinc palette variant.
+     These tokens were previously inline fallbacks in iam/*.css. */
+  --shell-surface: #ffffff;
+  --shell-surface-muted: #f4f4f5;
+  --shell-surface-subtle: #fafafa;
+  --shell-border-subtle: #e4e4e7;
+  --shell-text-strong: #525252;
+
+  /* ── Status bg / strong-text variants (badges, banners) ──── */
+  --status-success-bg: #dcfce7;
+  --status-success-text-strong: #166534;
+  --status-danger-bg: #fee2e2;
+  --status-danger-text-strong: #991b1b;
+  --status-danger-hover-text: #b91c1c;
+
+  /* ── Badge / role extension tokens ───────────────────────── */
+  --badge-blue-text-strong: #1e40af;
+  --badge-warning-border: #fcd34d;
+  --role-admin-bg: #a16207;
 }

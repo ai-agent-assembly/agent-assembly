@@ -74,7 +74,7 @@ export function RevealOnceModal({
         />
         <div className="iam-dialog__actions">
           {copied && (
-            <span data-testid="reveal-once-copied" style={{ marginRight: 'auto', color: '#16a34a', fontSize: '0.85rem' }}>
+            <span data-testid="reveal-once-copied" style={{ marginRight: 'auto', color: 'var(--status-success-solid)', fontSize: '0.85rem' }}>
               Copied — closing…
             </span>
           )}
