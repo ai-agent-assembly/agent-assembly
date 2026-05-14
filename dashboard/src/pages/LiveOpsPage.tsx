@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useToast } from '../components/Toast'
+import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
@@ -197,6 +198,8 @@ export function LiveOpsPage() {
                 onRetry={reconnect}
                 retryLabel="Reconnect"
               />
+            ) : status === 'connected' && ops.length === 0 ? (
+              <EmptyState page="live" />
             ) : (
               filteredOps.map((op) => (
                 <OperationRow
