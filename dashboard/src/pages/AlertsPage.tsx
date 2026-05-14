@@ -90,7 +90,7 @@ export function AlertsPage() {
       >
         <div>
           <h1 style={{ marginBottom: '0.25rem' }}>Alerts</h1>
-          <p style={{ color: '#6b7280', margin: 0, fontSize: '0.875rem' }}>
+          <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.875rem' }}>
             Policy violations, budget thresholds, and anomaly detections across all governed agents.
           </p>
         </div>
@@ -109,8 +109,8 @@ export function AlertsPage() {
             onClick={() => setRuleFormOpen(true)}
             style={{
               padding: '6px 12px',
-              background: '#1f2937',
-              color: '#fff',
+              background: 'var(--button-primary-bg)',
+              color: 'var(--button-primary-text)',
               border: 'none',
               borderRadius: '4px',
               cursor: 'pointer',
@@ -129,8 +129,8 @@ export function AlertsPage() {
           style={{
             marginBottom: '0.75rem',
             padding: '6px 10px',
-            background: '#fef3c7',
-            color: '#92400e',
+            background: 'var(--badge-amber-bg)',
+            color: 'var(--alert-banner-text)',
             borderRadius: '4px',
             fontSize: '0.75rem',
           }}
@@ -154,7 +154,7 @@ export function AlertsPage() {
 
       <div
         data-testid="alerts-count"
-        style={{ fontSize: '0.75rem', color: '#6b7280', padding: '0.5rem 0' }}
+        style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}
       >
         {alertsQuery.isLoading
           ? 'Loading…'
