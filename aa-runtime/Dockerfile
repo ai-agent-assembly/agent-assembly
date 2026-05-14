@@ -14,7 +14,7 @@ WORKDIR /app
 # output only changes when Cargo.toml / Cargo.lock change.
 FROM chef AS planner
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json --bin aa-runtime
 
 # Builder: install system deps, pick the musl target for TARGETARCH,
 # cook (compile) dependencies from recipe.json, then compile app code.
@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target,id=aa-runtime-target-${TARGETARCH} \
     TARGET=$(cat /tmp/rust_target) && \
-    cargo chef cook --release --target "$TARGET" --recipe-path recipe.json
+    cargo chef cook --release --target "$TARGET" --recipe-path recipe.json --bin aa-runtime
 
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
