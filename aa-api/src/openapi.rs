@@ -8,7 +8,7 @@ use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
-use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policies, topology, traces};
+use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, ops, policies, topology, traces};
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
 #[derive(OpenApi)]
@@ -35,6 +35,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policie
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
+        (name = "ops", description = "Per-operation lifecycle actions (pause / resume / terminate)"),
     ),
     paths(
         crate::routes::health::health,
@@ -63,6 +64,9 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policie
         edges::report_edge,
         edges::list_agent_edges,
         edges::get_agent_graph,
+        ops::pause_op,
+        ops::resume_op,
+        ops::terminate_op,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -102,6 +106,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, policie
         edges::EdgeListResponse,
         edges::GraphNode,
         edges::GraphResponse,
+        ops::OpActionAck,
         GovernanceEvent,
         EventType,
         ViolationPayload,

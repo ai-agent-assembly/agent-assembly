@@ -11,6 +11,7 @@ pub mod devtools;
 pub mod edges;
 pub mod health;
 pub mod logs;
+pub mod ops;
 pub mod policies;
 pub mod tools;
 pub mod topology;
@@ -67,6 +68,10 @@ pub fn v1_router() -> Router {
         .route("/topology/edges", post(edges::report_edge))
         .route("/agents/{id}/edges", get(edges::list_agent_edges))
         .route("/agents/{id}/graph", get(edges::get_agent_graph))
+        // Per-op lifecycle actions (stubs — see routes/ops.rs)
+        .route("/ops/{id}/pause", post(ops::pause_op))
+        .route("/ops/{id}/resume", post(ops::resume_op))
+        .route("/ops/{id}/terminate", post(ops::terminate_op))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.
