@@ -8,7 +8,7 @@
 .iam-member-list td {
   padding: 0.5rem 0.75rem;
   text-align: left;
-  border-bottom: 1px solid var(--shell-border, #e4e4e7);
+  border-bottom: 1px solid var(--shell-border-subtle);
 }
 
 .iam-member-list th {
@@ -16,27 +16,27 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-member-list__loading,
 .iam-member-list__empty {
   text-align: center;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
   padding: 1.5rem 0;
 }
 
 .iam-member-list__mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 0.8rem;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-member-list__error {
   display: flex;
   align-items: center;
   gap: 1rem;
-  color: #b91c1c;
+  color: var(--status-danger-hover-text);
   padding: 0.75rem 0;
 }
 
@@ -53,21 +53,21 @@
 .iam-member-cell__email {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 0.75rem;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-avatar {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 9999px;
-  background: var(--shell-surface-muted, #f4f4f5);
-  border: 1px solid var(--shell-border, #e4e4e7);
+  background: var(--shell-surface-muted);
+  border: 1px solid var(--shell-border-subtle);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 0.75rem;
   font-weight: 700;
-  color: var(--shell-text, #18181b);
+  color: var(--shell-text);
   flex-shrink: 0;
 }
 
@@ -79,13 +79,13 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
-.iam-role-badge--owner { background: #b91c1c; }
-.iam-role-badge--admin { background: #a16207; }
-.iam-role-badge--member { background: #2563eb; }
-.iam-role-badge--viewer { background: #525252; }
+.iam-role-badge--owner { background: var(--status-danger-hover-text); }
+.iam-role-badge--admin { background: var(--role-admin-bg); }
+.iam-role-badge--member { background: var(--shell-accent); }
+.iam-role-badge--viewer { background: var(--shell-text-strong); }
 
 .iam-status {
   display: inline-block;
@@ -97,9 +97,9 @@
   letter-spacing: 0.04em;
 }
 
-.iam-status--active { background: #dcfce7; color: #166534; }
-.iam-status--invited { background: #dbeafe; color: #1e40af; }
-.iam-status--suspended { background: #fee2e2; color: #991b1b; }
+.iam-status--active { background: var(--status-success-bg); color: var(--status-success-text-strong); }
+.iam-status--invited { background: var(--badge-blue-bg); color: var(--badge-blue-text-strong); }
+.iam-status--suspended { background: var(--status-danger-bg); color: var(--status-danger-text-strong); }
 
 .iam-role-cell {
   display: flex;
