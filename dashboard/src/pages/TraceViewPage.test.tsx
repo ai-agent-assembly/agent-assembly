@@ -60,7 +60,7 @@ const MOCK_EVENT: TraceEvent = {
   type: 'llm_call',
   agent: 'support-agent',
   durationMs: 834,
-  payloadPreview: 'GPT-4o · query user #4521 billing',
+  payloadPreview: 'GPT-4o · query user 4521 billing',
   payload: {},
   severity: 'info',
 }

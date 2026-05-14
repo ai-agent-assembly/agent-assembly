@@ -14,13 +14,13 @@ import { useCanManageTeam } from '../features/teams/permissions'
 import { NotFoundPage } from './NotFoundPage'
 
 const STATUS_COLOR: Record<string, string> = {
-  active: '#16a34a',
-  suspended: '#d97706',
-  deregistered: '#6b7280',
+  active: 'var(--status-success-solid)',
+  suspended: 'var(--status-warning-solid)',
+  deregistered: 'var(--text-muted)',
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLOR[status] ?? '#6b7280'
+  const color = STATUS_COLOR[status] ?? 'var(--text-muted)'
   return (
     <span
       data-testid="team-member-status"
@@ -30,7 +30,7 @@ function StatusBadge({ status }: { status: string }) {
         borderRadius: '9999px',
         fontSize: '0.75rem',
         fontWeight: 600,
-        color: '#fff',
+        color: 'var(--text-on-accent)',
         background: color,
       }}
     >
@@ -65,12 +65,12 @@ function OpenInTopologyButton({ agentId }: { agentId: string }) {
 
 function MemberRow({ member }: { member: AgentNode }) {
   return (
-    <tr data-testid="team-member-row" style={{ borderBottom: '1px solid #f3f4f6' }}>
+    <tr data-testid="team-member-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
       <td style={{ padding: '0.5rem' }}>
         <Link to={`/agents/${encodeURIComponent(member.id)}`}>
           <ShortId id={member.id} />
         </Link>
-        <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>{member.name}</div>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{member.name}</div>
       </td>
       <td style={{ padding: '0.5rem' }}>
         <StatusBadge status={member.status} />
@@ -103,9 +103,9 @@ function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }:
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
       }}
     >
-      <div style={{ background: '#fff', padding: '1.5rem', borderRadius: '6px', minWidth: '24rem', maxWidth: '40rem' }}>
+      <div style={{ background: 'var(--surface-card)', padding: '1.5rem', borderRadius: '6px', minWidth: '24rem', maxWidth: '40rem' }}>
         <h2 style={{ marginTop: 0 }}>{title}</h2>
-        <div style={{ fontSize: '0.875rem', color: '#374151', marginBottom: '1rem' }}>{body}</div>
+        <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>{body}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
           <button data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
           <button data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
@@ -220,13 +220,13 @@ export function TeamDetailPage() {
       </p>
 
       {teamQuery.isError && (
-        <div data-testid="team-detail-error" style={{ color: '#dc2626', marginBottom: '1rem' }}>
+        <div data-testid="team-detail-error" style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem' }}>
           Failed to load team.
         </div>
       )}
 
       {toast && (
-        <div data-testid="team-action-toast" role="alert" style={{ color: '#dc2626', marginBottom: '1rem' }}>
+        <div data-testid="team-action-toast" role="alert" style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem' }}>
           {toast}
         </div>
       )}
@@ -237,13 +237,13 @@ export function TeamDetailPage() {
         <>
           <header data-testid="team-detail-header" style={{ marginBottom: '1rem' }}>
             <h1 style={{ marginBottom: '0.25rem' }}>{teamQuery.data.team_id}</h1>
-            <div style={{ display: 'flex', gap: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
+            <div style={{ display: 'flex', gap: '1rem', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
               <span data-testid="team-member-count">{teamQuery.data.agent_count} member{teamQuery.data.agent_count === 1 ? '' : 's'}</span>
               <span data-testid="team-total-spend">
                 Daily spend:{' '}
                 {teamCost?.daily_spend_usd ? `$${teamCost.daily_spend_usd}` : '—'}
               </span>
-              <span data-testid="team-created-at" style={{ color: '#9ca3af' }}>Created at: —</span>
+              <span data-testid="team-created-at" style={{ color: 'var(--text-disabled)' }}>Created at: —</span>
             </div>
           </header>
 
@@ -258,7 +258,7 @@ export function TeamDetailPage() {
                   {['Agent ID', 'Status', 'Depth', 'Actions'].map(h => (
                     <th
                       key={h}
-                      style={{ textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #e5e7eb' }}
+                      style={{ textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid var(--surface-card-border)' }}
                     >
                       {h}
                     </th>
