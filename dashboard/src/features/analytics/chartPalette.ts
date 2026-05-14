@@ -39,11 +39,11 @@ const CHART_COLORBLIND_VARS: readonly string[] = [
   '--chart-cb-7',
 ]
 
-function resolvePalette(varNames: readonly string[]): readonly string[] {
+function resolvePalette(varNames: readonly string[]): string[] {
   if (typeof document === 'undefined') return varNames.map(() => '')
   const root = getComputedStyle(document.documentElement)
   return varNames.map((v) => root.getPropertyValue(v).trim())
 }
 
-export const CHART_CATEGORICAL_PALETTE: readonly string[] = resolvePalette(CHART_CATEGORICAL_VARS)
-export const CHART_COLORBLIND_PALETTE: readonly string[] = resolvePalette(CHART_COLORBLIND_VARS)
+export const CHART_CATEGORICAL_PALETTE: string[] = resolvePalette(CHART_CATEGORICAL_VARS)
+export const CHART_COLORBLIND_PALETTE: string[] = resolvePalette(CHART_COLORBLIND_VARS)
