@@ -102,4 +102,24 @@ describe('applyFilters', () => {
     expect(applyFilters(OPS, { agent: '' as unknown as string }).map((o) => o.id))
       .toEqual(['op-1', 'op-2', 'op-3', 'op-4'])
   })
+
+  it('excludes ops without a team field when the team axis is set', () => {
+    const opNoTeam: LiveOperation = {
+      id: 'op-no-team',
+      agent: 'support-agent',
+      opType: 'read',
+      resource: 'gmail.send',
+      status: 'running',
+      startedAt: '2026-05-13T14:23:05Z',
+      latencyMs: 10,
+    }
+    const result = applyFilters([...OPS, opNoTeam], { team: 'support' })
+    expect(result.map((o) => o.id)).toEqual(['op-1', 'op-3', 'op-4'])
+    expect(result.find((o) => o.id === 'op-no-team')).toBeUndefined()
+  })
+
+  it('returns an empty array when given an empty op list', () => {
+    expect(applyFilters([], EMPTY_FILTERS)).toEqual([])
+    expect(applyFilters([], { agent: 'support-agent' })).toEqual([])
+  })
 })

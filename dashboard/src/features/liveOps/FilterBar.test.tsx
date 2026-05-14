@@ -93,4 +93,53 @@ describe('FilterBar', () => {
     const labels = Array.from(opType.querySelectorAll('option')).map((o) => o.value)
     expect(labels).toEqual(['', 'read', 'write', 'delete', 'exec'])
   })
+
+  it('emits onFiltersChange with the next team selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<ControlledHarness onChange={onChange} />)
+    await user.selectOptions(screen.getByTestId('filter-team'), 'devops')
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ team: 'devops' }),
+    )
+  })
+
+  it('emits onFiltersChange with the next opType selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<ControlledHarness onChange={onChange} />)
+    await user.selectOptions(screen.getByTestId('filter-op-type'), 'write')
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ opType: 'write' }),
+    )
+  })
+
+  it('emits onFiltersChange with the next status selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<ControlledHarness onChange={onChange} />)
+    await user.selectOptions(screen.getByTestId('filter-status'), 'blocked')
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'blocked' }),
+    )
+  })
+
+  it('renders gracefully when agentOptions / teamOptions are empty', () => {
+    const onChange = vi.fn()
+    render(
+      <FilterBar
+        filters={EMPTY_FILTERS}
+        onFiltersChange={onChange}
+        agentOptions={[]}
+        teamOptions={[]}
+      />,
+    )
+    // Each select still mounts with the "All" sentinel option only.
+    const agent = screen.getByTestId('filter-agent')
+    const team = screen.getByTestId('filter-team')
+    expect(agent.querySelectorAll('option')).toHaveLength(1)
+    expect(team.querySelectorAll('option')).toHaveLength(1)
+    expect(agent.querySelector('option')?.value).toBe('')
+    expect(team.querySelector('option')?.value).toBe('')
+  })
 })
