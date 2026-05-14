@@ -152,6 +152,17 @@ pub struct SampleCall {
     pub fp_reason: Option<String>,
 }
 
+/// Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
+/// the `CapabilityMatrix` interface in `dashboard/src/api/capability.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityMatrix {
+    pub resources: Vec<Resource>,
+    pub agents: Vec<CapabilityAgent>,
+    pub policies: Vec<Policy>,
+    pub sample_calls: Vec<SampleCall>,
+}
+
 /// One agent row in the dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +286,22 @@ mod tests {
         assert_eq!(json["hits24h"], 1234, "field must be `hits24h`, not `hits_24h`");
         assert!(json.get("hits_24h").is_none());
         assert_eq!(json["rules"][0]["verb"][0], "write");
+    }
+
+    #[test]
+    fn capability_matrix_serializes_sample_calls_in_camel_case() {
+        let matrix = CapabilityMatrix {
+            resources: vec![],
+            agents: vec![],
+            policies: vec![],
+            sample_calls: vec![],
+        };
+        let json = serde_json::to_value(&matrix).unwrap();
+        assert!(json["resources"].is_array());
+        assert!(json["agents"].is_array());
+        assert!(json["policies"].is_array());
+        assert!(json["sampleCalls"].is_array(), "field must be `sampleCalls`");
+        assert!(json.get("sample_calls").is_none());
     }
 
     #[test]
