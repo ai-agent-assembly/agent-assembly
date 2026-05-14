@@ -338,8 +338,8 @@ fn decision_label(raw: i32) -> Option<String> {
 ///
 /// `FileOpDetail.latency_ms` and `PolicyViolation.latency_ms` are
 /// read here so the wire path is ready for when measurement
-/// instrumentation lands (AAASM-1424 for eBPF FileOp timing,
-/// AAASM-1425 for gateway-side PolicyViolation timing). Until those
+/// instrumentation lands (AAASM-1425 for eBPF FileOp timing,
+/// AAASM-1426 for gateway-side PolicyViolation timing). Until those
 /// land, both fields default to `0` and we surface them as `None`
 /// so the dashboard keeps its existing placeholder behaviour.
 fn detail_op_fields(

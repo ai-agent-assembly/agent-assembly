@@ -37,7 +37,7 @@ pub fn file_io_to_audit(event: &FileIoEvent) -> AuditEvent {
             bytes: 0,
             source: "ebpf".to_string(),
             // eBPF events are point-in-time syscall traces, not durations.
-            // Real measurement pending AAASM-1424.
+            // Real measurement pending AAASM-1425.
             latency_ms: 0,
         })),
         ..AuditEvent::default()

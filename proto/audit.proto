@@ -120,7 +120,7 @@ message FileOpDetail {
   string source     = 4;
   // End-to-end syscall latency in milliseconds. Currently `0` (default)
   // until the eBPF probes are extended to record enter/exit timestamps —
-  // tracked under AAASM-1424. Schema lives here so the wire path is
+  // tracked under AAASM-1425. Schema lives here so the wire path is
   // ready when the kernel-side instrumentation lands.
   int64  latency_ms = 5;
 }
@@ -168,7 +168,7 @@ message PolicyViolation {
   // `Detail::Violation` today; the gateway tracks the verdict as a
   // string in its audit reader. Schema lives here so when the gateway
   // is wired to emit structured `PolicyViolation` events with timing
-  // (tracked under AAASM-1425), the wire path is ready.
+  // (tracked under AAASM-1426), the wire path is ready.
   int64  latency_ms     = 4;
 }
 
