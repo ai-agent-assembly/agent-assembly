@@ -163,3 +163,5 @@ jobs:
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Verify aa-cli compiles with embedded assets
+        run: cargo build -p aa-cli
