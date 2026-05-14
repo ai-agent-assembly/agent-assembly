@@ -466,6 +466,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CapabilityMatrix'
+  /api/v1/capability/override:
+    post:
+      tags:
+      - capability
+      summary: |-
+        `POST /api/v1/capability/override` — apply a capability override across
+        one or more agents. Mutating capability state is treated as a
+        `Global`-scope policy update, so the caller must hold the `OrgAdmin`
+        role (Admin API scope).
+      operationId: apply_override
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CapabilityOverrideRequest'
+        required: true
+      responses:
+        '200':
+          description: Updated agent rows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityOverrideResponse'
+        '400':
+          description: Unknown agent id
+        '403':
+          description: Caller lacks the role required to mutate capability state
   /api/v1/costs:
     get:
       tags:
@@ -1597,6 +1624,44 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SampleCall'
+    CapabilityOverrideRequest:
+      type: object
+      description: |-
+        Request payload for `POST /api/v1/capability/override` — apply a single
+        (resource, verb, decision) override across one or more agents.
+      required:
+      - agentIds
+      - resourceId
+      - verb
+      - decision
+      properties:
+        agentIds:
+          type: array
+          items:
+            type: string
+          description: Agents to apply the override to.
+        decision:
+          $ref: '#/components/schemas/Decision'
+          description: New decision to record for that (resource, verb) pair.
+        resourceId:
+          type: string
+          description: Identifier of the resource whose cell is being overridden.
+        verb:
+          $ref: '#/components/schemas/Verb'
+          description: Verb (read / write / delete / exec) within the cell.
+    CapabilityOverrideResponse:
+      type: object
+      description: |-
+        Response envelope for `POST /api/v1/capability/override`: the subset of
+        agent rows that actually changed (matches `OverrideResponse` in the
+        dashboard's TypeScript mock).
+      required:
+      - updated
+      properties:
+        updated:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityAgent'
     ChangeType:
       type: string
       description: Classifier for what a proposed-vs-current decision change represents.
