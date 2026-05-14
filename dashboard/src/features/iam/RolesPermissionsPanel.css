@@ -14,7 +14,7 @@
 .iam-roles-panel__sub {
   margin: 0.25rem 0 0;
   font-size: 0.85rem;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-roles-panel__layout {
@@ -34,11 +34,11 @@
 .iam-roles-panel__hint {
   padding: 1.5rem 1rem;
   text-align: center;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
   font-size: 0.85rem;
-  border: 1px dashed var(--shell-border, #e4e4e7);
+  border: 1px dashed var(--shell-border-subtle);
   border-radius: 0.5rem;
-  background: var(--shell-surface-muted, #fafafa);
+  background: var(--shell-surface-subtle);
 }
 
 @media (max-width: 60rem) {
