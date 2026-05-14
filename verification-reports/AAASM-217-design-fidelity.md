@@ -27,45 +27,50 @@
 | Agent Detail Overview tab (posture + traffic + events) | ✅ Matches |
 | Agent Detail follow-up tab empty-states | ✅ Matches |
 | Suspend reason dialog | ✅ Matches |
-| **AppShell topbar stacks above Agent Detail drawer head** | **⚠️ Bug — see Findings** |
+| **AppShell topbar stacks above Agent Detail drawer head** | **✅ Fixed (AAASM-1405)** |
 
-10 surfaces fully match the hi-fi prototype. 1 cross-cutting bug found in the
-AppShell + Drawer stacking interaction — flagged below; a Bug Sub-task should
-follow up on the production fix.
+All 11 in-scope surfaces fully match the hi-fi prototype after the
+AAASM-1405 fix.
 
 ## Findings
 
-### ⚠️ AppShell topbar overlaps Agent Detail drawer head
+### ✅ AppShell topbar overlaps Agent Detail drawer head — FIXED (AAASM-1405)
 
-The Drawer primitive (`dashboard/src/components/Drawer.tsx`) renders its
-scrim with `position: fixed; inset: 0; z-index: 50`. By spec this should
-overlay the entire viewport — including the AppShell topbar.
+> *Original finding, resolved.* The drawer now paints cleanly above the
+> AppShell topbar; the regenerated `00-detail-fullpage.png` and
+> `07-detail-head.png` show the breadcrumb / title / action buttons fully
+> visible with the scrim covering the topbar.
 
-In practice, the topbar visually obscures the top ~52 px of the drawer:
+**Original symptom.** The Drawer primitive (`dashboard/src/components/Drawer.tsx`)
+declared its scrim with `position: fixed; inset: 0; z-index: 50`, but the
+AppShell topbar painted in front of the drawer's top ~52 px:
 
-* Breadcrumb (`← fleet › <id>`) and agent name title in the drawer head are
+* Breadcrumb (`← fleet › <id>`) and agent name title in the drawer head were
   hidden behind the topbar
-* The `■ suspend` / `▶ resume` action buttons are partially obscured —
-  Playwright reports `header.appshell__topbar intercepts pointer events`
-  when trying to click them via real pointer events
-* The full-page screenshot (`00-detail-fullpage.png`) shows this clearly:
-  the white topbar (with "approvals" / "Log out") sits in front of the
-  drawer panel's top section
+* The `■ suspend` / `▶ resume` action buttons were obscured — Playwright
+  reported `header.appshell__topbar intercepts pointer events` on click
+* The original `00-detail-fullpage.png` showed the white topbar sitting in
+  front of the drawer panel's top section
 
-Likely root cause: a stacking-context boundary in `AppShell` (e.g.
-`appshell__content`'s `overflow: auto` combined with React tree ancestry)
-that prevents the Drawer scrim's `z-index: 50` from escaping to the root
-stacking context. A React portal to `document.body` would sidestep it.
+**Root cause.** A stacking-context boundary in the AppShell tree contained
+the scrim's `position: fixed`, so its `z-index: 50` was compared only
+within that contained context rather than at the root.
 
-**Workaround in the test**: `agent-detail-suspend.evaluate(el => el.click())`
-to fire the React handler directly. A real user can still suspend an agent
-because the close/click handlers on the underlying drawer route work — but
-the top buttons are not directly clickable via pointer.
+**Fix (AAASM-1405)**:
 
-**Recommendation**: open a Bug Sub-task under AAASM-217 (the parent Story
-is Done, but a quality bug on its shipped chrome belongs there). The fix
-likely sits in `Drawer.tsx` (portal to `document.body`) or `AppShell.css`
-(remove the implicit stacking context).
+1. `Drawer.tsx` now renders via `ReactDOM.createPortal(tree, document.body)`,
+   so the scrim becomes a direct child of `<body>` and escapes any AppShell
+   stacking context entirely. SSR / non-DOM test renderers fall back to
+   in-tree rendering.
+2. `Drawer.css` bumps the scrim to `z-index: 1000` (was 50) so it
+   comfortably outranks anything inside `#root` at the new root-level
+   comparison.
+
+**Verification.** Re-running `pnpm test:e2e fleet-design-fidelity` after
+the fix: all 11 tests pass with a real `await page.getByTestId('agent-detail-suspend').click()`
+— no more `evaluate(el => el.click())` workaround. The regenerated
+screenshots (`00-detail-fullpage.png`, `07-detail-head.png`) show the drawer
+correctly painted above the topbar with no overlap.
 
 ## Per-section walkthrough
 
@@ -168,12 +173,12 @@ resolves to the `--danger` RGB token. `N selected` counter present.
 | **Hi-fi** | `design/v1/hi-fi/agent-detail.jsx` lines 200-220 |
 | **Implementation** | `AgentDetailPage.tsx` lines 205-260 |
 | **Screenshot** | `07-detail-head.png` |
-| **Verdict** | ✅ Structure matches — see ⚠️ stacking finding above |
+| **Verdict** | ✅ Matches (AAASM-1405 portal fix landed) |
 
 The head's structural elements (breadcrumb, flag dot, title, framework
-chip, owner @-handle, action buttons) all render in the correct order with
-the hi-fi class palette. **Visual issue**: the AppShell topbar overlays
-this section — see Findings.
+chip, owner @-handle, action buttons) render in the correct order with
+the hi-fi class palette and are no longer obscured by the AppShell
+topbar — see the resolved Findings entry above.
 
 ### 08 — Agent Detail identity strip
 
@@ -265,8 +270,8 @@ pnpm test:e2e fleet-design-fidelity
 
 ## Next steps
 
-1. **File Bug Sub-task** under AAASM-217 for the topbar / drawer stacking
-   issue (production fix in `Drawer.tsx` or `AppShell.css`).
+1. ~~**File Bug Sub-task** under AAASM-217 for the topbar / drawer stacking
+   issue~~ — Done as AAASM-1405; fix landed in this PR.
 2. **Optional**: add `playwright-percy` or `pixelmatch` for automated
    regression coverage on these screenshots; currently the report is the
    human verification surface.
