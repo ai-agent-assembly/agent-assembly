@@ -1,50 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MockWebSocket, resetMockWebSockets } from '../../test/mockWebSocket'
 import { useLiveOpsStream } from './useLiveOpsStream'
-
-class MockWebSocket {
-  static instances: MockWebSocket[] = []
-  static OPEN = 1
-  static CLOSED = 3
-
-  static reset() {
-    MockWebSocket.instances = []
-  }
-
-  readyState = 0
-  url: string
-  onopen: ((ev?: Event) => void) | null = null
-  onmessage: ((ev: { data: string }) => void) | null = null
-  onclose: (() => void) | null = null
-  onerror: ((ev?: Event) => void) | null = null
-
-  constructor(url: string) {
-    this.url = url
-    MockWebSocket.instances.push(this)
-  }
-
-  // ── Test helpers ────────────────────────────────────────
-  open() {
-    this.readyState = MockWebSocket.OPEN
-    this.onopen?.()
-  }
-  emit(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) })
-  }
-  serverClose() {
-    if (this.readyState === MockWebSocket.CLOSED) return
-    this.readyState = MockWebSocket.CLOSED
-    this.onclose?.()
-  }
-
-  // ── WebSocket API ──────────────────────────────────────
-  close() {
-    this.serverClose()
-  }
-  send() {
-    /* noop */
-  }
-}
 
 const VIOLATION_EVENT = {
   id: 1,
@@ -74,7 +31,7 @@ const opts = {
 
 describe('useLiveOpsStream', () => {
   beforeEach(() => {
-    MockWebSocket.reset()
+    resetMockWebSockets()
     vi.useFakeTimers()
   })
 
