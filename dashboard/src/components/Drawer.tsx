@@ -1,4 +1,5 @@
 import { useEffect, useRef, type MouseEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import './Drawer.css'
 
 interface DrawerProps {
@@ -25,6 +26,12 @@ interface DrawerProps {
  * caller's responsibility (typically by mounting / unmounting at a routed
  * URL). No focus trap; v1 relies on the underlying page being inert behind
  * the scrim.
+ *
+ * Renders via `createPortal(..., document.body)` so the scrim escapes any
+ * ancestor stacking context the host app might establish (AAASM-1405 —
+ * the AppShell topbar was painting in front of the drawer head when the
+ * scrim was rendered in-tree). On the server / pre-mount, falls back to
+ * in-tree rendering to avoid SSR mismatches.
  */
 export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
   const onCloseRef = useRef(onClose)
@@ -49,7 +56,7 @@ export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
     if (e.target === e.currentTarget) onClose()
   }
 
-  return (
+  const tree = (
     <div
       className="drawer-scrim"
       data-testid="drawer-scrim"
@@ -67,4 +74,8 @@ export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
       </aside>
     </div>
   )
+
+  // Guard for SSR / test renderers without a body — fall back to in-tree.
+  if (typeof document === 'undefined' || !document.body) return tree
+  return createPortal(tree, document.body)
 }

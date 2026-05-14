@@ -306,15 +306,10 @@ test.describe('AAASM-1382 — Fleet + Agent Detail design fidelity @ 1280x800', 
   test('Suspend reason dialog renders with required-field validation', async ({ page }) => {
     await gotoFleet(page)
     await page.getByTestId('agent-row').first().click()
-    // KNOWN ISSUE — flagged in `AAASM-217-design-fidelity.md`:
-    // the AppShell topbar visually overlaps the drawer head; a real pointer
-    // click on the suspend button is intercepted. Dispatch the click via
-    // `element.click()` (JS-level) so the React onClick handler still fires
-    // and we can capture the dialog. A Bug Sub-task should follow up on the
-    // production stacking-context fix.
-    await page
-      .getByTestId('agent-detail-suspend')
-      .evaluate((el) => (el as HTMLButtonElement).click())
+    // AAASM-1405 portalled the Drawer to `document.body`, so the drawer
+    // head now paints above the AppShell topbar and a real pointer click
+    // reaches the suspend button.
+    await page.getByTestId('agent-detail-suspend').click()
     const dialog = page.getByTestId('suspend-dialog')
     await expect(dialog).toBeVisible()
 
