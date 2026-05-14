@@ -1,39 +1,11 @@
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MockWebSocket, resetMockWebSockets } from '../../test/mockWebSocket'
 import { useAlertsStream } from './useAlertsStream'
 import type { Alert, Silence } from './types'
 
-// ── MockWebSocket ─────────────────────────────────────────────────────────
-
-class MockWebSocket {
-  static OPEN = 1
-  static CLOSED = 3
-  static instances: MockWebSocket[] = []
-  readyState = 0
-  onopen: (() => void) | null = null
-  onclose: (() => void) | null = null
-  onerror: (() => void) | null = null
-  onmessage: ((e: { data: string }) => void) | null = null
-  constructor(public url: string) {
-    MockWebSocket.instances.push(this)
-  }
-  close() {
-    this.readyState = MockWebSocket.CLOSED
-    this.onclose?.()
-  }
-  /** Test-only helper: pretend the upgrade succeeded. */
-  fakeOpen() {
-    this.readyState = MockWebSocket.OPEN
-    this.onopen?.()
-  }
-  /** Test-only helper: deliver a frame. */
-  fakeMessage(payload: unknown) {
-    this.onmessage?.({ data: JSON.stringify(payload) })
-  }
-}
-
 beforeEach(() => {
-  MockWebSocket.instances = []
+  resetMockWebSockets()
   vi.stubGlobal('WebSocket', MockWebSocket)
 })
 
@@ -69,12 +41,12 @@ describe('useAlertsStream', () => {
     expect(result.current).toBe('connecting')
 
     act(() => {
-      MockWebSocket.instances[0].fakeOpen()
+      MockWebSocket.instances[0].open()
     })
     await waitFor(() => expect(result.current).toBe('open'))
 
     act(() => {
-      MockWebSocket.instances[0].fakeMessage({
+      MockWebSocket.instances[0].emit({
         type: 'alert.fire',
         ts: '2026-05-14T09:00:00Z',
         alert: ALERT,
@@ -88,12 +60,12 @@ describe('useAlertsStream', () => {
     const onSilence = vi.fn()
     renderHook(() => useAlertsStream({ onResolve, onSilence }))
     act(() => {
-      MockWebSocket.instances[0].fakeMessage({
+      MockWebSocket.instances[0].emit({
         type: 'alert.resolve',
         ts: '...',
         alert: { ...ALERT, status: 'RESOLVED' },
       })
-      MockWebSocket.instances[0].fakeMessage({
+      MockWebSocket.instances[0].emit({
         type: 'alert.silence',
         ts: '...',
         alert: { ...ALERT, status: 'SUPPRESSED' },
@@ -108,14 +80,14 @@ describe('useAlertsStream', () => {
     const onFire = vi.fn()
     renderHook(() => useAlertsStream({ onFire }))
     act(() => {
-      MockWebSocket.instances[0].fakeMessage({ type: 'heartbeat', ts: '...' })
+      MockWebSocket.instances[0].emit({ type: 'heartbeat', ts: '...' })
     })
     expect(onFire).not.toHaveBeenCalled()
   })
 
   it('reports closed status when the socket drops', async () => {
     const { result } = renderHook(() => useAlertsStream({}))
-    act(() => MockWebSocket.instances[0].fakeOpen())
+    act(() => MockWebSocket.instances[0].open())
     await waitFor(() => expect(result.current).toBe('open'))
     act(() => MockWebSocket.instances[0].close())
     await waitFor(() => expect(result.current).toBe('closed'))
