@@ -447,6 +447,21 @@ paths:
                 $ref: '#/components/schemas/ProblemDetail'
       security:
       - bearer_auth: []
+  /api/v1/capability/matrix:
+    get:
+      tags:
+      - capability
+      summary: |-
+        `GET /api/v1/capability/matrix` — return the full agent × resource ×
+        verb × decision matrix that backs the dashboard Capability Matrix page.
+      operationId: get_matrix
+      responses:
+        '200':
+          description: Full capability matrix snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityMatrix'
   /api/v1/costs:
     get:
       tags:
@@ -1129,6 +1144,12 @@ components:
           id: aabbccdd00112233aabbccdd00112233
           name: child
           team_id: team-alpha
+    AgentMode:
+      type: string
+      description: Enforcement mode for an agent's capability policy.
+      enum:
+      - enforce
+      - shadow
     AgentNode:
       type: object
       description: |-
@@ -1266,6 +1287,13 @@ components:
         version:
           type: string
           description: Semver version string.
+    AgentStatus:
+      type: string
+      description: Liveness status surfaced to the matrix view.
+      enum:
+      - active
+      - idle
+      - suspended
     AgentTree:
       type: object
       description: |-
@@ -1465,6 +1493,115 @@ components:
           format: int32
           description: Threshold percentage that was crossed (e.g. `80` or `95`).
           minimum: 0
+    CapCell:
+      type: object
+      description: |-
+        One cell in the (agent × resource) matrix: a decision per verb, plus an
+        optional `flag` marker the UI uses to highlight over-permissioned cells.
+      required:
+      - read
+      - write
+      - delete
+      - exec
+      properties:
+        delete:
+          $ref: '#/components/schemas/Decision'
+        exec:
+          $ref: '#/components/schemas/Decision'
+        flag:
+          type:
+          - boolean
+          - 'null'
+          description: Marks this cell for UI attention (e.g. over-permissioned).
+        read:
+          $ref: '#/components/schemas/Decision'
+        write:
+          $ref: '#/components/schemas/Decision'
+    CapabilityAgent:
+      type: object
+      description: One agent row in the dashboard Capability Matrix.
+      required:
+      - id
+      - name
+      - framework
+      - owner
+      - trust
+      - mode
+      - status
+      - lastSeen
+      - caps
+      properties:
+        caps:
+          type: object
+          description: Resource-id → CapCell mapping for this agent.
+          additionalProperties:
+            $ref: '#/components/schemas/CapCell'
+          propertyNames:
+            type: string
+        flagged:
+          type:
+          - boolean
+          - 'null'
+        framework:
+          type: string
+        id:
+          type: string
+        lastSeen:
+          type: string
+          description: Human-readable relative-time string (e.g. `"2m ago"`).
+        mode:
+          $ref: '#/components/schemas/AgentMode'
+        name:
+          type: string
+        note:
+          type:
+          - string
+          - 'null'
+        owner:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        trust:
+          type: integer
+          format: int32
+          description: Trust score on a 0–100 scale.
+          minimum: 0
+    CapabilityMatrix:
+      type: object
+      description: |-
+        Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
+        the `CapabilityMatrix` interface in `dashboard/src/api/capability.ts`.
+      required:
+      - resources
+      - agents
+      - policies
+      - sampleCalls
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CapabilityAgent'
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Resource'
+        sampleCalls:
+          type: array
+          items:
+            $ref: '#/components/schemas/SampleCall'
+    ChangeType:
+      type: string
+      description: Classifier for what a proposed-vs-current decision change represents.
+      enum:
+      - newly-blocked
+      - narrowed
+      - unchanged
+      - tightened
+      - false-positive
     CostSummary:
       type: object
       description: JSON representation of the cost/budget summary.
@@ -1535,6 +1672,15 @@ components:
           - string
           - 'null'
           description: Optional reason for the decision.
+    Decision:
+      type: string
+      description: Decision recorded for a single (agent, resource, verb) tuple.
+      enum:
+      - allow
+      - narrow
+      - approval
+      - deny
+      - na
     EdgeListResponse:
       type: object
       description: Paginated list of directed edges for an agent.
@@ -1806,6 +1952,42 @@ components:
         op_id:
           type: string
           description: Operation id from the URL path.
+    Policy:
+      type: object
+      description: A policy version shown in the dashboard Capability Matrix's policies tab.
+      required:
+      - id
+      - name
+      - version
+      - scope
+      - status
+      - hits24h
+      - affects
+      - rules
+      properties:
+        affects:
+          type: array
+          items:
+            type: string
+        hits24h:
+          type: integer
+          format: int64
+          description: Number of times this policy fired in the last 24 hours.
+          minimum: 0
+        id:
+          type: string
+        name:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyRule'
+        scope:
+          type: string
+        status:
+          $ref: '#/components/schemas/PolicyStatus'
+        version:
+          type: string
     PolicyResponse:
       type: object
       description: JSON representation of a governance policy version.
@@ -1835,6 +2017,34 @@ components:
         version:
           type: string
           description: Policy version string.
+    PolicyRule:
+      type: object
+      description: |-
+        A single rule inside a policy — resource, verbs scoped, action, and an
+        optional condition expression.
+      required:
+      - resource
+      - verb
+      - action
+      - condition
+      properties:
+        action:
+          type: string
+        condition:
+          type: string
+        resource:
+          type: string
+        verb:
+          type: array
+          items:
+            $ref: '#/components/schemas/Verb'
+    PolicyStatus:
+      type: string
+      description: Lifecycle status of a policy version in the capability view.
+      enum:
+      - active
+      - proposed
+      - archived
     ProblemDetail:
       type: object
       description: RFC 7807 Problem Details JSON body.
@@ -1932,6 +2142,40 @@ components:
           type: integer
           format: int64
           description: Auto-assigned edge identifier.
+    Resource:
+      type: object
+      description: |-
+        A resource that an agent may interact with — one column family in the
+        dashboard Capability Matrix.
+      required:
+      - id
+      - name
+      - group
+      - paths
+      properties:
+        group:
+          $ref: '#/components/schemas/ResourceGroup'
+          description: Coarse group this resource belongs to.
+        id:
+          type: string
+          description: Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`).
+        name:
+          type: string
+          description: Human-readable display name (e.g. `"Postgres"`).
+        paths:
+          type: array
+          items:
+            type: string
+          description: Globbed paths covered by this resource (e.g. `["pg.public.*"]`).
+    ResourceGroup:
+      type: string
+      description: Coarse group a resource belongs to, used for matrix column headings.
+      enum:
+      - comm
+      - files
+      - data
+      - infra
+      - code
     ResumeResponse:
       type: object
       description: Response from `POST /api/v1/agents/:id/resume`.
@@ -2012,6 +2256,45 @@ components:
           - string
           - 'null'
           description: Team the request was routed to, if known.
+    SampleCall:
+      type: object
+      description: |-
+        A representative call sample shown alongside the matrix to explain the
+        effect of the current (and any proposed) policy.
+      required:
+      - ts
+      - agent
+      - verb
+      - resource
+      - currentDecision
+      properties:
+        agent:
+          type: string
+        changeType:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/ChangeType'
+        currentDecision:
+          $ref: '#/components/schemas/Decision'
+        detail:
+          type:
+          - string
+          - 'null'
+        fpReason:
+          type:
+          - string
+          - 'null'
+          description: Free-form explanation for a `false-positive` change classification.
+        proposedDecision:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Decision'
+        resource:
+          type: string
+        ts:
+          type: string
+        verb:
+          $ref: '#/components/schemas/Verb'
     Scope:
       type: string
       description: |-
@@ -2402,6 +2685,14 @@ components:
         start_time:
           type: string
           description: Start time of the span (ISO 8601).
+    Verb:
+      type: string
+      description: Verb a capability cell scopes its decision to.
+      enum:
+      - read
+      - write
+      - delete
+      - exec
     ViolationPayload:
       oneOf:
       - type: object
@@ -2528,3 +2819,5 @@ tags:
   description: Agent topology — tree, team, lineage, statistics, and mesh edge queries
 - name: ops
   description: Per-operation lifecycle actions (pause / resume / terminate)
+- name: capability
+  description: Dashboard Capability Matrix — agent × resource × verb × decision view
