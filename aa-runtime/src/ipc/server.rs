@@ -675,6 +675,7 @@ mod tests {
             policy_rule: "test-rule".to_string(),
             blocked_action: "FILE_OPERATION".to_string(),
             reason: "blocked".to_string(),
+            latency_ms: 0,
         };
         let event = AuditEvent {
             detail: Some(Detail::Violation(violation)),

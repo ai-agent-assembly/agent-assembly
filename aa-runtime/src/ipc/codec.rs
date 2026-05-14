@@ -366,6 +366,7 @@ mod tests {
             policy_rule: "block-files".to_string(),
             blocked_action: "FILE_OPERATION".to_string(),
             reason: "file access not permitted".to_string(),
+            latency_ms: 0,
         };
 
         let bytes = encode_response(IpcResponse::ViolationAlert(violation)).await;

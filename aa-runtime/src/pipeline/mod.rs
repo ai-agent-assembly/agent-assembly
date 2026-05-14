@@ -411,6 +411,7 @@ mod tests {
                 policy_rule: "test-rule".to_string(),
                 blocked_action: "test-action".to_string(),
                 reason: "test-reason".to_string(),
+                latency_ms: 0,
             })),
             ..Default::default()
         }
@@ -555,6 +556,7 @@ mod tests {
                 policy_rule: "rule".to_string(),
                 blocked_action: "action".to_string(),
                 reason: "reason".to_string(),
+                latency_ms: 0,
             })),
             ..Default::default()
         }
