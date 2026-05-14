@@ -136,14 +136,14 @@ export function EmptyState({ page = 'overview', onCta, onSecondary }: EmptyState
         <div className="state-tag">{c.tag}</div>
         <div className="state-title">{c.title}</div>
         <div className="state-msg">{c.msg}</div>
-        {(c.cta || c.secondary) && (
+        {((c.cta && onCta) || (c.secondary && onSecondary)) && (
           <div className="state-actions">
-            {c.cta && (
+            {c.cta && onCta && (
               <button type="button" className="state-btn state-btn--primary" onClick={onCta}>
                 ▸ {c.cta}
               </button>
             )}
-            {c.secondary && (
+            {c.secondary && onSecondary && (
               <button type="button" className="state-btn" onClick={onSecondary}>
                 {c.secondary}
               </button>
