@@ -11,7 +11,7 @@ const MOCK_EVENTS: TraceEvent[] = [
     type: 'llm_call',
     agent: 'support-agent',
     durationMs: 834,
-    payloadPreview: 'GPT-4o · query user #4521 billing',
+    payloadPreview: 'GPT-4o · query user 4521 billing',
     payload: { model: 'gpt-4o', prompt: 'lookup billing' },
     severity: 'info',
   },
