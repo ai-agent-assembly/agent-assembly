@@ -112,4 +112,22 @@
 
   /* ── Text on solid accent backgrounds (segmented controls, badges) */
   --text-on-accent: #ffffff;
+
+  /* ── Shell extension tokens (referenced by IdentityPage etc.) ── */
+  /* These were previously inline fallbacks in component CSS; defining
+     them globally lets each consumer drop the fallback hex. */
+  --shell-accent: #2563eb;
+  --shell-text: #18181b;
+  --shell-border: #d4d4d8;
+
+  /* ── Primary button (dark CTA surface) ───────────────────── */
+  --button-primary-bg: #1f2937;
+  --button-primary-text: #ffffff;
+
+  /* ── Extended status palette (solid badges + thresholds) ─── */
+  --status-warning-solid: #d97706;
+  --status-caution-solid: #ca8a04;
+
+  /* ── Alert banner (amber-100 bg + amber-800 text) ────────── */
+  --alert-banner-text: #92400e;
 }
