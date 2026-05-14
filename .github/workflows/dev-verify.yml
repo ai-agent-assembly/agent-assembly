@@ -9,6 +9,12 @@ on:
       - ".github/workflows/dev-verify.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   pull_request:
     branches: [master]
     paths:
@@ -17,6 +23,12 @@ on:
       - ".github/workflows/dev-verify.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
 
 jobs:
   dev-verify:

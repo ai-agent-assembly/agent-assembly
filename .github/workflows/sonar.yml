@@ -10,6 +10,12 @@ on:
       - ".github/workflows/sonar.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   pull_request:
     branches: [master]
     paths:
@@ -19,6 +25,12 @@ on:
       - ".github/workflows/sonar.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
 
 jobs:
   sonar:
