@@ -20,10 +20,10 @@ export const ruleFormSchema = z
   .object({
     name: z.string().trim().min(1, 'name is required').max(128, 'name must be ≤ 128 chars'),
     description: z.string().trim().max(500, 'description must be ≤ 500 chars'),
-    metric: z.enum(METRICS, { errorMap: () => ({ message: 'select a metric' }) }),
-    operator: z.enum(OPERATORS, { errorMap: () => ({ message: 'select an operator' }) }),
+    metric: z.enum(METRICS, { message: 'select a metric' }),
+    operator: z.enum(OPERATORS, { message: 'select an operator' }),
     threshold: z
-      .number({ invalid_type_error: 'threshold must be a number' })
+      .number({ message: 'threshold must be a number' })
       .finite('threshold must be a finite number'),
     evaluationWindowSeconds: z.union([z.literal(300), z.literal(900), z.literal(3600)]),
     severity: z.enum(SEVERITIES),
@@ -31,7 +31,7 @@ export const ruleFormSchema = z
       .array(z.string().min(1))
       .min(1, 'at least one destination is required'),
     dedupWindowSeconds: z
-      .number({ invalid_type_error: 'dedup window must be a number' })
+      .number({ message: 'dedup window must be a number' })
       .int('dedup window must be a whole minute')
       .min(0, 'dedup window cannot be negative'),
     suppressionLabels: z
