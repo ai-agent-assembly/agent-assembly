@@ -41,19 +41,19 @@ function mockFetch(tools: ToolStat[]) {
 // ── toolUsageUtils unit tests ─────────────────────────────────────────────────
 
 describe('errorRateColor', () => {
-  it('returns green for rate < 1%', () => {
-    expect(errorRateColor(0)).toBe('#10b981')
-    expect(errorRateColor(0.009)).toBe('#10b981')
+  it('returns the success token for rate < 1%', () => {
+    expect(errorRateColor(0)).toBe('var(--status-success)')
+    expect(errorRateColor(0.009)).toBe('var(--status-success)')
   })
 
-  it('returns amber for rate 1-5%', () => {
-    expect(errorRateColor(0.01)).toBe('#f59e0b')
-    expect(errorRateColor(0.05)).toBe('#f59e0b')
+  it('returns the warning token for rate 1-5%', () => {
+    expect(errorRateColor(0.01)).toBe('var(--status-warning)')
+    expect(errorRateColor(0.05)).toBe('var(--status-warning)')
   })
 
-  it('returns red for rate > 5%', () => {
-    expect(errorRateColor(0.051)).toBe('#ef4444')
-    expect(errorRateColor(1)).toBe('#ef4444')
+  it('returns the danger token for rate > 5%', () => {
+    expect(errorRateColor(0.051)).toBe('var(--status-danger)')
+    expect(errorRateColor(1)).toBe('var(--status-danger)')
   })
 })
 
