@@ -38,8 +38,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               padding: '0.75rem 1rem',
               borderRadius: '0.375rem',
               background:
-                t.variant === 'success' ? '#16a34a' : t.variant === 'error' ? '#dc2626' : '#2563eb',
-              color: '#fff',
+                t.variant === 'success'
+                  ? 'var(--status-success-solid)'
+                  : t.variant === 'error'
+                    ? 'var(--status-danger-solid)'
+                    : 'var(--status-info-solid)',
+              color: 'var(--toast-text)',
               fontSize: '0.875rem',
               maxWidth: '24rem',
             }}
