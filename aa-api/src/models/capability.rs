@@ -29,6 +29,31 @@ pub enum Decision {
     Na,
 }
 
+/// Coarse group a resource belongs to, used for matrix column headings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceGroup {
+    Comm,
+    Files,
+    Data,
+    Infra,
+    Code,
+}
+
+/// A resource that an agent may interact with — one column family in the
+/// dashboard Capability Matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Resource {
+    /// Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`).
+    pub id: String,
+    /// Human-readable display name (e.g. `"Postgres"`).
+    pub name: String,
+    /// Coarse group this resource belongs to.
+    pub group: ResourceGroup,
+    /// Globbed paths covered by this resource (e.g. `["pg.public.*"]`).
+    pub paths: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +79,27 @@ mod tests {
     fn verb_deserializes_lowercase() {
         let v: Verb = serde_json::from_str(r#""exec""#).unwrap();
         assert_eq!(v, Verb::Exec);
+    }
+
+    #[test]
+    fn resource_group_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&ResourceGroup::Comm).unwrap(), r#""comm""#);
+        assert_eq!(serde_json::to_string(&ResourceGroup::Files).unwrap(), r#""files""#);
+        assert_eq!(serde_json::to_string(&ResourceGroup::Infra).unwrap(), r#""infra""#);
+    }
+
+    #[test]
+    fn resource_serializes_fields_in_order() {
+        let r = Resource {
+            id: "pg".to_string(),
+            name: "Postgres".to_string(),
+            group: ResourceGroup::Data,
+            paths: vec!["pg.public.*".to_string(), "pg.public.users".to_string()],
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["id"], "pg");
+        assert_eq!(json["name"], "Postgres");
+        assert_eq!(json["group"], "data");
+        assert_eq!(json["paths"].as_array().unwrap().len(), 2);
     }
 }
