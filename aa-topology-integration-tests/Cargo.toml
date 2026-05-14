@@ -1,0 +1,8 @@
+[package]
+name = "aa-topology-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "End-to-end integration tests for the AAASM topology pipeline (SDK → gateway → REST → CLI). Test-only crate."
