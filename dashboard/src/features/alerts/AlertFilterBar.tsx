@@ -23,7 +23,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
         gap: '0.75rem',
         alignItems: 'center',
         padding: '0.75rem 0',
-        borderBottom: '1px solid #e5e7eb',
+        borderBottom: '1px solid var(--surface-card-border)',
         fontSize: '0.875rem',
       }}
     >
@@ -31,7 +31,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
         data-testid="alerts-filter-severity"
         style={{ display: 'flex', gap: '0.25rem', border: 'none', padding: 0 }}
       >
-        <legend style={{ color: '#6b7280', marginRight: '0.5rem' }}>Severity</legend>
+        <legend style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>Severity</legend>
         {ALL_SEVERITIES.map((sev) => {
           const active = value.severities.includes(sev)
           return (
@@ -44,9 +44,9 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
               style={{
                 padding: '2px 8px',
                 borderRadius: '4px',
-                border: '1px solid #d1d5db',
-                background: active ? '#1f2937' : '#fff',
-                color: active ? '#fff' : '#1f2937',
+                border: '1px solid var(--form-input-border)',
+                background: active ? 'var(--button-primary-bg)' : 'var(--surface-card)',
+                color: active ? 'var(--text-on-accent)' : 'var(--button-primary-bg)',
                 cursor: 'pointer',
                 fontSize: '0.75rem',
               }}
@@ -61,7 +61,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
         data-testid="alerts-filter-status"
         style={{ display: 'flex', gap: '0.25rem', border: 'none', padding: 0 }}
       >
-        <legend style={{ color: '#6b7280', marginRight: '0.5rem' }}>Status</legend>
+        <legend style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>Status</legend>
         {ALL_STATUSES.map((st) => {
           const active = value.statuses.includes(st)
           return (
@@ -74,9 +74,9 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
               style={{
                 padding: '2px 8px',
                 borderRadius: '4px',
-                border: '1px solid #d1d5db',
-                background: active ? '#1f2937' : '#fff',
-                color: active ? '#fff' : '#1f2937',
+                border: '1px solid var(--form-input-border)',
+                background: active ? 'var(--button-primary-bg)' : 'var(--surface-card)',
+                color: active ? 'var(--text-on-accent)' : 'var(--button-primary-bg)',
                 cursor: 'pointer',
                 fontSize: '0.75rem',
               }}
@@ -88,7 +88,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
       </fieldset>
 
       <label
-        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: '#6b7280' }}
+        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
         Agent
         <input
@@ -99,7 +99,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
           onChange={(e) => onChange({ ...value, agentQuery: e.target.value })}
           style={{
             padding: '2px 8px',
-            border: '1px solid #d1d5db',
+            border: '1px solid var(--form-input-border)',
             borderRadius: '4px',
             fontSize: '0.75rem',
             minWidth: '12rem',
@@ -108,7 +108,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
       </label>
 
       <label
-        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: '#6b7280' }}
+        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
         Range
         <select
@@ -117,7 +117,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
           onChange={(e) => onChange({ ...value, timeRange: e.target.value as TimeRangePreset })}
           style={{
             padding: '2px 8px',
-            border: '1px solid #d1d5db',
+            border: '1px solid var(--form-input-border)',
             borderRadius: '4px',
             fontSize: '0.75rem',
           }}
@@ -133,14 +133,14 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
       {value.timeRange === 'custom' && (
         <div
           data-testid="alerts-filter-custom"
-          style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', color: '#6b7280' }}
+          style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', color: 'var(--text-muted)' }}
         >
           <input
             type="datetime-local"
             data-testid="alerts-filter-custom-from"
             value={value.customFrom ?? ''}
             onChange={(e) => onChange({ ...value, customFrom: e.target.value || null })}
-            style={{ padding: '2px 6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
+            style={{ padding: '2px 6px', border: '1px solid var(--form-input-border)', borderRadius: '4px' }}
           />
           <span>→</span>
           <input
@@ -148,7 +148,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
             data-testid="alerts-filter-custom-to"
             value={value.customTo ?? ''}
             onChange={(e) => onChange({ ...value, customTo: e.target.value || null })}
-            style={{ padding: '2px 6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
+            style={{ padding: '2px 6px', border: '1px solid var(--form-input-border)', borderRadius: '4px' }}
           />
         </div>
       )}
