@@ -50,6 +50,8 @@ pub fn v1_router() -> Router {
         .route("/approvals/{id}/reject", post(approvals::reject_action))
         // Costs
         .route("/costs", get(costs::get_cost_summary))
+        // Capability matrix (dashboard) — AAASM-1366
+        .route("/capability/matrix", get(capability::get_matrix))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
         // Dev tool webhooks
