@@ -189,15 +189,15 @@
 }
 
 .onb-term {
-  background: #0d0e10;
-  color: #d4d4d4;
+  background: var(--term-bg);
+  color: var(--term-text);
   border-radius: 3px;
   padding: 14px 16px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
   line-height: 1.55;
   min-height: 200px;
-  border: 1px solid #1a1b1d;
+  border: 1px solid var(--term-border);
   overflow: hidden;
   margin-top: 8px;
 }
@@ -207,11 +207,11 @@
   word-break: break-word;
 }
 
-.onb-term-prompt { color: #4a9eff; user-select: none; }
-.onb-term-cmd { color: #f0f0f0; }
-.onb-term-out { color: #a0a0a0; }
-.onb-term-ok { color: #5fd17a; }
-.onb-term-faint { color: #6e6e6e; }
+.onb-term-prompt { color: var(--term-prompt); user-select: none; }
+.onb-term-cmd { color: var(--term-cmd); }
+.onb-term-out { color: var(--term-out); }
+.onb-term-ok { color: var(--term-ok); }
+.onb-term-faint { color: var(--term-faint); }
 
 .onb-term-meta {
   display: flex;
@@ -288,8 +288,8 @@
 .onb-id-out {
   margin-top: 20px;
   padding: 14px 16px;
-  background: #0d0e10;
-  color: #d4d4d4;
+  background: var(--term-bg);
+  color: var(--term-text);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   line-height: 1.7;
@@ -299,9 +299,9 @@
 }
 
 .onb-id-row { display: flex; gap: 10px; }
-.onb-id-key { color: #6e94c2; min-width: 90px; }
-.onb-id-val { color: #d4d4d4; word-break: break-all; }
-.onb-id-val.is-fp { color: #5fd17a; }
+.onb-id-key { color: var(--term-key); min-width: 90px; }
+.onb-id-val { color: var(--term-text); word-break: break-all; }
+.onb-id-val.is-fp { color: var(--term-ok); }
 
 .onb-id-hint {
   font-family: 'JetBrains Mono', monospace;
@@ -485,8 +485,8 @@
 }
 
 .onb-enroll-pings {
-  background: #0d0e10;
-  color: #d4d4d4;
+  background: var(--term-bg);
+  color: var(--term-text);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   padding: 12px 14px;
@@ -495,8 +495,8 @@
   overflow-y: auto;
 }
 
-.onb-enroll-pings-empty { color: #6e6e6e; padding: 4px 0; }
+.onb-enroll-pings-empty { color: var(--term-faint); padding: 4px 0; }
 .onb-enroll-ping { padding: 2px 0; }
-.onb-ping-time { color: #6e94c2; }
-.onb-ping-action { color: #d4d4d4; }
-.onb-ping-tag { color: #5fd17a; }
+.onb-ping-time { color: var(--term-key); }
+.onb-ping-action { color: var(--term-text); }
+.onb-ping-tag { color: var(--term-ok); }
