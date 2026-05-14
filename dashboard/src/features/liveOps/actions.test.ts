@@ -100,4 +100,14 @@ describe('liveOps/actions', () => {
     fetchSpy.mockResolvedValue(errResponse(409, 'op already terminated'))
     await expect(terminateOp('op-1')).rejects.toThrow(/op already terminated/)
   })
+
+  it('sends Content-Type: application/json on every request', async () => {
+    fetchSpy.mockResolvedValue(okResponse())
+    await pauseOp('op-1')
+    await resumeOp('op-1')
+    await terminateOp('op-1')
+    for (const [, init] of fetchSpy.mock.calls) {
+      expect(init.headers['Content-Type']).toBe('application/json')
+    }
+  })
 })

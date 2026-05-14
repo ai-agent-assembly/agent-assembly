@@ -221,4 +221,91 @@ describe('useLiveOpsStream', () => {
     unmount()
     expect(ws.readyState).toBe(MockWebSocket.CLOSED)
   })
+
+  it('appends ?token=… to the WS URL when aa_token is present in localStorage', () => {
+    const originalGet = Storage.prototype.getItem
+    Storage.prototype.getItem = function (key: string) {
+      return key === 'aa_token' ? 'jwt-abc' : originalGet.call(this, key)
+    }
+    try {
+      renderHook(() => useLiveOpsStream(opts))
+      expect(MockWebSocket.instances[0].url).toContain('types=violation')
+      expect(MockWebSocket.instances[0].url).toContain('token=jwt-abc')
+    } finally {
+      Storage.prototype.getItem = originalGet
+    }
+  })
+
+  it('caps reconnect backoff at maxBackoffMs', () => {
+    renderHook(() =>
+      useLiveOpsStream({
+        ...opts,
+        initialBackoffMs: 100,
+        maxBackoffMs: 250,
+        maxReconnectAttempts: 5,
+      }),
+    )
+    // 1st backoff: 100 ms (2^0 * 100)
+    act(() => {
+      MockWebSocket.instances[0].serverClose()
+      vi.advanceTimersByTime(100)
+    })
+    expect(MockWebSocket.instances).toHaveLength(2)
+
+    // 2nd backoff: 200 ms (2^1 * 100) — still under cap
+    act(() => {
+      MockWebSocket.instances[1].serverClose()
+      vi.advanceTimersByTime(200)
+    })
+    expect(MockWebSocket.instances).toHaveLength(3)
+
+    // 3rd backoff would be 400 ms (2^2 * 100) but is clamped to 250 ms.
+    act(() => {
+      MockWebSocket.instances[2].serverClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(249)
+    })
+    expect(MockWebSocket.instances).toHaveLength(3)
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(MockWebSocket.instances).toHaveLength(4)
+  })
+
+  it('successful open resets the backoff counter so the next close starts at initialBackoffMs', () => {
+    renderHook(() => useLiveOpsStream(opts))
+
+    // Drive one backoff escalation: close → reconnect waits 100ms.
+    act(() => {
+      MockWebSocket.instances[0].serverClose()
+      vi.advanceTimersByTime(100)
+    })
+    expect(MockWebSocket.instances).toHaveLength(2)
+
+    // Second close BEFORE the second socket has opened — backoff is now 200ms.
+    act(() => {
+      MockWebSocket.instances[1].serverClose()
+      vi.advanceTimersByTime(200)
+    })
+    expect(MockWebSocket.instances).toHaveLength(3)
+
+    // Now let the third socket actually open — this should reset the counter.
+    act(() => {
+      MockWebSocket.instances[2].open()
+    })
+
+    // Subsequent close should reconnect after initialBackoffMs again (100), not 400.
+    act(() => {
+      MockWebSocket.instances[2].serverClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(99)
+    })
+    expect(MockWebSocket.instances).toHaveLength(3)
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(MockWebSocket.instances).toHaveLength(4)
+  })
 })
