@@ -19,7 +19,7 @@ function TrustGauge({ score }: { score: number | null }) {
     )
   }
   const clamped = Math.max(0, Math.min(100, score))
-  const tone = clamped >= 80 ? '#22592a' : clamped >= 60 ? '#8a5a00' : '#b8291e'
+  const tone = clamped >= 80 ? 'var(--ok)' : clamped >= 60 ? 'var(--warn)' : 'var(--danger)'
   const dash = (clamped / 100) * 125.6
   return (
     <div className="ad-identity__trust">
