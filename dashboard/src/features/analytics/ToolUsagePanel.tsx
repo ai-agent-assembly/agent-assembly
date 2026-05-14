@@ -54,7 +54,7 @@ export function ToolUsagePanel() {
           >
             <XAxis
               type="number"
-              tick={{ fontSize: 11, fill: '#6b7280' }}
+              tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
               axisLine={false}
               tickLine={false}
             />
@@ -62,7 +62,7 @@ export function ToolUsagePanel() {
               type="category"
               dataKey="name"
               width={130}
-              tick={{ fontSize: 12, fill: '#374151' }}
+              tick={{ fontSize: 12, fill: 'var(--text-secondary)' }}
               axisLine={false}
               tickLine={false}
             />
