@@ -120,6 +120,38 @@ pub struct Policy {
     pub rules: Vec<PolicyRule>,
 }
 
+/// Classifier for what a proposed-vs-current decision change represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChangeType {
+    NewlyBlocked,
+    Narrowed,
+    Unchanged,
+    Tightened,
+    FalsePositive,
+}
+
+/// A representative call sample shown alongside the matrix to explain the
+/// effect of the current (and any proposed) policy.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SampleCall {
+    pub ts: String,
+    pub agent: String,
+    pub verb: Verb,
+    pub resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub current_decision: Decision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_decision: Option<Decision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_type: Option<ChangeType>,
+    /// Free-form explanation for a `false-positive` change classification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fp_reason: Option<String>,
+}
+
 /// One agent row in the dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -243,6 +275,27 @@ mod tests {
         assert_eq!(json["hits24h"], 1234, "field must be `hits24h`, not `hits_24h`");
         assert!(json.get("hits_24h").is_none());
         assert_eq!(json["rules"][0]["verb"][0], "write");
+    }
+
+    #[test]
+    fn sample_call_serializes_change_type_kebab_case() {
+        let call = SampleCall {
+            ts: "2026-04-23T14:23:01Z".to_string(),
+            agent: "support-triage".to_string(),
+            verb: Verb::Write,
+            resource: "pg".to_string(),
+            detail: Some("UPDATE users SET ...".to_string()),
+            current_decision: Decision::Approval,
+            proposed_decision: Some(Decision::Deny),
+            change_type: Some(ChangeType::NewlyBlocked),
+            fp_reason: None,
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(json["currentDecision"], "approval");
+        assert_eq!(json["proposedDecision"], "deny");
+        assert_eq!(json["changeType"], "newly-blocked");
+        assert!(json.get("fpReason").is_none());
+        assert!(json.get("change_type").is_none(), "snake_case must not appear");
     }
 
     #[test]
