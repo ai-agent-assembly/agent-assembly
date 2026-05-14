@@ -30,7 +30,7 @@ function SkeletonRows({ cols }: { cols: number }) {
                 style={{
                   display: 'block',
                   height: '1rem',
-                  background: '#e5e7eb',
+                  background: 'var(--surface-skeleton-shimmer)',
                   borderRadius: '4px',
                 }}
               />
@@ -43,8 +43,13 @@ function SkeletonRows({ cols }: { cols: number }) {
 }
 
 function BurnCell({ pct }: { pct: number | null }) {
-  if (pct == null) return <span style={{ color: '#6b7280' }}>—</span>
-  const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#ca8a04' : '#16a34a'
+  if (pct == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>
+  const color =
+    pct >= 90
+      ? 'var(--status-danger-solid)'
+      : pct >= 70
+        ? 'var(--status-caution-solid)'
+        : 'var(--status-success-solid)'
   return (
     <span style={{ color, fontFamily: 'JetBrains Mono, monospace' }}>
       {pct.toFixed(1)}%
@@ -71,7 +76,7 @@ const columns = [
   columnHelper.display({
     id: 'created_at',
     header: 'Created At',
-    cell: () => <span style={{ color: '#6b7280' }}>—</span>,
+    cell: () => <span style={{ color: 'var(--text-muted)' }}>—</span>,
   }),
 ]
 
@@ -118,7 +123,7 @@ export function TeamsPage() {
       {isError && (
         <div
           data-testid="teams-error"
-          style={{ color: '#dc2626', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
+          style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
         >
           <span>Failed to load teams.</span>
           <button onClick={() => void overviewQuery.refetch()}>Retry</button>
@@ -134,18 +139,18 @@ export function TeamsPage() {
           onChange={e => setSearch(e.target.value)}
           style={{
             padding: '0.4rem 0.6rem',
-            border: '1px solid #d1d5db',
+            border: '1px solid var(--form-input-border)',
             borderRadius: '4px',
             minWidth: '16rem',
           }}
         />
-        <span data-testid="teams-count" style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+        <span data-testid="teams-count" style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
           {totalRows} team{totalRows === 1 ? '' : 's'}
         </span>
       </div>
 
       {!isLoading && !isError && rows.length === 0 && (
-        <p data-testid="teams-empty" style={{ color: '#6b7280' }}>
+        <p data-testid="teams-empty" style={{ color: 'var(--text-muted)' }}>
           No teams registered yet.
         </p>
       )}
@@ -160,7 +165,7 @@ export function TeamsPage() {
                   style={{
                     textAlign: 'left',
                     padding: '0.5rem',
-                    borderBottom: '2px solid #e5e7eb',
+                    borderBottom: '2px solid var(--surface-card-border)',
                     cursor: header.column.getCanSort() ? 'pointer' : undefined,
                   }}
                   onClick={header.column.getToggleSortingHandler()}
@@ -181,7 +186,7 @@ export function TeamsPage() {
             <SkeletonRows cols={columns.length} />
           ) : (
             table.getRowModel().rows.map(row => (
-              <tr key={row.id} data-testid="team-row" style={{ borderBottom: '1px solid #f3f4f6' }}>
+              <tr key={row.id} data-testid="team-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
                 {row.getVisibleCells().map(cell => (
                   <td key={cell.id} style={{ padding: '0.5rem' }}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -205,7 +210,7 @@ export function TeamsPage() {
           >
             ←
           </button>
-          <span style={{ fontSize: '0.875rem', color: '#374151' }}>
+          <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
             Page {pageIndex + 1} of {pageCount}
           </span>
           <button
