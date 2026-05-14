@@ -11,6 +11,7 @@ aa-core = { path = "../aa-core" }
 aa-devtool       = { path = "../aa-devtool" }
 aa-devtool-saas  = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }
+aa-proto = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws"] }

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../../api/generated/schema'
-import type { LiveOperation } from './types'
+import type { LiveOperation, OperationStatus } from './types'
+import { OPERATION_STATUSES } from './types'
 
 type GovernanceEvent = components['schemas']['GovernanceEvent']
+type ViolationPayload = components['schemas']['ViolationPayload']
+type ViolationAuditPayload = Extract<ViolationPayload, { kind: 'audit' }>
 
 export type StreamStatus = 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -42,16 +45,29 @@ function buildWsUrl(): string {
   return `${wsBase}/api/v1/ws/events?${query}`
 }
 
+function isAuditPayload(p: unknown): p is ViolationAuditPayload {
+  return typeof p === 'object' && p !== null && (p as { kind?: unknown }).kind === 'audit'
+}
+
+function coerceStatus(raw: string | null | undefined): OperationStatus {
+  if (raw && (OPERATION_STATUSES as readonly string[]).includes(raw)) {
+    return raw as OperationStatus
+  }
+  return 'running'
+}
+
 function mapEvent(event: GovernanceEvent): LiveOperation | null {
   if (event.event_type !== 'violation') return null
+  const audit = isAuditPayload(event.payload) ? event.payload : null
   return {
     id: String(event.id),
     agent: event.agent_id,
-    opType: 'unknown',
-    resource: '',
-    status: 'running',
+    team: audit?.team ?? undefined,
+    opType: audit?.op_type ?? 'unknown',
+    resource: audit?.resource ?? '',
+    status: coerceStatus(audit?.status),
     startedAt: event.timestamp,
-    latencyMs: 0,
+    latencyMs: audit?.latency_ms ?? 0,
   }
 }
 

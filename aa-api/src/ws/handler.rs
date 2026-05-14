@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::models::ws_payloads::{EventPayload, ViolationPayload};
 use crate::models::{EventType, GovernanceEvent};
 use crate::state::AppState;
 use crate::ws::params::WsQueryParams;
@@ -143,7 +144,10 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
                     id,
                     event_type: EventType::Violation,
                     agent_id: extract_pipeline_agent_id(&pipeline_ev),
-                    payload: serde_json::to_value(format!("{pipeline_ev:?}")).unwrap_or_default(),
+                    payload: serde_json::to_value(EventPayload::Violation(
+                        build_violation_payload(&pipeline_ev),
+                    ))
+                    .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 })
             }
@@ -211,6 +215,111 @@ fn extract_pipeline_agent_id(ev: &aa_runtime::pipeline::event::PipelineEvent) ->
     }
 }
 
+/// Build a structured `ViolationPayload` from a `PipelineEvent` so the
+/// Live Ops dashboard receives op-level metadata (op type, target
+/// resource, lifecycle status, etc.) rather than a Debug-format string.
+///
+/// `latency_ms` is sourced from the relevant `Detail` variant when
+/// available (LLM / tool / network / process); `FileOp`, `Violation`,
+/// and `Approval` details don't carry an end-to-end latency and leave
+/// the field as `None`. `call_stack` is intentionally absent — that
+/// requires a proto-level addition tracked elsewhere.
+fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> ViolationPayload {
+    use aa_runtime::pipeline::event::{EventSource, PipelineEvent};
+
+    match ev {
+        PipelineEvent::Audit(enriched) => {
+            let source = match enriched.source {
+                EventSource::Sdk => "sdk",
+                EventSource::EBpf => "ebpf",
+                EventSource::Proxy => "proxy",
+            }
+            .to_string();
+
+            let op_type = action_type_label(enriched.inner.action_type);
+            let status = decision_label(enriched.inner.decision);
+            let team = if enriched.inner.team_id.is_empty() {
+                None
+            } else {
+                Some(enriched.inner.team_id.clone())
+            };
+            let (resource, latency_ms) = detail_op_fields(enriched.inner.detail.as_ref());
+
+            ViolationPayload::Audit {
+                source,
+                received_at_ms: enriched.received_at_ms,
+                sequence_number: enriched.sequence_number,
+                op_type,
+                resource,
+                status,
+                latency_ms,
+                team,
+            }
+        }
+        PipelineEvent::LayerDegradation(info) => ViolationPayload::LayerDegradation {
+            layer: info.layer.clone(),
+            reason: info.reason.clone(),
+            remaining_layers: info.remaining_layers.clone(),
+        },
+    }
+}
+
+/// Map the proto `ActionType` enum (raw `i32`) to the dashboard's
+/// op-type string. Returns `None` when the value is unspecified or
+/// outside the enum's known range so the field is omitted from JSON.
+fn action_type_label(raw: i32) -> Option<String> {
+    use aa_proto::assembly::common::v1::ActionType;
+    let action_type = ActionType::try_from(raw).ok()?;
+    let label = match action_type {
+        ActionType::LlmCall => "llm_call",
+        ActionType::ToolCall => "tool_call",
+        ActionType::FileOperation => "file_op",
+        ActionType::NetworkCall => "network",
+        ActionType::ProcessExec => "process",
+        ActionType::AgentSpawn => "spawn",
+        ActionType::ActionUnspecified => return None,
+    };
+    Some(label.to_string())
+}
+
+/// Map the proto `Decision` enum (raw `i32`) to the dashboard's
+/// `OperationStatus` discriminant. Treats Allow / Redact as `running`
+/// (the action proceeded); Deny → `blocked`; Pending → `pending`.
+fn decision_label(raw: i32) -> Option<String> {
+    use aa_proto::assembly::common::v1::Decision;
+    let decision = Decision::try_from(raw).ok()?;
+    let label = match decision {
+        Decision::Allow | Decision::Redact => "running",
+        Decision::Deny => "blocked",
+        Decision::Pending => "pending",
+        Decision::Unspecified => return None,
+    };
+    Some(label.to_string())
+}
+
+/// Extract per-detail resource + latency fields. The resource label
+/// is the most-identifying string per variant (model / tool name /
+/// path / host / command / blocked action); latency comes from the
+/// variants that carry an end-to-end duration.
+fn detail_op_fields(
+    detail: Option<&aa_proto::assembly::audit::v1::audit_event::Detail>,
+) -> (Option<String>, Option<u64>) {
+    use aa_proto::assembly::audit::v1::audit_event::Detail;
+
+    let Some(detail) = detail else {
+        return (None, None);
+    };
+    match detail {
+        Detail::LlmCall(d) => (Some(d.model.clone()), u64::try_from(d.latency_ms).ok()),
+        Detail::ToolCall(d) => (Some(d.tool_name.clone()), u64::try_from(d.latency_ms).ok()),
+        Detail::FileOp(d) => (Some(d.path.clone()), None),
+        Detail::Network(d) => (Some(format!("{}:{}", d.host, d.port)), u64::try_from(d.latency_ms).ok()),
+        Detail::Process(d) => (Some(d.command.clone()), u64::try_from(d.duration_ms).ok()),
+        Detail::Violation(d) => (Some(d.blocked_action.clone()), None),
+        Detail::Approval(_) => (None, None),
+    }
+}
+
 /// Serialise a governance event and send it as a WebSocket text frame.
 async fn send_event(
     sender: &std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>,
@@ -223,4 +332,261 @@ async fn send_event(
         .send(Message::Text(json.into()))
         .await
         .map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_proto::assembly::audit::v1::{
+        audit_event::Detail, AuditEvent, FileOpDetail, LayerDegradationEvent, LlmCallDetail, NetworkCallDetail,
+        PolicyViolation, ProcessExecDetail, ToolCallDetail,
+    };
+    use aa_proto::assembly::common::v1::{ActionType, Decision};
+    use aa_runtime::pipeline::event::{EnrichedEvent, EventSource, LayerDegradationInfo, PipelineEvent};
+    use std::boxed::Box;
+
+    fn make_audit_event(
+        action_type: ActionType,
+        decision: Decision,
+        team_id: &str,
+        detail: Option<Detail>,
+    ) -> AuditEvent {
+        AuditEvent {
+            event_id: "evt-1".into(),
+            agent_id: None,
+            occurred_at: None,
+            action_type: action_type.into(),
+            decision: decision.into(),
+            trace_id: "trace-1".into(),
+            span_id: "span-1".into(),
+            parent_span_id: String::new(),
+            detail,
+            labels: Default::default(),
+            root_agent_id: String::new(),
+            parent_agent_id: String::new(),
+            team_id: team_id.into(),
+            session_id: String::new(),
+            delegation_reason: String::new(),
+            spawned_by_tool: String::new(),
+            depth: 0,
+        }
+    }
+
+    fn pipeline_audit(
+        action_type: ActionType,
+        decision: Decision,
+        team_id: &str,
+        detail: Option<Detail>,
+    ) -> PipelineEvent {
+        PipelineEvent::Audit(Box::new(EnrichedEvent {
+            inner: make_audit_event(action_type, decision, team_id, detail),
+            received_at_ms: 1_700_000_000_000,
+            source: EventSource::Sdk,
+            agent_id: "support-agent".into(),
+            connection_id: 0,
+            sequence_number: 42,
+        }))
+    }
+
+    /// Test-only flattened view of the `Audit` variant for ergonomic asserts.
+    struct AuditFields {
+        source: String,
+        sequence_number: u64,
+        op_type: Option<String>,
+        resource: Option<String>,
+        status: Option<String>,
+        latency_ms: Option<u64>,
+        team: Option<String>,
+    }
+
+    fn unwrap_audit_fields(p: ViolationPayload) -> AuditFields {
+        match p {
+            ViolationPayload::Audit {
+                source,
+                received_at_ms: _,
+                sequence_number,
+                op_type,
+                resource,
+                status,
+                latency_ms,
+                team,
+            } => AuditFields {
+                source,
+                sequence_number,
+                op_type,
+                resource,
+                status,
+                latency_ms,
+                team,
+            },
+            ViolationPayload::LayerDegradation { .. } => panic!("expected Audit variant"),
+        }
+    }
+
+    #[test]
+    fn audit_llm_call_maps_model_and_latency() {
+        let ev = pipeline_audit(
+            ActionType::LlmCall,
+            Decision::Allow,
+            "support",
+            Some(Detail::LlmCall(LlmCallDetail {
+                model: "gpt-4o".into(),
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                latency_ms: 834,
+                pii_detected: false,
+                pii_redacted: false,
+                provider: "openai".into(),
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.source, "sdk");
+        assert_eq!(fields.sequence_number, 42);
+        assert_eq!(fields.op_type.as_deref(), Some("llm_call"));
+        assert_eq!(fields.resource.as_deref(), Some("gpt-4o"));
+        assert_eq!(fields.status.as_deref(), Some("running"));
+        assert_eq!(fields.latency_ms, Some(834));
+        assert_eq!(fields.team.as_deref(), Some("support"));
+    }
+
+    #[test]
+    fn audit_tool_call_maps_tool_name() {
+        let ev = pipeline_audit(
+            ActionType::ToolCall,
+            Decision::Deny,
+            "",
+            Some(Detail::ToolCall(ToolCallDetail {
+                tool_name: "web_search".into(),
+                tool_source: "mcp".into(),
+                latency_ms: 41,
+                succeeded: false,
+                error_message: "blocked by policy".into(),
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.op_type.as_deref(), Some("tool_call"));
+        assert_eq!(fields.resource.as_deref(), Some("web_search"));
+        assert_eq!(fields.status.as_deref(), Some("blocked"));
+        assert_eq!(fields.latency_ms, Some(41));
+        assert_eq!(fields.team, None, "empty team_id should serialize as None");
+    }
+
+    #[test]
+    fn audit_file_op_maps_path_no_latency() {
+        let ev = pipeline_audit(
+            ActionType::FileOperation,
+            Decision::Allow,
+            "",
+            Some(Detail::FileOp(FileOpDetail {
+                operation: "read".into(),
+                path: "/etc/passwd".into(),
+                bytes: 1024,
+                source: "sdk_hook".into(),
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.op_type.as_deref(), Some("file_op"));
+        assert_eq!(fields.resource.as_deref(), Some("/etc/passwd"));
+        assert_eq!(fields.latency_ms, None);
+    }
+
+    #[test]
+    fn audit_network_call_maps_host_port() {
+        let ev = pipeline_audit(
+            ActionType::NetworkCall,
+            Decision::Allow,
+            "",
+            Some(Detail::Network(NetworkCallDetail {
+                host: "example.com".into(),
+                port: 443,
+                protocol: "https".into(),
+                latency_ms: 220,
+                status_code: 200,
+                succeeded: true,
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.resource.as_deref(), Some("example.com:443"));
+        assert_eq!(fields.latency_ms, Some(220));
+    }
+
+    #[test]
+    fn audit_process_exec_maps_command_and_duration() {
+        let ev = pipeline_audit(
+            ActionType::ProcessExec,
+            Decision::Allow,
+            "",
+            Some(Detail::Process(ProcessExecDetail {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo hi".into()],
+                exit_code: 0,
+                duration_ms: 12,
+                succeeded: true,
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.op_type.as_deref(), Some("process"));
+        assert_eq!(fields.resource.as_deref(), Some("/bin/sh"));
+        assert_eq!(fields.latency_ms, Some(12));
+    }
+
+    #[test]
+    fn audit_policy_violation_resource_is_blocked_action() {
+        let ev = pipeline_audit(
+            ActionType::ToolCall,
+            Decision::Deny,
+            "",
+            Some(Detail::Violation(PolicyViolation {
+                policy_rule: "no-secrets".into(),
+                blocked_action: "read /etc/shadow".into(),
+                reason: "policy denied".into(),
+            })),
+        );
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.resource.as_deref(), Some("read /etc/shadow"));
+        assert_eq!(fields.status.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn audit_pending_decision_maps_to_pending_status() {
+        let ev = pipeline_audit(ActionType::ToolCall, Decision::Pending, "", None);
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.status.as_deref(), Some("pending"));
+    }
+
+    #[test]
+    fn audit_redact_decision_maps_to_running_status() {
+        let ev = pipeline_audit(ActionType::ToolCall, Decision::Redact, "", None);
+        let fields = unwrap_audit_fields(build_violation_payload(&ev));
+        assert_eq!(fields.status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn layer_degradation_passes_through() {
+        let _unused = LayerDegradationEvent {
+            agent_id: String::new(),
+            session_id: String::new(),
+            timestamp_ns: 0,
+            layer: String::new(),
+            reason: String::new(),
+            remaining_layers: vec![],
+        };
+        let ev = PipelineEvent::LayerDegradation(LayerDegradationInfo {
+            layer: "ebpf".into(),
+            reason: "uprobe attach failed".into(),
+            remaining_layers: vec!["proxy".into(), "sdk".into()],
+        });
+        match build_violation_payload(&ev) {
+            ViolationPayload::LayerDegradation {
+                layer,
+                reason,
+                remaining_layers,
+            } => {
+                assert_eq!(layer, "ebpf");
+                assert_eq!(reason, "uprobe attach failed");
+                assert_eq!(remaining_layers, vec!["proxy".to_string(), "sdk".to_string()]);
+            }
+            ViolationPayload::Audit { .. } => panic!("expected LayerDegradation variant"),
+        }
+    }
 }

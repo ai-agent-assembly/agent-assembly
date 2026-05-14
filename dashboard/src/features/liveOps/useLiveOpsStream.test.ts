@@ -51,7 +51,17 @@ const VIOLATION_EVENT = {
   agent_id: 'support-agent',
   event_type: 'violation',
   timestamp: '2026-05-13T14:23:01Z',
-  payload: { kind: 'audit', received_at_ms: 0, sequence_number: 1, source: 'sdk' },
+  payload: {
+    kind: 'audit',
+    received_at_ms: 0,
+    sequence_number: 1,
+    source: 'sdk',
+    op_type: 'tool_call',
+    resource: 'web_search',
+    status: 'running',
+    latency_ms: 41,
+    team: 'support',
+  },
 }
 
 const opts = {
@@ -100,6 +110,72 @@ describe('useLiveOpsStream', () => {
       startedAt: '2026-05-13T14:23:01Z',
       status: 'running',
     })
+  })
+
+  it('populates every LiveOperation field from the structured payload', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit(VIOLATION_EVENT)
+    })
+    expect(result.current.ops[0]).toEqual({
+      id: '1',
+      agent: 'support-agent',
+      team: 'support',
+      opType: 'tool_call',
+      resource: 'web_search',
+      status: 'running',
+      startedAt: '2026-05-13T14:23:01Z',
+      latencyMs: 41,
+    })
+  })
+
+  it('falls back to safe defaults when the payload is missing op fields', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        payload: { kind: 'audit', received_at_ms: 0, sequence_number: 1, source: 'sdk' },
+      })
+    })
+    expect(result.current.ops[0]).toMatchObject({
+      opType: 'unknown',
+      resource: '',
+      status: 'running',
+      latencyMs: 0,
+      team: undefined,
+    })
+  })
+
+  it('coerces an unknown status string to running', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        payload: { ...VIOLATION_EVENT.payload, status: 'something-else' },
+      })
+    })
+    expect(result.current.ops[0]?.status).toBe('running')
+  })
+
+  it('maps blocked / pending status values through unchanged', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        id: 10,
+        payload: { ...VIOLATION_EVENT.payload, status: 'blocked' },
+      })
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        id: 11,
+        payload: { ...VIOLATION_EVENT.payload, status: 'pending' },
+      })
+    })
+    expect(result.current.ops.map((o) => o.status)).toEqual(['pending', 'blocked'])
   })
 
   it('ignores non-violation event types', () => {

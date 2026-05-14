@@ -2307,10 +2307,36 @@ components:
             type: string
             enum:
             - audit
+          latency_ms:
+            type:
+            - integer
+            - 'null'
+            format: int64
+            description: |-
+              Observed latency in milliseconds. Optional today — populated once
+              the audit pipeline tracks per-action duration end-to-end.
+            minimum: 0
+          op_type:
+            type:
+            - string
+            - 'null'
+            description: |-
+              Operation kind from the underlying `AuditEvent.action_type` — one of
+              `"llm_call"`, `"tool_call"`, `"file_op"`, `"network"`, `"process"`,
+              `"spawn"`, or `"unknown"` when unspecified. Drives the Live Ops
+              dashboard's per-row "op type" column.
           received_at_ms:
             type: integer
             format: int64
             description: Unix milliseconds when the pipeline received the event.
+          resource:
+            type:
+            - string
+            - 'null'
+            description: |-
+              Target resource derived from the action's `detail` variant — e.g.
+              `LLMCallDetail.model_name`, `ToolCallDetail.tool_name`,
+              `FileOpDetail.path`. Drives the Live Ops "resource" column.
           sequence_number:
             type: integer
             format: int64
@@ -2319,6 +2345,21 @@ components:
           source:
             type: string
             description: 'Source that delivered the event: `"sdk"`, `"ebpf"`, or `"proxy"`.'
+          status:
+            type:
+            - string
+            - 'null'
+            description: |-
+              Operation lifecycle status mapped from the proto `Decision`:
+              `"running"` (allow / redact), `"blocked"` (deny), `"pending"`
+              (awaiting human approval).
+          team:
+            type:
+            - string
+            - 'null'
+            description: |-
+              Team identifier from the agent's lineage context. Empty for
+              legacy events and root agents without a team set.
       - type: object
         description: An interception layer became unavailable.
         required:

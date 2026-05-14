@@ -10,6 +10,7 @@ dependencies = [
  "aa-devtool",
  "aa-devtool-saas",
  "aa-gateway",
+ "aa-proto",
  "aa-runtime",
  "argon2",
  "axum",
