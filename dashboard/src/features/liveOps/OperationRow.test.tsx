@@ -147,4 +147,13 @@ describe('OperationRow', () => {
     expect(row).toHaveAttribute('data-override', 'pausing')
     expect(screen.getByTestId('op-row-override')).toHaveTextContent('pausing…')
   })
+
+  it('starts expanded when defaultExpanded is true', () => {
+    render(<OperationRow op={FIXTURE} defaultExpanded />)
+    const row = screen.getByTestId('op-row')
+    const chevron = screen.getByTestId('op-row-chevron')
+    expect(row).toHaveAttribute('data-expanded', 'true')
+    expect(chevron).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('op-row-tree')).toBeInTheDocument()
+  })
 })
