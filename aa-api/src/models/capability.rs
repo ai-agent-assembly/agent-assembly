@@ -54,6 +54,19 @@ pub struct Resource {
     pub paths: Vec<String>,
 }
 
+/// One cell in the (agent × resource) matrix: a decision per verb, plus an
+/// optional `flag` marker the UI uses to highlight over-permissioned cells.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CapCell {
+    pub read: Decision,
+    pub write: Decision,
+    pub delete: Decision,
+    pub exec: Decision,
+    /// Marks this cell for UI attention (e.g. over-permissioned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +114,35 @@ mod tests {
         assert_eq!(json["name"], "Postgres");
         assert_eq!(json["group"], "data");
         assert_eq!(json["paths"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cap_cell_omits_flag_when_none() {
+        let cell = CapCell {
+            read: Decision::Allow,
+            write: Decision::Narrow,
+            delete: Decision::Deny,
+            exec: Decision::Na,
+            flag: None,
+        };
+        let json = serde_json::to_value(&cell).unwrap();
+        assert_eq!(json["read"], "allow");
+        assert_eq!(json["write"], "narrow");
+        assert_eq!(json["delete"], "deny");
+        assert_eq!(json["exec"], "na");
+        assert!(json.get("flag").is_none(), "flag should be omitted when None");
+    }
+
+    #[test]
+    fn cap_cell_includes_flag_when_set() {
+        let cell = CapCell {
+            read: Decision::Allow,
+            write: Decision::Allow,
+            delete: Decision::Allow,
+            exec: Decision::Na,
+            flag: Some(true),
+        };
+        let json = serde_json::to_value(&cell).unwrap();
+        assert_eq!(json["flag"], true);
     }
 }
