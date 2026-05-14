@@ -11,8 +11,8 @@ interface KpiCardProps {
   isError: boolean
 }
 
-const DELTA_POSITIVE_COLOR = '#10b981'  // emerald-500
-const DELTA_NEGATIVE_COLOR = '#f43f5e'  // rose-500
+const DELTA_POSITIVE_COLOR = 'var(--trend-positive)'
+const DELTA_NEGATIVE_COLOR = 'var(--trend-negative)'
 
 export function KpiCard({ metric, label, value, delta, unit, isLoading, isError }: KpiCardProps) {
   return (

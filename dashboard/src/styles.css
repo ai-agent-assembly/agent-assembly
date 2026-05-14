@@ -173,4 +173,33 @@
 
   /* ── Soft danger (red-300) for hover/active overlays ─────── */
   --danger-soft: #fca5a5;
+
+  /* ── Chart categorical palette ───────────────────────────── */
+  /* 12 distinguishable hues for series colors in Recharts panels.
+     Order matches CHART_CATEGORICAL_PALETTE in chartPalette.ts. */
+  --chart-cat-1: #6366f1;
+  --chart-cat-2: #f59e0b;
+  --chart-cat-3: #10b981;
+  --chart-cat-4: #f43f5e;
+  --chart-cat-5: #3b82f6;
+  --chart-cat-6: #8b5cf6;
+  --chart-cat-7: #14b8a6;
+  --chart-cat-8: #f97316;
+  --chart-cat-9: #84cc16;
+  --chart-cat-10: #06b6d4;
+  --chart-cat-11: #ec4899;
+  --chart-cat-12: #a78bfa;
+
+  /* ── Chart colorblind-safe palette (Wong 2011) ───────────── */
+  --chart-cb-1: #e69f00;
+  --chart-cb-2: #56b4e9;
+  --chart-cb-3: #009e73;
+  --chart-cb-4: #f0e442;
+  --chart-cb-5: #0072b2;
+  --chart-cb-6: #d55e00;
+  --chart-cb-7: #cc79a7;
+
+  /* ── Trend indicators (Kpi delta) ────────────────────────── */
+  --trend-positive: #10b981;
+  --trend-negative: #f43f5e;
 }
