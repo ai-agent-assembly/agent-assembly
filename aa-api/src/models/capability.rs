@@ -200,6 +200,14 @@ pub struct CapabilityOverrideRequest {
     pub decision: Decision,
 }
 
+/// Response envelope for `POST /api/v1/capability/override`: the subset of
+/// agent rows that actually changed (matches `OverrideResponse` in the
+/// dashboard's TypeScript mock).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CapabilityOverrideResponse {
+    pub updated: Vec<CapabilityAgent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +384,14 @@ mod tests {
         assert!(json.get("flagged").is_none(), "flagged should be omitted when None");
         assert!(json.get("note").is_none(), "note should be omitted when None");
         assert_eq!(json["caps"]["pg"]["write"], "approval");
+    }
+
+    #[test]
+    fn override_response_serializes_updated_array() {
+        let resp = CapabilityOverrideResponse { updated: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["updated"].is_array());
+        assert_eq!(json["updated"].as_array().unwrap().len(), 0);
     }
 
     #[test]
