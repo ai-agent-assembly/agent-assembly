@@ -1,10 +1,10 @@
 import type { Severity } from './types'
 
 const SEVERITY_BG: Record<Severity, string> = {
-  CRITICAL: '#dc2626',
-  HIGH: '#f97316',
-  MEDIUM: '#eab308',
-  LOW: '#60a5fa',
+  CRITICAL: 'var(--severity-critical)',
+  HIGH: 'var(--severity-high)',
+  MEDIUM: 'var(--severity-medium)',
+  LOW: 'var(--severity-low)',
 }
 
 export function SeverityBadge({ severity }: { severity: Severity }) {
@@ -18,7 +18,7 @@ export function SeverityBadge({ severity }: { severity: Severity }) {
         fontSize: '0.7rem',
         fontWeight: 700,
         letterSpacing: '0.04em',
-        color: '#fff',
+        color: 'var(--text-on-accent)',
         background: SEVERITY_BG[severity],
       }}
     >
