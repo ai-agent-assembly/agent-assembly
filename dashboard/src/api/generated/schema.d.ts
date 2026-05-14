@@ -297,6 +297,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/{id}/pause` — request that an in-flight operation be paused.
+         * @description Stub today: returns 202 Accepted and logs the request without updating
+         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         */
+        post: operations["pause_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/{id}/resume` — request that a paused operation resume.
+         * @description Stub today: returns 202 Accepted and logs the request without updating
+         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         */
+        post: operations["resume_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/{id}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.
+         * @description Stub today: returns 202 Accepted and logs the request without updating
+         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         */
+        post: operations["terminate_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies": {
         parameters: {
             query?: never;
@@ -1014,6 +1077,21 @@ export interface components {
             session_id: string;
             /** @description ISO 8601 timestamp of the event. */
             timestamp: string;
+        };
+        /**
+         * @description Acknowledgement returned by the per-op lifecycle endpoints.
+         *
+         *     The fields are deliberately minimal — they document what the
+         *     gateway received, not the resulting state (which the dashboard
+         *     observes via the WebSocket event stream).
+         */
+        OpActionAck: {
+            /** @description Server-side timestamp when the request was accepted (RFC 3339). */
+            accepted_at: string;
+            /** @description Action that was requested — one of `"pause"`, `"resume"`, `"terminate"`. */
+            action: string;
+            /** @description Operation id from the URL path. */
+            op_id: string;
         };
         /** @description JSON representation of a governance policy version. */
         PolicyResponse: {
@@ -1975,6 +2053,102 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LogEntry"][];
+                };
+            };
+        };
+    };
+    pause_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation id (string form of `GovernanceEvent.id`). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pause request accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpActionAck"];
+                };
+            };
+            /** @description Empty or malformed operation id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    resume_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation id (string form of `GovernanceEvent.id`). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resume request accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpActionAck"];
+                };
+            };
+            /** @description Empty or malformed operation id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    terminate_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation id (string form of `GovernanceEvent.id`). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Terminate request accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpActionAck"];
+                };
+            };
+            /** @description Empty or malformed operation id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
         };
