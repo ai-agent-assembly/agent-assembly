@@ -26,7 +26,7 @@ const fieldStyle = {
   fontSize: '0.875rem',
 }
 
-const errorStyle = { color: '#dc2626', fontSize: '0.75rem' }
+const errorStyle = { color: 'var(--status-danger-solid)', fontSize: '0.75rem' }
 
 export function ConditionBuilder() {
   const { register, formState, watch } = useFormContext<RuleFormValues>()
@@ -41,12 +41,12 @@ export function ConditionBuilder() {
         display: 'grid',
         gridTemplateColumns: 'repeat(4, 1fr)',
         gap: '0.75rem',
-        border: '1px solid #e5e7eb',
+        border: '1px solid var(--surface-card-border)',
         borderRadius: '6px',
         padding: '0.75rem',
       }}
     >
-      <legend style={{ padding: '0 0.5rem', color: '#6b7280', fontSize: '0.75rem' }}>
+      <legend style={{ padding: '0 0.5rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
         Condition
       </legend>
 
@@ -78,7 +78,7 @@ export function ConditionBuilder() {
         <span>
           Threshold
           {isPercentage && (
-            <span style={{ color: '#6b7280', marginLeft: '0.25rem' }}>(0–100)</span>
+            <span style={{ color: 'var(--text-muted)', marginLeft: '0.25rem' }}>(0–100)</span>
           )}
         </span>
         <input
