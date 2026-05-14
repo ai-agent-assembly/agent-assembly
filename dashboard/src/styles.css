@@ -109,4 +109,7 @@
 
   /* ── Toast (white text on solid status bg) ───────────────── */
   --toast-text: #ffffff;
+
+  /* ── Text on solid accent backgrounds (segmented controls, badges) */
+  --text-on-accent: #ffffff;
 }
