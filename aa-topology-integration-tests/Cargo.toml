@@ -9,6 +9,7 @@ description = "End-to-end integration tests for the AAASM topology pipeline (SDK
 
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
+aa-core     = { path = "../aa-core" }
 aa-devtool  = { path = "../aa-devtool" }
 aa-gateway  = { path = "../aa-gateway" }
 aa-runtime  = { path = "../aa-runtime" }
@@ -16,6 +17,8 @@ aa-runtime  = { path = "../aa-runtime" }
 anyhow      = "1"
 assert_cmd  = "2"
 axum        = { version = "0.8", features = ["ws"] }
+chrono-tz   = "0.10"
+moka        = { version = "0.12", features = ["future"] }
 portpicker  = "0.1"
 reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde_json  = "1"
