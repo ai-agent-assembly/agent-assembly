@@ -110,6 +110,11 @@ pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, J
 /// one or more agents. Mutating capability state is treated as a
 /// `Global`-scope policy update, so the caller must hold the `OrgAdmin`
 /// role (Admin API scope).
+///
+/// Returns the subset of agent rows that actually changed — the dashboard
+/// uses this to drive an optimistic-UI rollback when an override fails.
+/// An unknown `agentId` rejects the request with 400 and leaves the store
+/// untouched; an unknown `resourceId` on an agent is silently skipped.
 #[utoipa::path(
     post,
     path = "/api/v1/capability/override",
