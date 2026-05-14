@@ -218,3 +218,54 @@ describe('AgentDetailPage loading and error states', () => {
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('AgentDetailPage drawer head action buttons', () => {
+  it('renders the trace + shadow + suspend three-button group for an active agent', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-trace')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-trace')).toHaveTextContent(/trace last call/i)
+    expect(screen.getByTestId('agent-detail-shadow')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-shadow')).toHaveTextContent(/shadow mode/i)
+    expect(screen.getByTestId('agent-detail-suspend')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-detail-resume')).not.toBeInTheDocument()
+  })
+
+  it('swaps suspend for resume when the agent is already suspended (3-button group intact)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+      mockQuery<Agent | undefined>({
+        data: { ...MOCK_AGENT, status: 'suspended' },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+      mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+    )
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-trace')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-shadow')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-resume')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-detail-suspend')).not.toBeInTheDocument()
+  })
+
+  it('trace last call button fires a toast with the agent id', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    fireEvent.click(await screen.findByTestId('agent-detail-trace'))
+    expect(await screen.findByText(/Opened trace for abc123/)).toBeInTheDocument()
+  })
+
+  it('shadow mode button fires a mock toast', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    fireEvent.click(await screen.findByTestId('agent-detail-shadow'))
+    expect(await screen.findByText(/Switched abc123 to shadow mode/)).toBeInTheDocument()
+  })
+})
