@@ -31,16 +31,25 @@ export interface TraceTimelineProps {
   readonly onSelectEvent?: (event: TraceEvent) => void
 }
 
+/**
+ * Trace timeline rendered as a vertical sequence of step-cards
+ * (AAASM-1391 — matches `design/v1/hi-fi/trace.jsx` `TraceStep`).
+ *
+ * Each step has a circular icon and a vertical connecting line on the
+ * left (`.trace-event__rail`), and a 3-line body on the right
+ * (`.trace-event__head` / `.__detail` / `.__meta`). The rail line is
+ * omitted on the final event so the timeline visually terminates.
+ */
 export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
   return (
     <ol className="trace-timeline" data-testid="trace-timeline">
-      {events.map(event => {
+      {events.map((event, index) => {
         const sev = severityKey(event)
         const icon = ICON_BY_TYPE[event.type] ?? '·'
         const tooltipReason =
           event.type === 'policy_violation' ? event.violationReason : undefined
         const iconNode = (
-          <span className="trace-event__icon" aria-hidden="true">{icon}</span>
+          <div className="trace-event__icon-circle" aria-hidden="true">{icon}</div>
         )
         const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
         const handleKeyDown = onSelectEvent
@@ -51,6 +60,7 @@ export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
               }
             }
           : undefined
+        const isLast = index === events.length - 1
         return (
           <li
             key={event.id}
@@ -63,15 +73,23 @@ export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
             onClick={handleClick}
             onKeyDown={handleKeyDown}
           >
-            <span className="trace-event__time">{formatTime(event.timestamp)}</span>
-            {tooltipReason ? (
-              <Tooltip content={tooltipReason}>{iconNode}</Tooltip>
-            ) : (
-              iconNode
-            )}
-            <span className="trace-event__agent">{event.agent}</span>
-            <span className="trace-event__preview">{truncatePreview(event.payloadPreview)}</span>
-            <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
+            <div className="trace-event__rail">
+              {tooltipReason ? (
+                <Tooltip content={tooltipReason}>{iconNode}</Tooltip>
+              ) : (
+                iconNode
+              )}
+              {!isLast && <div className="trace-event__rail-line" />}
+            </div>
+            <div className="trace-event__body">
+              <div className="trace-event__head">
+                <span className="trace-event__label">{event.type}</span>
+                <span className="trace-event__time">{formatTime(event.timestamp)}</span>
+                <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
+              </div>
+              <div className="trace-event__detail">{truncatePreview(event.payloadPreview)}</div>
+              <div className="trace-event__meta">{event.agent}</div>
+            </div>
           </li>
         )
       })}
