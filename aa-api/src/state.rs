@@ -22,6 +22,7 @@ use crate::auth::rate_limit::RateLimiter;
 use crate::events::EventBroadcast;
 use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
 use crate::replay::ReplayBuffer;
+use crate::routes::capability::CapabilityStore;
 use crate::trace_store::TraceStore;
 
 /// Shared state available to all Axum handlers via `Extension<AppState>`.
@@ -77,4 +78,6 @@ pub struct AppState {
     pub topology_lineage_cache: moka::future::Cache<String, Arc<AgentLineage>>,
     /// Short-lived cache for GET /topology/stats responses (10 s TTL).
     pub topology_stats_cache: moka::future::Cache<&'static str, Arc<TopologyStats>>,
+    /// Dashboard Capability Matrix store (AAASM-1366).
+    pub capability_store: Arc<CapabilityStore>,
 }
