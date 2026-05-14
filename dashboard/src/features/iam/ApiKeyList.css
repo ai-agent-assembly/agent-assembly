@@ -8,7 +8,7 @@
 .iam-api-key-list td {
   padding: 0.5rem 0.75rem;
   text-align: left;
-  border-bottom: 1px solid var(--shell-border, #e4e4e7);
+  border-bottom: 1px solid var(--shell-border-subtle);
 }
 
 .iam-api-key-list th {
@@ -16,20 +16,20 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-api-key-list__loading,
 .iam-api-key-list__empty {
   text-align: center;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
   padding: 1.5rem 0;
 }
 
 .iam-api-key-list__mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 0.8rem;
-  color: var(--shell-text-muted, #71717a);
+  color: var(--shell-text-muted);
 }
 
 .iam-api-key-list__label {
@@ -47,16 +47,16 @@
   padding: 1px 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 0.7rem;
-  background: var(--shell-surface-muted, #f4f4f5);
-  border: 1px solid var(--shell-border, #e4e4e7);
+  background: var(--shell-surface-muted);
+  border: 1px solid var(--shell-border-subtle);
   border-radius: 0.25rem;
-  color: var(--shell-text, #18181b);
+  color: var(--shell-text);
 }
 
 .iam-api-key-list__revoke-btn {
-  border: 1px solid #ef4444;
+  border: 1px solid var(--status-danger);
   background: transparent;
-  color: #ef4444;
+  color: var(--status-danger);
   font-size: 0.75rem;
   font-weight: 600;
   padding: 0.25rem 0.6rem;
@@ -77,12 +77,12 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  color: #b91c1c;
+  color: var(--status-danger-hover-text);
   padding: 0.75rem 0;
 }
 
 .iam-dialog__btn--danger {
-  background: #dc2626;
-  color: #fff;
+  background: var(--status-danger-solid);
+  color: var(--text-on-accent);
   border-color: transparent;
 }
