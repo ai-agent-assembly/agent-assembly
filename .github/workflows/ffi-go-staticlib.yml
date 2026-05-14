@@ -8,6 +8,12 @@ on:
       - ".github/workflows/ffi-go-staticlib.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   pull_request:
     branches: [master]
     paths:
@@ -15,6 +21,12 @@ on:
       - ".github/workflows/ffi-go-staticlib.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
 
 jobs:
   build-aa-ffi-go:

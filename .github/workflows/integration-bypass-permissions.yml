@@ -10,6 +10,12 @@ on:
       - ".github/workflows/integration-bypass-permissions.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   push:
     branches: [master]
     paths:
@@ -19,6 +25,12 @@ on:
       - ".github/workflows/integration-bypass-permissions.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
 
 env:
   CARGO_TERM_COLOR: always

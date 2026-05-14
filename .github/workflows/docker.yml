@@ -12,6 +12,12 @@ on:
       - ".github/workflows/docker.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   push:
     tags: ["v*"]
 

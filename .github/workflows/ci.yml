@@ -15,6 +15,12 @@ on:
       - ".github/workflows/ci.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
   pull_request:
     branches: [master]
     paths:
@@ -29,6 +35,12 @@ on:
       - ".github/workflows/ci.yml"
       - "!**/*.md"
       - "!**/LICENSE"
+      - "!**/*.png"
+      - "!**/*.jpg"
+      - "!**/*.jpeg"
+      - "!**/*.gif"
+      - "!**/*.webp"
+      - "!**/*.ico"
 
 env:
   CARGO_TERM_COLOR: always
