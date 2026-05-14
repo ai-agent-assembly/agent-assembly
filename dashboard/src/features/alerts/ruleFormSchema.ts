@@ -19,7 +19,7 @@ const SUPPRESSION_KEY = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 export const ruleFormSchema = z
   .object({
     name: z.string().trim().min(1, 'name is required').max(128, 'name must be ≤ 128 chars'),
-    description: z.string().trim().max(500, 'description must be ≤ 500 chars').default(''),
+    description: z.string().trim().max(500, 'description must be ≤ 500 chars'),
     metric: z.enum(METRICS, { errorMap: () => ({ message: 'select a metric' }) }),
     operator: z.enum(OPERATORS, { errorMap: () => ({ message: 'select an operator' }) }),
     threshold: z
@@ -40,9 +40,8 @@ export const ruleFormSchema = z
           key: z.string().regex(SUPPRESSION_KEY, 'key must match [A-Za-z_][A-Za-z0-9_.-]*'),
           value: z.string().min(1, 'value cannot be empty'),
         }),
-      )
-      .default([]),
-    enabled: z.boolean().default(true),
+      ),
+    enabled: z.boolean(),
   })
   .superRefine((data, ctx) => {
     const isPercentage =
