@@ -152,3 +152,31 @@ async fn apply_override_rejects_viewer_scope_with_403() {
         "ProblemDetail body should describe the deny; got: {detail}"
     );
 }
+
+#[tokio::test]
+async fn apply_override_rejects_unknown_agent_with_400() {
+    let app = common::test_app(); // auth off → RBAC pass; failure must be from validation
+
+    let response = app
+        .oneshot(post_override_request(
+            json!({
+                "agentIds": ["does-not-exist"],
+                "resourceId": "pg",
+                "verb": "write",
+                "decision": "deny"
+            }),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let detail = json["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("does-not-exist"),
+        "ProblemDetail should name the offending agent id; got: {detail}"
+    );
+}
