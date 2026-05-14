@@ -10,12 +10,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use tokio::sync::RwLock;
 
+use aa_gateway::policy::rbac::MutationKind;
+use aa_gateway::policy::scope::PolicyScope;
+
+use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::error::ProblemDetail;
 use crate::models::capability::{
-    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest, ChangeType,
-    Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup, SampleCall, Verb,
+    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
+    CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
+    SampleCall, Verb,
 };
 use crate::state::AppState;
 
@@ -97,6 +104,61 @@ impl CapabilityStore {
 pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, Json<CapabilityMatrix>) {
     let matrix = state.capability_store.snapshot().await;
     (StatusCode::OK, Json(matrix))
+}
+
+/// `POST /api/v1/capability/override` — apply a capability override across
+/// one or more agents. Mutating capability state is treated as a
+/// `Global`-scope policy update, so the caller must hold the `OrgAdmin`
+/// role (Admin API scope).
+#[utoipa::path(
+    post,
+    path = "/api/v1/capability/override",
+    request_body = CapabilityOverrideRequest,
+    responses(
+        (status = 200, description = "Updated agent rows", body = CapabilityOverrideResponse),
+        (status = 400, description = "Unknown agent id"),
+        (status = 403, description = "Caller lacks the role required to mutate capability state")
+    ),
+    tag = "capability"
+)]
+pub async fn apply_override(
+    policy_auth: PolicyWriteAuth,
+    Extension(state): Extension<AppState>,
+    Json(body): Json<CapabilityOverrideRequest>,
+) -> Result<(StatusCode, Json<CapabilityOverrideResponse>), OverrideHandlerError> {
+    policy_auth
+        .check_mutation(&PolicyScope::Global, MutationKind::Update)
+        .map_err(OverrideHandlerError::Forbidden)?;
+
+    let updated = state
+        .capability_store
+        .apply_override(&body)
+        .await
+        .map_err(|e| match e {
+            OverrideError::UnknownAgent(id) => OverrideHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Unknown agent id: {id}")),
+            ),
+        })?;
+
+    Ok((StatusCode::OK, Json(CapabilityOverrideResponse { updated })))
+}
+
+/// Unified error type for the override handler so 400 and 403 paths render
+/// through their respective ProblemDetail / PolicyAuthorizationDenied
+/// `IntoResponse` impls.
+#[derive(Debug)]
+pub enum OverrideHandlerError {
+    BadRequest(ProblemDetail),
+    Forbidden(PolicyAuthorizationDenied),
+}
+
+impl IntoResponse for OverrideHandlerError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::BadRequest(p) => p.into_response(),
+            Self::Forbidden(d) => d.into_response(),
+        }
+    }
 }
 
 // ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
