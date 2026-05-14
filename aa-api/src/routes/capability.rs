@@ -9,12 +9,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use axum::http::StatusCode;
+use axum::{Extension, Json};
 use tokio::sync::RwLock;
 
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, ChangeType, Decision, Policy, PolicyRule,
     PolicyStatus, Resource, ResourceGroup, SampleCall, Verb,
 };
+use crate::state::AppState;
 
 /// Thread-safe holder for the dashboard Capability Matrix snapshot.
 #[derive(Debug)]
@@ -34,6 +37,21 @@ impl CapabilityStore {
     pub async fn snapshot(&self) -> CapabilityMatrix {
         self.inner.read().await.clone()
     }
+}
+
+/// `GET /api/v1/capability/matrix` — return the full agent × resource ×
+/// verb × decision matrix that backs the dashboard Capability Matrix page.
+#[utoipa::path(
+    get,
+    path = "/api/v1/capability/matrix",
+    responses(
+        (status = 200, description = "Full capability matrix snapshot", body = CapabilityMatrix)
+    ),
+    tag = "capability"
+)]
+pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, Json<CapabilityMatrix>) {
+    let matrix = state.capability_store.snapshot().await;
+    (StatusCode::OK, Json(matrix))
 }
 
 // ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
