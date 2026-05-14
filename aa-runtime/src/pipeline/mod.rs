@@ -115,6 +115,8 @@ pub async fn run(
                             &approval_queue,
                             &response_router,
                             &gateway_client,
+                            &broadcast_tx,
+                            &seq,
                         )
                         .await;
                     }
@@ -239,6 +241,7 @@ async fn send_ipc_response(connection_id: u64, response: IpcResponse, router: &R
 ///    push an [`IpcResponse::ApprovalDecision`] back once the request is resolved.
 /// 2. `blocked_actions` → `DENY`.
 /// 3. No match → `ALLOW`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_policy_query(
     connection_id: u64,
     req: aa_proto::assembly::policy::v1::CheckActionRequest,
@@ -246,6 +249,8 @@ async fn handle_policy_query(
     approval_queue: &Arc<ApprovalQueue>,
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
+    broadcast_tx: &broadcast::Sender<PipelineEvent>,
+    sequence_counter: &AtomicU64,
 ) {
     // ── Gateway forwarding path ─────────────────────────────────────────
     if let Some(client) = gateway_client {
@@ -253,6 +258,13 @@ async fn handle_policy_query(
         match guard.check_action(req.clone()).await {
             Ok(resp) => {
                 tracing::debug!(connection_id, decision = resp.decision, "gateway responded");
+                // On Deny: surface a structured PolicyViolation event into
+                // the broadcast pipeline so the Live Ops dashboard sees the
+                // policy-engine evaluation latency. AAASM-1421 added the
+                // proto field; this is where it gets populated.
+                if resp.decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+                    emit_gateway_violation(&req, &resp, connection_id, broadcast_tx, sequence_counter);
+                }
                 send_ipc_response(connection_id, IpcResponse::PolicyResponse(resp), response_router).await;
                 return;
             }
@@ -373,6 +385,56 @@ async fn handle_policy_query(
     .await;
 }
 
+/// Emit a structured `PolicyViolation` `AuditEvent` after the gateway
+/// returns `Decision::Deny`. The event carries the gateway's evaluation
+/// latency (`decision_latency_us` → ms) so the Live Ops dashboard can
+/// display real timing for policy-blocked operations.
+fn emit_gateway_violation(
+    req: &aa_proto::assembly::policy::v1::CheckActionRequest,
+    resp: &aa_proto::assembly::policy::v1::CheckActionResponse,
+    connection_id: u64,
+    broadcast_tx: &broadcast::Sender<PipelineEvent>,
+    sequence_counter: &AtomicU64,
+) {
+    use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
+    use aa_proto::assembly::common::v1::ActionType;
+
+    let action_name = ActionType::try_from(req.action_type)
+        .map(|a| a.as_str_name())
+        .unwrap_or("ACTION_UNSPECIFIED")
+        .to_string();
+    let agent_id_str = req
+        .agent_id
+        .as_ref()
+        .map(|a| a.agent_id.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let event = AuditEvent {
+        action_type: req.action_type,
+        decision: resp.decision,
+        trace_id: req.trace_id.clone(),
+        span_id: req.span_id.clone(),
+        detail: Some(Detail::Violation(PolicyViolation {
+            policy_rule: resp.policy_rule.clone(),
+            blocked_action: action_name,
+            reason: resp.reason.clone(),
+            // The gateway reports decision latency in microseconds; the
+            // proto schema (AAASM-1421) carries milliseconds. Integer
+            // division truncates — sub-millisecond decisions report as 0,
+            // which is the correct floor.
+            latency_ms: resp.decision_latency_us / 1_000,
+        })),
+        ..AuditEvent::default()
+    };
+
+    let enriched = enrich(event, &agent_id_str, connection_id, sequence_counter);
+    if broadcast_tx.send(PipelineEvent::Audit(Box::new(enriched))).is_err() {
+        // All subscribers dropped — same silent-drop behaviour as flush().
+        tracing::trace!("dropped synthetic violation event; no subscribers");
+    }
+}
+
 /// Broadcast all events in `batch` and record metrics.
 ///
 /// Clears `batch` after broadcasting. Errors from `broadcast_tx.send`
@@ -414,6 +476,89 @@ mod tests {
                 latency_ms: 0,
             })),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn emit_gateway_violation_on_deny_pushes_structured_audit_event() {
+        use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (tx, mut rx) = broadcast::channel::<PipelineEvent>(4);
+        let seq = AtomicU64::new(0);
+        let req = CheckActionRequest {
+            agent_id: Some(ProtoAgentId {
+                agent_id: "support-agent".into(),
+                ..Default::default()
+            }),
+            credential_token: String::new(),
+            trace_id: "trace-1".into(),
+            span_id: "span-1".into(),
+            action_type: ActionType::FileOperation as i32,
+            context: Default::default(),
+        };
+        let resp = CheckActionResponse {
+            decision: Decision::Deny as i32,
+            reason: "blocked by policy".into(),
+            policy_rule: "no-secrets".into(),
+            approval_id: String::new(),
+            redact: None,
+            // Gateway reports microseconds; expect 12000us → 12ms after the /1000 conversion.
+            decision_latency_us: 12_000,
+        };
+
+        emit_gateway_violation(&req, &resp, 99, &tx, &seq);
+
+        let event = rx.try_recv().expect("expected one event on the channel");
+        let enriched = unwrap_audit(event);
+        assert_eq!(enriched.agent_id, "support-agent");
+        assert_eq!(enriched.connection_id, 99);
+
+        match enriched.inner.detail {
+            Some(Detail::Violation(v)) => {
+                assert_eq!(v.policy_rule, "no-secrets");
+                assert_eq!(v.blocked_action, "FILE_OPERATION");
+                assert_eq!(v.reason, "blocked by policy");
+                assert_eq!(v.latency_ms, 12);
+            }
+            other => panic!("expected Violation detail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_gateway_violation_sub_millisecond_decision_floors_to_zero() {
+        use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (tx, mut rx) = broadcast::channel::<PipelineEvent>(4);
+        let seq = AtomicU64::new(0);
+        let req = CheckActionRequest {
+            agent_id: Some(ProtoAgentId {
+                agent_id: "fast-agent".into(),
+                ..Default::default()
+            }),
+            credential_token: String::new(),
+            trace_id: String::new(),
+            span_id: String::new(),
+            action_type: ActionType::ToolCall as i32,
+            context: Default::default(),
+        };
+        let resp = CheckActionResponse {
+            decision: Decision::Deny as i32,
+            reason: "fast-block".into(),
+            policy_rule: "rule".into(),
+            approval_id: String::new(),
+            redact: None,
+            // 0.5 ms == 500 us — integer division truncates to 0 ms.
+            decision_latency_us: 500,
+        };
+
+        emit_gateway_violation(&req, &resp, 1, &tx, &seq);
+
+        let event = rx.try_recv().expect("expected one event on the channel");
+        match unwrap_audit(event).inner.detail {
+            Some(Detail::Violation(v)) => assert_eq!(v.latency_ms, 0),
+            other => panic!("expected Violation detail, got {other:?}"),
         }
     }
 
