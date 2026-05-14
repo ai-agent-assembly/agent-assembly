@@ -65,7 +65,7 @@ describe('TraceTimeline', () => {
 
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     const row = screen.getByTestId('trace-event')
-    await userEvent.hover(row.querySelector('.trace-event__icon')!)
+    await userEvent.hover(row.querySelector('.trace-event__icon-circle')!)
     expect(screen.getByRole('tooltip')).toHaveTextContent('refund > $100 requires human approval')
   })
 
@@ -111,7 +111,7 @@ describe('TraceTimeline', () => {
     render(<TraceTimeline events={events} />)
 
     const row = screen.getByTestId('trace-event')
-    const preview = row.querySelector('.trace-event__preview')!
+    const preview = row.querySelector('.trace-event__detail')!
     expect(preview.textContent).toHaveLength(501)
     expect(preview.textContent?.endsWith('…')).toBe(true)
     expect(preview.textContent?.slice(0, 500)).toBe('x'.repeat(500))
@@ -124,7 +124,7 @@ describe('TraceTimeline', () => {
     ]
     render(<TraceTimeline events={events} />)
 
-    const preview = screen.getByTestId('trace-event').querySelector('.trace-event__preview')!
+    const preview = screen.getByTestId('trace-event').querySelector('.trace-event__detail')!
     expect(preview.textContent).toBe(exactlyFiveHundred)
     expect(preview.textContent?.endsWith('…')).toBe(false)
   })
