@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::models::ws_payloads::{EventPayload, ViolationPayload};
+use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::models::{EventType, GovernanceEvent};
 use crate::state::AppState;
 use crate::ws::params::WsQueryParams;
@@ -157,7 +157,10 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
                     id,
                     event_type: EventType::Approval,
                     agent_id: approval_ev.agent_id.clone(),
-                    payload: serde_json::to_value(format!("{approval_ev:?}")).unwrap_or_default(),
+                    payload: serde_json::to_value(EventPayload::Approval(
+                        build_approval_payload(&approval_ev),
+                    ))
+                    .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 })
             }
@@ -167,7 +170,10 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
                     id,
                     event_type: EventType::Budget,
                     agent_id: format!("{:02x?}", budget_ev.agent_id.as_bytes()),
-                    payload: serde_json::to_value(format!("{budget_ev:?}")).unwrap_or_default(),
+                    payload: serde_json::to_value(EventPayload::Budget(
+                        build_budget_alert_payload(&budget_ev),
+                    ))
+                    .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 })
             }
@@ -280,6 +286,34 @@ fn action_type_label(raw: i32) -> Option<String> {
         ActionType::ActionUnspecified => return None,
     };
     Some(label.to_string())
+}
+
+/// Build a structured `ApprovalPayload` from the runtime's
+/// `ApprovalRequest`. The schema fields map 1:1 to the source struct's
+/// public fields; routing-metadata fields on `ApprovalRequest` (team
+/// id, escalation overrides, fallback policy) are intentionally not
+/// surfaced — they're internal queue routing details, not part of the
+/// dashboard contract.
+fn build_approval_payload(ev: &aa_runtime::approval::ApprovalRequest) -> ApprovalPayload {
+    ApprovalPayload {
+        request_id: ev.request_id.to_string(),
+        action: ev.action.clone(),
+        condition_triggered: ev.condition_triggered.clone(),
+        submitted_at: ev.submitted_at,
+        timeout_secs: ev.timeout_secs,
+    }
+}
+
+/// Build a structured `BudgetAlertPayload` from the gateway's
+/// `BudgetAlert`. The schema fields map 1:1 to the source struct's
+/// alert-relevant fields; agent / team identifiers stay on the outer
+/// `GovernanceEvent` envelope.
+fn build_budget_alert_payload(ev: &aa_gateway::budget::types::BudgetAlert) -> BudgetAlertPayload {
+    BudgetAlertPayload {
+        threshold_pct: ev.threshold_pct,
+        spent_usd: ev.spent_usd,
+        limit_usd: ev.limit_usd,
+    }
 }
 
 /// Map the proto `Decision` enum (raw `i32`) to the dashboard's
@@ -588,5 +622,66 @@ mod tests {
             }
             ViolationPayload::Audit { .. } => panic!("expected LayerDegradation variant"),
         }
+    }
+
+    #[test]
+    fn approval_payload_maps_request_fields() {
+        use aa_core::PolicyResult;
+        use aa_runtime::approval::ApprovalRequest;
+        use uuid::Uuid;
+
+        let request_id = Uuid::new_v4();
+        let request = ApprovalRequest {
+            request_id,
+            agent_id: "support-agent".into(),
+            action: "send_external_email".into(),
+            condition_triggered: "outbound_email_to_unknown_domain".into(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 300,
+            fallback: PolicyResult::Allow,
+            team_id: Some("support".into()),
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+
+        let payload = build_approval_payload(&request);
+        assert_eq!(payload.request_id, request_id.to_string());
+        assert_eq!(payload.action, "send_external_email");
+        assert_eq!(payload.condition_triggered, "outbound_email_to_unknown_domain");
+        assert_eq!(payload.submitted_at, 1_700_000_000);
+        assert_eq!(payload.timeout_secs, 300);
+
+        // JSON-shape check — the discriminator + fields must match the
+        // ApprovalPayload OpenAPI schema (no extra fields leaking through).
+        let json = serde_json::to_value(EventPayload::Approval(payload)).unwrap();
+        assert_eq!(json["action"], "send_external_email");
+        assert_eq!(json["timeout_secs"], 300);
+        assert!(json.get("team_id").is_none(), "internal routing fields must not leak");
+        assert!(json.get("fallback").is_none(), "internal routing fields must not leak");
+    }
+
+    #[test]
+    fn budget_alert_payload_maps_amount_fields() {
+        use aa_core::AgentId;
+        use aa_gateway::budget::types::BudgetAlert;
+
+        let alert = BudgetAlert {
+            agent_id: AgentId::from_bytes([0u8; 16]),
+            team_id: Some("support".into()),
+            threshold_pct: 95,
+            spent_usd: 47.21,
+            limit_usd: 50.00,
+        };
+
+        let payload = build_budget_alert_payload(&alert);
+        assert_eq!(payload.threshold_pct, 95);
+        assert!((payload.spent_usd - 47.21).abs() < f64::EPSILON);
+        assert!((payload.limit_usd - 50.00).abs() < f64::EPSILON);
+
+        // JSON-shape check.
+        let json = serde_json::to_value(EventPayload::Budget(payload)).unwrap();
+        assert_eq!(json["threshold_pct"], 95);
+        assert!(json.get("agent_id").is_none(), "agent_id lives on the outer envelope");
+        assert!(json.get("team_id").is_none(), "team_id is not part of the schema");
     }
 }
