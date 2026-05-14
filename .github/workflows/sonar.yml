@@ -8,6 +8,8 @@ on:
       - "dashboard/**"
       - "sonar-project.properties"
       - ".github/workflows/sonar.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
   pull_request:
     branches: [master]
     paths:
@@ -15,6 +17,8 @@ on:
       - "dashboard/**"
       - "sonar-project.properties"
       - ".github/workflows/sonar.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
 
 jobs:
   sonar:

@@ -6,11 +6,15 @@ on:
     paths:
       - "aa-ffi-go/**"
       - ".github/workflows/ffi-go-staticlib.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
   pull_request:
     branches: [master]
     paths:
       - "aa-ffi-go/**"
       - ".github/workflows/ffi-go-staticlib.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
 
 jobs:
   build-aa-ffi-go:

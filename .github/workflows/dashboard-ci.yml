@@ -7,12 +7,16 @@ on:
       - "dashboard/**"
       - "openapi/v1.yaml"
       - ".github/workflows/dashboard-ci.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
   pull_request:
     branches: [master]
     paths:
       - "dashboard/**"
       - "openapi/v1.yaml"
       - ".github/workflows/dashboard-ci.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
 
 jobs:
   typecheck-and-lint:
