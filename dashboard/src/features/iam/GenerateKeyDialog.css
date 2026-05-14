@@ -3,9 +3,9 @@
   grid-template-columns: 1fr 1fr;
   gap: 0.25rem 1rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--shell-border, #d4d4d8);
+  border: 1px solid var(--shell-border);
   border-radius: 0.375rem;
-  background: var(--shell-surface-muted, #fafafa);
+  background: var(--shell-surface-subtle);
 }
 
 .iam-scope-checklist__row {
