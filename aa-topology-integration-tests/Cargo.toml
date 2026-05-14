@@ -6,3 +6,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "End-to-end integration tests for the AAASM topology pipeline (SDK → gateway → REST → CLI). Test-only crate."
+
+[dev-dependencies]
+aa-api      = { path = "../aa-api" }
+aa-devtool  = { path = "../aa-devtool" }
+aa-gateway  = { path = "../aa-gateway" }
+aa-runtime  = { path = "../aa-runtime" }
+
+anyhow      = "1"
+assert_cmd  = "2"
+axum        = { version = "0.8", features = ["ws"] }
+portpicker  = "0.1"
+reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde_json  = "1"
+tokio       = { version = "1", features = ["full"] }
