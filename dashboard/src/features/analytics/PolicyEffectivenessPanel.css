@@ -1,13 +1,9 @@
-/* CSS variables for heatmap color stops — update here for theme switching */
-:root {
-  --heatmap-low: #10b981;
-  --heatmap-mid: #f59e0b;
-  --heatmap-high: #ef4444;
-}
+/* Heatmap color stops are defined in dashboard/src/styles.css (--heatmap-low,
+   --heatmap-mid, --heatmap-high) so all theme tokens live in one place. */
 
 .policy-effectiveness-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
   padding: 1.25rem 1.5rem;
 }
@@ -22,7 +18,7 @@
 .policy-effectiveness-panel__title {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
@@ -32,7 +28,12 @@
 .policy-effectiveness-panel__skeleton {
   height: 320px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background: linear-gradient(
+    90deg,
+    var(--surface-skeleton-base) 25%,
+    var(--surface-skeleton-shimmer) 50%,
+    var(--surface-skeleton-base) 75%
+  );
   background-size: 200% 100%;
   animation: policy-effectiveness-shimmer 1.5s infinite linear;
 }
@@ -50,7 +51,7 @@
   justify-content: center;
   height: 320px;
   gap: 0.5rem;
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 0.875rem;
 }
 
@@ -59,7 +60,7 @@
 }
 
 .policy-effectiveness-panel__empty a {
-  color: #6366f1;
+  color: var(--accent);
   text-decoration: underline;
 }
 
@@ -68,7 +69,7 @@
   align-items: center;
   justify-content: center;
   height: 320px;
-  color: #9ca3af;
+  color: var(--text-disabled);
   font-size: 0.875rem;
   margin: 0;
 }
@@ -91,7 +92,7 @@
   padding: 0 0.25rem 0.5rem 0;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
 }
 
 .policy-effectiveness-panel__sort-btn {
@@ -100,18 +101,18 @@
   cursor: pointer;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--text-secondary);
   padding: 0;
   text-align: left;
 }
 
 .policy-effectiveness-panel__sort-btn:hover {
-  color: #6366f1;
+  color: var(--accent);
 }
 
 .policy-effectiveness-panel__date-cell {
   font-size: 0.6875rem;
-  color: #9ca3af;
+  color: var(--text-disabled);
   text-align: center;
   padding-bottom: 0.5rem;
   white-space: nowrap;
@@ -121,7 +122,7 @@
 
 .policy-effectiveness-panel__rule-label {
   font-size: 0.8125rem;
-  color: #374151;
+  color: var(--text-secondary);
   padding-right: 0.5rem;
   white-space: nowrap;
   overflow: hidden;
@@ -142,7 +143,7 @@
 
 .policy-effectiveness-panel__cell:hover {
   opacity: 0.8;
-  outline: 2px solid #374151;
+  outline: 2px solid var(--tooltip-outline);
   outline-offset: 1px;
 }
 
@@ -150,8 +151,8 @@
 .policy-effectiveness-panel__tooltip {
   position: fixed;
   z-index: 100;
-  background: #1f2937;
-  color: #f9fafb;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
   font-size: 0.8125rem;
