@@ -5,6 +5,8 @@
 //! the wire shape matches the dashboard's TypeScript types in
 //! `dashboard/src/api/capability.ts`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -65,6 +67,45 @@ pub struct CapCell {
     /// Marks this cell for UI attention (e.g. over-permissioned).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<bool>,
+}
+
+/// Enforcement mode for an agent's capability policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMode {
+    Enforce,
+    Shadow,
+}
+
+/// Liveness status surfaced to the matrix view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    Active,
+    Idle,
+    Suspended,
+}
+
+/// One agent row in the dashboard Capability Matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityAgent {
+    pub id: String,
+    pub name: String,
+    pub framework: String,
+    pub owner: String,
+    /// Trust score on a 0–100 scale.
+    pub trust: u8,
+    pub mode: AgentMode,
+    pub status: AgentStatus,
+    /// Human-readable relative-time string (e.g. `"2m ago"`).
+    pub last_seen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flagged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Resource-id → CapCell mapping for this agent.
+    pub caps: BTreeMap<String, CapCell>,
 }
 
 #[cfg(test)]
@@ -144,5 +185,43 @@ mod tests {
         };
         let json = serde_json::to_value(&cell).unwrap();
         assert_eq!(json["flag"], true);
+    }
+
+    #[test]
+    fn capability_agent_serializes_last_seen_in_camel_case() {
+        let mut caps = BTreeMap::new();
+        caps.insert(
+            "pg".to_string(),
+            CapCell {
+                read: Decision::Allow,
+                write: Decision::Approval,
+                delete: Decision::Deny,
+                exec: Decision::Na,
+                flag: None,
+            },
+        );
+        let agent = CapabilityAgent {
+            id: "support-triage".to_string(),
+            name: "support-triage".to_string(),
+            framework: "CrewAI".to_string(),
+            owner: "cx-tools".to_string(),
+            trust: 78,
+            mode: AgentMode::Enforce,
+            status: AgentStatus::Active,
+            last_seen: "12s ago".to_string(),
+            flagged: None,
+            note: None,
+            caps,
+        };
+        let json = serde_json::to_value(&agent).unwrap();
+        assert_eq!(json["id"], "support-triage");
+        assert_eq!(json["trust"], 78);
+        assert_eq!(json["mode"], "enforce");
+        assert_eq!(json["status"], "active");
+        assert_eq!(json["lastSeen"], "12s ago", "field must be camelCase");
+        assert!(json.get("last_seen").is_none(), "snake_case field must not appear");
+        assert!(json.get("flagged").is_none(), "flagged should be omitted when None");
+        assert!(json.get("note").is_none(), "note should be omitted when None");
+        assert_eq!(json["caps"]["pg"]["write"], "approval");
     }
 }
