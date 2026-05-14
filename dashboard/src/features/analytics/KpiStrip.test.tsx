@@ -54,20 +54,20 @@ describe('KpiCard', () => {
     expect(screen.getByText('ms')).toBeInTheDocument()
   })
 
-  it('colors delta green (#10b981) when trend is positive for agents', () => {
+  it('colors delta with --trend-positive when trend is positive for agents', () => {
     render(
       <KpiCard metric="agents" label="Total Agents" value={10} delta={0.12} isLoading={false} isError={false} />,
     )
     const delta = screen.getByText('+12.0%')
-    expect(delta).toHaveStyle({ color: '#10b981' })
+    expect(delta).toHaveStyle({ color: 'var(--trend-positive)' })
   })
 
-  it('colors delta red (#f43f5e) when trend is negative for agents', () => {
+  it('colors delta with --trend-negative when trend is negative for agents', () => {
     render(
       <KpiCard metric="agents" label="Total Agents" value={10} delta={-0.05} isLoading={false} isError={false} />,
     )
     const delta = screen.getByText('-5.0%')
-    expect(delta).toHaveStyle({ color: '#f43f5e' })
+    expect(delta).toHaveStyle({ color: 'var(--trend-negative)' })
   })
 
   it('colors delta green for p99 when delta is negative (lower latency = good)', () => {
@@ -75,7 +75,7 @@ describe('KpiCard', () => {
       <KpiCard metric="p99" label="p99 Latency" value={95} delta={-0.08} unit="ms" isLoading={false} isError={false} />,
     )
     const delta = screen.getByText('-8.0%')
-    expect(delta).toHaveStyle({ color: '#10b981' })
+    expect(delta).toHaveStyle({ color: 'var(--trend-positive)' })
   })
 
   it('colors delta red for p99 when delta is positive (higher latency = bad)', () => {
@@ -83,21 +83,21 @@ describe('KpiCard', () => {
       <KpiCard metric="p99" label="p99 Latency" value={150} delta={0.2} unit="ms" isLoading={false} isError={false} />,
     )
     const delta = screen.getByText('+20.0%')
-    expect(delta).toHaveStyle({ color: '#f43f5e' })
+    expect(delta).toHaveStyle({ color: 'var(--trend-negative)' })
   })
 
   it('colors delta green for cost when delta is negative (lower cost = good)', () => {
     render(
       <KpiCard metric="cost" label="Total Cost" value={50} delta={-0.1} unit="USD" isLoading={false} isError={false} />,
     )
-    expect(screen.getByText('-10.0%')).toHaveStyle({ color: '#10b981' })
+    expect(screen.getByText('-10.0%')).toHaveStyle({ color: 'var(--trend-positive)' })
   })
 
   it('colors delta green for anomalies when delta is negative (fewer anomalies = good)', () => {
     render(
       <KpiCard metric="anomalies" label="Anomaly Count" value={3} delta={-0.5} isLoading={false} isError={false} />,
     )
-    expect(screen.getByText('-50.0%')).toHaveStyle({ color: '#10b981' })
+    expect(screen.getByText('-50.0%')).toHaveStyle({ color: 'var(--trend-positive)' })
   })
 
   it('renders dash on error state', () => {
