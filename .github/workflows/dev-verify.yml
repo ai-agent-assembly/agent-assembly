@@ -7,12 +7,16 @@ on:
       - "Makefile"
       - "scripts/**"
       - ".github/workflows/dev-verify.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
   pull_request:
     branches: [master]
     paths:
       - "Makefile"
       - "scripts/**"
       - ".github/workflows/dev-verify.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
 
 jobs:
   dev-verify:

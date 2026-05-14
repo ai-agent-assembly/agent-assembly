@@ -13,6 +13,8 @@ on:
       - "openapi/v1.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
   pull_request:
     branches: [master]
     paths:
@@ -25,6 +27,8 @@ on:
       - "openapi/v1.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
 
 env:
   CARGO_TERM_COLOR: always
