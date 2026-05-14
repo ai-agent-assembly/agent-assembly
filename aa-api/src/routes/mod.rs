@@ -6,6 +6,7 @@ pub mod agents;
 pub mod alerts;
 pub mod approvals;
 pub mod auth;
+pub mod capability;
 pub mod costs;
 pub mod devtools;
 pub mod edges;
