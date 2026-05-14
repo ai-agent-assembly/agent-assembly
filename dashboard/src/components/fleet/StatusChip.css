@@ -9,8 +9,8 @@
   white-space: nowrap;
 }
 
-.fleet-status--active { color: #22592a; }
-.fleet-status--idle { color: #8a8a8a; }
-.fleet-status--suspended { color: #b8291e; }
-.fleet-status--error { color: #b8291e; }
-.fleet-status--unknown { color: #8a8a8a; }
+.fleet-status--active { color: var(--ok); }
+.fleet-status--idle { color: var(--ink-4); }
+.fleet-status--suspended { color: var(--danger); }
+.fleet-status--error { color: var(--danger); }
+.fleet-status--unknown { color: var(--ink-4); }
