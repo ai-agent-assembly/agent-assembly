@@ -28,7 +28,7 @@ export function ConfirmRoleChangeModal({
         <p style={{ fontSize: '0.9rem', margin: '0 0 0.75rem' }}>
           Change <strong>{member.name}</strong>’s role from <strong>{member.role}</strong> to <strong>{nextRole}</strong>?
         </p>
-        <p style={{ fontSize: '0.85rem', color: '#b91c1c', margin: 0 }} data-testid="confirm-role-warning">
+        <p style={{ fontSize: '0.85rem', color: 'var(--status-danger-hover-text)', margin: 0 }} data-testid="confirm-role-warning">
           {danger.message}
         </p>
         <div className="iam-dialog__actions">
