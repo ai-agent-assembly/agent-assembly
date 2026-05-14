@@ -10,7 +10,7 @@
 .fleet-trust__track {
   width: 60px;
   height: 6px;
-  background: #d8d4c7;
+  background: var(--line);
   border-radius: 1px;
   overflow: hidden;
   display: inline-block;
@@ -26,10 +26,10 @@
   font-weight: 600;
 }
 
-.fleet-trust--ok { color: #22592a; }
-.fleet-trust--warn { color: #8a5a00; }
-.fleet-trust--danger { color: #b8291e; }
+.fleet-trust--ok { color: var(--ok); }
+.fleet-trust--warn { color: var(--warn); }
+.fleet-trust--danger { color: var(--danger); }
 
 .fleet-trust--empty {
-  color: #8a8a8a;
+  color: var(--ink-4);
 }
