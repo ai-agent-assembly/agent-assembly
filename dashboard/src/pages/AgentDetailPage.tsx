@@ -266,6 +266,22 @@ export function AgentDetailPage() {
                 </h1>
               </div>
               <div className="ad-head__actions">
+                <button
+                  type="button"
+                  className="ad-head__btn"
+                  onClick={() => toast(`Opened trace for ${agent.id}`, 'info')}
+                  data-testid="agent-detail-trace"
+                >
+                  ⎈ trace last call
+                </button>
+                <button
+                  type="button"
+                  className="ad-head__btn"
+                  onClick={() => toast(`Switched ${agent.id} to shadow mode (mock)`, 'info')}
+                  data-testid="agent-detail-shadow"
+                >
+                  → shadow mode
+                </button>
                 {agent.status === 'suspended' ? (
                   <button
                     type="button"
