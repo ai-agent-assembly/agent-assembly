@@ -137,6 +137,38 @@ import { EmptyState, ErrorState } from '../components/states'
 Both components consume only design tokens from `src/styles.css`; do not pass
 inline color or spacing styles.
 
+## Live Ops page
+
+The Live Ops page (`/live`) renders the realtime governance pipeline in three zones:
+the traffic-flow canvas, the `tail -f` event stream, and the pending-approvals pool.
+The page subscribes to `GET /api/v1/ws/events?types=violation&token=<jwt>` via
+`useLiveOpsStream` (`src/features/liveOps/useLiveOpsStream.ts`), projects each
+incoming event into a 100-op ring (most-recent-first), and reconnects with
+exponential backoff (250 ms → 8 s cap, 5 attempts) before transitioning to an
+`error` state that exposes a manual `reconnect()` escape hatch surfaced as the
+`ErrorState`'s retry button. Filtering, freezing the stream (auto-scroll
+toggle), inline call-stack expansion, and the per-row action menu are
+implemented across `OperationRow`, `FilterBar`, `AutoScrollToggle`,
+`PipelineCanvas`, and `ApprovalPool` under `src/features/liveOps/`.
+
+Row actions POST against the following per-op endpoints — wired client-side
+through `src/features/liveOps/actions.ts` with an optimistic `OperationOverride`
+that is cleared on the next matching WS event or rolled back via a toast on
+rejection:
+
+- `POST /api/v1/ops/{id}/pause`     — running → blocked
+- `POST /api/v1/ops/{id}/resume`    — blocked → running
+- `POST /api/v1/ops/{id}/terminate` — any → completing (gated behind a
+  `ConfirmDialog` danger variant)
+
+The gateway-side handlers for those three endpoints are not yet shipped; until
+[AAASM-1401](https://lightning-dust-mite.atlassian.net/browse/AAASM-1401)
+lands, a real 404 exercises the dashboard rollback path. The page-level
+optimistic state machine lives in `LiveOpsPage` and is covered by
+`LiveOpsPage.actions.test.tsx`.
+
+Design source: `../design/v1/hi-fi/live-ops.jsx`.
+
 ## Design reference
 
 Hi-fi prototypes are in `../design/v1/hi-fi/`. Open `index.html` directly in a browser.
