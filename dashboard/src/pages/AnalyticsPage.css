@@ -21,8 +21,8 @@
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1rem;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-subtle-bg);
+  border: 1px solid var(--surface-card-border);
   border-radius: 8px;
 }
 
@@ -35,21 +35,21 @@
 .analytics-filter-bar__label {
   font-size: 0.875rem;
   font-weight: 500;
-  color: #374151;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .analytics-filter-bar__select {
   font-size: 0.875rem;
   padding: 0.25rem 0.5rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--form-input-border);
   border-radius: 4px;
-  background: #fff;
-  color: #111827;
+  background: var(--surface-card);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
 .analytics-filter-bar__select:focus {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
