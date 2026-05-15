@@ -359,6 +359,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-topology-integration-tests"
+version = "0.0.1"
+dependencies = [
+ "aa-api",
+ "aa-core",
+ "aa-devtool",
+ "aa-gateway",
+ "aa-runtime",
+ "anyhow",
+ "assert_cmd",
+ "axum",
+ "chrono-tz",
+ "moka",
+ "portpicker",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "aa-wasm"
 version = "0.0.1"
 dependencies = [
@@ -3913,6 +3933,15 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+
+[[package]]
+name = "portpicker"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
+dependencies = [
+ "rand 0.8.6",
+]
 
 [[package]]
 name = "potential_utf"

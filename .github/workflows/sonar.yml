@@ -114,7 +114,7 @@ jobs:
       # files. Doesn't address the binary download (the action manages that
       # internally), but trims ~30s off steady-state runs.
       - name: Cache SonarCloud analysis state
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}

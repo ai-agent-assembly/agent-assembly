@@ -4,11 +4,16 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::ComponentsBuilder;
 use utoipa::{Modify, OpenApi};
 
+use crate::models::capability::{
+    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
+    CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
+    SampleCall, Verb,
+};
 use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
-use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, ops, policies, topology, traces};
+use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, logs, ops, policies, topology, traces};
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
 #[derive(OpenApi)]
@@ -36,6 +41,7 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, ops, po
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
         (name = "ops", description = "Per-operation lifecycle actions (pause / resume / terminate)"),
+        (name = "capability", description = "Dashboard Capability Matrix — agent × resource × verb × decision view"),
     ),
     paths(
         crate::routes::health::health,
@@ -68,6 +74,8 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, ops, po
         ops::pause_op,
         ops::resume_op,
         ops::terminate_op,
+        capability::get_matrix,
+        capability::apply_override,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -116,6 +124,22 @@ use crate::routes::{agents, alerts, approvals, auth, costs, edges, logs, ops, po
         ApprovalPayload,
         BudgetAlertPayload,
         EventPayload,
+        Verb,
+        Decision,
+        ResourceGroup,
+        Resource,
+        CapCell,
+        AgentMode,
+        AgentStatus,
+        CapabilityAgent,
+        PolicyStatus,
+        PolicyRule,
+        Policy,
+        ChangeType,
+        SampleCall,
+        CapabilityMatrix,
+        CapabilityOverrideRequest,
+        CapabilityOverrideResponse,
     )),
     modifiers(&SecurityAddon),
 )]
