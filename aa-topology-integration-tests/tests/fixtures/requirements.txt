@@ -1,0 +1,8 @@
+# Pinned dependencies for the topology integration-test Python driver.
+#
+# The `agent_assembly` SDK itself is installed editably from the sibling
+# `python-sdk` repository — see the venv bootstrap in `sdk_driver.py`:
+#     pip install -e ${PYTHON_SDK_PATH:-../python-sdk}
+# That's why `agent_assembly` is NOT pinned here.
+
+langgraph>=0.2,<0.4
