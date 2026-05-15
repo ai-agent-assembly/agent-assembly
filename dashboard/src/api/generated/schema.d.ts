@@ -257,6 +257,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/capability/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/capability/override` — apply a capability override across
+         *     one or more agents. Mutating capability state is treated as a
+         *     `Global`-scope policy update, so the caller must hold the `OrgAdmin`
+         *     role (Admin API scope).
+         * @description Returns the subset of agent rows that actually changed — the dashboard
+         *     uses this to drive an optimistic-UI rollback when an override fails.
+         *     An unknown `agentId` rejects the request with 400 and leaves the store
+         *     untouched; an unknown `resourceId` on an agent is silently skipped.
+         */
+        post: operations["apply_override"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/costs": {
         parameters: {
             query?: never;
@@ -960,6 +986,28 @@ export interface components {
             policies: components["schemas"]["Policy"][];
             resources: components["schemas"]["Resource"][];
             sampleCalls: components["schemas"]["SampleCall"][];
+        };
+        /**
+         * @description Request payload for `POST /api/v1/capability/override` — apply a single
+         *     (resource, verb, decision) override across one or more agents.
+         */
+        CapabilityOverrideRequest: {
+            /** @description Agents to apply the override to. */
+            agentIds: string[];
+            /** @description New decision to record for that (resource, verb) pair. */
+            decision: components["schemas"]["Decision"];
+            /** @description Identifier of the resource whose cell is being overridden. */
+            resourceId: string;
+            /** @description Verb (read / write / delete / exec) within the cell. */
+            verb: components["schemas"]["Verb"];
+        };
+        /**
+         * @description Response envelope for `POST /api/v1/capability/override`: the subset of
+         *     agent rows that actually changed (matches `OverrideResponse` in the
+         *     dashboard's TypeScript mock).
+         */
+        CapabilityOverrideResponse: {
+            updated: components["schemas"]["CapabilityAgent"][];
         };
         /**
          * @description Classifier for what a proposed-vs-current decision change represents.
@@ -2153,6 +2201,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CapabilityMatrix"];
                 };
+            };
+        };
+    };
+    apply_override: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapabilityOverrideRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated agent rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityOverrideResponse"];
+                };
+            };
+            /** @description Unknown agent id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the role required to mutate capability state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
