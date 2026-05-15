@@ -16,6 +16,7 @@ pub mod context;
 pub mod cost;
 pub mod dashboard;
 pub mod logs;
+pub mod permissions;
 pub mod policy;
 pub mod run;
 pub mod status;
