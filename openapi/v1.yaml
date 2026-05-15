@@ -99,6 +99,35 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+  /api/v1/agents/{id}/capabilities:
+    get:
+      tags:
+      - agents
+      summary: '`GET /api/v1/agents/:id/capabilities` — effective permissions with provenance.'
+      description: |-
+        Returns the agent's merged `allow`/`deny` capability set plus the per-scope
+        contribution from every policy in its cascade. Used by `aasm policy show
+        <agent_id> --show-permissions` and `aasm topology lineage <agent_id>
+        --show-permissions`, and by the dashboard's inherited-permissions panel.
+      operationId: get_agent_capabilities
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded agent UUID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Effective permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EffectivePermissionsResponse'
+        '400':
+          description: Invalid agent ID format
+        '404':
+          description: Agent not found
   /api/v1/agents/{id}/edges:
     get:
       tags:
@@ -1587,6 +1616,29 @@ components:
         target_agent_id:
           type: string
           description: Hex-encoded target agent ID.
+    EffectivePermissionsResponse:
+      type: object
+      description: Effective permission set for an agent, with cascade provenance.
+      required:
+      - allow
+      - deny
+      - sources
+      properties:
+        allow:
+          type: array
+          items:
+            type: string
+          description: Capabilities allowed after merging the cascade (most-restrictive-wins).
+        deny:
+          type: array
+          items:
+            type: string
+          description: Capabilities denied after merging the cascade.
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionSourceResponse'
+          description: Per-scope contribution, in cascade order (broadest → narrowest).
     EventPayload:
       oneOf:
       - $ref: '#/components/schemas/ViolationPayload'
@@ -1806,6 +1858,27 @@ components:
         op_id:
           type: string
           description: Operation id from the URL path.
+    PermissionSourceResponse:
+      type: object
+      description: Per-scope contribution to an agent's effective permissions.
+      required:
+      - scope
+      - allow
+      - deny
+      properties:
+        allow:
+          type: array
+          items:
+            type: string
+          description: Capability identifiers this scope explicitly allows.
+        deny:
+          type: array
+          items:
+            type: string
+          description: Capability identifiers this scope explicitly denies.
+        scope:
+          type: string
+          description: Wire-format scope label (e.g. `"global"`, `"team:platform"`).
     PolicyResponse:
       type: object
       description: JSON representation of a governance policy version.
