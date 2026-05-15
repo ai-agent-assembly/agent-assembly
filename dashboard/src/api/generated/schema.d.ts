@@ -234,6 +234,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/capability/matrix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/capability/matrix` — return the full agent × resource ×
+         *     verb × decision matrix that backs the dashboard Capability Matrix page.
+         * @description Returns the full snapshot — resources, agents (each with a `caps` map),
+         *     policies, and sample calls — in the exact shape the dashboard's
+         *     `CapabilityClient.getMatrix()` consumes.
+         */
+        get: operations["get_matrix"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/costs": {
         parameters: {
             query?: never;
@@ -674,6 +697,11 @@ export interface components {
             ancestors: components["schemas"]["LineageStep"][];
         };
         /**
+         * @description Enforcement mode for an agent's capability policy.
+         * @enum {string}
+         */
+        AgentMode: "enforce" | "shadow";
+        /**
          * @description Minimal agent representation used in list and tree responses.
          *
          *     # Example JSON
@@ -755,6 +783,11 @@ export interface components {
             /** @description Semver version string. */
             version: string;
         };
+        /**
+         * @description Liveness status surfaced to the matrix view.
+         * @enum {string}
+         */
+        AgentStatus: "active" | "idle" | "suspended";
         /**
          * @description Recursive tree node representing an agent and all its descendants.
          *
@@ -884,6 +917,55 @@ export interface components {
              */
             threshold_pct: number;
         };
+        /**
+         * @description One cell in the (agent × resource) matrix: a decision per verb, plus an
+         *     optional `flag` marker the UI uses to highlight over-permissioned cells.
+         */
+        CapCell: {
+            delete: components["schemas"]["Decision"];
+            exec: components["schemas"]["Decision"];
+            /** @description Marks this cell for UI attention (e.g. over-permissioned). */
+            flag?: boolean | null;
+            read: components["schemas"]["Decision"];
+            write: components["schemas"]["Decision"];
+        };
+        /** @description One agent row in the dashboard Capability Matrix. */
+        CapabilityAgent: {
+            /** @description Resource-id → CapCell mapping for this agent. */
+            caps: {
+                [key: string]: components["schemas"]["CapCell"];
+            };
+            flagged?: boolean | null;
+            framework: string;
+            id: string;
+            /** @description Human-readable relative-time string (e.g. `"2m ago"`). */
+            lastSeen: string;
+            mode: components["schemas"]["AgentMode"];
+            name: string;
+            note?: string | null;
+            owner: string;
+            status: components["schemas"]["AgentStatus"];
+            /**
+             * Format: int32
+             * @description Trust score on a 0–100 scale.
+             */
+            trust: number;
+        };
+        /**
+         * @description Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
+         *     the `CapabilityMatrix` interface in `dashboard/src/api/capability.ts`.
+         */
+        CapabilityMatrix: {
+            agents: components["schemas"]["CapabilityAgent"][];
+            policies: components["schemas"]["Policy"][];
+            resources: components["schemas"]["Resource"][];
+            sampleCalls: components["schemas"]["SampleCall"][];
+        };
+        /**
+         * @description Classifier for what a proposed-vs-current decision change represents.
+         * @enum {string}
+         */
+        ChangeType: "newly-blocked" | "narrowed" | "unchanged" | "tightened" | "false-positive";
         /** @description JSON representation of the cost/budget summary. */
         CostSummary: {
             /** @description Configured daily budget limit in USD, if set. */
@@ -920,6 +1002,11 @@ export interface components {
             /** @description Optional reason for the decision. */
             reason?: string | null;
         };
+        /**
+         * @description Decision recorded for a single (agent, resource, verb) tuple.
+         * @enum {string}
+         */
+        Decision: "allow" | "narrow" | "approval" | "deny" | "na";
         /** @description Paginated list of directed edges for an agent. */
         EdgeListResponse: {
             /** @description The queried agent ID. */
@@ -1093,6 +1180,21 @@ export interface components {
             /** @description Operation id from the URL path. */
             op_id: string;
         };
+        /** @description A policy version shown in the dashboard Capability Matrix's policies tab. */
+        Policy: {
+            affects: string[];
+            /**
+             * Format: int64
+             * @description Number of times this policy fired in the last 24 hours.
+             */
+            hits24h: number;
+            id: string;
+            name: string;
+            rules: components["schemas"]["PolicyRule"][];
+            scope: string;
+            status: components["schemas"]["PolicyStatus"];
+            version: string;
+        };
         /** @description JSON representation of a governance policy version. */
         PolicyResponse: {
             /** @description Whether this is the currently active policy. */
@@ -1110,6 +1212,21 @@ export interface components {
             /** @description Policy version string. */
             version: string;
         };
+        /**
+         * @description A single rule inside a policy — resource, verbs scoped, action, and an
+         *     optional condition expression.
+         */
+        PolicyRule: {
+            action: string;
+            condition: string;
+            resource: string;
+            verb: components["schemas"]["Verb"][];
+        };
+        /**
+         * @description Lifecycle status of a policy version in the capability view.
+         * @enum {string}
+         */
+        PolicyStatus: "active" | "proposed" | "archived";
         /**
          * @description RFC 7807 Problem Details JSON body.
          * @example {
@@ -1170,6 +1287,25 @@ export interface components {
              */
             id: number;
         };
+        /**
+         * @description A resource that an agent may interact with — one column family in the
+         *     dashboard Capability Matrix.
+         */
+        Resource: {
+            /** @description Coarse group this resource belongs to. */
+            group: components["schemas"]["ResourceGroup"];
+            /** @description Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`). */
+            id: string;
+            /** @description Human-readable display name (e.g. `"Postgres"`). */
+            name: string;
+            /** @description Globbed paths covered by this resource (e.g. `["pg.public.*"]`). */
+            paths: string[];
+        };
+        /**
+         * @description Coarse group a resource belongs to, used for matrix column headings.
+         * @enum {string}
+         */
+        ResourceGroup: "comm" | "files" | "data" | "infra" | "code";
         /** @description Response from `POST /api/v1/agents/:id/resume`. */
         ResumeResponse: {
             /** @description Hex-encoded agent UUID. */
@@ -1213,6 +1349,22 @@ export interface components {
             target_role?: string | null;
             /** @description Team the request was routed to, if known. */
             target_team_id?: string | null;
+        };
+        /**
+         * @description A representative call sample shown alongside the matrix to explain the
+         *     effect of the current (and any proposed) policy.
+         */
+        SampleCall: {
+            agent: string;
+            changeType?: null | components["schemas"]["ChangeType"];
+            currentDecision: components["schemas"]["Decision"];
+            detail?: string | null;
+            /** @description Free-form explanation for a `false-positive` change classification. */
+            fpReason?: string | null;
+            proposedDecision?: null | components["schemas"]["Decision"];
+            resource: string;
+            ts: string;
+            verb: components["schemas"]["Verb"];
         };
         /**
          * @description Authorization scope level for API operations.
@@ -1465,6 +1617,11 @@ export interface components {
             /** @description Start time of the span (ISO 8601). */
             start_time: string;
         };
+        /**
+         * @description Verb a capability cell scopes its decision to.
+         * @enum {string}
+         */
+        Verb: "read" | "write" | "delete" | "exec";
         /**
          * @description Payload for `event_type: "violation"` events.
          *
@@ -1975,6 +2132,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    get_matrix: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full capability matrix snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityMatrix"];
                 };
             };
         };
