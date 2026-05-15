@@ -225,5 +225,6 @@ spec:
         topology_stats_cache: moka::future::Cache::builder()
             .time_to_live(Duration::from_secs(10))
             .build(),
+        capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
     })
 }
