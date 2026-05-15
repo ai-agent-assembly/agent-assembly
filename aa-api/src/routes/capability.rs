@@ -10,14 +10,29 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use tokio::sync::RwLock;
 
+use aa_gateway::policy::rbac::MutationKind;
+use aa_gateway::policy::scope::PolicyScope;
+
+use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::error::ProblemDetail;
 use crate::models::capability::{
-    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, ChangeType, Decision, Policy, PolicyRule,
-    PolicyStatus, Resource, ResourceGroup, SampleCall, Verb,
+    AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
+    CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
+    SampleCall, Verb,
 };
 use crate::state::AppState;
+
+/// Reasons an override request can fail before reaching the handler's
+/// response path. Mapped to ProblemDetail by the handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverrideError {
+    /// The request named an agent id that the store does not know about.
+    UnknownAgent(String),
+}
 
 /// Thread-safe holder for the dashboard Capability Matrix snapshot.
 #[derive(Debug)]
@@ -36,6 +51,39 @@ impl CapabilityStore {
     /// Return a cloned snapshot of the matrix.
     pub async fn snapshot(&self) -> CapabilityMatrix {
         self.inner.read().await.clone()
+    }
+
+    /// Apply a single `(resource_id, verb, decision)` override across the
+    /// requested agents and return the rows that changed.
+    ///
+    /// Rejects unknown `agent_id` values with `OverrideError::UnknownAgent`.
+    /// An unknown `resource_id` is silently ignored for that agent (matches
+    /// the dashboard mock at `capability.ts::applyOverrideToAgents`).
+    pub async fn apply_override(&self, req: &CapabilityOverrideRequest) -> Result<Vec<CapabilityAgent>, OverrideError> {
+        let mut matrix = self.inner.write().await;
+        // Validate every requested agent_id up front so a single unknown id
+        // rejects the whole request without partial mutation.
+        for id in &req.agent_ids {
+            if !matrix.agents.iter().any(|a| &a.id == id) {
+                return Err(OverrideError::UnknownAgent(id.clone()));
+            }
+        }
+        let mut updated = Vec::with_capacity(req.agent_ids.len());
+        for agent in matrix.agents.iter_mut() {
+            if !req.agent_ids.contains(&agent.id) {
+                continue;
+            }
+            if let Some(cell) = agent.caps.get_mut(&req.resource_id) {
+                match req.verb {
+                    Verb::Read => cell.read = req.decision,
+                    Verb::Write => cell.write = req.decision,
+                    Verb::Delete => cell.delete = req.decision,
+                    Verb::Exec => cell.exec = req.decision,
+                }
+                updated.push(agent.clone());
+            }
+        }
+        Ok(updated)
     }
 }
 
@@ -56,6 +104,66 @@ impl CapabilityStore {
 pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, Json<CapabilityMatrix>) {
     let matrix = state.capability_store.snapshot().await;
     (StatusCode::OK, Json(matrix))
+}
+
+/// `POST /api/v1/capability/override` — apply a capability override across
+/// one or more agents. Mutating capability state is treated as a
+/// `Global`-scope policy update, so the caller must hold the `OrgAdmin`
+/// role (Admin API scope).
+///
+/// Returns the subset of agent rows that actually changed — the dashboard
+/// uses this to drive an optimistic-UI rollback when an override fails.
+/// An unknown `agentId` rejects the request with 400 and leaves the store
+/// untouched; an unknown `resourceId` on an agent is silently skipped.
+#[utoipa::path(
+    post,
+    path = "/api/v1/capability/override",
+    request_body = CapabilityOverrideRequest,
+    responses(
+        (status = 200, description = "Updated agent rows", body = CapabilityOverrideResponse),
+        (status = 400, description = "Unknown agent id"),
+        (status = 403, description = "Caller lacks the role required to mutate capability state")
+    ),
+    tag = "capability"
+)]
+pub async fn apply_override(
+    policy_auth: PolicyWriteAuth,
+    Extension(state): Extension<AppState>,
+    Json(body): Json<CapabilityOverrideRequest>,
+) -> Result<(StatusCode, Json<CapabilityOverrideResponse>), OverrideHandlerError> {
+    policy_auth
+        .check_mutation(&PolicyScope::Global, MutationKind::Update)
+        .map_err(OverrideHandlerError::Forbidden)?;
+
+    let updated = state
+        .capability_store
+        .apply_override(&body)
+        .await
+        .map_err(|e| match e {
+            OverrideError::UnknownAgent(id) => OverrideHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Unknown agent id: {id}")),
+            ),
+        })?;
+
+    Ok((StatusCode::OK, Json(CapabilityOverrideResponse { updated })))
+}
+
+/// Unified error type for the override handler so 400 and 403 paths render
+/// through their respective ProblemDetail / PolicyAuthorizationDenied
+/// `IntoResponse` impls.
+#[derive(Debug)]
+pub enum OverrideHandlerError {
+    BadRequest(ProblemDetail),
+    Forbidden(PolicyAuthorizationDenied),
+}
+
+impl IntoResponse for OverrideHandlerError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::BadRequest(p) => p.into_response(),
+            Self::Forbidden(d) => d.into_response(),
+        }
+    }
 }
 
 // ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
@@ -332,6 +440,65 @@ mod tests {
         let ids: Vec<&str> = m.resources.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"pg"));
         assert!(ids.contains(&"shell"));
+    }
+
+    #[tokio::test]
+    async fn apply_override_mutates_targeted_cells_only() {
+        let store = CapabilityStore::new_seeded();
+        let before = store.snapshot().await;
+        let target_agent = before.agents[0].id.clone();
+        let untouched_agent = before.agents[1].id.clone();
+
+        let req = CapabilityOverrideRequest {
+            agent_ids: vec![target_agent.clone()],
+            resource_id: "pg".into(),
+            verb: Verb::Write,
+            decision: Decision::Deny,
+        };
+        let updated = store.apply_override(&req).await.unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].id, target_agent);
+        assert_eq!(updated[0].caps.get("pg").unwrap().write, Decision::Deny);
+
+        let after = store.snapshot().await;
+        let other_after = after.agents.iter().find(|a| a.id == untouched_agent).unwrap();
+        let other_before = before.agents.iter().find(|a| a.id == untouched_agent).unwrap();
+        assert_eq!(
+            other_after.caps.get("pg").unwrap().write,
+            other_before.caps.get("pg").unwrap().write,
+            "untouched agent's `pg.write` must be unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_override_rejects_unknown_agent() {
+        let store = CapabilityStore::new_seeded();
+        let err = store
+            .apply_override(&CapabilityOverrideRequest {
+                agent_ids: vec!["does-not-exist".into()],
+                resource_id: "pg".into(),
+                verb: Verb::Read,
+                decision: Decision::Allow,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err, OverrideError::UnknownAgent("does-not-exist".into()));
+    }
+
+    #[tokio::test]
+    async fn apply_override_skips_unknown_resource_silently() {
+        let store = CapabilityStore::new_seeded();
+        let target = store.snapshot().await.agents[0].id.clone();
+        let updated = store
+            .apply_override(&CapabilityOverrideRequest {
+                agent_ids: vec![target],
+                resource_id: "nonexistent-resource".into(),
+                verb: Verb::Read,
+                decision: Decision::Deny,
+            })
+            .await
+            .unwrap();
+        assert!(updated.is_empty(), "agent without that resource cell yields no row");
     }
 
     #[tokio::test]

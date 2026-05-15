@@ -185,6 +185,29 @@ pub struct CapabilityAgent {
     pub caps: BTreeMap<String, CapCell>,
 }
 
+/// Request payload for `POST /api/v1/capability/override` — apply a single
+/// (resource, verb, decision) override across one or more agents.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityOverrideRequest {
+    /// Agents to apply the override to.
+    pub agent_ids: Vec<String>,
+    /// Identifier of the resource whose cell is being overridden.
+    pub resource_id: String,
+    /// Verb (read / write / delete / exec) within the cell.
+    pub verb: Verb,
+    /// New decision to record for that (resource, verb) pair.
+    pub decision: Decision,
+}
+
+/// Response envelope for `POST /api/v1/capability/override`: the subset of
+/// agent rows that actually changed (matches `OverrideResponse` in the
+/// dashboard's TypeScript mock).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CapabilityOverrideResponse {
+    pub updated: Vec<CapabilityAgent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +384,28 @@ mod tests {
         assert!(json.get("flagged").is_none(), "flagged should be omitted when None");
         assert!(json.get("note").is_none(), "note should be omitted when None");
         assert_eq!(json["caps"]["pg"]["write"], "approval");
+    }
+
+    #[test]
+    fn override_response_serializes_updated_array() {
+        let resp = CapabilityOverrideResponse { updated: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["updated"].is_array());
+        assert_eq!(json["updated"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn override_request_deserializes_camel_case() {
+        let raw = r#"{
+            "agentIds": ["support-triage", "research-bot-04"],
+            "resourceId": "pg",
+            "verb": "write",
+            "decision": "deny"
+        }"#;
+        let req: CapabilityOverrideRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.agent_ids, vec!["support-triage", "research-bot-04"]);
+        assert_eq!(req.resource_id, "pg");
+        assert_eq!(req.verb, Verb::Write);
+        assert_eq!(req.decision, Decision::Deny);
     }
 }
