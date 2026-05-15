@@ -147,6 +147,47 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
     }
 }
 
+/// Per-scope contribution to an effective permission set.
+///
+/// Carries the `allow` and `deny` capabilities a single policy document declares
+/// at one scope along the cascade chain. The `scope` field is a wire-format
+/// label such as `"global"`, `"org:acme"`, `"team:platform"`, or
+/// `"agent:<uuid>"`; the gateway populates it from the policy's own
+/// `PolicyScope` so the renderer can show provenance without depending on the
+/// gateway's enum.
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PermissionSource {
+    /// Wire-format scope label (e.g. `"global"`, `"team:platform"`).
+    pub scope: String,
+    /// Capabilities this scope explicitly allows.
+    pub allow: BTreeSet<Capability>,
+    /// Capabilities this scope explicitly denies.
+    pub deny: BTreeSet<Capability>,
+}
+
+/// Effective capability set for a single agent, with cascade provenance.
+///
+/// `merged` is the result of folding `merge_capabilities` left-to-right over
+/// every policy document that applies to the agent (Global → Org → Team →
+/// Agent → Tool). `sources` records each contributing scope's individual
+/// `allow`/`deny`, in cascade order, so consumers (CLI, dashboard) can show
+/// *where* each capability decision originates.
+///
+/// `sources` may be empty if no policy in the cascade declares a
+/// `capabilities` block, in which case `merged` is also empty (no allow-list
+/// restriction).
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EffectivePermissions {
+    /// Merged result after most-restrictive-wins cascade.
+    pub merged: CapabilitySet,
+    /// Per-scope contribution, in cascade order (broadest → narrowest).
+    pub sources: alloc::vec::Vec<PermissionSource>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
