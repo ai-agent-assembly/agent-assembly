@@ -11,6 +11,9 @@
 //! (`aa-gateway` is gRPC-only and there is currently no `aa-api` HTTP
 //! binary in the workspace).
 
+#[allow(dead_code)]
+pub mod sdk_driver;
+
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -225,5 +228,6 @@ spec:
         topology_stats_cache: moka::future::Cache::builder()
             .time_to_live(Duration::from_secs(10))
             .build(),
+        capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
     })
 }
