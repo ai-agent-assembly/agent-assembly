@@ -1,3 +1,7 @@
+// Shared across multiple test binaries (smoke, sdk_driver_selftest, …); not
+// every binary uses every helper, so dead-code warnings here are noise.
+#![allow(dead_code)]
+
 //! Test harness for the topology integration test suite (AAASM-1066 / ST-1).
 //!
 //! Provides `TopologyTestEnv` — a self-contained fixture that builds a minimal
