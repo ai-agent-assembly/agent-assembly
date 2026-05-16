@@ -72,6 +72,33 @@ message AuditEvent {
   string spawned_by_tool  = 26;
   // Delegation depth — 0 for root agents, +1 per level.
   uint32 depth            = 27;
+
+  // ── Call stack (AAASM-1419) ─────────────────────────────────────────────
+  // Hierarchical record of LLM/tool/result steps that led to this event.
+  // Renders inline beneath an expanded Live Ops row in the dashboard.
+  // Empty (default) when the producer did not record a stack.
+  repeated CallStackNode call_stack = 28;
+}
+
+// ── Call stack ────────────────────────────────────────────────────────────────
+
+// CallStackNode is one node in the hierarchical call stack attached to an
+// AuditEvent. Mirrors the dashboard `LiveOperation.callStack` TS type so a
+// proto event can be rendered without a structural transform.
+message CallStackNode {
+  // Stable identifier for this node within the call stack.
+  string id        = 1;
+  // Node category — one of "llm", "tool", or "result". String-typed (not
+  // an enum) to keep this open-ended for downstream renderers.
+  string kind      = 2;
+  // Human-readable label rendered in the dashboard (e.g. a tool name or
+  // a model identifier).
+  string label     = 3;
+  // Step-local latency in milliseconds. Optional; `0` (default) means
+  // the producer did not record a duration for this node.
+  int64  latency_ms = 4;
+  // Recursive descent — nested calls produced by this step.
+  repeated CallStackNode children = 5;
 }
 
 // ── Detail messages ───────────────────────────────────────────────────────────
