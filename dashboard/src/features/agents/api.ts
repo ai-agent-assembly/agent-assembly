@@ -8,6 +8,8 @@ export type SubtreeBurn = components['schemas']['SubtreeBurnResponse']
 export type DailyBurnPoint = components['schemas']['DailyBurnPointResponse']
 export type ChildSpend = components['schemas']['ChildSpendResponse']
 export type BurnPeriod = '7d' | '30d'
+export type EffectivePermissions = components['schemas']['EffectivePermissionsResponse']
+export type PermissionSource = components['schemas']['PermissionSourceResponse']
 
 export function useAgentsQuery() {
   return useQuery({
@@ -45,6 +47,21 @@ export function useAgentSubtreeBurnQuery(id: string, period: BurnPeriod = '7d') 
       })
       if (error) throw new Error('Failed to fetch subtree burn')
       if (!data) throw new Error('Subtree burn response was empty')
+      return data
+    },
+    enabled: !!id,
+  })
+}
+
+export function useAgentCapabilitiesQuery(id: string) {
+  return useQuery<EffectivePermissions>({
+    queryKey: ['agents', id, 'capabilities'],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/agents/{id}/capabilities', {
+        params: { path: { id } },
+      })
+      if (error) throw new Error('Failed to fetch agent capabilities')
+      if (!data) throw new Error('Agent capabilities response was empty')
       return data
     },
     enabled: !!id,
