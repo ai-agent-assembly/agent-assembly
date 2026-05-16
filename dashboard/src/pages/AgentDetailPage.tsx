@@ -9,6 +9,7 @@ import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
 import { LoadingState } from '../components/LoadingState'
+import { InheritedPermissionsPanel } from '../components/InheritedPermissionsPanel'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
 const SubtreeBurnChart = lazy(() =>
@@ -386,12 +387,7 @@ export function AgentDetailPage() {
                 </div>
               )}
 
-              {tab === 'capability' && (
-                <TabEmpty
-                  title="Capability"
-                  body="The capability matrix scoped to this agent is rendered on the global Capability page (AAASM-1280). Inline view lands in a follow-up sub-task."
-                />
-              )}
+              {tab === 'capability' && <InheritedPermissionsPanel agentId={agent.id} />}
               {tab === 'traffic' && (
                 <TabEmpty
                   title="Traffic"
