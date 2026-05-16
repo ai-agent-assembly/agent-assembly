@@ -541,6 +541,16 @@ impl BudgetTracker {
         self.team_budgets.get(team_id).map(|s| s.clone())
     }
 
+    /// Return the current spend state for a specific agent, or `None` if the
+    /// agent has no recorded spend.
+    ///
+    /// Read-only snapshot — does not mutate any state and does not perform a
+    /// daily / monthly reset before returning. Callers that need a freshly
+    /// reset view should call [`BudgetState::maybe_reset`] themselves.
+    pub fn agent_state(&self, agent_id: &AgentId) -> Option<BudgetState> {
+        self.per_agent.get(agent_id).map(|s| s.clone())
+    }
+
     /// Return a snapshot of the current global (all-agents combined) budget state.
     pub fn global_state(&self) -> BudgetState {
         self.global
