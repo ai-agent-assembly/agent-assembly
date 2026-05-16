@@ -2,6 +2,7 @@ import { useAlertQuery } from './api'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
 import { SilenceAction } from './SilenceAction'
+import { RuleYamlViewer } from './RuleYamlViewer'
 import type { AlertDetail } from './types'
 
 function ruleYaml(detail: AlertDetail): string {
@@ -75,20 +76,7 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
 
       <section style={sectionStyle}>
         <span style={sectionHeader}>Rule YAML</span>
-        <pre
-          data-testid="alert-detail-rule-yaml"
-          style={{
-            background: 'var(--surface-hover-bg)',
-            padding: '0.75rem',
-            borderRadius: '4px',
-            fontSize: '0.75rem',
-            margin: 0,
-            overflowX: 'auto',
-            whiteSpace: 'pre',
-          }}
-        >
-          {ruleYaml(data)}
-        </pre>
+        <RuleYamlViewer yaml={ruleYaml(data)} />
       </section>
 
       <section style={sectionStyle}>
