@@ -39,6 +39,7 @@ pub fn v1_router() -> Router {
         .route("/agents/{id}/resume", post(agents::resume_agent))
         .route("/agents/{id}/capabilities", get(agents::get_agent_capabilities))
         .route("/agents/{id}/budget", get(agents::get_agent_budget))
+        .route("/agents/{id}/subtree-burn", get(agents::get_agent_subtree_burn))
         // Logs
         .route("/logs", get(logs::list_logs))
         // Traces

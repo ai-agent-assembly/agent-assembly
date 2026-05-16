@@ -530,6 +530,152 @@ pub async fn get_agent_budget(
     Ok((StatusCode::OK, Json(BudgetRollupResponse { rows })))
 }
 
+// ---------------------------------------------------------------------------
+// Subtree-burn (AAASM-1055 / F100)
+// ---------------------------------------------------------------------------
+
+/// Per-direct-child contribution to a single day's subtree spend.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChildSpendResponse {
+    /// Hex-encoded child agent ID.
+    pub child_agent_id: String,
+    /// Display name of the child agent.
+    pub child_name: String,
+    /// USD spent by this child on the given date (string-encoded Decimal).
+    pub spent_usd: String,
+}
+
+/// One point in the subtree-burn time series.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DailyBurnPointResponse {
+    /// ISO 8601 calendar date (YYYY-MM-DD) the point covers.
+    pub date: String,
+    /// Per-direct-child contributions, ordered by child agent ID for stability.
+    pub per_child: Vec<ChildSpendResponse>,
+    /// Total subtree spend for the date (root + descendants, string-encoded Decimal).
+    pub total_usd: String,
+}
+
+/// Response for `GET /api/v1/agents/{id}/subtree-burn`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SubtreeBurnResponse {
+    /// Hex-encoded root agent ID.
+    pub agent_id: String,
+    /// Requested period: `"7d"` or `"30d"`.
+    pub period: String,
+    /// Time series, ordered oldest → newest.
+    pub points: Vec<DailyBurnPointResponse>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct SubtreeBurnParams {
+    /// Period string: `7d` (default) or `30d`.
+    pub period: Option<String>,
+}
+
+fn parse_subtree_burn_period(s: Option<&str>) -> &'static str {
+    match s {
+        Some("30d") => "30d",
+        _ => "7d",
+    }
+}
+
+/// `GET /api/v1/agents/{id}/subtree-burn` — per-direct-child subtree spend time series.
+///
+/// **Current behaviour (preview)**: returns a single data point for today
+/// only. The wire schema accepts and echoes back the `period=7d|30d`
+/// parameter so consumers can pin a contract, but real per-day historical
+/// aggregation requires a daily-spend history store that does not yet
+/// exist in `aa-gateway::budget`. A follow-up Subtask will extend the
+/// tracker with persistent history and populate the full series; the
+/// dashboard chart already handles `points.len() >= 1` so it will pick
+/// up the additional points without any frontend change.
+///
+/// Each child's spend is read from `BudgetTracker::agent_state` for the
+/// agent's direct descendants (via `AgentRegistry::children_of`). The
+/// agent's own spend is included as a synthetic `child_name: "(self)"`
+/// row when the root has its own recorded spend, so the stack adds up to
+/// the subtree total.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/subtree-burn",
+    params(
+        ("id" = String, Path, description = "Hex-encoded agent UUID"),
+        SubtreeBurnParams,
+    ),
+    responses(
+        (status = 200, description = "Subtree-burn time series", body = SubtreeBurnResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_subtree_burn(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<SubtreeBurnParams>,
+) -> Result<(StatusCode, Json<SubtreeBurnResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+    let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+
+    if state.agent_registry.get(&agent_id_bytes).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
+    }
+
+    let period = parse_subtree_burn_period(params.period.as_deref());
+
+    let mut per_child: Vec<ChildSpendResponse> = Vec::new();
+    let mut total = rust_decimal::Decimal::ZERO;
+
+    if let Some(root_state) = state.budget_tracker.agent_state(&agent_id) {
+        if root_state.spent_usd > rust_decimal::Decimal::ZERO {
+            per_child.push(ChildSpendResponse {
+                child_agent_id: hex::encode(agent_id.as_bytes()),
+                child_name: "(self)".to_string(),
+                spent_usd: root_state.spent_usd.to_string(),
+            });
+            total += root_state.spent_usd;
+        }
+    }
+
+    let mut children = state.agent_registry.children_of(&agent_id_bytes);
+    children.sort();
+    for child_id_bytes in children {
+        let child_id = aa_core::identity::AgentId::from_bytes(child_id_bytes);
+        let child_state = match state.budget_tracker.agent_state(&child_id) {
+            Some(s) => s,
+            None => continue,
+        };
+        let child_name = state
+            .agent_registry
+            .get(&child_id_bytes)
+            .map(|rec| rec.name)
+            .unwrap_or_else(|| hex::encode(child_id_bytes));
+        per_child.push(ChildSpendResponse {
+            child_agent_id: hex::encode(child_id_bytes),
+            child_name,
+            spent_usd: child_state.spent_usd.to_string(),
+        });
+        total += child_state.spent_usd;
+    }
+
+    let today = chrono::Utc::now().date_naive().to_string();
+    let point = DailyBurnPointResponse {
+        date: today,
+        per_child,
+        total_usd: total.to_string(),
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(SubtreeBurnResponse {
+            agent_id: hex::encode(agent_id.as_bytes()),
+            period: period.to_string(),
+            points: vec![point],
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
