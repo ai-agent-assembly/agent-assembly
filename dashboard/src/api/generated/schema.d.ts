@@ -48,6 +48,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/budget` — per-scope budget rollup for an agent.
+         * @description Returns rows for the agent itself, its team (if it belongs to one), the
+         *     org / global totals, and its delegation subtree (if it has descendants).
+         *     Each row carries `spent_usd`, `limit_usd`, `remaining_usd`, and
+         *     `percent_used` (the latter two omitted when no limit is configured).
+         *     Backs `aasm policy show <agent_id> --show-budget` (AAASM-1051) and the
+         *     dashboard's budget-burn surface (AAASM-1055).
+         */
+        get: operations["get_agent_budget"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/capabilities": {
         parameters: {
             query?: never;
@@ -966,6 +991,29 @@ export interface components {
              */
             threshold_pct: number;
         };
+        /** @description Aggregated budget rollup for an agent across its scope hierarchy. */
+        BudgetRollupResponse: {
+            /** @description Rows ordered narrowest scope first (agent → team → org → subtree). */
+            rows: components["schemas"]["BudgetRowResponse"][];
+        };
+        /** @description One budget row in the rollup — agent / team / org / subtree × daily / monthly. */
+        BudgetRowResponse: {
+            /** @description Configured limit for the period, if any (string-encoded Decimal). */
+            limit_usd?: string | null;
+            /**
+             * Format: double
+             * @description Spend / limit × 100. Omitted when no limit.
+             */
+            percent_used?: number | null;
+            /** @description Period the row covers: `"daily"`, `"monthly"`, or `"today"` (subtree). */
+            period: string;
+            /** @description `limit_usd - spent_usd`, clamped at zero. Omitted when no limit. */
+            remaining_usd?: string | null;
+            /** @description Scope label: `"agent"`, `"team:<id>"`, `"org"`, or `"subtree"`. */
+            scope: string;
+            /** @description Total USD spent in the period (string-encoded Decimal). */
+            spent_usd: string;
+        };
         /**
          * @description One cell in the (agent × resource) matrix: a decision per verb, plus an
          *     optional `flag` marker the UI uses to highlight over-permissioned cells.
@@ -1861,6 +1909,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_budget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Budget rollup rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetRollupResponse"];
+                };
             };
             /** @description Invalid agent ID format */
             400: {

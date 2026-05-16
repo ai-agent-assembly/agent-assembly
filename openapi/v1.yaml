@@ -99,6 +99,37 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+  /api/v1/agents/{id}/budget:
+    get:
+      tags:
+      - agents
+      summary: '`GET /api/v1/agents/:id/budget` — per-scope budget rollup for an agent.'
+      description: |-
+        Returns rows for the agent itself, its team (if it belongs to one), the
+        org / global totals, and its delegation subtree (if it has descendants).
+        Each row carries `spent_usd`, `limit_usd`, `remaining_usd`, and
+        `percent_used` (the latter two omitted when no limit is configured).
+        Backs `aasm policy show <agent_id> --show-budget` (AAASM-1051) and the
+        dashboard's budget-burn surface (AAASM-1055).
+      operationId: get_agent_budget
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded agent UUID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Budget rollup rows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetRollupResponse'
+        '400':
+          description: Invalid agent ID format
+        '404':
+          description: Agent not found
   /api/v1/agents/{id}/capabilities:
     get:
       tags:
@@ -1558,6 +1589,50 @@ components:
           format: int32
           description: Threshold percentage that was crossed (e.g. `80` or `95`).
           minimum: 0
+    BudgetRollupResponse:
+      type: object
+      description: Aggregated budget rollup for an agent across its scope hierarchy.
+      required:
+      - rows
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetRowResponse'
+          description: Rows ordered narrowest scope first (agent → team → org → subtree).
+    BudgetRowResponse:
+      type: object
+      description: One budget row in the rollup — agent / team / org / subtree × daily / monthly.
+      required:
+      - scope
+      - period
+      - spent_usd
+      properties:
+        limit_usd:
+          type:
+          - string
+          - 'null'
+          description: Configured limit for the period, if any (string-encoded Decimal).
+        percent_used:
+          type:
+          - number
+          - 'null'
+          format: double
+          description: Spend / limit × 100. Omitted when no limit.
+        period:
+          type: string
+          description: 'Period the row covers: `"daily"`, `"monthly"`, or `"today"` (subtree).'
+        remaining_usd:
+          type:
+          - string
+          - 'null'
+          description: '`limit_usd - spent_usd`, clamped at zero. Omitted when no limit.'
+        scope:
+          type: string
+          description: 'Scope label: `"agent"`, `"team:<id>"`, `"org"`, or `"subtree"`.'
+        spent_usd:
+          type: string
+          description: Total USD spent in the period (string-encoded Decimal).
     CapCell:
       type: object
       description: |-
