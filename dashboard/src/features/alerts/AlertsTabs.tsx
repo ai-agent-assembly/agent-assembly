@@ -1,4 +1,4 @@
-export type AlertsTab = 'active' | 'incidents'
+export type AlertsTab = 'active' | 'incidents' | 'rules'
 
 interface AlertsTabsProps {
   value: AlertsTab
@@ -8,6 +8,8 @@ interface AlertsTabsProps {
 const TABS: ReadonlyArray<{ value: AlertsTab; label: string }> = [
   { value: 'active', label: 'Active' },
   { value: 'incidents', label: 'Incidents' },
+  // AAASM-1393 — design-spec parity with hi-fi alerts.jsx ("Rule Configuration").
+  { value: 'rules', label: 'Rule Configuration' },
 ]
 
 export function AlertsTabs({ value, onChange }: AlertsTabsProps) {
