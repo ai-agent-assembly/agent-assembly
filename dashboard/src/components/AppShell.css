@@ -51,6 +51,16 @@
   min-width: 1.5rem;
 }
 
+.appshell__nav-icon {
+  /* Optional glyph (AAASM-1373) rendered between the num prefix and the
+     label. Aligns visually with .appshell__nav-num — same vertical centre
+     via the parent flex row, slightly larger font for legibility. */
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+}
+
 .appshell__nav-link:hover {
   background: var(--shell-nav-hover-bg);
   color: var(--shell-nav-text);
