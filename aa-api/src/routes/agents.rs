@@ -467,12 +467,17 @@ pub struct BudgetRollupResponse {
 }
 
 fn budget_row_to_response(row: aa_gateway::budget::BudgetRow) -> BudgetRowResponse {
+    // AAASM-1051 AC: "Format USD using `Decimal::round_dp(2)`". Wire strings
+    // always have exactly two decimals; the CLI presentation layer adds
+    // thousands separators on top, JSON / YAML consumers get the canonical
+    // rounded value so downstream code can re-format as needed.
+    let fmt_usd = |d: rust_decimal::Decimal| format!("{:.2}", d.round_dp(2));
     BudgetRowResponse {
         scope: row.scope,
         period: row.period,
-        spent_usd: row.spent_usd.to_string(),
-        limit_usd: row.limit_usd.map(|d| d.to_string()),
-        remaining_usd: row.remaining_usd.map(|d| d.to_string()),
+        spent_usd: fmt_usd(row.spent_usd),
+        limit_usd: row.limit_usd.map(fmt_usd),
+        remaining_usd: row.remaining_usd.map(fmt_usd),
         percent_used: row.percent_used,
     }
 }
