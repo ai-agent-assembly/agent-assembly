@@ -5,6 +5,9 @@
 //! `aasm topology lineage <agent_id> --show-permissions`. The wire schema
 //! matches `aa_api::routes::agents::EffectivePermissionsResponse`.
 
+use std::collections::BTreeSet;
+
+use comfy_table::{ContentArrangement, Table};
 use serde::Deserialize;
 
 use crate::client;
@@ -39,10 +42,11 @@ pub async fn fetch_effective_permissions(
 
 /// Render an `EffectivePermissions` payload to stdout in the requested format.
 ///
-/// Text format: per-scope sections (broadest → narrowest) followed by an
-/// `Effective` summary. Capabilities are bullet-listed under `Allow:` /
-/// `Deny:` headers and sorted lexicographically by the API. JSON format
-/// pretty-prints the payload as-is.
+/// Text format (default): a `comfy-table` with one row per capability appearing
+/// anywhere in the cascade. Columns are `Capability` / `Effective` (Allow /
+/// Deny / —) / `Granted by` (scopes whose `allow` lists the capability) /
+/// `Denied by` (scopes whose `deny` lists it). JSON and YAML formats serialise
+/// the raw response payload.
 pub fn render(perms: &EffectivePermissions, output: OutputFormat) {
     match output {
         OutputFormat::Json => render_json(perms),
@@ -82,34 +86,100 @@ fn render_yaml(perms: &EffectivePermissions) {
     );
 }
 
+/// Effective verdict for a single capability after merging the cascade.
+///
+/// The merge contract is parent-deny-wins; capabilities can also be filtered
+/// out of `merged.allow` when scopes intersect non-empty allow-lists. `Open`
+/// is used when no `allow` list applies (i.e. `merged.allow.is_empty()` and
+/// the capability is not explicitly denied): no restriction is in force.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Effective {
+    Allow,
+    Deny,
+    /// Capability appears in some scope's allow but is filtered out by
+    /// `most-restrictive-wins` intersection with another scope's allow.
+    Filtered,
+    /// No allow-list constrains this capability and no deny lists it.
+    Open,
+}
+
+impl Effective {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "Allow",
+            Self::Deny => "Deny",
+            Self::Filtered => "—",
+            Self::Open => "(open)",
+        }
+    }
+}
+
+fn effective_for(cap: &str, perms: &EffectivePermissions) -> Effective {
+    if perms.deny.iter().any(|c| c == cap) {
+        Effective::Deny
+    } else if perms.allow.iter().any(|c| c == cap) {
+        Effective::Allow
+    } else if perms.allow.is_empty() && perms.sources.iter().all(|s| s.allow.is_empty()) {
+        // No source ever constrained the allow-list — every cap is open.
+        Effective::Open
+    } else {
+        Effective::Filtered
+    }
+}
+
 fn render_text(perms: &EffectivePermissions) {
     if perms.sources.is_empty() {
         println!("No policy in this agent's cascade declares a capabilities block.");
-        println!("Effective: (no allow-list restriction, no denies)");
+        println!("Effective: no allow-list restriction, no denies.");
         return;
     }
 
+    // Union every capability mentioned anywhere in the cascade. BTreeSet keeps
+    // output deterministic (lexicographic by capability identifier).
+    let mut all_caps: BTreeSet<&str> = BTreeSet::new();
     for src in &perms.sources {
-        println!("Source: {}", src.scope);
-        print_list("  Allow", &src.allow);
-        print_list("  Deny", &src.deny);
-        println!();
-    }
-
-    println!("Effective (most-restrictive-wins merge):");
-    print_list("  Allow", &perms.allow);
-    print_list("  Deny", &perms.deny);
-}
-
-fn print_list(label: &str, items: &[String]) {
-    if items.is_empty() {
-        println!("{label}: (none)");
-    } else {
-        println!("{label}:");
-        for item in items {
-            println!("    - {item}");
+        for c in &src.allow {
+            all_caps.insert(c.as_str());
+        }
+        for c in &src.deny {
+            all_caps.insert(c.as_str());
         }
     }
+    for c in &perms.allow {
+        all_caps.insert(c.as_str());
+    }
+    for c in &perms.deny {
+        all_caps.insert(c.as_str());
+    }
+
+    let mut table = Table::new();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Capability", "Effective", "Granted by", "Denied by"]);
+
+    for cap in &all_caps {
+        let granted_by: Vec<&str> = perms
+            .sources
+            .iter()
+            .filter(|s| s.allow.iter().any(|c| c == cap))
+            .map(|s| s.scope.as_str())
+            .collect();
+        let denied_by: Vec<&str> = perms
+            .sources
+            .iter()
+            .filter(|s| s.deny.iter().any(|c| c == cap))
+            .map(|s| s.scope.as_str())
+            .collect();
+        let effective = effective_for(cap, perms);
+        table.add_row(vec![
+            cap.to_string(),
+            effective.label().to_string(),
+            granted_by.join(", "),
+            denied_by.join(", "),
+        ]);
+    }
+
+    println!("{table}");
 }
 
 #[cfg(test)]
@@ -157,15 +227,41 @@ mod tests {
             deny: vec![],
             sources: vec![],
         };
-        // Smoke: render_text should not panic. Captured-stdout coverage is
-        // exercised by integration tests under tests/.
+        // Smoke: render_text should not panic on the no-policy edge case.
         render_text(&perms);
     }
 
     #[test]
     fn sample_renders_each_source_and_effective_section() {
-        // Smoke: render both formats without panic.
+        // Smoke: render every format without panic.
         render_text(&sample());
         render_json(&sample());
+        render_yaml(&sample());
+    }
+
+    #[test]
+    fn effective_for_classifies_each_case() {
+        let perms = sample();
+        // file_read is in merged.allow → Allow
+        assert_eq!(effective_for("file_read", &perms), Effective::Allow);
+        // network_outbound is in merged.deny → Deny
+        assert_eq!(effective_for("network_outbound", &perms), Effective::Deny);
+        // file_write appears in a source allow but was filtered out by the
+        // most-restrictive intersection with team:platform's narrower allow.
+        assert_eq!(effective_for("file_write", &perms), Effective::Filtered);
+    }
+
+    #[test]
+    fn effective_for_returns_open_when_no_source_constrains_allow() {
+        let perms = EffectivePermissions {
+            allow: vec![],
+            deny: vec![],
+            sources: vec![PermissionSource {
+                scope: "global".to_string(),
+                allow: vec![],
+                deny: vec![],
+            }],
+        };
+        assert_eq!(effective_for("anything", &perms), Effective::Open);
     }
 }
