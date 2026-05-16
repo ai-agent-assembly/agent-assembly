@@ -49,6 +49,13 @@ pub struct FileIoEventRaw {
     pub flags: u32,
     /// Syscall return code.
     pub return_code: i64,
+    /// End-to-end syscall duration in nanoseconds (exit_ts − enter_ts).
+    ///
+    /// Populated by kretprobes that pair with an entry kprobe via a
+    /// per-tid timestamp map. `0` when the syscall has only an entry
+    /// hook (currently: read / write / unlink / rename — tracked under
+    /// the AAASM-1425 follow-up for the remaining syscalls).
+    pub duration_ns: u64,
     /// File path as a null-terminated byte array.
     pub path: [u8; MAX_PATH_LEN],
 }
