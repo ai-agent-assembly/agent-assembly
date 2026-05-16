@@ -6,13 +6,13 @@ mod maps;
 
 use aa_ebpf_common::file::{FdPathKey, FileIoEventRaw, SyscallType, MAX_PATH_LEN};
 use aya_ebpf::{
-    helpers::bpf_probe_read_user_str_bytes,
+    helpers::{bpf_ktime_get_ns, bpf_probe_read_user_str_bytes},
     macros::{kprobe, kretprobe},
     programs::{ProbeContext, RetProbeContext},
 };
 
 use crate::helpers::{emit_event, get_pid_tgid, should_monitor};
-use crate::maps::{FD_PATH_MAP, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST};
+use crate::maps::{FD_PATH_MAP, OPENAT_ENTRY_TS, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST};
 
 /// kprobe on `sys_openat` — captures the filename argument and stashes
 /// it in `OPENAT_TMP` keyed by `pid_tgid` so the kretprobe can pair it
@@ -41,6 +41,10 @@ fn try_sys_openat(ctx: &ProbeContext) -> Result<u32, u32> {
 
     let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
     let _ = OPENAT_TMP.insert(&pid_tgid, &buf, 0);
+
+    // Stash the entry timestamp so the kretprobe can compute duration.
+    let entry_ts = unsafe { bpf_ktime_get_ns() };
+    let _ = OPENAT_ENTRY_TS.insert(&pid_tgid, &entry_ts, 0);
 
     Ok(0)
 }
@@ -75,8 +79,16 @@ fn try_sys_openat_ret(ctx: &RetProbeContext) -> Result<u32, u32> {
         syscall: SyscallType::Openat,
         flags: 0,
         return_code: 0,
+        duration_ns: 0,
         path: *path,
     };
+
+    // Compute end-to-end syscall duration from the entry-timestamp map.
+    if let Some(&entry_ts) = unsafe { OPENAT_ENTRY_TS.get(&pid_tgid) } {
+        let now = unsafe { bpf_ktime_get_ns() };
+        event.duration_ns = now.saturating_sub(entry_ts);
+        let _ = OPENAT_ENTRY_TS.remove(&pid_tgid);
+    }
 
     // Clean up the temporary entry.
     let _ = OPENAT_TMP.remove(&pid_tgid);
@@ -143,6 +155,7 @@ fn try_sys_read(ctx: &ProbeContext) -> Result<u32, u32> {
         syscall: SyscallType::Read,
         flags: 0,
         return_code: 0,
+        duration_ns: 0,
         path: *path,
     };
 
@@ -189,6 +202,7 @@ fn try_sys_write(ctx: &ProbeContext) -> Result<u32, u32> {
         syscall: SyscallType::Write,
         flags: 0,
         return_code: 0,
+        duration_ns: 0,
         path: *path,
     };
 
@@ -227,6 +241,7 @@ fn try_sys_unlink(ctx: &ProbeContext) -> Result<u32, u32> {
         syscall: SyscallType::Unlink,
         flags: 0,
         return_code: 0,
+        duration_ns: 0,
         path: [0u8; MAX_PATH_LEN],
     };
     unsafe {
@@ -273,6 +288,7 @@ fn try_sys_rename(ctx: &ProbeContext) -> Result<u32, u32> {
         syscall: SyscallType::Rename,
         flags: 0,
         return_code: 0,
+        duration_ns: 0,
         path: [0u8; MAX_PATH_LEN],
     };
     unsafe {

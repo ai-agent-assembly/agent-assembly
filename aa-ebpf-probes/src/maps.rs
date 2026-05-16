@@ -25,6 +25,12 @@ pub static FD_PATH_MAP: HashMap<FdPathKey, [u8; MAX_PATH_LEN]> =
 pub static OPENAT_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
     HashMap::with_max_entries(MAX_ENTRIES, 0);
 
+/// Temporary map to pass the entry timestamp from the openat kprobe
+/// entry to the openat kretprobe (keyed by pid_tgid). Used to compute
+/// end-to-end syscall duration for the emitted `FileIoEventRaw`.
+#[map]
+pub static OPENAT_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
 /// Path pattern blocklist: paths that should trigger an alert.
 /// Key is a hash of the path prefix, value is 1 (deny).
 #[map]
