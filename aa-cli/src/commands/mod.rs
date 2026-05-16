@@ -11,6 +11,7 @@ pub mod agent;
 pub mod alerts;
 pub mod approvals;
 pub mod audit;
+pub mod budget;
 pub mod completion;
 pub mod context;
 pub mod cost;
