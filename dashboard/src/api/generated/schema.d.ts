@@ -160,6 +160,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/subtree-burn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/{id}/subtree-burn` — per-direct-child subtree spend time series.
+         * @description **Current behaviour (preview)**: returns a single data point for today
+         *     only. The wire schema accepts and echoes back the `period=7d|30d`
+         *     parameter so consumers can pin a contract, but real per-day historical
+         *     aggregation requires a daily-spend history store that does not yet
+         *     exist in `aa-gateway::budget`. A follow-up Subtask will extend the
+         *     tracker with persistent history and populate the full series; the
+         *     dashboard chart already handles `points.len() >= 1` so it will pick
+         *     up the additional points without any frontend change.
+         *
+         *     Each child's spend is read from `BudgetTracker::agent_state` for the
+         *     agent's direct descendants (via `AgentRegistry::children_of`). The
+         *     agent's own spend is included as a synthetic `child_name: "(self)"`
+         *     row when the root has its own recorded spend, so the stack adds up to
+         *     the subtree total.
+         */
+        get: operations["get_agent_subtree_burn"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/suspend": {
         parameters: {
             query?: never;
@@ -1085,6 +1118,15 @@ export interface components {
          * @enum {string}
          */
         ChangeType: "newly-blocked" | "narrowed" | "unchanged" | "tightened" | "false-positive";
+        /** @description Per-direct-child contribution to a single day's subtree spend. */
+        ChildSpendResponse: {
+            /** @description Hex-encoded child agent ID. */
+            child_agent_id: string;
+            /** @description Display name of the child agent. */
+            child_name: string;
+            /** @description USD spent by this child on the given date (string-encoded Decimal). */
+            spent_usd: string;
+        };
         /** @description JSON representation of the cost/budget summary. */
         CostSummary: {
             /** @description Configured daily budget limit in USD, if set. */
@@ -1113,6 +1155,15 @@ export interface components {
              *     to mutate policies at this scope. Defaults to `"global"` when absent.
              */
             scope?: string | null;
+        };
+        /** @description One point in the subtree-burn time series. */
+        DailyBurnPointResponse: {
+            /** @description ISO 8601 calendar date (YYYY-MM-DD) the point covers. */
+            date: string;
+            /** @description Per-direct-child contributions, ordered by child agent ID for stability. */
+            per_child: components["schemas"]["ChildSpendResponse"][];
+            /** @description Total subtree spend for the date (root + descendants, string-encoded Decimal). */
+            total_usd: string;
         };
         /** @description Request body for approval decide actions. */
         DecideRequest: {
@@ -1511,6 +1562,15 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
+        SubtreeBurnResponse: {
+            /** @description Hex-encoded root agent ID. */
+            agent_id: string;
+            /** @description Requested period: `"7d"` or `"30d"`. */
+            period: string;
+            /** @description Time series, ordered oldest → newest. */
+            points: components["schemas"]["DailyBurnPointResponse"][];
+        };
         /** @description Request body for `POST /api/v1/agents/:id/suspend`. */
         SuspendRequest: {
             /** @description Reason for suspending the agent (logged for audit). */
@@ -2128,6 +2188,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResumeResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_subtree_burn: {
+        parameters: {
+            query?: {
+                /** @description Period string: `7d` (default) or `30d`. */
+                period?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Subtree-burn time series */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubtreeBurnResponse"];
                 };
             };
             /** @description Invalid agent ID format */
