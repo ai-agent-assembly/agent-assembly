@@ -34,6 +34,12 @@ pub struct FileIoEvent {
     pub return_code: i64,
     /// Whether this event matched a blocklisted path (flags bit 0).
     pub is_sensitive: bool,
+    /// End-to-end syscall duration in nanoseconds (`exit_ts − enter_ts`).
+    ///
+    /// `0` when the syscall has only an entry hook today (read /
+    /// write / unlink / rename — tracked under the AAASM-1425 follow-up).
+    /// Populated for `openat` via the entry-timestamp map.
+    pub duration_ns: u64,
 }
 
 impl FileIoEvent {
@@ -63,6 +69,7 @@ impl FileIoEvent {
             flags: raw.flags,
             return_code: raw.return_code,
             is_sensitive: raw.flags & 1 != 0,
+            duration_ns: raw.duration_ns,
         })
     }
 }
@@ -83,6 +90,7 @@ mod tests {
             syscall,
             flags,
             return_code: 3,
+            duration_ns: 0,
             path: path_buf,
         }
     }
@@ -98,10 +106,19 @@ mod tests {
             flags: 0,
             return_code: 0,
             is_sensitive: false,
+            duration_ns: 0,
         };
         assert_eq!(event.pid, 1234);
         assert_eq!(event.syscall, SyscallKind::Openat);
         assert_eq!(event.path, "/etc/shadow");
+    }
+
+    #[test]
+    fn from_raw_carries_duration_ns_through() {
+        let mut raw = make_raw("/tmp/timed.txt", SyscallType::Openat, 0);
+        raw.duration_ns = 123_456;
+        let event = FileIoEvent::from_raw(&raw).expect("parse");
+        assert_eq!(event.duration_ns, 123_456);
     }
 
     #[test]
