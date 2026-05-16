@@ -16,6 +16,8 @@
 //! binary in the workspace).
 
 #[allow(dead_code)]
+pub mod scenario;
+#[allow(dead_code)]
 pub mod sdk_driver;
 
 use std::net::SocketAddr;

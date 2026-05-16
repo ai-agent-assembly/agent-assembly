@@ -19,6 +19,13 @@ export interface CanonicalRoute {
   group: RouteGroup
   /** Route path. */
   path: string
+  /**
+   * Optional glyph rendered alongside the numbered prefix (AAASM-1373).
+   * Only the routes with established iconography ship one today; routes
+   * without an icon fall back to the bare `num` + `label` layout so no
+   * visual regression hits the other entries.
+   */
+  icon?: string
 }
 
 export const CANONICAL_ROUTES: readonly CanonicalRoute[] = [
@@ -26,7 +33,7 @@ export const CANONICAL_ROUTES: readonly CanonicalRoute[] = [
   { id: 'fleet',      num: '02', label: 'Fleet',            group: 'monitor', path: '/agents' },
   { id: 'topology',   num: '03', label: 'Topology',         group: 'monitor', path: '/topology' },
   { id: 'live',       num: '04', label: 'Live Ops',         group: 'monitor', path: '/live' },
-  { id: 'alerts',     num: '05', label: 'Alerts',           group: 'monitor', path: '/alerts' },
+  { id: 'alerts',     num: '05', label: 'Alerts',           group: 'monitor', path: '/alerts', icon: '🔔' },
   { id: 'audit',      num: '06', label: 'Audit Log',        group: 'monitor', path: '/audit' },
   { id: 'capability', num: '07', label: 'Capability',       group: 'control', path: '/capability' },
   { id: 'policy',     num: '08', label: 'Policy',           group: 'control', path: '/policies' },

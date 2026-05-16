@@ -63,6 +63,7 @@ mod tests {
             flags: 0,
             return_code: 0,
             is_sensitive: false,
+            duration_ns: 0,
         }
     }
 
