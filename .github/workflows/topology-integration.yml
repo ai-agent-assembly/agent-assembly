@@ -1,0 +1,88 @@
+name: Topology integration tests
+
+# End-to-end topology integration test suite (AAASM-1066). Runs the
+# `aa-topology-integration-tests` crate on Linux + macOS so the assertion
+# tests (REST + CLI roundtrip) are exercised on both platforms before
+# anything depending on them ships.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "aa-topology-integration-tests/**"
+      - "aa-api/**"
+      - "aa-gateway/**"
+      - "aa-cli/**"
+      - "aa-runtime/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/topology-integration.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "aa-topology-integration-tests/**"
+      - "aa-api/**"
+      - "aa-gateway/**"
+      - "aa-cli/**"
+      - "aa-runtime/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/topology-integration.yml"
+
+jobs:
+  topology-integration-tests:
+    name: Topology integration tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout agent-assembly
+        uses: actions/checkout@v4
+
+      - name: Checkout sibling python-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: AI-agent-assembly/python-sdk
+          path: python-sdk
+
+      - name: Install protobuf compiler (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install protobuf
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: topology-it-${{ matrix.os }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Run topology integration tests
+        env:
+          PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
+        run: cargo nextest run -p aa-topology-integration-tests --test-threads=1
+
+      - name: Upload gateway logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-it-gateway-logs-${{ matrix.os }}
+          path: |
+            target/nextest/**/*.log
+            target/debug/build/aa-topology-integration-tests-*/output
+            **/*.log
+          if-no-files-found: ignore
+          retention-days: 7
