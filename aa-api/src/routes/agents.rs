@@ -439,6 +439,92 @@ pub async fn get_agent_capabilities(
     ))
 }
 
+/// One budget row in the rollup — agent / team / org / subtree × daily / monthly.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BudgetRowResponse {
+    /// Scope label: `"agent"`, `"team:<id>"`, `"org"`, or `"subtree"`.
+    pub scope: String,
+    /// Period the row covers: `"daily"`, `"monthly"`, or `"today"` (subtree).
+    pub period: String,
+    /// Total USD spent in the period (string-encoded Decimal).
+    pub spent_usd: String,
+    /// Configured limit for the period, if any (string-encoded Decimal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_usd: Option<String>,
+    /// `limit_usd - spent_usd`, clamped at zero. Omitted when no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_usd: Option<String>,
+    /// Spend / limit × 100. Omitted when no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent_used: Option<f64>,
+}
+
+/// Aggregated budget rollup for an agent across its scope hierarchy.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BudgetRollupResponse {
+    /// Rows ordered narrowest scope first (agent → team → org → subtree).
+    pub rows: Vec<BudgetRowResponse>,
+}
+
+fn budget_row_to_response(row: aa_gateway::budget::BudgetRow) -> BudgetRowResponse {
+    BudgetRowResponse {
+        scope: row.scope,
+        period: row.period,
+        spent_usd: row.spent_usd.to_string(),
+        limit_usd: row.limit_usd.map(|d| d.to_string()),
+        remaining_usd: row.remaining_usd.map(|d| d.to_string()),
+        percent_used: row.percent_used,
+    }
+}
+
+/// `GET /api/v1/agents/:id/budget` — per-scope budget rollup for an agent.
+///
+/// Returns rows for the agent itself, its team (if it belongs to one), the
+/// org / global totals, and its delegation subtree (if it has descendants).
+/// Each row carries `spent_usd`, `limit_usd`, `remaining_usd`, and
+/// `percent_used` (the latter two omitted when no limit is configured).
+/// Backs `aasm policy show <agent_id> --show-budget` (AAASM-1051) and the
+/// dashboard's budget-burn surface (AAASM-1055).
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/budget",
+    params(("id" = String, Path, description = "Hex-encoded agent UUID")),
+    responses(
+        (status = 200, description = "Budget rollup rows", body = BudgetRollupResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_budget(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<BudgetRollupResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+    let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+
+    if state.agent_registry.get(&agent_id_bytes).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
+    }
+
+    let lineage = state.agent_registry.lineage(&agent_id_bytes);
+    let team_id = lineage.as_ref().and_then(|l| l.team_id.as_deref());
+    let descendants = state.agent_registry.descendants_of(&agent_id_bytes);
+
+    let rollup = aa_gateway::budget::compute_budget_rollup(
+        &agent_id,
+        team_id,
+        state.budget_tracker.as_ref(),
+        &descendants,
+        None,
+        None,
+    );
+
+    let rows = rollup.rows.into_iter().map(budget_row_to_response).collect();
+
+    Ok((StatusCode::OK, Json(BudgetRollupResponse { rows })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
