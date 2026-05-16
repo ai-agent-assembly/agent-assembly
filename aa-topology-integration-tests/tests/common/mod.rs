@@ -1,3 +1,7 @@
+// Shared across multiple test binaries (smoke, sdk_driver_selftest, …); not
+// every binary uses every helper, so dead-code warnings here are noise.
+#![allow(dead_code)]
+
 //! Test harness for the topology integration test suite (AAASM-1066 / ST-1).
 //!
 //! Provides `TopologyTestEnv` — a self-contained fixture that builds a minimal
@@ -10,6 +14,9 @@
 //! than spawning the `aa-gateway` binary as the ticket text suggests
 //! (`aa-gateway` is gRPC-only and there is currently no `aa-api` HTTP
 //! binary in the workspace).
+
+#[allow(dead_code)]
+pub mod sdk_driver;
 
 use std::net::SocketAddr;
 use std::path::Path;
