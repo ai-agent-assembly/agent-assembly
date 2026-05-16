@@ -79,6 +79,15 @@ export function AppShell() {
                 data-testid={`nav-link-${r.id}`}
               >
                 <span className="appshell__nav-num">{r.num}</span>
+                {r.icon && (
+                  <span
+                    className="appshell__nav-icon"
+                    data-testid={`nav-icon-${r.id}`}
+                    aria-hidden="true"
+                  >
+                    {r.icon}
+                  </span>
+                )}
                 {r.label}
               </NavLink>
             ))}
