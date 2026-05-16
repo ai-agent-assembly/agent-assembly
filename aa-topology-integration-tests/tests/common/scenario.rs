@@ -26,10 +26,10 @@ pub const PARENT_AGENT_ID: [u8; 16] = [0x11; 16];
 /// Raw 16-byte UUID for the child agent registered by [`register_parent_child`].
 pub const CHILD_AGENT_ID: [u8; 16] = [0x22; 16];
 
-/// Render a 16-byte agent id as a hyphenated UUID string (matches how the
-/// REST topology endpoint serialises ids).
+/// Render a 16-byte agent id as the 32-char lowercase hex string used by
+/// `aa-api`'s topology endpoints (see `aa_api::models::topology::format_id`).
 pub fn hex_id(id: &[u8; 16]) -> String {
-    uuid::Uuid::from_bytes(*id).to_string()
+    id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Insert a parent + child pair into the harness's registry. Returns the
