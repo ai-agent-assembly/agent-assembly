@@ -19,7 +19,6 @@ assert_cmd  = "2"
 axum        = { version = "0.8", features = ["ws"] }
 chrono      = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz   = "0.10"
-uuid        = { version = "1", features = ["v4"] }
 moka        = { version = "0.12", features = ["future"] }
 portpicker  = "0.1"
 reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
