@@ -1015,6 +1015,35 @@ export interface components {
             spent_usd: string;
         };
         /**
+         * @description One node in the hierarchical call stack rendered beneath an
+         *     expanded Live Ops row in the dashboard.
+         *
+         *     Mirrors the proto `assembly.audit.v1.CallStackNode` message and the
+         *     dashboard `LiveOperation.callStack[]` TS type.
+         */
+        CallStackNode: {
+            /**
+             * @description Recursive descent — nested calls produced by this step. Omitted
+             *     when the node has no children.
+             */
+            children?: components["schemas"]["CallStackNode"][] | null;
+            /** @description Stable identifier for this node within the call stack. */
+            id: string;
+            /**
+             * @description Node category — one of `"llm"`, `"tool"`, or `"result"`. String-typed
+             *     (not an enum) to keep this open-ended for downstream renderers.
+             */
+            kind: string;
+            /** @description Human-readable label rendered in the dashboard. */
+            label: string;
+            /**
+             * Format: int64
+             * @description Step-local latency in milliseconds. Omitted when the producer did
+             *     not record a duration for this node.
+             */
+            latency_ms?: number | null;
+        };
+        /**
          * @description One cell in the (agent × resource) matrix: a decision per verb, plus an
          *     optional `flag` marker the UI uses to highlight over-permissioned cells.
          */
@@ -1766,6 +1795,11 @@ export interface components {
          *     action that violated policy or an interception layer degradation.
          */
         ViolationPayload: {
+            /**
+             * @description Hierarchical call stack for the operation (LLM / tool / result
+             *     steps). Omitted when the producer did not record a stack.
+             */
+            call_stack?: components["schemas"]["CallStackNode"][] | null;
             /** @enum {string} */
             kind: "audit";
             /**

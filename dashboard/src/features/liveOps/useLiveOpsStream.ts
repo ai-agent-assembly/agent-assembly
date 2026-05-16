@@ -1,11 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../../api/generated/schema'
-import type { LiveOperation, OperationStatus } from './types'
+import type { CallStackNode, CallStackNodeKind, LiveOperation, OperationStatus } from './types'
 import { OPERATION_STATUSES } from './types'
 
 type GovernanceEvent = components['schemas']['GovernanceEvent']
 type ViolationPayload = components['schemas']['ViolationPayload']
 type ViolationAuditPayload = Extract<ViolationPayload, { kind: 'audit' }>
+type WireCallStackNode = components['schemas']['CallStackNode']
+
+const CALL_STACK_KINDS: readonly CallStackNodeKind[] = ['llm', 'tool', 'result'] as const
+
+function coerceCallStackKind(raw: string): CallStackNodeKind {
+  return (CALL_STACK_KINDS as readonly string[]).includes(raw)
+    ? (raw as CallStackNodeKind)
+    : 'result'
+}
+
+function mapCallStackNode(node: WireCallStackNode): CallStackNode {
+  const children =
+    node.children && node.children.length > 0
+      ? node.children.map(mapCallStackNode)
+      : undefined
+  const latencyMs = node.latency_ms ?? undefined
+  return {
+    id: node.id,
+    kind: coerceCallStackKind(node.kind),
+    label: node.label,
+    ...(latencyMs !== undefined && latencyMs !== null ? { latencyMs } : {}),
+    ...(children ? { children } : {}),
+  }
+}
+
+function mapCallStack(
+  raw: WireCallStackNode[] | null | undefined,
+): CallStackNode[] | undefined {
+  if (!raw || raw.length === 0) return undefined
+  return raw.map(mapCallStackNode)
+}
 
 export type StreamStatus = 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -59,6 +90,7 @@ function coerceStatus(raw: string | null | undefined): OperationStatus {
 function mapEvent(event: GovernanceEvent): LiveOperation | null {
   if (event.event_type !== 'violation') return null
   const audit = isAuditPayload(event.payload) ? event.payload : null
+  const callStack = mapCallStack(audit?.call_stack)
   return {
     id: String(event.id),
     agent: event.agent_id,
@@ -68,8 +100,12 @@ function mapEvent(event: GovernanceEvent): LiveOperation | null {
     status: coerceStatus(audit?.status),
     startedAt: event.timestamp,
     latencyMs: audit?.latency_ms ?? 0,
+    ...(callStack ? { callStack } : {}),
   }
 }
+
+// Re-export for direct unit testing of the mapper.
+export const __test__ = { mapEvent }
 
 /**
  * Subscribe to the gateway WebSocket and project violation events into a
