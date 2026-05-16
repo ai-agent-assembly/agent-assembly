@@ -185,6 +185,7 @@ async fn lineage_returns_success() {
     let result = std::thread::spawn(move || {
         let args = aa_cli::commands::topology::lineage::LineageArgs {
             agent_id: agent_id.to_string(),
+            show_permissions: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)
@@ -402,6 +403,7 @@ async fn lineage_root_agent_returns_success() {
     let result = std::thread::spawn(move || {
         let args = aa_cli::commands::topology::lineage::LineageArgs {
             agent_id: agent_id.to_string(),
+            show_permissions: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)
@@ -429,6 +431,7 @@ async fn lineage_404_returns_exit_code_4() {
     let result = std::thread::spawn(move || {
         let args = aa_cli::commands::topology::lineage::LineageArgs {
             agent_id: agent_id.to_string(),
+            show_permissions: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::topology::lineage::run(args, &ctx, OutputFormat::Table)

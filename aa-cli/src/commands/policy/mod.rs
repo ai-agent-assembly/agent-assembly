@@ -10,6 +10,7 @@ use crate::output::OutputFormat;
 pub mod get;
 pub mod history;
 pub mod list;
+pub mod show;
 pub mod simulate;
 pub mod validate;
 
@@ -39,6 +40,8 @@ pub enum PolicyCommands {
     Get(get::GetArgs),
     /// List all policies deployed to the governance runtime.
     List(list::ListArgs),
+    /// Show an agent's effective policy view (use `--show-permissions`).
+    Show(show::ShowArgs),
 }
 
 /// Dispatch a policy subcommand.
@@ -52,5 +55,6 @@ pub fn dispatch(args: PolicyArgs, ctx: &ResolvedContext, output: OutputFormat) -
         PolicyCommands::Validate(val_args) => validate::run(val_args),
         PolicyCommands::Get(get_args) => get::run(get_args),
         PolicyCommands::List(list_args) => list::run(list_args, ctx, output),
+        PolicyCommands::Show(show_args) => show::run(show_args, ctx, output),
     }
 }

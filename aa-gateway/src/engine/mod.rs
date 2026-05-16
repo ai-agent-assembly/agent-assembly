@@ -711,7 +711,7 @@ impl PolicyEngine {
     ///
     /// Returns an empty `CapabilitySet` (no restrictions) when no policy in the
     /// cascade defines a `capabilities` block.
-    pub(crate) fn collect_merged_capabilities(cascade: &[std::sync::Arc<PolicyDocument>]) -> aa_core::CapabilitySet {
+    pub fn collect_merged_capabilities(cascade: &[std::sync::Arc<PolicyDocument>]) -> aa_core::CapabilitySet {
         cascade.iter().fold(aa_core::CapabilitySet::default(), |acc, doc| {
             if let Some(caps) = &doc.capabilities {
                 aa_core::merge_capabilities(&acc, caps)
@@ -719,6 +719,37 @@ impl PolicyEngine {
                 acc
             }
         })
+    }
+
+    /// Compute the effective permission set for a single agent, with cascade
+    /// provenance.
+    ///
+    /// Walks the agent's cascade (`Global → Org → Team → Agent → Tool`) and
+    /// returns:
+    /// - `merged`: the result of folding `merge_capabilities` over every doc
+    ///   in the cascade that declares a `capabilities` block;
+    /// - `sources`: one `PermissionSource` per cascade doc that declares
+    ///   capabilities, in cascade order, with the scope's wire-format label
+    ///   plus that doc's own `allow` / `deny` sets.
+    ///
+    /// Sources with no `capabilities` block are omitted from `sources` so the
+    /// CLI / dashboard only display rows that actually contribute. If no doc
+    /// in the cascade declares capabilities, `sources` is empty and `merged`
+    /// equals `CapabilitySet::default()` (no allow-list restriction).
+    pub fn effective_permissions(&self, agent_id: &aa_core::identity::AgentId) -> aa_core::EffectivePermissions {
+        let cascade = self.collect_cascade(agent_id);
+        let merged = Self::collect_merged_capabilities(&cascade);
+        let sources = cascade
+            .iter()
+            .filter_map(|doc| {
+                doc.capabilities.as_ref().map(|caps| aa_core::PermissionSource {
+                    scope: doc.scope.to_string(),
+                    allow: caps.allow.clone(),
+                    deny: caps.deny.clone(),
+                })
+            })
+            .collect();
+        aa_core::EffectivePermissions { merged, sources }
     }
 
     /// Record a spend amount for an agent after an action completes.

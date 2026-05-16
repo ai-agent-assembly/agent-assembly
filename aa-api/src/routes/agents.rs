@@ -361,6 +361,84 @@ pub async fn resume_agent(
     ))
 }
 
+/// Per-scope contribution to an agent's effective permissions.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PermissionSourceResponse {
+    /// Wire-format scope label (e.g. `"global"`, `"team:platform"`).
+    pub scope: String,
+    /// Capability identifiers this scope explicitly allows.
+    pub allow: Vec<String>,
+    /// Capability identifiers this scope explicitly denies.
+    pub deny: Vec<String>,
+}
+
+/// Effective permission set for an agent, with cascade provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EffectivePermissionsResponse {
+    /// Capabilities allowed after merging the cascade (most-restrictive-wins).
+    pub allow: Vec<String>,
+    /// Capabilities denied after merging the cascade.
+    pub deny: Vec<String>,
+    /// Per-scope contribution, in cascade order (broadest → narrowest).
+    pub sources: Vec<PermissionSourceResponse>,
+}
+
+fn cap_set_to_strings(set: &aa_core::CapabilitySet) -> (Vec<String>, Vec<String>) {
+    let allow = set.allow.iter().map(|c| c.to_string()).collect();
+    let deny = set.deny.iter().map(|c| c.to_string()).collect();
+    (allow, deny)
+}
+
+/// `GET /api/v1/agents/:id/capabilities` — effective permissions with provenance.
+///
+/// Returns the agent's merged `allow`/`deny` capability set plus the per-scope
+/// contribution from every policy in its cascade. Used by `aasm policy show
+/// <agent_id> --show-permissions` and `aasm topology lineage <agent_id>
+/// --show-permissions`, and by the dashboard's inherited-permissions panel.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/capabilities",
+    params(("id" = String, Path, description = "Hex-encoded agent UUID")),
+    responses(
+        (status = 200, description = "Effective permissions", body = EffectivePermissionsResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_capabilities(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<EffectivePermissionsResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+    let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+
+    if state.agent_registry.get(&agent_id_bytes).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
+    }
+
+    let effective = state.policy_engine.effective_permissions(&agent_id);
+    let (merged_allow, merged_deny) = cap_set_to_strings(&effective.merged);
+    let sources = effective
+        .sources
+        .into_iter()
+        .map(|s| PermissionSourceResponse {
+            scope: s.scope,
+            allow: s.allow.iter().map(|c| c.to_string()).collect(),
+            deny: s.deny.iter().map(|c| c.to_string()).collect(),
+        })
+        .collect();
+
+    Ok((
+        StatusCode::OK,
+        Json(EffectivePermissionsResponse {
+            allow: merged_allow,
+            deny: merged_deny,
+            sources,
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

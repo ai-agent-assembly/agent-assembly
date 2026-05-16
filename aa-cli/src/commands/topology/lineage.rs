@@ -6,6 +6,7 @@ use clap::Args;
 
 use super::render::{render, AgentLineage, TopologyPayload};
 use crate::client;
+use crate::commands::permissions;
 use crate::config::ResolvedContext;
 use crate::error::CliError;
 use crate::output::OutputFormat;
@@ -15,10 +16,15 @@ use crate::output::OutputFormat;
 #[command(after_help = "\
 Examples:
   aasm topology lineage aabbccdd00112233aabbccdd00112233
-  aasm topology lineage aabbccdd00112233aabbccdd00112233 --output json")]
+  aasm topology lineage aabbccdd00112233aabbccdd00112233 --output json
+  aasm topology lineage aabbccdd00112233aabbccdd00112233 --show-permissions")]
 pub struct LineageArgs {
     /// Agent ID (hex-encoded UUID).
     pub agent_id: String,
+
+    /// After the lineage, also print the agent's effective capability set with cascade provenance.
+    #[arg(long)]
+    pub show_permissions: bool,
 }
 
 /// Run the `aasm topology lineage` command.
@@ -39,5 +45,17 @@ pub fn run(args: LineageArgs, ctx: &ResolvedContext, output: OutputFormat) -> Ex
     };
 
     render(TopologyPayload::Lineage(&lineage), output);
+
+    if args.show_permissions {
+        let perms = match rt.block_on(permissions::fetch_effective_permissions(ctx, &args.agent_id)) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error fetching permissions: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        permissions::render(&perms, output);
+    }
+
     ExitCode::SUCCESS
 }
