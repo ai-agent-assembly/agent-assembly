@@ -4,6 +4,7 @@
 //! Consumed by `aasm policy show <agent_id> --show-budget`. The wire schema
 //! matches `aa_api::routes::agents::BudgetRollupResponse`.
 
+use comfy_table::{ContentArrangement, Table};
 use serde::Deserialize;
 
 use crate::client;
@@ -39,14 +40,25 @@ pub async fn fetch_budget_rollup(ctx: &ResolvedContext, agent_id: &str) -> Resul
 
 /// Render a `BudgetRollup` payload to stdout in the requested format.
 ///
-/// Text format: one section per row with scope/period header and indented
-/// `spent` / `limit` / `remaining` / `% used` fields. JSON / YAML formats
-/// pretty-print the wire payload as-is.
+/// Text format (default): a `comfy-table` with one row per rollup row.
+/// Columns are `Scope` / `Period` / `Spent` / `Limit` / `Remaining` / `Used %`.
+/// USD amounts are formatted with a `$` prefix and thousands separators
+/// (e.g. `$12,500.50`); the server already rounded to 2 decimals via
+/// `Decimal::round_dp(2)`. JSON / YAML formats serialise the raw response.
 pub fn render(rollup: &BudgetRollup, output: OutputFormat) {
+    let mut stdout = std::io::stdout().lock();
+    render_to(rollup, output, &mut stdout).expect("write budget rollup to stdout");
+}
+
+/// Render a `BudgetRollup` to an arbitrary writer.
+///
+/// Same output shape as [`render`]; exposed so integration tests can capture
+/// and assert against the bytes without spawning a subprocess.
+pub fn render_to<W: std::io::Write>(rollup: &BudgetRollup, output: OutputFormat, w: &mut W) -> std::io::Result<()> {
     match output {
-        OutputFormat::Json => render_json(rollup),
-        OutputFormat::Yaml => render_yaml(rollup),
-        OutputFormat::Table => render_text(rollup),
+        OutputFormat::Json => render_json(rollup, w),
+        OutputFormat::Yaml => render_yaml(rollup, w),
+        OutputFormat::Table => render_text(rollup, w),
     }
 }
 
@@ -66,46 +78,83 @@ fn as_serde_value(rollup: &BudgetRollup) -> serde_json::Value {
     })
 }
 
-fn render_json(rollup: &BudgetRollup) {
+fn render_json<W: std::io::Write>(rollup: &BudgetRollup, w: &mut W) -> std::io::Result<()> {
     let value = as_serde_value(rollup);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).expect("serialize budget rollup")
-    );
+    let s = serde_json::to_string_pretty(&value).expect("serialize budget rollup");
+    writeln!(w, "{s}")
 }
 
-fn render_yaml(rollup: &BudgetRollup) {
+fn render_yaml<W: std::io::Write>(rollup: &BudgetRollup, w: &mut W) -> std::io::Result<()> {
     let value = as_serde_value(rollup);
-    print!(
-        "{}",
-        serde_yaml::to_string(&value).expect("serialize budget rollup to yaml")
-    );
+    let s = serde_yaml::to_string(&value).expect("serialize budget rollup to yaml");
+    write!(w, "{s}")
 }
 
-fn render_text(rollup: &BudgetRollup) {
+fn render_text<W: std::io::Write>(rollup: &BudgetRollup, w: &mut W) -> std::io::Result<()> {
     if rollup.rows.is_empty() {
-        println!("No budget data recorded for this agent yet.");
-        return;
+        return writeln!(w, "No budget data recorded for this agent yet.");
     }
+
+    let mut table = Table::new();
+    table
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec!["Scope", "Period", "Spent", "Limit", "Remaining", "Used %"]);
 
     for row in &rollup.rows {
-        let header = format!("{} · {}", row.scope, row.period);
-        println!("{header}");
-        println!("  Spent:     {} USD", row.spent_usd);
-        match &row.limit_usd {
-            Some(limit) => println!("  Limit:     {limit} USD"),
-            None => println!("  Limit:     (none)"),
-        }
-        match &row.remaining_usd {
-            Some(remaining) => println!("  Remaining: {remaining} USD"),
-            None => println!("  Remaining: (n/a — no limit)"),
-        }
-        match row.percent_used {
-            Some(pct) => println!("  Used:      {pct:.1} %"),
-            None => println!("  Used:      (n/a — no limit)"),
-        }
-        println!();
+        table.add_row(vec![
+            row.scope.clone(),
+            row.period.clone(),
+            format_usd(&row.spent_usd),
+            row.limit_usd
+                .as_deref()
+                .map(format_usd)
+                .unwrap_or_else(|| "—".to_string()),
+            row.remaining_usd
+                .as_deref()
+                .map(format_usd)
+                .unwrap_or_else(|| "—".to_string()),
+            row.percent_used
+                .map(|p| format!("{p:.1}%"))
+                .unwrap_or_else(|| "—".to_string()),
+        ]);
     }
+
+    writeln!(w, "{table}")
+}
+
+/// Render a server-rounded USD string with a `$` prefix and thousands
+/// separators in the integer part. Closes AAASM-1051 AC bullet
+/// "tokens with thousands separator".
+///
+/// Input is a canonical decimal string from the API (e.g. `"12500.50"` or
+/// `"-3.00"`); the server guarantees exactly two decimals via
+/// `Decimal::round_dp(2)`. Falls back to the raw input verbatim if the
+/// string is malformed — robustness over precision for a presentation path.
+fn format_usd(raw: &str) -> String {
+    // Split into sign, integer part, fractional part. Anything we can't
+    // parse falls back to the input wrapped in `$`.
+    let (sign, rest) = if let Some(stripped) = raw.strip_prefix('-') {
+        ("-", stripped)
+    } else {
+        ("", raw)
+    };
+    let (int_part, frac_part) = match rest.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (rest, "00"),
+    };
+    if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return format!("${raw}");
+    }
+    // Insert thousands separators.
+    let mut grouped = String::with_capacity(int_part.len() + int_part.len() / 3);
+    for (i, ch) in int_part.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    let int_with_commas: String = grouped.chars().rev().collect();
+    format!("{sign}${int_with_commas}.{frac_part}")
 }
 
 #[cfg(test)]
@@ -126,7 +175,7 @@ mod tests {
                 BudgetRow {
                     scope: "team:eng-platform".to_string(),
                     period: "daily".to_string(),
-                    spent_usd: "120.00".to_string(),
+                    spent_usd: "12500.00".to_string(),
                     limit_usd: None,
                     remaining_usd: None,
                     percent_used: None,
@@ -173,14 +222,40 @@ mod tests {
     #[test]
     fn empty_rollup_renders_explicit_no_data_message() {
         let empty = BudgetRollup { rows: vec![] };
-        render_text(&empty);
+        let mut buf = Vec::new();
+        render_text(&empty, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("No budget data"));
     }
 
     #[test]
     fn sample_renders_each_row_section() {
         // Smoke: render every format without panic.
-        render_text(&sample());
-        render_json(&sample());
-        render_yaml(&sample());
+        let mut buf = Vec::new();
+        render_text(&sample(), &mut buf).unwrap();
+        render_json(&sample(), &mut buf).unwrap();
+        render_yaml(&sample(), &mut buf).unwrap();
+    }
+
+    #[test]
+    fn format_usd_inserts_thousands_separators_and_dollar_sign() {
+        assert_eq!(format_usd("12500.50"), "$12,500.50");
+        assert_eq!(format_usd("1.25"), "$1.25");
+        assert_eq!(format_usd("1234567.89"), "$1,234,567.89");
+        assert_eq!(format_usd("0.00"), "$0.00");
+    }
+
+    #[test]
+    fn format_usd_preserves_negative_sign_before_dollar() {
+        assert_eq!(format_usd("-3.00"), "-$3.00");
+        assert_eq!(format_usd("-12500.00"), "-$12,500.00");
+    }
+
+    #[test]
+    fn format_usd_falls_back_to_raw_on_malformed_input() {
+        // Anything we can't parse comes back wrapped — robustness for a
+        // presentation path that should never panic.
+        assert_eq!(format_usd("not-a-number"), "$not-a-number");
+        assert_eq!(format_usd(""), "$");
     }
 }
