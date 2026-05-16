@@ -8,6 +8,7 @@ import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
+import { SubtreeBurnChart } from '../components/SubtreeBurnChart'
 import './AgentDetailDrawer.css'
 
 function TrustGauge({ score }: { score: number | null }) {
@@ -339,6 +340,10 @@ export function AgentDetailPage() {
                         wired in a follow-up sub-task
                       </div>
                     </div>
+                  </section>
+
+                  <section className="ad-card ad-card--span-2" data-testid="agent-subtree-burn">
+                    <SubtreeBurnChart agentId={agent.id} />
                   </section>
 
                   <section className="ad-card ad-card--span-2" data-testid="agent-events">
