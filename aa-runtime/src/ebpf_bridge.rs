@@ -36,9 +36,10 @@ pub fn file_io_to_audit(event: &FileIoEvent) -> AuditEvent {
             path: event.path.clone(),
             bytes: 0,
             source: "ebpf".to_string(),
-            // eBPF events are point-in-time syscall traces, not durations.
-            // Real measurement pending AAASM-1425.
-            latency_ms: 0,
+            // Convert nanoseconds (BPF kretprobe) to milliseconds. `0` when
+            // the syscall has only an entry hook (read / write / unlink /
+            // rename — follow-up under AAASM-1425).
+            latency_ms: (event.duration_ns / 1_000_000) as i64,
         })),
         ..AuditEvent::default()
     }
@@ -204,6 +205,29 @@ mod tests {
                 assert!(p.args.is_empty());
             }
             _ => panic!("expected Process detail"),
+        }
+    }
+
+    #[test]
+    fn file_io_to_audit_propagates_zero_duration_as_zero_latency() {
+        let event = make_file_io(SyscallKind::Read, "/tmp/no-duration");
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert_eq!(fop.latency_ms, 0),
+            _ => panic!("expected FileOp detail"),
+        }
+    }
+
+    #[test]
+    fn file_io_to_audit_converts_duration_ns_to_latency_ms() {
+        let mut event = make_file_io(SyscallKind::Openat, "/tmp/timed");
+        event.duration_ns = 2_500_000;
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert_eq!(fop.latency_ms, 2),
+            _ => panic!("expected FileOp detail"),
         }
     }
 
