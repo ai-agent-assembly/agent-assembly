@@ -16,3 +16,6 @@ pub use persistence::{
 
 pub mod tracker;
 pub use tracker::BudgetTracker;
+
+pub mod rollup;
+pub use rollup::{compute_budget_rollup, BudgetRollup, BudgetRow};
