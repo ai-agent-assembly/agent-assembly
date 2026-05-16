@@ -1,8 +1,18 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { CANONICAL_ROUTES, ROUTE_GROUPS } from './routes'
 import { ComingSoon } from './pages/ComingSoon'
+
+// Mock the AppShell's external dependencies so the render test below can
+// mount it without auth / approvals network calls. Both mocks are scoped
+// to this file — no global side effects.
+vi.mock('./auth/useAuth', () => ({
+  useAuth: () => ({ token: 'aaasm1373-token', logout: vi.fn() }),
+}))
+vi.mock('./features/approvals/ApprovalsBellButton', () => ({
+  ApprovalsBellButton: () => null,
+}))
 
 describe('CANONICAL_ROUTES config', () => {
   it('declares exactly 12 routes', () => {
@@ -41,6 +51,43 @@ describe('CANONICAL_ROUTES config', () => {
     expect(nums).toEqual([
       '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12',
     ])
+  })
+
+  it('alerts route ships a bell icon (AAASM-1373)', () => {
+    const alerts = CANONICAL_ROUTES.find((r) => r.id === 'alerts')
+    expect(alerts).toBeDefined()
+    expect(alerts!.icon).toBe('🔔')
+  })
+
+  it('only alerts has an icon today — the other 11 routes leave icon undefined', () => {
+    const withIcon = CANONICAL_ROUTES.filter((r) => r.icon !== undefined).map((r) => r.id)
+    expect(withIcon).toEqual(['alerts'])
+  })
+})
+
+describe('AppShell nav-icon rendering (AAASM-1373)', () => {
+  it('renders the bell icon for /alerts and nothing for the other 11 routes', async () => {
+    // Import lazily so the vi.mock hoisting at file scope is honoured before
+    // the real AppShell module is loaded.
+    const { AppShell } = await import('./components/AppShell')
+    render(
+      <MemoryRouter initialEntries={['/alerts']}>
+        <AppShell />
+      </MemoryRouter>,
+    )
+
+    // The /alerts entry renders the bell glyph inside the dedicated span.
+    const alertsIcon = screen.getByTestId('nav-icon-alerts')
+    expect(alertsIcon).toBeInTheDocument()
+    expect(alertsIcon.textContent).toBe('🔔')
+    expect(alertsIcon).toHaveAttribute('aria-hidden', 'true')
+
+    // No other route ships an icon today — the other 11 nav-icon-* testids
+    // must not appear in the document.
+    for (const route of CANONICAL_ROUTES) {
+      if (route.id === 'alerts') continue
+      expect(screen.queryByTestId(`nav-icon-${route.id}`)).toBeNull()
+    }
   })
 })
 
