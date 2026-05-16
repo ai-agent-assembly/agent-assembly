@@ -125,15 +125,32 @@ async function mockBackend(page: Page, state: BackendState) {
     return route.fallback()
   })
 
-  // Alert rules: list + create.
-  await page.route('**/api/v1/alerts/rules*', (route: Route) => {
+  // Alert rules: list + create + update + delete (DELETE/PUT added for AAASM-1393 rules tab).
+  // Glob `**` (not `*`) so per-rule paths like `/rules/<id>` match — Playwright's
+  // `*` doesn't span path separators.
+  await page.route('**/api/v1/alerts/rules**', (route: Route) => {
     const method = route.request().method()
+    const url = route.request().url()
     if (method === 'GET') return route.fulfill({ json: state.rules })
     if (method === 'POST') {
       const body = JSON.parse(route.request().postData() ?? '{}')
       const created = { ...RULE, ...body }
       state.rules = [...state.rules, created]
       return route.fulfill({ status: 201, json: created })
+    }
+    if (method === 'PUT') {
+      const match = url.match(/\/rules\/([^/?]+)/)
+      const id = match ? decodeURIComponent(match[1]) : null
+      const body = JSON.parse(route.request().postData() ?? '{}')
+      state.rules = state.rules.map((r) => (r.id === id ? { ...r, ...body } : r))
+      const updated = state.rules.find((r) => r.id === id) ?? state.rules[0]
+      return route.fulfill({ json: updated })
+    }
+    if (method === 'DELETE') {
+      const match = url.match(/\/rules\/([^/?]+)/)
+      const id = match ? decodeURIComponent(match[1]) : null
+      if (id) state.rules = state.rules.filter((r) => r.id !== id)
+      return route.fulfill({ status: 204, body: '' })
     }
     return route.fallback()
   })
@@ -237,5 +254,51 @@ test.describe('Alerts page — AAASM-1082 lifecycle', () => {
     await page.getByTestId('silence-action-submit').click()
     await expect(page.getByText('Silence applied')).toBeVisible()
     await page.screenshot({ path: `${SCREENSHOT_DIR}/06-silenced.png`, fullPage: true })
+  })
+
+  test('rules tab — list rules, edit a rule, delete a rule (AAASM-1393)', async ({ page }) => {
+    await injectToken(page)
+    const state: BackendState = {
+      destinations: [SLACK_DESTINATION],
+      rules: [RULE, { ...RULE, id: 'rule-002', name: 'High violations' }],
+      alerts: [],
+      detail: ALERT_DETAIL,
+    }
+    await mockBackend(page, state)
+
+    // Deep-link to the rules tab via the AAASM-1393 URL state.
+    await page.goto('/alerts?tab=rules')
+    await expect(page.getByTestId('alert-rules-tab')).toBeVisible()
+    await expect(page.getByTestId('alert-rules-table')).toBeVisible()
+    const rows = page.getByTestId('alert-rules-row')
+    await expect(rows).toHaveCount(2)
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/07-rules-tab.png`, fullPage: true })
+
+    // ── Edit the first rule via the row-level Edit button ───────────────
+    await rows.first().getByTestId('alert-rules-row-edit').click()
+    await expect(page.getByTestId('alert-rule-form')).toBeVisible()
+    // The form opened pre-filled in edit mode (name field carries the rule name).
+    await expect(page.getByTestId('rule-name')).toHaveValue('Budget guardrail')
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/08-rules-edit.png`, fullPage: true })
+    // AlertRuleForm uses a click-outside-to-close pattern; no Escape binding.
+    // Use the cancel button to dismiss the modal before the delete click.
+    await page.getByTestId('alert-rule-form-cancel').click()
+    await expect(page.getByTestId('alert-rule-form')).not.toBeVisible()
+
+    // ── Delete the second rule via the row-level Delete button ─────────
+    await page
+      .getByTestId('alert-rules-row')
+      .filter({ hasText: 'High violations' })
+      .getByTestId('alert-rules-row-delete')
+      .click()
+
+    // After the DELETE refetches the rules list, the "High violations" row
+    // is gone. The Deleted-rule toast fires from the mutation's onSuccess;
+    // assert the durable side-effect (row removed) rather than the toast
+    // which auto-dismisses after 4 s.
+    await expect(
+      page.getByTestId('alert-rules-row').filter({ hasText: 'High violations' }),
+    ).toHaveCount(0)
+    await expect(page.getByTestId('alert-rules-row')).toHaveCount(1)
   })
 })
