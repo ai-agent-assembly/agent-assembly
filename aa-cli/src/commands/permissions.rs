@@ -48,10 +48,23 @@ pub async fn fetch_effective_permissions(
 /// `Denied by` (scopes whose `deny` lists it). JSON and YAML formats serialise
 /// the raw response payload.
 pub fn render(perms: &EffectivePermissions, output: OutputFormat) {
+    let mut stdout = std::io::stdout().lock();
+    render_to(perms, output, &mut stdout).expect("write permissions to stdout");
+}
+
+/// Render an `EffectivePermissions` payload to an arbitrary writer.
+///
+/// Same output shape as [`render`]; exposed so integration tests can capture
+/// and assert against the bytes without spawning a subprocess.
+pub fn render_to<W: std::io::Write>(
+    perms: &EffectivePermissions,
+    output: OutputFormat,
+    w: &mut W,
+) -> std::io::Result<()> {
     match output {
-        OutputFormat::Json => render_json(perms),
-        OutputFormat::Yaml => render_yaml(perms),
-        OutputFormat::Table => render_text(perms),
+        OutputFormat::Json => render_json(perms, w),
+        OutputFormat::Yaml => render_yaml(perms, w),
+        OutputFormat::Table => render_text(perms, w),
     }
 }
 
@@ -70,20 +83,16 @@ fn as_serde_value(perms: &EffectivePermissions) -> serde_json::Value {
     })
 }
 
-fn render_json(perms: &EffectivePermissions) {
+fn render_json<W: std::io::Write>(perms: &EffectivePermissions, w: &mut W) -> std::io::Result<()> {
     let value = as_serde_value(perms);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).expect("serialize permissions")
-    );
+    let s = serde_json::to_string_pretty(&value).expect("serialize permissions");
+    writeln!(w, "{s}")
 }
 
-fn render_yaml(perms: &EffectivePermissions) {
+fn render_yaml<W: std::io::Write>(perms: &EffectivePermissions, w: &mut W) -> std::io::Result<()> {
     let value = as_serde_value(perms);
-    print!(
-        "{}",
-        serde_yaml::to_string(&value).expect("serialize permissions to yaml")
-    );
+    let s = serde_yaml::to_string(&value).expect("serialize permissions to yaml");
+    write!(w, "{s}")
 }
 
 /// Effective verdict for a single capability after merging the cascade.
@@ -127,11 +136,11 @@ fn effective_for(cap: &str, perms: &EffectivePermissions) -> Effective {
     }
 }
 
-fn render_text(perms: &EffectivePermissions) {
+fn render_text<W: std::io::Write>(perms: &EffectivePermissions, w: &mut W) -> std::io::Result<()> {
     if perms.sources.is_empty() {
-        println!("No policy in this agent's cascade declares a capabilities block.");
-        println!("Effective: no allow-list restriction, no denies.");
-        return;
+        writeln!(w, "No policy in this agent's cascade declares a capabilities block.")?;
+        writeln!(w, "Effective: no allow-list restriction, no denies.")?;
+        return Ok(());
     }
 
     // Union every capability mentioned anywhere in the cascade. BTreeSet keeps
@@ -179,7 +188,7 @@ fn render_text(perms: &EffectivePermissions) {
         ]);
     }
 
-    println!("{table}");
+    writeln!(w, "{table}")
 }
 
 #[cfg(test)]
@@ -227,16 +236,20 @@ mod tests {
             deny: vec![],
             sources: vec![],
         };
-        // Smoke: render_text should not panic on the no-policy edge case.
-        render_text(&perms);
+        let mut buf = Vec::new();
+        render_text(&perms, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("No policy"));
+        assert!(s.contains("Effective"));
     }
 
     #[test]
     fn sample_renders_each_source_and_effective_section() {
         // Smoke: render every format without panic.
-        render_text(&sample());
-        render_json(&sample());
-        render_yaml(&sample());
+        let mut buf = Vec::new();
+        render_text(&sample(), &mut buf).unwrap();
+        render_json(&sample(), &mut buf).unwrap();
+        render_yaml(&sample(), &mut buf).unwrap();
     }
 
     #[test]
