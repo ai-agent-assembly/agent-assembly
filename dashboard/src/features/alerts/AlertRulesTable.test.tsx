@@ -70,7 +70,7 @@ const RULE_B: AlertRule = {
   id: 'r-b',
   name: 'Policy violations > 5',
   description: '',
-  metric: 'policy_violations_count',
+  metric: 'policy_violation_count',
   threshold: 5,
   severity: 'HIGH',
   enabled: false,
@@ -103,6 +103,7 @@ describe('AlertRulesTable', () => {
     expect(rows[0]).toHaveAttribute('data-rule-id', 'r-a')
     expect(rows[0]).toHaveTextContent('Budget > 90%')
     expect(rows[0]).toHaveTextContent('budget_spent_pct')
+    expect(rows[1]).toHaveTextContent('policy_violation_count')
     expect(rows[0]).toHaveTextContent('> 90')
     expect(rows[0]).toHaveTextContent('enabled')
 

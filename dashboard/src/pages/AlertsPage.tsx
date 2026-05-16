@@ -7,11 +7,13 @@ import { AlertsTabs, type AlertsTab } from '../features/alerts/AlertsTabs'
 import { AlertDetailDrawer } from '../features/alerts/AlertDetailDrawer'
 import { AlertDetailContent } from '../features/alerts/AlertDetailContent'
 import { AlertRuleForm } from '../features/alerts/AlertRuleForm'
+import { AlertRulesTable } from '../features/alerts/AlertRulesTable'
 import { DestinationManager } from '../features/alerts/DestinationManager'
 import { EmptyStateNoRules } from '../features/alerts/EmptyStateNoRules'
 import { EmptyStateNoAlerts } from '../features/alerts/EmptyStateNoAlerts'
 import { AlertsErrorBanner } from '../features/alerts/AlertsErrorBanner'
 import { useAlertRulesQuery, useAlertsQuery } from '../features/alerts/api'
+import type { AlertRule } from '../features/alerts/types'
 import { useAlertsStream } from '../features/alerts/useAlertsStream'
 import { applyFire, applyResolve, applySilence } from '../features/alerts/alertsStreamSync'
 import {
@@ -26,7 +28,10 @@ function partitionByTab(rows: readonly Alert[], tab: AlertsTab): readonly Alert[
 }
 
 function readTab(sp: URLSearchParams): AlertsTab {
-  return sp.get('tab') === 'incidents' ? 'incidents' : 'active'
+  const raw = sp.get('tab')
+  if (raw === 'incidents') return 'incidents'
+  if (raw === 'rules') return 'rules'
+  return 'active'
 }
 
 export function AlertsPage() {
@@ -64,6 +69,8 @@ export function AlertsPage() {
 
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
   const [ruleFormOpen, setRuleFormOpen] = useState(false)
+  /** When editing an existing rule, holds it so AlertRuleForm pre-fills (AAASM-1393). */
+  const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
   const [destinationsOpen, setDestinationsOpen] = useState(false)
 
   const queryClient = useQueryClient()
@@ -143,34 +150,50 @@ export function AlertsPage() {
 
       <AlertsTabs value={tab} onChange={setTab} />
 
-      <AlertFilterBar value={filters} onChange={setFilters} />
-
-      {alertsQuery.isError && (
-        <AlertsErrorBanner
-          message={alertsQuery.error?.message ?? 'unknown error'}
-          onRetry={() => void alertsQuery.refetch()}
+      {tab === 'rules' ? (
+        <AlertRulesTable
+          onCreate={() => {
+            setEditingRule(null)
+            setRuleFormOpen(true)
+          }}
+          onEdit={(rule) => {
+            setEditingRule(rule)
+            setRuleFormOpen(true)
+          }}
+          onOpenDestinations={() => setDestinationsOpen(true)}
         />
-      )}
-
-      <div
-        data-testid="alerts-count"
-        style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}
-      >
-        {alertsQuery.isLoading
-          ? 'Loading…'
-          : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
-      </div>
-
-      {noRulesConfigured ? (
-        <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
-      ) : noAlertsInWindow ? (
-        <EmptyStateNoAlerts />
       ) : (
-        <AlertList
-          rows={rows}
-          onSelect={setSelectedAlertId}
-          loading={alertsQuery.isLoading && rows.length === 0}
-        />
+        <>
+          <AlertFilterBar value={filters} onChange={setFilters} />
+
+          {alertsQuery.isError && (
+            <AlertsErrorBanner
+              message={alertsQuery.error?.message ?? 'unknown error'}
+              onRetry={() => void alertsQuery.refetch()}
+            />
+          )}
+
+          <div
+            data-testid="alerts-count"
+            style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}
+          >
+            {alertsQuery.isLoading
+              ? 'Loading…'
+              : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
+          </div>
+
+          {noRulesConfigured ? (
+            <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
+          ) : noAlertsInWindow ? (
+            <EmptyStateNoAlerts />
+          ) : (
+            <AlertList
+              rows={rows}
+              onSelect={setSelectedAlertId}
+              loading={alertsQuery.isLoading && rows.length === 0}
+            />
+          )}
+        </>
       )}
 
       <AlertDetailDrawer
@@ -180,7 +203,14 @@ export function AlertsPage() {
         {selectedAlertId && <AlertDetailContent alertId={selectedAlertId} />}
       </AlertDetailDrawer>
 
-      <AlertRuleForm open={ruleFormOpen} onClose={() => setRuleFormOpen(false)} />
+      <AlertRuleForm
+        open={ruleFormOpen}
+        onClose={() => {
+          setRuleFormOpen(false)
+          setEditingRule(null)
+        }}
+        initialValue={editingRule ?? undefined}
+      />
 
       <DestinationManager
         open={destinationsOpen}
