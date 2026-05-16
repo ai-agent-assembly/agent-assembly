@@ -48,6 +48,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/capabilities` — effective permissions with provenance.
+         * @description Returns the agent's merged `allow`/`deny` capability set plus the per-scope
+         *     contribution from every policy in its cascade. Used by `aasm policy show
+         *     <agent_id> --show-permissions` and `aasm topology lineage <agent_id>
+         *     --show-permissions`, and by the dashboard's inherited-permissions panel.
+         */
+        get: operations["get_agent_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/edges": {
         parameters: {
             query?: never;
@@ -1084,6 +1107,15 @@ export interface components {
             /** @description Hex-encoded target agent ID. */
             target_agent_id: string;
         };
+        /** @description Effective permission set for an agent, with cascade provenance. */
+        EffectivePermissionsResponse: {
+            /** @description Capabilities allowed after merging the cascade (most-restrictive-wins). */
+            allow: string[];
+            /** @description Capabilities denied after merging the cascade. */
+            deny: string[];
+            /** @description Per-scope contribution, in cascade order (broadest → narrowest). */
+            sources: components["schemas"]["PermissionSourceResponse"][];
+        };
         /**
          * @description Discriminated union of all possible `GovernanceEvent.payload` shapes.
          *
@@ -1227,6 +1259,15 @@ export interface components {
             action: string;
             /** @description Operation id from the URL path. */
             op_id: string;
+        };
+        /** @description Per-scope contribution to an agent's effective permissions. */
+        PermissionSourceResponse: {
+            /** @description Capability identifiers this scope explicitly allows. */
+            allow: string[];
+            /** @description Capability identifiers this scope explicitly denies. */
+            deny: string[];
+            /** @description Wire-format scope label (e.g. `"global"`, `"team:platform"`). */
+            scope: string;
         };
         /** @description A policy version shown in the dashboard Capability Matrix's policies tab. */
         Policy: {
@@ -1820,6 +1861,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_capabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective permissions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EffectivePermissionsResponse"];
+                };
             };
             /** @description Invalid agent ID format */
             400: {
