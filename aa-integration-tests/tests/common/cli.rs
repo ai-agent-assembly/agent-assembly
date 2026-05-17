@@ -261,6 +261,32 @@ impl CliFixture {
 }
 
 impl CliFixture {
+    /// Record one `BudgetAlert` directly into the in-process alert store
+    /// and return its auto-incremented id.
+    ///
+    /// `threshold_pct` drives the derived severity (per
+    /// `aa_api::alerts::severity_from_threshold`): `<75` → info,
+    /// `75..=89` → warning, `>=90` → critical. `agent_id` is the 16-byte
+    /// id that will be hex-encoded into the stored alert's `agent_id`
+    /// field — pass distinct ids to exercise the CLI's `--agent` filter.
+    ///
+    /// Used by `cli_alerts.rs` (AAASM-1460) to populate the gateway's
+    /// alert state before testing `aasm alerts list`. The harness boots
+    /// with `AuthMode::Off`, so no auth context is needed.
+    pub fn seed_alert(&self, threshold_pct: u8, agent_id: [u8; 16]) -> u64 {
+        use aa_api::alerts::AlertStore;
+        let limit_usd = 10.0_f64;
+        let spent_usd = limit_usd * f64::from(threshold_pct) / 100.0;
+        let alert = aa_gateway::budget::types::BudgetAlert {
+            agent_id: aa_core::AgentId::from_bytes(agent_id),
+            team_id: None,
+            threshold_pct,
+            spent_usd,
+            limit_usd,
+        };
+        self.env.alert_store.record(&alert)
+    }
+
     /// Seed `n` agents into the given team. Returns their 16-byte ids in
     /// registration order. Used by `topology team` tests that need a
     /// specific team populated.
