@@ -15,18 +15,17 @@
 //! `--since`, `--limit` flags). The actual `aa-cli/src/commands/trace/`
 //! implementation only has a flat `aasm trace <id> [--format tree|timeline]`
 //! surface today, so this test file targets the **real surface**. The
-//! ticket-described subcommands and flags are flagged as a follow-up
-//! Subtask in the PR description.
+//! ticket-described subcommands and flags remain out of scope.
 //!
-//! ## Known CLI/API contract mismatch
+//! ## CLI/API contract
 //!
-//! `aa-api`'s `GET /api/v1/traces/:session_id` returns
-//! `TraceResponse { session_id, agent_id, spans: Vec<TraceSpan> }`. The
-//! CLI deserializes into `SessionTrace { session_id, events: Vec<TraceEvent> }`
-//! — fields do not align. Happy-path tests that exercise the success
-//! branch are marked `#[ignore]` until the contract is reconciled (a
-//! follow-up Subtask under AAASM-1258 will be filed in the PR).
-//! Negative-path tests are unaffected and run by default.
+//! `aa-api` returns `TraceResponse { session_id, agent_id, spans }`; the
+//! CLI's `aa-cli/src/commands/trace/wire.rs` translates that into the
+//! hierarchical `SessionTrace { events }` the renderer consumes
+//! (AAASM-1475). The seeded operation names (`op-0`, `op-1`, …) appear
+//! verbatim in the rendered output across all three `--output` formats
+//! and both `--format` variants, so the happy-path tests below assert
+//! on that to verify the end-to-end contract.
 
 mod common;
 
@@ -37,14 +36,9 @@ use rstest::rstest;
 // aasm trace <session-id>  (happy path — default --format tree)
 // =============================================================================
 
-/// `aasm trace <id>` against a seeded session must exit cleanly and emit
-/// non-empty stdout (the default tree-rendered output).
-///
-/// Marked `#[ignore]` until the CLI/API trace contract mismatch is fixed
-/// (see the module-level docs and the PR description). Once reconciled,
-/// drop the attribute and tighten the stdout assertion.
+/// `aasm trace <id>` against a seeded session must exit 0 and render
+/// every seeded operation name in the tree output.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on CLI/API trace contract reconciliation (TraceResponse spans vs SessionTrace events)"]
 async fn trace_seeded_session_default_format_succeeds() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let session_id = "sess-aaasm-1468-default";
@@ -62,18 +56,22 @@ async fn trace_seeded_session_default_format_succeeds() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(!out.stdout.is_empty(), "stdout should not be empty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for op in ["op-0", "op-1", "op-2"] {
+        assert!(
+            stdout.contains(op),
+            "tree stdout should contain seeded operation `{op}`\nstdout:\n{stdout}",
+        );
+    }
 }
 
 // =============================================================================
 // aasm trace <session-id> --format timeline  (happy path)
 // =============================================================================
 
-/// `aasm trace <id> --format timeline` against a seeded session must exit
-/// cleanly. Marked `#[ignore]` for the same reason as the tree-format
-/// happy-path test above.
+/// `aasm trace <id> --format timeline` against a seeded session must
+/// exit 0 and render every seeded operation in the timeline view.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on CLI/API trace contract reconciliation (TraceResponse spans vs SessionTrace events)"]
 async fn trace_seeded_session_timeline_format_succeeds() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let session_id = "sess-aaasm-1468-timeline";
@@ -91,22 +89,27 @@ async fn trace_seeded_session_timeline_format_succeeds() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(!out.stdout.is_empty(), "stdout should not be empty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for op in ["op-0", "op-1", "op-2", "op-3"] {
+        assert!(
+            stdout.contains(op),
+            "timeline stdout should contain seeded operation `{op}`\nstdout:\n{stdout}",
+        );
+    }
 }
 
 // =============================================================================
 // aasm trace <session-id> --output {json|yaml|table}  (format coverage)
 // =============================================================================
 
-/// Every `--output` format must succeed for a seeded session. Parametrized
-/// over the three supported formats via `#[rstest]`. Marked `#[ignore]`
-/// pending the contract fix.
+/// Every `--output` format must succeed for a seeded session and surface
+/// the seeded operation name(s) in its serialization. Parametrized over
+/// the three supported formats via `#[rstest]`.
 #[rstest]
 #[case::json("json")]
 #[case::yaml("yaml")]
 #[case::table("table")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on CLI/API trace contract reconciliation (TraceResponse spans vs SessionTrace events)"]
 async fn trace_succeeds_for_every_output_format(#[case] fmt: &str) {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let session_id = "sess-aaasm-1468-format";
@@ -123,7 +126,15 @@ async fn trace_succeeds_for_every_output_format(#[case] fmt: &str) {
         "{fmt} should exit 0; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr),
     );
-    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("op-0"),
+        "{fmt} stdout should contain seeded operation `op-0`\nstdout:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("op-1"),
+        "{fmt} stdout should contain seeded operation `op-1`\nstdout:\n{stdout}",
+    );
 }
 
 // =============================================================================
@@ -134,9 +145,7 @@ async fn trace_succeeds_for_every_output_format(#[case] fmt: &str) {
 /// missing identifier echoed somewhere in stderr so a human can debug.
 ///
 /// This works today because the CLI calls `error_for_status()` on the
-/// 404 response before attempting deserialization — the contract
-/// mismatch documented in the module-level docs only bites the success
-/// branch.
+/// 404 response before attempting deserialization.
 #[tokio::test(flavor = "multi_thread")]
 async fn trace_unknown_session_id_returns_failure() {
     let fixture = CliFixture::start().await.expect("fixture should start");
