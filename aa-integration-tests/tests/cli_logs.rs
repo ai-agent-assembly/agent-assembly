@@ -144,7 +144,7 @@ async fn logs_agent_filter_only_returns_matching() {
 // The smoke test below pins the surface that works today (flag is accepted,
 // CLI exits 0, the violation events at minimum come back). The strict
 // filter-correctness assertion is `#[ignore]`d until the underlying bug is
-// fixed — tracked as a sub-task under AAASM-1258.
+// fixed — tracked as AAASM-1476 (sub-task under AAASM-1258).
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_smoke_accepts_flag_and_returns_matching() {
     let fixture = CliFixture::start().await.expect("fixture should start");
@@ -170,7 +170,7 @@ async fn logs_type_filter_smoke_accepts_flag_and_returns_matching() {
     );
 }
 
-#[ignore = "blocked by aa-gateway audit-reader event_type parse mismatch — see follow-up bug under AAASM-1258"]
+#[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_only_returns_matching() {
     let fixture = CliFixture::start().await.expect("fixture should start");
