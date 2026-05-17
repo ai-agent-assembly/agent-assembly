@@ -3,7 +3,7 @@
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::alerts::StoredAlert;
@@ -23,6 +23,16 @@ fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
         status: a.status,
         updated_at: a.updated_at,
     }
+}
+
+/// Request body for `POST /api/v1/alerts/:id/resolve`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ResolveAlertRequest {
+    /// Optional human-readable note recorded with the resolution. The
+    /// in-memory store does not persist this today but the field is
+    /// accepted so CLI / dashboard clients can submit a reason.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// JSON representation of a governance alert.
@@ -107,6 +117,43 @@ pub async fn get_alert(
     let stored = state.alert_store.get(numeric_id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
     })?;
+
+    Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
+}
+
+/// `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
+///
+/// Idempotent — calling against an already-resolved alert returns the same
+/// record with `updated_at` unchanged. Returns 404 if the id is unknown,
+/// evicted, or not a valid u64.
+#[utoipa::path(
+    post,
+    path = "/api/v1/alerts/{id}/resolve",
+    params(("id" = String, Path, description = "Numeric alert identifier")),
+    request_body(content = ResolveAlertRequest, description = "Optional resolution metadata"),
+    responses(
+        (status = 200, description = "Alert resolved", body = AlertResponse),
+        (status = 404, description = "Alert not found")
+    ),
+    tag = "alerts"
+)]
+pub async fn resolve_alert(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: Option<Json<ResolveAlertRequest>>,
+) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+    let numeric_id = id
+        .parse::<u64>()
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
+
+    let reason = body.and_then(|Json(req)| req.reason);
+
+    let stored = state
+        .alert_store
+        .resolve(numeric_id, reason.as_deref())
+        .ok_or_else(|| {
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+        })?;
 
     Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
 }
