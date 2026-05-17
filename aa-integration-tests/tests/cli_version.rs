@@ -25,7 +25,7 @@
 mod common;
 
 use common::cli::CliFixture;
-use common::format::assert_equivalent_records;
+use common::format::{assert_equivalent_records, parse_json};
 use rstest::rstest;
 
 // =============================================================================
@@ -103,4 +103,52 @@ async fn version_json_and_yaml_describe_equivalent_records() {
     // `status` is reachability-dependent and excluded by the helper (it
     // compares only the `component` id field).
     assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "component");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn version_build_metadata_field_shape() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["version", "--output", "json"])
+        .output()
+        .expect("aasm version --output json should execute");
+    assert!(out.status.success(), "should exit 0");
+
+    let v = parse_json(&out.stdout);
+    let rows = v.as_array().expect("version output should be a JSON array");
+    let by_component: std::collections::HashMap<&str, &serde_json::Value> = rows
+        .iter()
+        .filter_map(|row| row.get("component").and_then(|c| c.as_str()).map(|c| (c, row)))
+        .collect();
+
+    for component in ["cli", "gateway", "api"] {
+        let row = by_component
+            .get(component)
+            .unwrap_or_else(|| panic!("expected `{component}` row in version output\nstdout:\n{v}"));
+        assert!(row.get("version").is_some(), "`{component}` row should have `version`");
+        assert!(row.get("status").is_some(), "`{component}` row should have `status`");
+    }
+
+    // The CLI row is always populated from `CARGO_PKG_VERSION` at build time
+    // and must be a non-empty semver-shaped string regardless of gateway
+    // reachability. Tolerates the "build without git context" case the AC
+    // calls out — the CLI does not currently emit `commit`/`build_date`
+    // fields, so this is the version-string shape we can assert today.
+    let cli_version = by_component["cli"]["version"]
+        .as_str()
+        .expect("cli.version should be a string");
+    let parts: Vec<&str> = cli_version.split('.').collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "cli.version `{cli_version}` should be semver `MAJOR.MINOR.PATCH`"
+    );
+    for part in &parts {
+        assert!(
+            part.chars().any(|c| c.is_ascii_digit()),
+            "cli.version segment `{part}` should contain at least one digit (got `{cli_version}`)",
+        );
+    }
 }
