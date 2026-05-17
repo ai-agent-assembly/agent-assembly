@@ -20,12 +20,13 @@
 //!   helpers together.
 //!
 //! Net = 9 tests across happy path, per-output format (×3), JSON↔YAML
-//! equivalence, populated state, exit codes 1 and 2, and a `--watch` smoke.
+//! equivalence, populated state, exit codes 1 and 2, and `--watch` liveness.
 
 mod common;
 
 use std::collections::{BTreeMap, VecDeque};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use aa_gateway::registry::{AgentRecord, AgentStatus};
 use common::cli::CliFixture;
@@ -260,4 +261,31 @@ async fn status_exits_2_when_gateway_is_unreachable() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_watch_runs_until_killed() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let mut child = fixture
+        .cmd()
+        .args(["status", "--watch"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm status --watch should spawn");
+
+    // `aasm status --watch` refreshes every 5s in an infinite loop. Stdout
+    // is block-buffered when piped, so the section-header bytes from the
+    // first render are typically lost on SIGKILL; the cli_agent.rs
+    // `agent_list_watch_runs_until_killed` test documents the same
+    // limitation. The robust signal is process longevity — proves --watch
+    // is accepted and the loop is entered without crashing.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        child.try_wait().expect("try_wait should work").is_none(),
+        "--watch should keep the process alive (not exit on its own)",
+    );
+    child.kill().expect("kill should succeed");
+    let _ = child.wait_with_output();
 }
