@@ -158,3 +158,51 @@ fn parse_event_type(s: &str) -> Option<Vec<AuditEventType>> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use AuditEventType::*;
+
+    #[test]
+    fn camel_case_variant_name_yields_singleton() {
+        assert_eq!(parse_event_type("PolicyViolation"), Some(vec![PolicyViolation]));
+        assert_eq!(parse_event_type("ApprovalGranted"), Some(vec![ApprovalGranted]));
+        assert_eq!(parse_event_type("BudgetLimitExceeded"), Some(vec![BudgetLimitExceeded]));
+    }
+
+    #[test]
+    fn snake_case_violation_matches_policy_violation() {
+        assert_eq!(parse_event_type("violation"), Some(vec![PolicyViolation]));
+    }
+
+    #[test]
+    fn snake_case_approval_matches_full_approval_family() {
+        let variants = parse_event_type("approval").expect("approval should parse");
+        for v in [
+            ApprovalRequested,
+            ApprovalGranted,
+            ApprovalDenied,
+            ApprovalTimedOut,
+            ApprovalRouted,
+            ApprovalEscalated,
+        ] {
+            assert!(variants.contains(&v), "expected {v:?} in `approval` family");
+        }
+        assert_eq!(variants.len(), 6, "approval should match exactly six variants");
+    }
+
+    #[test]
+    fn snake_case_budget_matches_both_budget_variants() {
+        let variants = parse_event_type("budget").expect("budget should parse");
+        assert!(variants.contains(&BudgetLimitApproached));
+        assert!(variants.contains(&BudgetLimitExceeded));
+        assert_eq!(variants.len(), 2);
+    }
+
+    #[test]
+    fn unknown_string_returns_none() {
+        assert_eq!(parse_event_type("garbage"), None);
+        assert_eq!(parse_event_type(""), None);
+    }
+}
