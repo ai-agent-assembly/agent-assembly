@@ -89,3 +89,30 @@ async fn completion_unknown_shell_errors_and_lists_supported_shells() {
         );
     }
 }
+
+#[rstest]
+#[tokio::test(flavor = "multi_thread")]
+async fn completion_missing_shell_arg_errors_with_clap_usage() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["completion"])
+        .output()
+        .expect("aasm completion (no shell arg) should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "should exit non-zero when <SHELL> is missing\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("<SHELL>"),
+        "stderr should mention the missing <SHELL> argument\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr should include the clap usage hint\nstderr:\n{stderr}",
+    );
+}
