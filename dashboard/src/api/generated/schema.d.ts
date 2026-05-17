@@ -284,10 +284,36 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/v1/approvals` — list pending approval requests.
-         * @description List pending human-in-the-loop approval requests with pagination.
+         * `GET /api/v1/approvals` — list approval requests with optional filters.
+         * @description Without `status` returns pending requests only (backwards-compatible).
+         *     With `status=PENDING|APPROVED|REJECTED` (case-insensitive) returns the
+         *     matching slice. The `agent` filter narrows by `agent_id` exact match
+         *     across both states.
          */
         get: operations["list_approvals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/approvals/:id` — look up a single approval by ID.
+         * @description Returns the request whether it is currently pending or has been
+         *     resolved (approved / rejected / timed-out). Resolved entries come
+         *     from a bounded in-memory history (default cap 1000) — older entries
+         *     may have been evicted under load.
+         */
+        get: operations["get_approval"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2612,10 +2638,18 @@ export interface operations {
     list_approvals: {
         parameters: {
             query?: {
-                /** @description Page number (1-indexed). Defaults to 1. */
+                /** @description Page number (1-indexed). Same semantics as [`PaginationParams::page`]. */
                 page?: number | null;
-                /** @description Items per page (max 100). Defaults to 50. */
+                /** @description Items per page. Same semantics as [`PaginationParams::per_page`]. */
                 per_page?: number | null;
+                /**
+                 * @description Filter by approval status: `pending` | `approved` | `rejected`
+                 *     (case-insensitive). When absent, returns pending requests only —
+                 *     matches the pre-AAASM-1477 contract.
+                 */
+                status?: string | null;
+                /** @description Filter by `agent_id` exact match. */
+                agent?: string | null;
             };
             header?: never;
             path?: never;
@@ -2623,7 +2657,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated list of pending approvals */
+            /** @description Paginated list of approvals */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2631,6 +2665,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApprovalResponse"][];
                 };
+            };
+        };
+    };
+    get_approval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Approval request identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval found */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Approval request not found or evicted from history */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
