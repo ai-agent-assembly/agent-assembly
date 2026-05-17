@@ -338,3 +338,114 @@ async fn context_set_replaces_existing_context_url() {
         "list should not retain the old URL after replacement; got:\n{stdout}",
     );
 }
+
+// ============================================================================
+// aasm context use
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn context_use_switches_default_to_named_context() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let home = TempDir::new().expect("tempdir for HOME");
+
+    // `a` becomes default (first), `b` does not.
+    for (name, url) in [("a", "http://a:8080"), ("b", "http://b:8080")] {
+        let out = fixture
+            .cmd()
+            .env("HOME", home.path())
+            .args(["context", "set", name, "--api-url", url])
+            .output()
+            .expect("seed set");
+        assert!(out.status.success(), "seed set should succeed");
+    }
+
+    let used = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "use", "b"])
+        .output()
+        .expect("use");
+    assert!(
+        used.status.success(),
+        "use should succeed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&used.stdout),
+        String::from_utf8_lossy(&used.stderr),
+    );
+
+    let list = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "list"])
+        .output()
+        .expect("list");
+    assert!(list.status.success(), "list should succeed");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let b_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("b"))
+        .unwrap_or_else(|| panic!("missing 'b' line in:\n{stdout}"));
+    assert!(
+        b_line.contains(" *"),
+        "after `use b`, b should be default; got: {b_line:?}"
+    );
+    let a_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("a"))
+        .unwrap_or_else(|| panic!("missing 'a' line in:\n{stdout}"));
+    assert!(
+        !a_line.contains(" *"),
+        "after `use b`, a should no longer be default; got: {a_line:?}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn context_use_unknown_name_exits_non_zero_and_says_not_found() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let home = TempDir::new().expect("tempdir for HOME");
+
+    // Seed at least one known context so the failure path is "unknown name",
+    // not "no contexts at all".
+    let seed = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "set", "known", "--api-url", "http://known:8080"])
+        .output()
+        .expect("seed set");
+    assert!(seed.status.success(), "seed should succeed");
+
+    let out = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "use", "missing"])
+        .output()
+        .expect("use");
+    assert!(
+        !out.status.success(),
+        "use on unknown name should exit non-zero\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not found"),
+        "stderr should mention 'not found'; got:\n{stderr}",
+    );
+
+    // Default unchanged.
+    let list = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "list"])
+        .output()
+        .expect("list");
+    assert!(list.status.success(), "list should succeed");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let known_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("known"))
+        .unwrap_or_else(|| panic!("missing 'known' line in:\n{stdout}"));
+    assert!(
+        known_line.contains(" *"),
+        "default should still be 'known' after failed use; got: {known_line:?}",
+    );
+}
