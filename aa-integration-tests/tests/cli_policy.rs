@@ -270,3 +270,67 @@ async fn policy_history_with_explicit_limit_still_runs_cleanly() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+// =============================================================================
+// aasm policy simulate
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_simulate_without_required_policy_flag_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "simulate"])
+        .output()
+        .expect("aasm policy simulate should execute");
+    assert!(
+        !out.status.success(),
+        "missing --policy should fail (clap-enforced); stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_simulate_live_mode_exits_non_zero() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let policy = CliFixture::fixture_path("policies/allow_all.yaml");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "simulate", "--policy", policy.to_str().unwrap(), "--live"])
+        .output()
+        .expect("aasm policy simulate --live should execute");
+    // The handler-level error message "live simulation is not yet
+    // supported (requires AAASM-73)" is unreachable today because
+    // `policy simulate` panics on a clap arg-lookup mismatch — the
+    // subcommand's `--output <PathBuf>` flag collides with the global
+    // `--output <OutputFormat>` flag. Tracked as a separate bug;
+    // until it's fixed the only observable property is non-zero exit.
+    assert!(
+        !out.status.success(),
+        "--live should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_simulate_without_against_or_live_exits_non_zero() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let policy = CliFixture::fixture_path("policies/allow_all.yaml");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "simulate", "--policy", policy.to_str().unwrap()])
+        .output()
+        .expect("aasm policy simulate (no --against) should execute");
+    // Same caveat as `policy_simulate_live_mode_exits_non_zero` — the
+    // user-facing "--against is required" message is hidden by a
+    // pre-existing clap-collision panic. Test only asserts non-zero
+    // exit until that bug is fixed.
+    assert!(
+        !out.status.success(),
+        "missing --against (and not --live) should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
