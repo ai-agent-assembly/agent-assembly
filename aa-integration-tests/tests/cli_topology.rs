@@ -266,3 +266,76 @@ async fn topology_team_show_budget_flag_does_not_break_output() {
     let v = parse_json(&out.stdout);
     assert_eq!(v["team_id"].as_str(), Some("alpha"));
 }
+
+// =============================================================================
+// aasm topology lineage
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_lineage_happy_path_returns_ancestor_chain() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (_parent_id, child_id) = fixture.seed_parent_child("alpha");
+    let child_hex = CliFixture::hex_id(&child_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "lineage", &child_hex, "--output", "json"])
+        .output()
+        .expect("aasm topology lineage should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["agent_id"].as_str(), Some(child_hex.as_str()));
+    // The lineage endpoint appends the requested agent itself as the final
+    // step (see aa-api/src/routes/topology.rs::get_lineage); for a child
+    // with 1 parent that's 2 steps total.
+    assert_eq!(v["ancestor_count"].as_u64(), Some(2), "child lineage = parent + self",);
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_lineage_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (_parent_id, child_id) = fixture.seed_parent_child("alpha");
+    let child_hex = CliFixture::hex_id(&child_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "lineage", &child_hex, "--output", fmt])
+        .output()
+        .expect("aasm topology lineage should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_lineage_root_agent_lineage_is_self_only() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (parent_id, _child_id) = fixture.seed_parent_child("alpha");
+    let parent_hex = CliFixture::hex_id(&parent_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "lineage", &parent_hex, "--output", "json"])
+        .output()
+        .expect("aasm topology lineage should execute");
+    assert!(out.status.success());
+    let v = parse_json(&out.stdout);
+    // The endpoint always appends the requested agent itself, so a root
+    // (no parents) yields a 1-step lineage = self only.
+    assert_eq!(v["ancestor_count"].as_u64(), Some(1), "root agent lineage = self only",);
+    let ancestors = v["ancestors"].as_array().expect("ancestors is array");
+    assert_eq!(ancestors.len(), 1);
+    assert_eq!(ancestors[0]["id"].as_str(), Some(parent_hex.as_str()));
+}
