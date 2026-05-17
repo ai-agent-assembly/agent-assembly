@@ -133,3 +133,32 @@ async fn status_json_and_yaml_are_structurally_equivalent() {
     assert!(json_v.get("approvals").is_some(), "json missing 'approvals' key");
     assert!(json_v.get("budget").is_some(), "json missing 'budget' key");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn status_populated_state_renders_seeded_agents_and_approvals() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent_ids = fixture.seed_agents(3);
+    let first_agent_hex = CliFixture::hex_id(&agent_ids[0]);
+    fixture.seed_approval(&first_agent_hex, "delete_production_db");
+    fixture.seed_approval(&first_agent_hex, "wire_funds_to_external_account");
+
+    let out = fixture
+        .cmd()
+        .args(["status", "--output", "json"])
+        .output()
+        .expect("aasm status should execute");
+    assert!(
+        out.status.success(),
+        "status should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+
+    let agents = v["agents"].as_array().expect("agents should be array");
+    assert_eq!(agents.len(), 3, "3 seeded agents should appear in agents array");
+
+    let pending = v["approvals"]["pending_count"]
+        .as_u64()
+        .expect("approvals.pending_count should be a number");
+    assert_eq!(pending, 2, "2 seeded approvals should appear as pending");
+}
