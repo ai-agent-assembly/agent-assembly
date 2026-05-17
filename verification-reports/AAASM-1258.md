@@ -95,6 +95,7 @@ consecutive successful runs:
 | [25989484659](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25989484659) | AAASM-1470 (cli_cost) | ✅ both OSes |
 | [25989539389](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25989539389) | AAASM-1461 (cli_audit) | ✅ both OSes |
 | [25990165694](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25990165694) | AAASM-1476 (audit-reader bugfix) | ✅ both OSes |
+| [25991254254](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25991254254) | AAASM-1481 (cli_dashboard ST-15b lifecycle) | ✅ both OSes |
 
 The `agent list --watch` streaming test in particular — the AC's named
 flake-risk case — has passed in every one of these runs.
@@ -236,7 +237,7 @@ follow-up notes (2).
 
 Phase A of Story AAASM-1258 is ready to mark as **verified**. Phase B
 (STs 4 onward — `cli_audit`, `cli_alerts`, `cli_cost`, `cli_trace`,
-`cli_logs`, `cli_context`, `cli_completion`, `cli_dashboard`, `cli_run`,
-`cli_status`, `cli_tools`, `cli_version`, `cli_approvals`) ships under
-the same parent Story but is covered by a separate verification
-deliverable.
+`cli_logs`, `cli_context`, `cli_completion`, `cli_dashboard` incl.
+ST-15b lifecycle (AAASM-1481), `cli_run`, `cli_status`, `cli_tools`,
+`cli_version`, `cli_approvals`) ships under the same parent Story but
+is covered by a separate verification deliverable.
