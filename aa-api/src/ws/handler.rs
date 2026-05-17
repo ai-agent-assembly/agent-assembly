@@ -334,6 +334,7 @@ fn build_approval_payload(ev: &aa_runtime::approval::ApprovalRequest) -> Approva
         condition_triggered: ev.condition_triggered.clone(),
         submitted_at: ev.submitted_at,
         timeout_secs: ev.timeout_secs,
+        expires_at: ev.submitted_at.saturating_add(ev.timeout_secs),
     }
 }
 
@@ -791,12 +792,17 @@ mod tests {
         assert_eq!(payload.condition_triggered, "outbound_email_to_unknown_domain");
         assert_eq!(payload.submitted_at, 1_700_000_000);
         assert_eq!(payload.timeout_secs, 300);
+        assert_eq!(
+            payload.expires_at, 1_700_000_300,
+            "expires_at = submitted_at + timeout_secs"
+        );
 
         // JSON-shape check — the discriminator + fields must match the
         // ApprovalPayload OpenAPI schema (no extra fields leaking through).
         let json = serde_json::to_value(EventPayload::Approval(payload)).unwrap();
         assert_eq!(json["action"], "send_external_email");
         assert_eq!(json["timeout_secs"], 300);
+        assert_eq!(json["expires_at"], 1_700_000_300_u64);
         assert!(json.get("team_id").is_none(), "internal routing fields must not leak");
         assert!(json.get("fallback").is_none(), "internal routing fields must not leak");
     }

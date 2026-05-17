@@ -104,6 +104,11 @@ pub struct ApprovalPayload {
     pub submitted_at: u64,
     /// Seconds before the request times out.
     pub timeout_secs: u64,
+    /// Unix epoch timestamp (seconds) at which the request expires
+    /// (`submitted_at + timeout_secs`). Provided as a pre-computed
+    /// absolute timestamp so dashboard consumers can render the
+    /// auto-expire countdown without local-clock drift.
+    pub expires_at: u64,
 }
 
 /// Payload for `event_type: "budget"` events.
