@@ -90,8 +90,10 @@ pub enum ViolationPayload {
 
 /// Payload for `event_type: "approval"` events.
 ///
-/// Represents a human-in-the-loop approval request submitted by the
-/// policy engine when an action requires explicit authorisation.
+/// Represents either a freshly-submitted human-in-the-loop approval
+/// request or a status-change notification (e.g. auto-expiration). The
+/// `status` field discriminates: `"pending"` for new requests,
+/// `"expired"` for auto-expirations (AAASM-1453).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApprovalPayload {
     /// Unique ID for the approval request (UUID v4).
@@ -109,6 +111,17 @@ pub struct ApprovalPayload {
     /// absolute timestamp so dashboard consumers can render the
     /// auto-expire countdown without local-clock drift.
     pub expires_at: u64,
+    /// Lifecycle status — `"pending"` for newly-submitted requests
+    /// (the original event semantics) or `"expired"` when the
+    /// per-request timeout has elapsed without a human decision
+    /// (AAASM-1453). Defaults to `"pending"` for legacy producers
+    /// pre-AAASM-1453 that haven't been updated.
+    #[serde(default = "default_pending_status")]
+    pub status: String,
+}
+
+fn default_pending_status() -> String {
+    "pending".to_string()
 }
 
 /// Payload for `event_type: "budget"` events.
