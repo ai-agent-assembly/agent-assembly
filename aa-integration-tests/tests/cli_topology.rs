@@ -339,3 +339,91 @@ async fn topology_lineage_root_agent_lineage_is_self_only() {
     assert_eq!(ancestors.len(), 1);
     assert_eq!(ancestors[0]["id"].as_str(), Some(parent_hex.as_str()));
 }
+
+// =============================================================================
+// aasm topology stats
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_stats_happy_path_reports_seeded_counts() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 2);
+    fixture.seed_team_members("beta", 3);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "stats", "--output", "json"])
+        .output()
+        .expect("aasm topology stats should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["total_agents"].as_u64(), Some(5), "5 seeded agents");
+    assert_eq!(v["team_count"].as_u64(), Some(2));
+    assert_eq!(v["active_count"].as_u64(), Some(5));
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_stats_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 1);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "stats", "--output", fmt])
+        .output()
+        .expect("aasm topology stats should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_stats_empty_registry_returns_zero_counts() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "stats", "--output", "json"])
+        .output()
+        .expect("aasm topology stats should execute");
+    assert!(out.status.success());
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["total_agents"].as_u64(), Some(0));
+    assert_eq!(v["team_count"].as_u64(), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_stats_json_and_yaml_are_structurally_equivalent() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 2);
+
+    let json_out = fixture
+        .cmd()
+        .args(["topology", "stats", "--output", "json"])
+        .output()
+        .expect("json call should execute");
+    let yaml_out = fixture
+        .cmd()
+        .args(["topology", "stats", "--output", "yaml"])
+        .output()
+        .expect("yaml call should execute");
+    assert!(json_out.status.success() && yaml_out.status.success());
+
+    // Sanity-check that both parse and report the same total_agents.
+    let json_v = parse_json(&json_out.stdout);
+    let yaml_v = common::format::parse_yaml(&yaml_out.stdout);
+    assert_eq!(json_v["total_agents"].as_u64(), Some(2));
+    assert_eq!(yaml_v.get("total_agents").and_then(|v| v.as_u64()), Some(2),);
+}
