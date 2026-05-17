@@ -63,6 +63,8 @@ pub fn v1_router() -> Router {
         .route("/iam/api-keys/{id}/rotate", post(iam::rotate_api_key))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
+        .route("/alerts/{id}", get(alerts::get_alert))
+        .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         // Dev tool webhooks
         .route(
             "/devtools/saas/{provider}/events",

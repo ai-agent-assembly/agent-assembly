@@ -233,6 +233,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/alerts/:id` — fetch one governance alert by ID.
+         * @description Returns 404 with an RFC 7807 problem detail if the alert is unknown
+         *     or has been evicted from the in-memory ring buffer.
+         */
+        get: operations["get_alert"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/{id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
+         * @description Idempotent — calling against an already-resolved alert returns the same
+         *     record with `updated_at` unchanged. Returns 404 if the id is unknown,
+         *     evicted, or not a valid u64.
+         */
+        post: operations["resolve_alert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals": {
         parameters: {
             query?: never;
@@ -1027,8 +1070,18 @@ export interface components {
             message: string;
             /** @description Alert severity level (e.g. "warning", "critical"). */
             severity: string;
+            /**
+             * @description Lifecycle status — `"unresolved"` on capture, `"resolved"` once
+             *     the alert has been acknowledged via `POST /alerts/:id/resolve`.
+             */
+            status: string;
             /** @description ISO 8601 timestamp when the alert was raised. */
             timestamp: string;
+            /**
+             * @description ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
+             *     while the alert is still in its initial captured state.
+             */
+            updated_at?: string | null;
         };
         ApiKeyResponse: {
             assigned_policies: string[];
@@ -1639,6 +1692,15 @@ export interface components {
              * @description Auto-assigned edge identifier.
              */
             id: number;
+        };
+        /** @description Request body for `POST /api/v1/alerts/:id/resolve`. */
+        ResolveAlertRequest: {
+            /**
+             * @description Optional human-readable note recorded with the resolution. The
+             *     in-memory store does not persist this today but the field is
+             *     accepted so CLI / dashboard clients can submit a reason.
+             */
+            reason?: string | null;
         };
         /**
          * @description A resource that an agent may interact with — one column family in the
@@ -2479,6 +2541,71 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AlertResponse"][];
                 };
+            };
+        };
+    };
+    get_alert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Numeric alert identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Alert detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertResponse"];
+                };
+            };
+            /** @description Alert not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolve_alert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Numeric alert identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional resolution metadata */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveAlertRequest"];
+            };
+        };
+        responses: {
+            /** @description Alert resolved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertResponse"];
+                };
+            };
+            /** @description Alert not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

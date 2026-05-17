@@ -29,6 +29,12 @@ pub struct StoredAlert {
     pub spent_usd: f64,
     /// Configured daily limit in USD.
     pub limit_usd: f64,
+    /// Lifecycle status — `"unresolved"` on capture, flipped to
+    /// `"resolved"` once `AlertStore::resolve` is called.
+    pub status: String,
+    /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
+    /// while the alert is still in its initial captured state.
+    pub updated_at: Option<String>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -91,6 +97,8 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
+        status: "unresolved".to_string(),
+        updated_at: None,
     }
 }
 
@@ -105,4 +113,15 @@ pub trait AlertStore: Send + Sync {
     ///
     /// Returns `(alerts, total_count)`. Results are ordered newest-first.
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64);
+
+    /// Retrieve a single alert by its numeric ID, or `None` if the ID is
+    /// unknown or has been evicted by the ring buffer.
+    fn get(&self, id: u64) -> Option<StoredAlert>;
+
+    /// Mark an alert as resolved. Returns the post-mutation record, or
+    /// `None` if the ID is unknown / evicted. Must be **idempotent** —
+    /// calling `resolve` on an already-resolved alert returns the same
+    /// record and does not bump `updated_at`. `_reason` is accepted for
+    /// API parity but the in-memory store does not persist it.
+    fn resolve(&self, id: u64, _reason: Option<&str>) -> Option<StoredAlert>;
 }

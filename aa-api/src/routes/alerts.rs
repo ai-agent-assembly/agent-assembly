@@ -3,11 +3,37 @@
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::alerts::StoredAlert;
+use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
+
+/// Convert a `StoredAlert` into the public-facing `AlertResponse` shape.
+fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
+    AlertResponse {
+        id: a.id.to_string(),
+        severity: a.severity.to_string(),
+        category: "budget".to_string(),
+        message: a.message,
+        timestamp: a.timestamp,
+        agent_id: Some(a.agent_id),
+        status: a.status,
+        updated_at: a.updated_at,
+    }
+}
+
+/// Request body for `POST /api/v1/alerts/:id/resolve`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ResolveAlertRequest {
+    /// Optional human-readable note recorded with the resolution. The
+    /// in-memory store does not persist this today but the field is
+    /// accepted so CLI / dashboard clients can submit a reason.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
 
 /// JSON representation of a governance alert.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -24,6 +50,12 @@ pub struct AlertResponse {
     pub timestamp: String,
     /// Agent ID that triggered the alert (if applicable).
     pub agent_id: Option<String>,
+    /// Lifecycle status — `"unresolved"` on capture, `"resolved"` once
+    /// the alert has been acknowledged via `POST /alerts/:id/resolve`.
+    pub status: String,
+    /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
+    /// while the alert is still in its initial captured state.
+    pub updated_at: Option<String>,
 }
 
 /// `GET /api/v1/alerts` — list recent governance alerts.
@@ -47,17 +79,7 @@ pub async fn list_alerts(
 
     let (stored, total) = state.alert_store.list(limit, offset);
 
-    let items: Vec<AlertResponse> = stored
-        .into_iter()
-        .map(|a| AlertResponse {
-            id: a.id.to_string(),
-            severity: a.severity.to_string(),
-            category: "budget".to_string(),
-            message: a.message,
-            timestamp: a.timestamp,
-            agent_id: Some(a.agent_id),
-        })
-        .collect();
+    let items: Vec<AlertResponse> = stored.into_iter().map(alert_response_from_stored).collect();
 
     (
         StatusCode::OK,
@@ -68,4 +90,70 @@ pub async fn list_alerts(
             total,
         }),
     )
+}
+
+/// `GET /api/v1/alerts/:id` — fetch one governance alert by ID.
+///
+/// Returns 404 with an RFC 7807 problem detail if the alert is unknown
+/// or has been evicted from the in-memory ring buffer.
+#[utoipa::path(
+    get,
+    path = "/api/v1/alerts/{id}",
+    params(("id" = String, Path, description = "Numeric alert identifier")),
+    responses(
+        (status = 200, description = "Alert detail", body = AlertResponse),
+        (status = 404, description = "Alert not found")
+    ),
+    tag = "alerts"
+)]
+pub async fn get_alert(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+    let numeric_id = id
+        .parse::<u64>()
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
+
+    let stored = state.alert_store.get(numeric_id).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+    })?;
+
+    Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
+}
+
+/// `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
+///
+/// Idempotent — calling against an already-resolved alert returns the same
+/// record with `updated_at` unchanged. Returns 404 if the id is unknown,
+/// evicted, or not a valid u64.
+#[utoipa::path(
+    post,
+    path = "/api/v1/alerts/{id}/resolve",
+    params(("id" = String, Path, description = "Numeric alert identifier")),
+    request_body(content = ResolveAlertRequest, description = "Optional resolution metadata"),
+    responses(
+        (status = 200, description = "Alert resolved", body = AlertResponse),
+        (status = 404, description = "Alert not found")
+    ),
+    tag = "alerts"
+)]
+pub async fn resolve_alert(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: Option<Json<ResolveAlertRequest>>,
+) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+    let numeric_id = id
+        .parse::<u64>()
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
+
+    let reason = body.and_then(|Json(req)| req.reason);
+
+    let stored = state
+        .alert_store
+        .resolve(numeric_id, reason.as_deref())
+        .ok_or_else(|| {
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+        })?;
+
+    Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
 }
