@@ -127,7 +127,7 @@ describe('MembersPanel — role change', () => {
     expect(_iamInternal.snapshot().find((m) => m.id === 'me')?.role).toBe('Owner')
   })
 
-  it('rolls back optimistic role change when the mutation rejects', async () => {
+  it('rolls back optimistic role change when the mutation rejects (after confirm)', async () => {
     _iamInternal.setUpdateRoleOverride(() => Promise.reject(new Error('boom')))
     const user = userEvent.setup()
     renderPanel()
@@ -135,20 +135,48 @@ describe('MembersPanel — role change', () => {
     const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
     await user.selectOptions(select, 'Viewer')
 
+    // AAASM-1400 — the modal opens even for a safe Member → Viewer change.
+    expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
+    await user.click(screen.getByTestId('confirm-role-confirm'))
+
     const toasts = await screen.findAllByTestId('toast')
     expect(toasts.some((t) => t.textContent?.includes('boom'))).toBe(true)
     await waitFor(() => expect(select.value).toBe('Member'))
   })
 
-  it('applies a safe role change without confirmation', async () => {
+  it('applies a safe role change after the always-confirm dialog (AAASM-1400)', async () => {
     const user = userEvent.setup()
     renderPanel()
     const row = await screen.findByTestId('member-row-mbr-3')
     const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
     await user.selectOptions(select, 'Admin')
 
+    // Modal opens with the neutral message (not the danger warning).
+    expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
+    expect(screen.getByTestId('confirm-role-neutral')).toBeInTheDocument()
+    expect(screen.queryByTestId('confirm-role-warning')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('confirm-role-confirm'))
     await waitFor(() => expect(select.value).toBe('Admin'))
-    expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('safe role change aborted on cancel — role reverts (AAASM-1400)', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    const row = await screen.findByTestId('member-row-mbr-3')
+    const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
+    await user.selectOptions(select, 'Admin')
+
+    expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
+    await user.click(screen.getByTestId('confirm-role-cancel'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument(),
+    )
+    // Underlying store stays on the original role.
+    expect(_iamInternal.snapshot().find((m) => m.id === 'mbr-3')?.role).toBe('Member')
   })
 })
 
