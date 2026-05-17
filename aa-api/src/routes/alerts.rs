@@ -6,8 +6,23 @@ use axum::{Extension, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::alerts::StoredAlert;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
+
+/// Convert a `StoredAlert` into the public-facing `AlertResponse` shape.
+fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
+    AlertResponse {
+        id: a.id.to_string(),
+        severity: a.severity.to_string(),
+        category: "budget".to_string(),
+        message: a.message,
+        timestamp: a.timestamp,
+        agent_id: Some(a.agent_id),
+        status: a.status,
+        updated_at: a.updated_at,
+    }
+}
 
 /// JSON representation of a governance alert.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -24,6 +39,12 @@ pub struct AlertResponse {
     pub timestamp: String,
     /// Agent ID that triggered the alert (if applicable).
     pub agent_id: Option<String>,
+    /// Lifecycle status — `"unresolved"` on capture, `"resolved"` once
+    /// the alert has been acknowledged via `POST /alerts/:id/resolve`.
+    pub status: String,
+    /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
+    /// while the alert is still in its initial captured state.
+    pub updated_at: Option<String>,
 }
 
 /// `GET /api/v1/alerts` — list recent governance alerts.
@@ -47,17 +68,7 @@ pub async fn list_alerts(
 
     let (stored, total) = state.alert_store.list(limit, offset);
 
-    let items: Vec<AlertResponse> = stored
-        .into_iter()
-        .map(|a| AlertResponse {
-            id: a.id.to_string(),
-            severity: a.severity.to_string(),
-            category: "budget".to_string(),
-            message: a.message,
-            timestamp: a.timestamp,
-            agent_id: Some(a.agent_id),
-        })
-        .collect();
+    let items: Vec<AlertResponse> = stored.into_iter().map(alert_response_from_stored).collect();
 
     (
         StatusCode::OK,

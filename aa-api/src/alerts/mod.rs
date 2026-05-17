@@ -29,6 +29,12 @@ pub struct StoredAlert {
     pub spent_usd: f64,
     /// Configured daily limit in USD.
     pub limit_usd: f64,
+    /// Lifecycle status — `"unresolved"` on capture, flipped to
+    /// `"resolved"` once `AlertStore::resolve` is called.
+    pub status: String,
+    /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
+    /// while the alert is still in its initial captured state.
+    pub updated_at: Option<String>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -91,6 +97,8 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
+        status: "unresolved".to_string(),
+        updated_at: None,
     }
 }
 
