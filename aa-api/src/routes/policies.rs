@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
@@ -31,13 +31,23 @@ pub struct PolicyResponse {
     pub policy_yaml: String,
 }
 
+/// Additional filter parameters for `GET /api/v1/policies`.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct PolicyListFilter {
+    /// When `true`, include older (inactive) policy versions in the response.
+    /// Defaults to `false` — only the currently active policy version is returned.
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
 /// `GET /api/v1/policies` — list all policy versions.
 ///
-/// List all governance policy versions with pagination.
+/// List governance policy versions with optional archive inclusion.
+/// By default only the active (most recent) version is returned.
 #[utoipa::path(
     get,
     path = "/api/v1/policies",
-    params(PaginationParams),
+    params(PaginationParams, PolicyListFilter),
     responses(
         (status = 200, description = "Paginated list of policy versions", body = Vec<PolicyResponse>)
     ),
@@ -46,6 +56,7 @@ pub struct PolicyResponse {
 pub async fn list_policies(
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
+    axum::extract::Query(filter): axum::extract::Query<PolicyListFilter>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let all = state
         .policy_history
@@ -53,9 +64,16 @@ pub async fn list_policies(
         .await
         .map_err(|e| ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("{e:?}")))?;
 
-    let total = all.len() as u64;
+    // Without include_archived only the most-recent (active) version is visible.
+    let visible: Vec<_> = if filter.include_archived {
+        all
+    } else {
+        all.into_iter().take(1).collect()
+    };
 
-    let paged: Vec<_> = all
+    let total = visible.len() as u64;
+
+    let paged: Vec<_> = visible
         .into_iter()
         .skip(params.offset())
         .take(params.per_page() as usize)
