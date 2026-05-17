@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7
+#
+# AAASM Go 1.26 base image
+# ------------------------
+# Ships the AAASM Go SDK (`github.com/agent-assembly/go-sdk`) + the
+# `aasm` operator binary pre-installed, so containerised agents get
+# governance on first run with no extra install step.
+#
+# Use:
+#   FROM ghcr.io/agent-assembly/go:1.26-alpine
+#
+# Transitional install path (will simplify once this Story ships):
+#   * `aasm` is built from source until AAASM-1201 publishes a curl|sh
+#     installer; stage 1 collapses to a `COPY --from=ghcr.io/...` then.
+#
+# Note: unlike Python and Node, the Go SDK does not need a PyPI/npm
+# equivalent — Go's `go install` reads directly from git, so no
+# downstream publish-to-registry Story is needed for the SDK install.
+#
+# Issue: AAASM-1440 (sub-task of AAASM-1204 / F114)
+# Epic:  AAASM-1199 (Release & Distribution Pipeline)
+
+# -----------------------------------------------------------------------------
+# Stage 1 — build the `aasm` binary from source.
+# Same builder as the Python and Node variants; Docker layer-shares the
+# cargo cache across all three images during multi-image CI builds.
+# -----------------------------------------------------------------------------
+FROM rust:alpine AS aasm-builder
+
+RUN apk add --no-cache musl-dev protobuf-dev openssl-dev pkgconfig
+
+WORKDIR /build
+
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p aa-cli --bin aasm \
+ && cp /build/target/release/aasm /usr/local/bin/aasm
+
+# -----------------------------------------------------------------------------
+# Stage 2 — Go 1.26 runtime.
+# Using the alpine variant for size (Go base images publish both -alpine
+# and -bookworm; alpine is the smaller default).
+# -----------------------------------------------------------------------------
+FROM golang:1.26-alpine
+
+# git is needed at build time for `go install` to fetch the SDK from
+# its git repository. Keep it installed — `go install` for downstream
+# user packages also needs git at runtime in many real-world use cases,
+# and Go's alpine image already includes it.
+
+# Drop the prebuilt `aasm` binary into the image PATH.
+COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
+
+# Install the AAASM Go SDK. `go install` uses Go's native git-based
+# distribution model — no registry-publish prerequisite (unlike pip/npm).
+RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
+
+# Build-time smoke tests — fail the image build (not a runtime surprise)
+# if either side of the install ends up broken.
+RUN aasm --version
+RUN go list github.com/agent-assembly/go-sdk
+
+LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+      org.opencontainers.image.description="AAASM governed Go 1.26 agent base image" \
+      org.opencontainers.image.licenses="Apache-2.0"
