@@ -80,7 +80,7 @@ pub fn v1_router() -> Router {
         .route("/topology/lineage/{agent_id}", get(topology::get_lineage))
         .route("/topology/stats", get(topology::get_stats))
         // Edges (mesh topology edge store)
-        .route("/topology/edges", post(edges::report_edge))
+        .route("/topology/edges", post(edges::report_edge).get(edges::list_topology_edges))
         .route("/agents/{id}/edges", get(edges::list_agent_edges))
         .route("/agents/{id}/graph", get(edges::get_agent_graph))
         // Per-op lifecycle actions (stubs — see routes/ops.rs)
