@@ -35,6 +35,7 @@ mod common;
 
 use aa_core::audit::AuditEventType;
 use common::cli::CliFixture;
+use rstest::rstest;
 use serde_json::Value;
 
 /// Parse newline-delimited JSON from `aasm logs --output json`.
@@ -72,4 +73,34 @@ async fn logs_happy_path_returns_seeded_events() {
     );
     let entries = parse_jsonl(&out.stdout);
     assert_eq!(entries.len(), 5, "5 seeded events expected in stdout");
+}
+
+// NOTE on `--output yaml`: `aa-cli/src/commands/logs/fetch.rs` only branches
+// on `Json` vs. text — yaml is parsed by clap but renders the same plain-text
+// shape as `table`. The format test below parametrizes all three so the matrix
+// matches the ticket AC; it asserts on exit + non-empty stdout rather than on
+// format-specific structure because yaml/table share the same renderer today.
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent = fixture.seed_agents(1)[0];
+    fixture
+        .seed_audit_events(2, agent, AuditEventType::PolicyViolation)
+        .expect("seed should succeed");
+
+    let out = fixture
+        .cmd()
+        .args(["logs", "--output", fmt])
+        .output()
+        .expect("aasm logs should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
