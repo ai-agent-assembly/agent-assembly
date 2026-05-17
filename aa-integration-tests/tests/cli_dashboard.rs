@@ -325,3 +325,57 @@ async fn dashboard_start_serves_static_assets() {
 
     let _ = reap_child(child);
 }
+
+// ============================================================================
+// aasm dashboard start — gateway reverse-proxy (AAASM-1481)
+// ============================================================================
+
+// `dashboard start` reverse-proxies `/api/*` to `ctx.api_url` (the value of
+// the top-level `--api-url` global flag, already wired by `CliFixture::cmd()`
+// to the harness's in-process gateway). This test seeds two agents into the
+// gateway, GETs `/api/v1/agents` through the dashboard, and asserts the
+// response is structurally identical to a direct GET against the gateway.
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_start_proxies_gateway_api() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_agents(2);
+
+    let port = free_port();
+    let dashboard_root = format!("http://127.0.0.1:{port}/");
+    let proxied = format!("http://127.0.0.1:{port}/api/v1/agents");
+    let direct = format!("{}/api/v1/agents", fixture.base_url());
+
+    let child = fixture
+        .cmd()
+        .args(["dashboard", "start", "--port", &port.to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm dashboard start should spawn");
+
+    assert_eq!(
+        wait_for_http(&dashboard_root, Duration::from_secs(30)).await,
+        Some(200),
+        "dashboard should become reachable",
+    );
+
+    let through_proxy: serde_json::Value = reqwest::get(&proxied)
+        .await
+        .expect("GET via dashboard proxy")
+        .json()
+        .await
+        .expect("proxy response is JSON");
+    let direct_resp: serde_json::Value = reqwest::get(&direct)
+        .await
+        .expect("GET direct against gateway")
+        .json()
+        .await
+        .expect("direct response is JSON");
+
+    assert_eq!(
+        through_proxy, direct_resp,
+        "proxied response should match direct gateway response",
+    );
+
+    let _ = reap_child(child);
+}
