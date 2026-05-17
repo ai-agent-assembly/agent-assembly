@@ -164,3 +164,34 @@ async fn cost_summary_group_by_agent_renders_per_agent_table_after_seed() {
         "per-agent table should include `DAILY_SPEND` column\nstdout:\n{stdout}",
     );
 }
+
+// =============================================================================
+// aasm cost forecast
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_forecast_happy_path_renders_projection() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "forecast"])
+        .output()
+        .expect("aasm cost forecast should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("COST FORECAST"),
+        "stdout should contain the section header\nstdout:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("Projected monthly"),
+        "stdout should mention `Projected monthly` label\nstdout:\n{stdout}",
+    );
+}
