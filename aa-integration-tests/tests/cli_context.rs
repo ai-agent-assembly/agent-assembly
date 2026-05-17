@@ -449,3 +449,103 @@ async fn context_use_unknown_name_exits_non_zero_and_says_not_found() {
         "default should still be 'known' after failed use; got: {known_line:?}",
     );
 }
+
+// ============================================================================
+// Round-trip + $HOME isolation
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn context_set_then_list_round_trips_full_values() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let home = TempDir::new().expect("tempdir for HOME");
+
+    let set = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args([
+            "context",
+            "set",
+            "rt",
+            "--api-url",
+            "https://rt.example.com:9443",
+            "--api-key",
+            "rt-token",
+        ])
+        .output()
+        .expect("set");
+    assert!(set.status.success(), "set should succeed");
+
+    let list = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args(["context", "list"])
+        .output()
+        .expect("list");
+    assert!(list.status.success(), "list should succeed");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("rt"),
+        "round-trip: list missing context name 'rt':\n{stdout}"
+    );
+    assert!(
+        stdout.contains("https://rt.example.com:9443"),
+        "round-trip: list missing api_url:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("(key set)"),
+        "round-trip: list should annotate '(key set)':\n{stdout}",
+    );
+    // Key MUST NOT appear in plaintext stdout — defense against accidental
+    // print regressions.
+    assert!(
+        !stdout.contains("rt-token"),
+        "round-trip: secret key must not leak to stdout:\n{stdout}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn context_set_does_not_touch_real_home_dot_aa() {
+    // Snapshot the real $HOME/.aa/config.yaml (if any) before the test. If
+    // HOME isolation works, this content is identical after.
+    let real_home = std::env::var_os("HOME").expect("HOME should be set in test process");
+    let real_cfg = std::path::Path::new(&real_home).join(".aa/config.yaml");
+    let before = std::fs::read_to_string(&real_cfg).ok();
+
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let home = TempDir::new().expect("tempdir for HOME");
+
+    let out = fixture
+        .cmd()
+        .env("HOME", home.path())
+        .args([
+            "context",
+            "set",
+            "iso",
+            "--api-url",
+            "http://iso.test:8080",
+            "--api-key",
+            "iso-key",
+        ])
+        .output()
+        .expect("set");
+    assert!(out.status.success(), "set should succeed");
+
+    let after = std::fs::read_to_string(&real_cfg).ok();
+    assert_eq!(
+        before, after,
+        "real $HOME/.aa/config.yaml content changed across the test; HOME isolation is broken",
+    );
+
+    // Per-test HOME tempdir actually received the write — proves the
+    // before/after equality above is meaningful (not a no-op `set`).
+    let tmp_cfg = home.path().join(".aa/config.yaml");
+    assert!(
+        tmp_cfg.exists(),
+        "tempdir HOME/.aa/config.yaml should exist after `set`",
+    );
+    let raw = std::fs::read_to_string(&tmp_cfg).expect("read tempdir config.yaml");
+    assert!(
+        raw.contains("iso"),
+        "tempdir config.yaml should contain the 'iso' context; got:\n{raw}",
+    );
+}
