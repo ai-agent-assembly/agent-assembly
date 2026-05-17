@@ -169,20 +169,20 @@ export interface paths {
         };
         /**
          * `GET /api/v1/agents/{id}/subtree-burn` — per-direct-child subtree spend time series.
-         * @description **Current behaviour (preview)**: returns a single data point for today
-         *     only. The wire schema accepts and echoes back the `period=7d|30d`
-         *     parameter so consumers can pin a contract, but real per-day historical
-         *     aggregation requires a daily-spend history store that does not yet
-         *     exist in `aa-gateway::budget`. A follow-up Subtask will extend the
-         *     tracker with persistent history and populate the full series; the
-         *     dashboard chart already handles `points.len() >= 1` so it will pick
-         *     up the additional points without any frontend change.
+         * @description Reads `BudgetTracker::agent_spend_history` for the agent itself and each
+         *     direct descendant from `AgentRegistry::children_of`, then aligns the
+         *     per-child series day-by-day so the response has one point per day in the
+         *     requested window (`7d` default, `30d` opt-in). Days with no recorded
+         *     spend appear with `spent_usd = "0"` for that child rather than being
+         *     omitted, so the dashboard's stacked area renders without gaps.
          *
-         *     Each child's spend is read from `BudgetTracker::agent_state` for the
-         *     agent's direct descendants (via `AgentRegistry::children_of`). The
-         *     agent's own spend is included as a synthetic `child_name: "(self)"`
-         *     row when the root has its own recorded spend, so the stack adds up to
-         *     the subtree total.
+         *     The agent's own spend is included as a synthetic `child_name: "(self)"`
+         *     row whenever it has any recorded spend across the window, so the stack
+         *     adds up to the subtree total.
+         *
+         *     The history store is in-memory only (not persisted across restarts);
+         *     the chart will populate progressively as agents accrue spend after
+         *     the most recent gateway start.
          */
         get: operations["get_agent_subtree_burn"];
         put?: never;
