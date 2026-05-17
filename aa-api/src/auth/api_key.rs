@@ -132,6 +132,15 @@ impl ApiKeyStore {
     }
 }
 
+/// Reason a key lookup failed during authentication.
+#[derive(Debug)]
+pub enum KeyNotValid {
+    /// No entry matched the supplied raw key.
+    NotFound,
+    /// The key exists but has been revoked.
+    Revoked,
+}
+
 /// Errors related to API key operations.
 #[derive(Debug, Error)]
 pub enum ApiKeyError {
