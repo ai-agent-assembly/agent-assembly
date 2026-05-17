@@ -463,6 +463,51 @@ async fn audit_export_writes_valid_json_array_to_temp_file() {
     assert_eq!(arr.len(), 4, "should export all 4 seeded entries; got:\n{parsed:#}");
 }
 
+/// `aasm audit export --format csv --output <file>` should write a CSV
+/// file with the documented header row plus one data row per seeded
+/// event.
+///
+/// **Currently `#[ignore]`'d** for the same `--output` clap id collision
+/// documented on `audit_export_writes_valid_json_array_to_temp_file`.
+/// Re-enable alongside that test when the bug subtask lands.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "AAASM-1258 bug subtask: clap id collision on --output between global Cli and audit::ExportArgs"]
+async fn audit_export_writes_valid_csv_to_temp_file() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xd2; 16];
+    fixture
+        .seed_audit_events(3, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed events");
+
+    let tmp = tempfile::tempdir().expect("tempdir for export target");
+    let out_path = tmp.path().join("audit.csv");
+    let out_arg = out_path.to_string_lossy().to_string();
+    let out = fixture
+        .cmd()
+        .args(["audit", "export", "--format", "csv", "--output", &out_arg])
+        .output()
+        .expect("aasm audit export should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out_path.exists(), "export file should exist at {out_path:?}");
+
+    let body = std::fs::read_to_string(&out_path).expect("read exported csv");
+    let lines: Vec<&str> = body.lines().collect();
+    assert!(
+        lines[0].starts_with("timestamp,agent_id,session_id,event_type,tool,result,policy"),
+        "CSV should start with the documented header row; got first line:\n{}",
+        lines[0],
+    );
+    assert!(
+        lines.len() >= 4,
+        "CSV should have header + at least 3 data rows; got {} lines:\n{body}",
+        lines.len(),
+    );
+}
+
 // =============================================================================
 // aasm audit verify-chain
 // =============================================================================
