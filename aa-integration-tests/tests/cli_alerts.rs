@@ -259,3 +259,30 @@ async fn alerts_get_unknown_id_exits_non_zero_with_clean_error() {
         "stderr should describe the failure; got:\n{stderr}",
     );
 }
+
+// =============================================================================
+// aasm alerts resolve
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_resolve_unknown_id_exits_non_zero_with_clean_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    // `--force` skips the interactive confirmation prompt so the test
+    // exercises the network path rather than blocking on stdin.
+    let out = fixture
+        .cmd()
+        .args(["alerts", "resolve", "does-not-exist", "--force"])
+        .output()
+        .expect("aasm alerts resolve should execute");
+    assert!(
+        !out.status.success(),
+        "unknown id should exit non-zero; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.to_lowercase().contains("error"),
+        "stderr should describe the failure; got:\n{stderr}",
+    );
+}
