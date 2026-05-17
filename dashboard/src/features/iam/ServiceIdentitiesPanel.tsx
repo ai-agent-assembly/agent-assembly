@@ -3,16 +3,19 @@ import { useGenerateApiKeyMutation } from './apiKeys'
 import { ApiKeyList } from './ApiKeyList'
 import { ConfirmDestroyUnseenKey } from './ConfirmDestroyUnseenKey'
 import { GenerateKeyDialog } from './GenerateKeyDialog'
+import { IdentityDetailCard } from './IdentityDetailCard'
 import { RevealOnceModal } from './RevealOnceModal'
 import { useRevealOnceState } from './useRevealOnceState'
 import { useToast } from '../../components/Toast'
-import type { GenerateApiKeyInput } from './types'
+import type { ApiKey, GenerateApiKeyInput } from './types'
 import './ServiceIdentitiesPanel.css'
 import './GenerateKeyDialog.css'
 
 export function ServiceIdentitiesPanel() {
   const [generateOpen, setGenerateOpen] = useState(false)
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+  /** Selected api-key row drives the IdentityDetailCard on the right (AAASM-1396). */
+  const [selected, setSelected] = useState<ApiKey | null>(null)
   const reveal = useRevealOnceState()
   const generate = useGenerateApiKeyMutation()
   const { toast } = useToast()
@@ -65,7 +68,29 @@ export function ServiceIdentitiesPanel() {
         Agent Assembly does not store it in cleartext and cannot show it again.
       </div>
 
-      <ApiKeyList />
+      <div className="iam-services-panel__layout">
+        <div className="iam-services-panel__list">
+          <ApiKeyList
+            selectedKeyId={selected?.id ?? null}
+            onSelect={setSelected}
+          />
+        </div>
+        <div className="iam-services-panel__detail">
+          {selected ? (
+            <IdentityDetailCard
+              identity={selected}
+              onClose={() => setSelected(null)}
+            />
+          ) : (
+            <div
+              className="iam-services-panel__hint"
+              data-testid="iam-services-detail-empty"
+            >
+              Select an API key on the left to inspect its identity profile.
+            </div>
+          )}
+        </div>
+      </div>
 
       <GenerateKeyDialog
         open={generateOpen}
