@@ -21,8 +21,14 @@
 mod common;
 
 use aa_core::audit::AuditEventType;
+use aa_core::identity::SessionId;
+use aa_core::{AgentId, AuditEntry};
 use common::cli::CliFixture;
 use rstest::rstest;
+
+/// Nanoseconds in one hour — used by the `--since` / `--until` filter
+/// tests to position seeded events on either side of an absolute cutoff.
+const NANOS_PER_HOUR: u64 = 3_600 * 1_000_000_000;
 
 // =============================================================================
 // aasm audit list
@@ -182,6 +188,68 @@ async fn audit_list_action_filter_narrows_to_one_event_type() {
     for e in arr {
         assert_eq!(e.get("event_type").and_then(|v| v.as_str()), Some("PolicyViolation"));
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_since_filter_excludes_events_before_cutoff() {
+    use std::io::Write as _;
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent_id = AgentId::from_bytes([0xb4; 16]);
+    let session_id = SessionId::from_bytes([0xee; 16]);
+
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos() as u64;
+
+    // Genesis entry is ~24h old (well outside `--since 1h`) so the filter
+    // must drop it; the second entry is ~5s old (inside the window).
+    let old = AuditEntry::new(
+        0,
+        now_ns.saturating_sub(24 * NANOS_PER_HOUR),
+        AuditEventType::ToolCallIntercepted,
+        agent_id,
+        session_id,
+        r#"{"tool":"old","result":"allow","policy":"default"}"#.into(),
+        [0u8; 32],
+    );
+    let new_entry = AuditEntry::new(
+        1,
+        now_ns.saturating_sub(5 * 1_000_000_000),
+        AuditEventType::ToolCallIntercepted,
+        agent_id,
+        session_id,
+        r#"{"tool":"new","result":"allow","policy":"default"}"#.into(),
+        *old.entry_hash(),
+    );
+    let path = fixture.env.audit_dir.join("since-filter.jsonl");
+    let mut f = std::fs::File::create(&path).expect("create since-filter.jsonl");
+    writeln!(f, "{}", serde_json::to_string(&old).unwrap()).unwrap();
+    writeln!(f, "{}", serde_json::to_string(&new_entry).unwrap()).unwrap();
+    drop(f);
+
+    let out = fixture
+        .cmd()
+        .args(["--output", "json", "audit", "list", "--since", "1h"])
+        .output()
+        .expect("aasm audit list --since should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let parsed = common::format::parse_json(&out.stdout);
+    let arr = parsed.as_array().expect("json stdout should be an array");
+    assert_eq!(
+        arr.len(),
+        1,
+        "--since 1h should exclude the 24h-old entry and keep only the recent one; got:\n{parsed:#}"
+    );
+    let payload = arr[0].get("payload").and_then(|v| v.as_str()).unwrap_or_default();
+    assert!(
+        payload.contains("\"tool\":\"new\""),
+        "remaining entry should be the recent one; got payload {payload}"
+    );
 }
 
 // =============================================================================
