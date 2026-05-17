@@ -178,3 +178,70 @@ async fn agent_list_watch_runs_until_killed() {
     child.kill().expect("kill should succeed");
     let _ = child.wait_with_output();
 }
+
+// =============================================================================
+// aasm agent inspect
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_inspect_happy_path_returns_single_agent() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "inspect", &hex, "--output", "json"])
+        .output()
+        .expect("aasm agent inspect should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    // AgentResponse uses field name `id` (not `agent_id`); see
+    // aa-api/src/routes/agents.rs::AgentResponse.
+    assert_eq!(v.get("id").and_then(Value::as_str), Some(hex.as_str()));
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_inspect_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "inspect", &hex, "--output", fmt])
+        .output()
+        .expect("aasm agent inspect should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_inspect_missing_agent_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let bogus = "ffffffffffffffffffffffffffffffff";
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "inspect", bogus])
+        .output()
+        .expect("aasm agent inspect should execute");
+    assert!(
+        !out.status.success(),
+        "unknown agent should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
