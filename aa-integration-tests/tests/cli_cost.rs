@@ -195,3 +195,24 @@ async fn cost_forecast_happy_path_renders_projection() {
         "stdout should mention `Projected monthly` label\nstdout:\n{stdout}",
     );
 }
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_forecast_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "forecast", "--output", fmt])
+        .output()
+        .expect("aasm cost forecast should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
