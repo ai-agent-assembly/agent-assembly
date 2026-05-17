@@ -110,6 +110,47 @@ async fn audit_list_json_and_yaml_describe_equivalent_records() {
     common::format::assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "agent_id");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_agent_filter_narrows_to_one_agent() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent_keep: [u8; 16] = [0xb1; 16];
+    let agent_drop: [u8; 16] = [0xb2; 16];
+    fixture
+        .seed_audit_events(2, agent_keep, AuditEventType::ToolCallIntercepted)
+        .expect("seed agent_keep");
+    fixture
+        .seed_audit_events(3, agent_drop, AuditEventType::ToolCallIntercepted)
+        .expect("seed agent_drop");
+
+    let keep_hex = CliFixture::hex_id(&agent_keep);
+    let drop_hex = CliFixture::hex_id(&agent_drop);
+    let out = fixture
+        .cmd()
+        .args(["--output", "json", "audit", "list", "--agent", &keep_hex])
+        .output()
+        .expect("aasm audit list --agent should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let entries = common::format::parse_json(&out.stdout);
+    let arr = entries.as_array().expect("json stdout should be an array");
+    assert_eq!(
+        arr.len(),
+        2,
+        "should return only the 2 events for agent_keep; got:\n{entries:#}"
+    );
+    for e in arr {
+        assert_eq!(e.get("agent_id").and_then(|v| v.as_str()), Some(keep_hex.as_str()));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(&drop_hex),
+        "agent_drop events should not leak through; got:\n{stdout}"
+    );
+}
+
 // =============================================================================
 // aasm audit export
 // =============================================================================
