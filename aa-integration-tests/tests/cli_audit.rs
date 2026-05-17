@@ -341,6 +341,80 @@ async fn audit_list_limit_caps_returned_rows() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_combined_filters_narrow_correctly() {
+    use std::io::Write as _;
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent_keep: [u8; 16] = [0xc1; 16];
+    let agent_drop: [u8; 16] = [0xc2; 16];
+
+    // Recent (within `--since 1h`) PolicyViolation events for the kept agent.
+    fixture
+        .seed_audit_events(3, agent_keep, AuditEventType::PolicyViolation)
+        .expect("seed kept-agent violations");
+    // Same agent, different action — should drop on `--action`.
+    fixture
+        .seed_audit_events(2, agent_keep, AuditEventType::ToolCallIntercepted)
+        .expect("seed kept-agent tool calls");
+    // Different agent, same action — should drop on `--agent`.
+    fixture
+        .seed_audit_events(2, agent_drop, AuditEventType::PolicyViolation)
+        .expect("seed dropped-agent violations");
+
+    // Old PolicyViolation for kept agent — should drop on `--since 1h`.
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_nanos() as u64;
+    let stale = AuditEntry::new(
+        0,
+        now_ns.saturating_sub(24 * NANOS_PER_HOUR),
+        AuditEventType::PolicyViolation,
+        AgentId::from_bytes(agent_keep),
+        SessionId::from_bytes([0xec; 16]),
+        r#"{"tool":"old","result":"deny","policy":"deny-rm"}"#.into(),
+        [0u8; 32],
+    );
+    let stale_path = fixture.env.audit_dir.join("combined-stale.jsonl");
+    let mut f = std::fs::File::create(&stale_path).expect("create combined-stale.jsonl");
+    writeln!(f, "{}", serde_json::to_string(&stale).unwrap()).unwrap();
+    drop(f);
+
+    let keep_hex = CliFixture::hex_id(&agent_keep);
+    let out = fixture
+        .cmd()
+        .args([
+            "--output",
+            "json",
+            "audit",
+            "list",
+            "--agent",
+            &keep_hex,
+            "--action",
+            "PolicyViolation",
+            "--since",
+            "1h",
+        ])
+        .output()
+        .expect("aasm audit list combined filters should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let parsed = common::format::parse_json(&out.stdout);
+    let arr = parsed.as_array().expect("json stdout should be an array");
+    assert_eq!(
+        arr.len(),
+        3,
+        "combined filters should keep only recent kept-agent PolicyViolation events; got:\n{parsed:#}"
+    );
+    for e in arr {
+        assert_eq!(e.get("agent_id").and_then(|v| v.as_str()), Some(keep_hex.as_str()));
+        assert_eq!(e.get("event_type").and_then(|v| v.as_str()), Some("PolicyViolation"));
+    }
+}
+
 // =============================================================================
 // aasm audit export
 // =============================================================================
