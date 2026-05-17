@@ -8,10 +8,58 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use aa_runtime::approval::{ApprovalDecision, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
+use utoipa::IntoParams;
 
 use crate::error::ProblemDetail;
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginatedResponse;
 use crate::state::AppState;
+
+/// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
+///
+/// Adds `status` and `agent` filters on top of [`PaginationParams`].
+///
+/// * `status` is case-insensitive; accepted values are `pending`,
+///   `approved`, `rejected`. Omitted ⇒ pending-only (backwards-compatible).
+/// * `agent` matches `agent_id` exactly across both pending and resolved.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct ListApprovalsParams {
+    /// Page number (1-indexed). Same semantics as [`PaginationParams::page`].
+    pub page: Option<u32>,
+    /// Items per page. Same semantics as [`PaginationParams::per_page`].
+    pub per_page: Option<u32>,
+    /// Filter by approval status: `pending` | `approved` | `rejected`
+    /// (case-insensitive). When absent, returns pending requests only —
+    /// matches the pre-AAASM-1477 contract.
+    pub status: Option<String>,
+    /// Filter by `agent_id` exact match.
+    pub agent: Option<String>,
+}
+
+impl ListApprovalsParams {
+    /// 1-indexed page number, defaulting to 1.
+    pub fn page(&self) -> u32 {
+        self.page.unwrap_or(1).max(1)
+    }
+    /// Items per page, clamped to [1, 100].
+    pub fn per_page(&self) -> u32 {
+        self.per_page.unwrap_or(20).clamp(1, 100)
+    }
+    /// Offset = (page-1) * per_page.
+    pub fn offset(&self) -> usize {
+        ((self.page() - 1) * self.per_page()) as usize
+    }
+    /// Normalize the optional status string to one of the canonical
+    /// lower-case values used internally (`"pending"`, `"approved"`,
+    /// `"rejected"`). Returns `None` for absent/empty inputs and `Some(_)`
+    /// for any other value (so unknown statuses just return empty rather
+    /// than erroring — matches the established CLI tolerance pattern).
+    pub fn normalized_status(&self) -> Option<String> {
+        self.status
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+    }
+}
 
 /// One step in the routing history of an approval request.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -136,30 +184,55 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
     }
 }
 
-/// `GET /api/v1/approvals` — list pending approval requests.
+/// `GET /api/v1/approvals` — list approval requests with optional filters.
 ///
-/// List pending human-in-the-loop approval requests with pagination.
+/// Without `status` returns pending requests only (backwards-compatible).
+/// With `status=PENDING|APPROVED|REJECTED` (case-insensitive) returns the
+/// matching slice. The `agent` filter narrows by `agent_id` exact match
+/// across both states.
 #[utoipa::path(
     get,
     path = "/api/v1/approvals",
-    params(PaginationParams),
+    params(ListApprovalsParams),
     responses(
-        (status = 200, description = "Paginated list of pending approvals", body = Vec<ApprovalResponse>)
+        (status = 200, description = "Paginated list of approvals", body = Vec<ApprovalResponse>)
     ),
     tag = "approvals"
 )]
 pub async fn list_approvals(
     Extension(state): Extension<AppState>,
-    axum::extract::Query(params): axum::extract::Query<PaginationParams>,
+    axum::extract::Query(params): axum::extract::Query<ListApprovalsParams>,
 ) -> impl IntoResponse {
-    let pending = state.approval_queue.list();
-    let total = pending.len();
+    let agent_filter = params.agent.as_deref();
+    let all: Vec<ApprovalResponse> = match params.normalized_status().as_deref() {
+        // No status filter — preserve the pre-AAASM-1477 contract:
+        // pending only, optionally narrowed by `agent`.
+        None | Some("pending") => state
+            .approval_queue
+            .list()
+            .into_iter()
+            .filter(|p| match agent_filter {
+                None => true,
+                Some(a) => p.agent_id == a,
+            })
+            .map(pending_to_response)
+            .collect(),
+        Some(status @ ("approved" | "rejected" | "timed_out")) => state
+            .approval_queue
+            .list_resolved(Some(status), agent_filter)
+            .into_iter()
+            .map(resolved_to_response)
+            .collect(),
+        // Unknown status value — empty page, not an error. Matches the
+        // established CLI tolerance for typos in filter values.
+        Some(_) => Vec::new(),
+    };
 
-    let items: Vec<ApprovalResponse> = pending
+    let total = all.len();
+    let items: Vec<ApprovalResponse> = all
         .into_iter()
         .skip(params.offset())
         .take(params.per_page() as usize)
-        .map(pending_to_response)
         .collect();
 
     (
