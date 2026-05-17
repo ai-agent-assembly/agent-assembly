@@ -134,45 +134,6 @@ async fn logs_agent_filter_only_returns_matching() {
     }
 }
 
-// The `--type` filter has a pre-existing CLI↔API contract mismatch:
-//   • `aasm logs --type violation` sends `?event_type=violation` (snake_case
-//     wire form via `LogEventType::as_api_str()`).
-//   • `aa-gateway`'s `AuditReader::list` parses event_type via a match table
-//     keyed on CamelCase variant names (`"PolicyViolation"`, …). Anything
-//     else falls through to `None` → filter is silently dropped → every
-//     event is returned.
-// Verified empirically while writing this file: 3 violations + 2 approvals
-// seeded, `--type violation` returns all 5 instead of 3.
-//
-// The smoke test below pins the surface that works today (flag is accepted,
-// CLI exits 0, the violation events at minimum come back). The strict
-// filter-correctness assertion is `#[ignore]`d until the underlying bug is
-// fixed — tracked as AAASM-1476 (sub-task under AAASM-1258).
-#[tokio::test(flavor = "multi_thread")]
-async fn logs_type_filter_smoke_accepts_flag_and_returns_matching() {
-    let fixture = CliFixture::start().await.expect("fixture should start");
-    let agent = fixture.seed_agents(1)[0];
-    fixture
-        .seed_audit_events(3, agent, AuditEventType::PolicyViolation)
-        .expect("seed violations should succeed");
-    fixture
-        .seed_audit_events(2, agent, AuditEventType::ApprovalGranted)
-        .expect("seed approvals should succeed");
-
-    let out = fixture
-        .cmd()
-        .args(["logs", "--type", "violation", "--output", "json"])
-        .output()
-        .expect("aasm logs --type should execute");
-    assert!(out.status.success(), "--type should be accepted by clap");
-    let entries = parse_jsonl(&out.stdout);
-    let violations = entries.iter().filter(|e| e["event_type"] == "PolicyViolation").count();
-    assert!(
-        violations >= 3,
-        "at minimum the 3 seeded violation events should appear (got {violations})"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_since_filter_only_returns_recent() {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -336,7 +297,6 @@ async fn logs_follow_runs_until_killed() {
     let _ = child.wait_with_output();
 }
 
-#[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_only_returns_matching() {
     let fixture = CliFixture::start().await.expect("fixture should start");
