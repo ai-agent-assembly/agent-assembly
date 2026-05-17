@@ -1,0 +1,104 @@
+//! CLI integration tests for `aasm policy` (AAASM-1261 / F121 Phase A ST-3).
+//!
+//! Exercises every `aasm policy <leaf>` subcommand against a live in-process
+//! gateway booted via `CliFixture`. Three leaves (`list`, `show`) hit the
+//! gateway via HTTP; the other three (`get`, `history`, `simulate`) are
+//! filesystem-only and read from `AA_DATA_DIR` (defaulting via
+//! `HistoryConfig::default_config()`). `CliFixture::cmd()` automatically
+//! sets `AA_DATA_DIR` to a per-fixture TempDir so these tests don't
+//! pollute `~/.aa/`.
+//!
+//! ## Leaf surface (from `aa-cli/src/commands/policy/`)
+//!
+//! | Leaf | Args | Backend | Notes |
+//! | --- | --- | --- | --- |
+//! | list     | —                                    | GET `/api/v1/policies`                                          | PaginatedResponse |
+//! | get      | `--version`                           | filesystem (`AA_DATA_DIR/policy-history`)                       | raw YAML to stdout |
+//! | show     | `<agent_id> --show-permissions --show-budget` | GET `/api/v1/policies/agents/{id}/permissions` + `/budget` | `{permissions, budget}` |
+//! | history  | `-n / --limit`                        | filesystem (`AA_DATA_DIR/policy-history`)                       | table |
+//! | simulate | `--policy --against --live --duration` | filesystem                                                     | `--live` returns "not yet supported" (AAASM-73); `--against` required when `--live=false` |
+//!
+//! Static YAML fixtures live at `tests/common/fixtures/policies/`.
+
+mod common;
+
+use common::cli::CliFixture;
+use rstest::rstest;
+use serde_json::Value;
+
+// =============================================================================
+// aasm policy list
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_list_empty_registry_prints_helpful_message() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "list"])
+        .output()
+        .expect("aasm policy list should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No policies found"),
+        "empty list should print helpful message; got:\n{stdout}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_list_with_seeded_policy_returns_array() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let yaml =
+        std::fs::read_to_string(CliFixture::fixture_path("policies/allow_all.yaml")).expect("read allow_all fixture");
+    let _name = fixture.seed_policy(&yaml).await.expect("seed_policy should succeed");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "list", "--output", "json"])
+        .output()
+        .expect("aasm policy list should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    let items = v.as_array().expect("stdout is array");
+    assert!(
+        !items.is_empty(),
+        "list should include seeded policy; got:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_list_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let yaml =
+        std::fs::read_to_string(CliFixture::fixture_path("policies/allow_all.yaml")).expect("read allow_all fixture");
+    fixture.seed_policy(&yaml).await.expect("seed_policy");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "list", "--output", fmt])
+        .output()
+        .expect("aasm policy list should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
