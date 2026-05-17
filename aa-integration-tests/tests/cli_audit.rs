@@ -419,6 +419,50 @@ async fn audit_list_combined_filters_narrow_correctly() {
 // aasm audit export
 // =============================================================================
 
+/// `aasm audit export --format json --output <file>` should write a
+/// valid JSON array to the given TempDir file.
+///
+/// **Currently `#[ignore]`'d**: `aasm audit export` is unusable today because
+/// the CLI declares two flags that share the clap id `"output"` —
+/// a top-level global `--output: OutputFormat` (`aa-cli/src/lib.rs:19-21`)
+/// AND a leaf-level `audit export --output: Option<String>`
+/// (`aa-cli/src/commands/audit/export.rs:23-25`). Every invocation of
+/// `audit export`, with or without `--output` on the command line, panics
+/// inside clap with "Mismatch between definition and access of `output`."
+/// Re-enable this test once the collision is resolved (rename the leaf flag
+/// to e.g. `--out` or give it a distinct `id`). Filed as a follow-up
+/// bug subtask under AAASM-1258.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "AAASM-1258 bug subtask: clap id collision on --output between global Cli and audit::ExportArgs"]
+async fn audit_export_writes_valid_json_array_to_temp_file() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xd1; 16];
+    fixture
+        .seed_audit_events(4, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed events");
+
+    let tmp = tempfile::tempdir().expect("tempdir for export target");
+    let out_path = tmp.path().join("audit.json");
+    let out_arg = out_path.to_string_lossy().to_string();
+    let out = fixture
+        .cmd()
+        .args(["audit", "export", "--format", "json", "--output", &out_arg])
+        .output()
+        .expect("aasm audit export should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out_path.exists(), "export file should exist at {out_path:?}");
+
+    let body = std::fs::read(&out_path).expect("read exported json");
+    assert!(!body.is_empty(), "exported file should not be empty");
+    let parsed = common::format::parse_json(&body);
+    let arr = parsed.as_array().expect("exported json should be an array");
+    assert_eq!(arr.len(), 4, "should export all 4 seeded entries; got:\n{parsed:#}");
+}
+
 // =============================================================================
 // aasm audit verify-chain
 // =============================================================================
