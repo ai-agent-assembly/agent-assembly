@@ -69,6 +69,26 @@
   cursor: not-allowed;
 }
 
+/* AAASM-1397 — Rotate action sits next to Revoke; uses the accent
+   tone (vs Revoke's danger tone) since it's a routine maintenance
+   operation, not destructive. */
+.iam-api-key-list__rotate-btn {
+  border: 1px solid var(--shell-accent);
+  background: transparent;
+  color: var(--shell-accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  margin-right: 0.25rem;
+}
+
+.iam-api-key-list__rotate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .iam-api-key-list__row--revoked {
   opacity: 0.55;
 }
