@@ -219,6 +219,48 @@ impl PolicyEngine {
         })
     }
 
+    /// Construct an engine with an empty, un-named policy document.
+    ///
+    /// The returned engine has `active_policy_info().name == None` and zero rules.
+    /// Intended for integration tests that exercise the "no active policy → 404"
+    /// path in `GET /api/v1/policies/active`; do not use in production code.
+    #[doc(hidden)]
+    pub fn for_testing() -> Self {
+        let budget = Arc::new(crate::budget::BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let doc = PolicyDocument {
+            name: None,
+            policy_version: None,
+            version: None,
+            scope: crate::policy::scope::PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: std::collections::HashMap::new(),
+            capabilities: None,
+        };
+        let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
+        PolicyEngine {
+            policy: policy_arc,
+            scanner: aa_core::CredentialScanner::new(),
+            compiled_patterns: vec![],
+            rate_state: DashMap::new(),
+            budget,
+            scope_index: ScopeIndex::new(),
+            _watcher: None,
+            registry: None,
+            policy_epoch: Arc::new(AtomicU64::new(0)),
+            decision_cache: DecisionCache::new(100_000),
+        }
+    }
+
     /// Attach an `AgentRegistry` so `collect_cascade` can resolve org/team lineage.
     ///
     /// Consumes `self` and returns a new `PolicyEngine` with the registry set.
