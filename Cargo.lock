@@ -303,6 +303,7 @@ dependencies = [
  "aa-runtime",
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "axum",
  "chrono",
  "chrono-tz",

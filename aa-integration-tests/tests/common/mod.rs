@@ -213,11 +213,57 @@ impl TopologyTestEnv {
     pub async fn start_with_discovery(adapters: Vec<Box<dyn DevToolAdapter>>) -> anyhow::Result<Self> {
         let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
         state.discovery = Arc::new(DiscoveryService::with_adapters(adapters));
-
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
+    /// Spin up a harness with an empty, un-named policy engine.
+    ///
+    /// The engine's `active_policy_info().name` is `None`, so
+    /// `GET /api/v1/policies/active` returns 404. Used by the integration
+    /// test that verifies the documented 404 path (AAASM-1484 test 3).
+    #[allow(dead_code)]
+    pub async fn start_empty_policy() -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store) = build_test_state_empty_policy()?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let key_store = Arc::clone(&state.key_store);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -580,4 +626,97 @@ pub fn make_api_key(id: &str, scopes: Vec<aa_api::auth::scope::Scope>) -> (Strin
         label: Some(format!("test key {id}")),
     };
     (key.as_str().to_string(), entry)
+}
+
+/// Build an `AppState` where the `PolicyEngine` carries no named policy.
+///
+/// `active_policy_info().name` is `None`, so `GET /api/v1/policies/active`
+/// returns 404. Used by `TopologyTestEnv::start_empty_policy()`.
+fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>)> {
+    let events = Arc::new(EventBroadcast::default());
+    let policy_engine = Arc::new(aa_gateway::engine::PolicyEngine::for_testing());
+    let budget_tracker = Arc::new(BudgetTracker::new(
+        PricingTable::default_table(),
+        None,
+        None,
+        chrono_tz::UTC,
+    ));
+    let approval_queue = ApprovalQueue::new();
+    let agent_registry = Arc::new(AgentRegistry::new());
+
+    let history_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let history_dir = std::env::temp_dir().join(format!(
+        "aa-topology-it-empty-history-{}-{history_id}",
+        std::process::id()
+    ));
+    let policy_history = Arc::new(FsHistoryStore::new(HistoryConfig {
+        history_dir,
+        max_versions: 50,
+    }));
+
+    let auth_config = Arc::new(AuthConfig {
+        mode: AuthMode::Off,
+        jwt_secret: None,
+        api_keys_path: std::path::PathBuf::from("/dev/null"),
+        rate_limit_rpm: 1000,
+    });
+    let key_store = Arc::new(
+        ApiKeyStore::load(std::path::Path::new("/dev/null"))
+            .unwrap_or_else(|_| ApiKeyStore::load(std::path::Path::new("/nonexistent")).expect("empty key store")),
+    );
+    const TEST_SECRET: &[u8] = b"topology-it-test-secret-32-bytes-long-padding";
+    let jwt_signer = Arc::new(JwtSigner::new(TEST_SECRET));
+    let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
+    let rate_limiter = Arc::new(RateLimiter::new(1000));
+    let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let alert_store_handle = Arc::clone(&alert_store);
+
+    let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let audit_dir = std::env::temp_dir().join(format!("aa-topology-it-empty-audit-{}-{audit_id}", std::process::id()));
+    std::fs::create_dir_all(&audit_dir)?;
+    let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
+
+    Ok((
+        AppState {
+            agent_registry,
+            policy_engine,
+            budget_tracker,
+            approval_queue,
+            policy_history,
+            alert_store,
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+        },
+        audit_dir,
+        alert_store_handle,
+    ))
 }
