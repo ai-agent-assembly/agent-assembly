@@ -8,6 +8,31 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// One node in the hierarchical call stack rendered beneath an
+/// expanded Live Ops row in the dashboard.
+///
+/// Mirrors the proto `assembly.audit.v1.CallStackNode` message and the
+/// dashboard `LiveOperation.callStack[]` TS type.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[schema(no_recursion)]
+pub struct CallStackNode {
+    /// Stable identifier for this node within the call stack.
+    pub id: String,
+    /// Node category — one of `"llm"`, `"tool"`, or `"result"`. String-typed
+    /// (not an enum) to keep this open-ended for downstream renderers.
+    pub kind: String,
+    /// Human-readable label rendered in the dashboard.
+    pub label: String,
+    /// Step-local latency in milliseconds. Omitted when the producer did
+    /// not record a duration for this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+    /// Recursive descent — nested calls produced by this step. Omitted
+    /// when the node has no children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<CallStackNode>>,
+}
+
 /// Payload for `event_type: "violation"` events.
 ///
 /// Represents a governance audit event from the pipeline — either an
@@ -47,6 +72,10 @@ pub enum ViolationPayload {
         /// legacy events and root agents without a team set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team: Option<String>,
+        /// Hierarchical call stack for the operation (LLM / tool / result
+        /// steps). Omitted when the producer did not record a stack.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_stack: Option<Vec<CallStackNode>>,
     },
     /// An interception layer became unavailable.
     LayerDegradation {
@@ -106,6 +135,7 @@ mod tests {
             status: Some("running".into()),
             latency_ms: Some(834),
             team: Some("support".into()),
+            call_stack: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["kind"], "audit");
@@ -127,6 +157,7 @@ mod tests {
             status: Some("running".into()),
             latency_ms: Some(600),
             team: None,
+            call_stack: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ViolationPayload = serde_json::from_str(&json).unwrap();
@@ -162,6 +193,7 @@ mod tests {
             status: None,
             latency_ms: None,
             team: None,
+            call_stack: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
         let obj = json.as_object().unwrap();
@@ -170,6 +202,60 @@ mod tests {
         assert!(!obj.contains_key("status"));
         assert!(!obj.contains_key("latency_ms"));
         assert!(!obj.contains_key("team"));
+        assert!(!obj.contains_key("call_stack"));
+    }
+
+    #[test]
+    fn audit_serializes_call_stack_as_snake_case_array() {
+        let payload = ViolationPayload::Audit {
+            source: "sdk".into(),
+            received_at_ms: 1_700_000_000_000,
+            sequence_number: 7,
+            op_type: Some("tool_call".into()),
+            resource: Some("gmail.send".into()),
+            status: Some("running".into()),
+            latency_ms: Some(500),
+            team: None,
+            call_stack: Some(vec![CallStackNode {
+                id: "n0".into(),
+                kind: "llm".into(),
+                label: "gpt-4o".into(),
+                latency_ms: Some(300),
+                children: Some(vec![CallStackNode {
+                    id: "n1".into(),
+                    kind: "tool".into(),
+                    label: "gmail.send".into(),
+                    latency_ms: Some(120),
+                    children: None,
+                }]),
+            }]),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        let stack = json["call_stack"].as_array().expect("call_stack array");
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack[0]["id"], "n0");
+        assert_eq!(stack[0]["kind"], "llm");
+        assert_eq!(stack[0]["latency_ms"], 300);
+        let children = stack[0]["children"].as_array().expect("children array");
+        assert_eq!(children[0]["label"], "gmail.send");
+        // No `latencyMs` camelCase leak — the dashboard mapEvent layer
+        // does that translation on the consumer side.
+        assert!(stack[0].as_object().unwrap().contains_key("latency_ms"));
+    }
+
+    #[test]
+    fn audit_call_stack_omits_optional_fields_when_none() {
+        let node = CallStackNode {
+            id: "n0".into(),
+            kind: "result".into(),
+            label: "done".into(),
+            latency_ms: None,
+            children: None,
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("latency_ms"));
+        assert!(!obj.contains_key("children"));
     }
 
     #[test]

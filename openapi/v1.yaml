@@ -1633,6 +1633,47 @@ components:
         spent_usd:
           type: string
           description: Total USD spent in the period (string-encoded Decimal).
+    CallStackNode:
+      type: object
+      description: |-
+        One node in the hierarchical call stack rendered beneath an
+        expanded Live Ops row in the dashboard.
+
+        Mirrors the proto `assembly.audit.v1.CallStackNode` message and the
+        dashboard `LiveOperation.callStack[]` TS type.
+      required:
+      - id
+      - kind
+      - label
+      properties:
+        children:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/CallStackNode'
+          description: |-
+            Recursive descent — nested calls produced by this step. Omitted
+            when the node has no children.
+        id:
+          type: string
+          description: Stable identifier for this node within the call stack.
+        kind:
+          type: string
+          description: |-
+            Node category — one of `"llm"`, `"tool"`, or `"result"`. String-typed
+            (not an enum) to keep this open-ended for downstream renderers.
+        label:
+          type: string
+          description: Human-readable label rendered in the dashboard.
+        latency_ms:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            Step-local latency in milliseconds. Omitted when the producer did
+            not record a duration for this node.
     CapCell:
       type: object
       description: |-
@@ -2925,6 +2966,15 @@ components:
         - sequence_number
         - kind
         properties:
+          call_stack:
+            type:
+            - array
+            - 'null'
+            items:
+              $ref: '#/components/schemas/CallStackNode'
+            description: |-
+              Hierarchical call stack for the operation (LLM / tool / result
+              steps). Omitted when the producer did not record a stack.
           kind:
             type: string
             enum:

@@ -105,6 +105,61 @@ describe('useLiveOpsStream', () => {
     })
   })
 
+  it('maps a wire call_stack into LiveOperation.callStack with camelCase fields', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        id: 9,
+        payload: {
+          ...VIOLATION_EVENT.payload,
+          call_stack: [
+            {
+              id: 'n0',
+              kind: 'llm',
+              label: 'gpt-4o',
+              latency_ms: 300,
+              children: [
+                {
+                  id: 'n1',
+                  kind: 'tool',
+                  label: 'gmail.send',
+                  latency_ms: null,
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+      })
+    })
+    expect(result.current.ops[0].callStack).toEqual([
+      {
+        id: 'n0',
+        kind: 'llm',
+        label: 'gpt-4o',
+        latencyMs: 300,
+        children: [
+          {
+            id: 'n1',
+            kind: 'tool',
+            label: 'gmail.send',
+          },
+        ],
+      },
+    ])
+  })
+
+  it('omits callStack when wire payload has no call_stack', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit(VIOLATION_EVENT)
+    })
+    expect(result.current.ops[0].callStack).toBeUndefined()
+  })
+
   it('coerces an unknown status string to running', () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
     act(() => {

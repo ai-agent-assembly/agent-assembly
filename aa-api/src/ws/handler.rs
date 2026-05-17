@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
+use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, CallStackNode, EventPayload, ViolationPayload};
 use crate::models::{EventType, GovernanceEvent};
 use crate::state::AppState;
 use crate::ws::params::WsQueryParams;
@@ -250,6 +250,7 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
                 Some(enriched.inner.team_id.clone())
             };
             let (resource, latency_ms) = detail_op_fields(enriched.inner.detail.as_ref());
+            let call_stack = map_call_stack(&enriched.inner.call_stack);
 
             ViolationPayload::Audit {
                 source,
@@ -260,12 +261,44 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
                 status,
                 latency_ms,
                 team,
+                call_stack,
             }
         }
         PipelineEvent::LayerDegradation(info) => ViolationPayload::LayerDegradation {
             layer: info.layer.clone(),
             reason: info.reason.clone(),
             remaining_layers: info.remaining_layers.clone(),
+        },
+    }
+}
+
+/// Convert proto `call_stack` (always a `Vec`, possibly empty) into the
+/// optional dashboard JSON shape. An empty proto vec maps to `None` so
+/// the field is omitted, matching the legacy back-compat path.
+fn map_call_stack(nodes: &[aa_proto::assembly::audit::v1::CallStackNode]) -> Option<Vec<CallStackNode>> {
+    if nodes.is_empty() {
+        None
+    } else {
+        Some(nodes.iter().map(map_call_stack_node).collect())
+    }
+}
+
+/// Recursive helper for [`map_call_stack`]. Treats proto `latency_ms == 0`
+/// as `None` (no duration recorded) and an empty `children` vec as `None`.
+fn map_call_stack_node(node: &aa_proto::assembly::audit::v1::CallStackNode) -> CallStackNode {
+    CallStackNode {
+        id: node.id.clone(),
+        kind: node.kind.clone(),
+        label: node.label.clone(),
+        latency_ms: if node.latency_ms == 0 {
+            None
+        } else {
+            Some(node.latency_ms)
+        },
+        children: if node.children.is_empty() {
+            None
+        } else {
+            Some(node.children.iter().map(map_call_stack_node).collect())
         },
     }
 }
@@ -390,8 +423,8 @@ async fn send_event(
 mod tests {
     use super::*;
     use aa_proto::assembly::audit::v1::{
-        audit_event::Detail, AuditEvent, FileOpDetail, LayerDegradationEvent, LlmCallDetail, NetworkCallDetail,
-        PolicyViolation, ProcessExecDetail, ToolCallDetail,
+        audit_event::Detail, AuditEvent, CallStackNode as ProtoCallStackNode, FileOpDetail, LayerDegradationEvent,
+        LlmCallDetail, NetworkCallDetail, PolicyViolation, ProcessExecDetail, ToolCallDetail,
     };
     use aa_proto::assembly::common::v1::{ActionType, Decision};
     use aa_runtime::pipeline::event::{EnrichedEvent, EventSource, LayerDegradationInfo, PipelineEvent};
@@ -421,6 +454,7 @@ mod tests {
             delegation_reason: String::new(),
             spawned_by_tool: String::new(),
             depth: 0,
+            call_stack: Vec::new(),
         }
     }
 
@@ -462,6 +496,7 @@ mod tests {
                 status,
                 latency_ms,
                 team,
+                call_stack: _,
             } => AuditFields {
                 source,
                 sequence_number,
@@ -648,6 +683,57 @@ mod tests {
         let ev = pipeline_audit(ActionType::ToolCall, Decision::Redact, "", None);
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
         assert_eq!(fields.status.as_deref(), Some("running"));
+    }
+
+    fn extract_call_stack(p: ViolationPayload) -> Option<Vec<CallStackNode>> {
+        match p {
+            ViolationPayload::Audit { call_stack, .. } => call_stack,
+            ViolationPayload::LayerDegradation { .. } => panic!("expected Audit variant"),
+        }
+    }
+
+    #[test]
+    fn audit_empty_call_stack_serializes_as_none() {
+        let ev = pipeline_audit(ActionType::ToolCall, Decision::Allow, "", None);
+        assert_eq!(extract_call_stack(build_violation_payload(&ev)), None);
+    }
+
+    #[test]
+    fn audit_call_stack_forwards_proto_nodes_recursively() {
+        let mut audit = make_audit_event(ActionType::ToolCall, Decision::Allow, "support", None);
+        audit.call_stack = vec![ProtoCallStackNode {
+            id: "n0".into(),
+            kind: "llm".into(),
+            label: "gpt-4o".into(),
+            latency_ms: 300,
+            children: vec![ProtoCallStackNode {
+                id: "n1".into(),
+                kind: "tool".into(),
+                label: "gmail.send".into(),
+                latency_ms: 0,
+                children: vec![],
+            }],
+        }];
+        let ev = PipelineEvent::Audit(Box::new(EnrichedEvent {
+            inner: audit,
+            received_at_ms: 1_700_000_000_000,
+            source: EventSource::Sdk,
+            agent_id: "support-agent".into(),
+            connection_id: 0,
+            sequence_number: 42,
+        }));
+        let stack = extract_call_stack(build_violation_payload(&ev)).expect("call_stack");
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack[0].id, "n0");
+        assert_eq!(stack[0].kind, "llm");
+        assert_eq!(stack[0].latency_ms, Some(300));
+        let children = stack[0].children.as_ref().expect("children");
+        assert_eq!(children[0].label, "gmail.send");
+        assert_eq!(
+            children[0].latency_ms, None,
+            "proto latency_ms=0 maps to None (no duration recorded)"
+        );
+        assert!(children[0].children.is_none());
     }
 
     #[test]
