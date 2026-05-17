@@ -79,6 +79,15 @@ pub struct TopologyTestEnv {
     /// Exposed so per-leaf seed helpers (e.g. `CliFixture::seed_audit_events`)
     /// can write entries that the `aasm logs` snapshot path observes.
     pub audit_dir: PathBuf,
+    /// Shared budget tracker. Exposed so the `aasm cost` CLI integration
+    /// tests (AAASM-1470 / ST-14) can seed per-agent / per-team spend
+    /// directly via `BudgetTracker::record_raw_spend` — the gateway exposes
+    /// no HTTP route for recording cost samples, so direct insertion is
+    /// the test-only equivalent (same pattern as `agent_registry` and
+    /// `trace_store`). Matches the ST-0 design note that downstream cost
+    /// ST adds its own seed plumbing against the resource it touches.
+    #[allow(dead_code)]
+    pub budget_tracker: Arc<BudgetTracker>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -97,6 +106,7 @@ impl TopologyTestEnv {
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -120,6 +130,7 @@ impl TopologyTestEnv {
             trace_store,
             approval_queue,
             audit_dir,
+            budget_tracker,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
