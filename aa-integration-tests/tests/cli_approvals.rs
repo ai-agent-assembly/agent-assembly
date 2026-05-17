@@ -124,3 +124,49 @@ async fn approvals_approve_happy_path_consumes_pending_entry() {
         items.len(),
     );
 }
+
+// =============================================================================
+// aasm approvals reject
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_reject_happy_path_consumes_pending_entry() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_approval("agent-a", "tool.invoke");
+    let id_str = id.to_string();
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "reject", &id_str, "--reason", "no"])
+        .output()
+        .expect("aasm approvals reject should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "reject should exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("Rejected"),
+        "stdout should report Rejected\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&id_str),
+        "stdout should echo the approval id\nstdout:\n{stdout}"
+    );
+
+    let list_out = fixture
+        .cmd()
+        .args(["approvals", "list", "--output", "json"])
+        .output()
+        .expect("aasm approvals list should execute");
+    let v: serde_json::Value =
+        serde_json::from_slice(&list_out.stdout).expect("list stdout should be valid JSON array");
+    let items = v.as_array().expect("list stdout should be a JSON array");
+    assert!(
+        items.is_empty(),
+        "rejected entry should leave the pending queue (got {} item(s))",
+        items.len(),
+    );
+}
