@@ -119,3 +119,82 @@ fn run_dry_run_succeeds_for_every_supported_tool(#[case] tool: &str) {
         "{tool} --dry-run plan should name the tool in the launch command:\n{stdout}",
     );
 }
+
+// =============================================================================
+// aasm run <unknown>
+// =============================================================================
+
+#[test]
+fn run_unknown_tool_fails_and_lists_all_supported_tools_on_stderr() {
+    let out = aasm_cmd()
+        .args(["run", "notathing", "--dry-run"])
+        .output()
+        .expect("aasm run notathing should execute");
+
+    assert!(
+        !out.status.success(),
+        "unknown tool should fail; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown tool"),
+        "stderr should announce the unknown-tool error:\n{stderr}",
+    );
+    for tool in ["claude", "codex", "copilot", "windsurf"] {
+        assert!(
+            stderr.contains(tool),
+            "stderr should list `{tool}` among supported tools:\n{stderr}",
+        );
+    }
+}
+
+// =============================================================================
+// aasm run --agent-id <id> <tool> --dry-run
+// =============================================================================
+
+#[test]
+fn run_dry_run_honors_agent_id_override() {
+    let custom_id = "cli-it-custom-agent-id";
+    let out = aasm_cmd()
+        .args(["run", "--agent-id", custom_id, "claude", "--dry-run"])
+        .output()
+        .expect("aasm run --agent-id should execute");
+
+    assert!(
+        out.status.success(),
+        "--agent-id override should not affect exit code; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(custom_id),
+        "dry-run plan should reflect the explicit --agent-id value:\n{stdout}",
+    );
+}
+
+// =============================================================================
+// aasm run <tool> --dry-run -- <trailing tool_args>
+// =============================================================================
+
+#[test]
+fn run_dry_run_echoes_trailing_tool_args_in_launch_command() {
+    let out = aasm_cmd()
+        .args(["run", "claude", "--dry-run", "--", "--some-flag", "value"])
+        .output()
+        .expect("aasm run with trailing args should execute");
+
+    assert!(
+        out.status.success(),
+        "trailing args should not affect exit code; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--some-flag") && stdout.contains("value"),
+        "launch command section should echo trailing tool_args:\n{stdout}",
+    );
+}
