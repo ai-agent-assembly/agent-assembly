@@ -59,3 +59,79 @@ jobs:
             ghcr.io/ai-agent-assembly/aa-runtime:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  build-and-push-language-images:
+    name: Build language image — ${{ matrix.lang }} (and publish on tag)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    # Matrix mirrors AAASM-1204 (F114) — latest-per-language Phase 1 set.
+    # Each entry feeds a single Dockerfile from docker/ plus its language-specific
+    # smoke command. The aasm-builder stage is identical across all three, so
+    # GHA cache (type=gha,mode=max) deduplicates the cargo build across entries.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lang: python
+            version: "3.14-slim"
+            dockerfile: docker/Dockerfile.python-3.14-slim
+            smoke_run: "python -c \"from agent_assembly import init_assembly\""
+          - lang: node
+            version: "24-slim"
+            dockerfile: docker/Dockerfile.node-24-slim
+            smoke_run: "node -e \"require('@agent-assembly/sdk')\""
+          - lang: go
+            version: "1.26-alpine"
+            dockerfile: docker/Dockerfile.go-1.26-alpine
+            smoke_run: "go list github.com/agent-assembly/go-sdk"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4
+
+      - name: Set up QEMU (ARM emulation for multi-arch)
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PR build: linux/amd64 only + load into local Docker daemon so the
+      # follow-up smoke step can `docker run` the image. Tag-push build:
+      # multi-arch + push to GHCR. `load` and multi-arch are mutually exclusive,
+      # so the two modes are gated on the event type.
+      - name: "Build ${{ matrix.lang }} image — PR loads for smoke, tag pushes to GHCR"
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: |
+            ghcr.io/agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
+            ghcr.io/agent-assembly/${{ matrix.lang }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke run on PR builds only — the image is locally loaded, so we can
+      # exercise `aasm --version` and the language-specific entrypoint before
+      # the PR can merge. Tag-push smoke is covered by AAASM-1226 via
+      # `docker pull` against the freshly-published GHCR tag.
+      - name: Smoke run (PR only)
+        if: github.event_name == 'pull_request'
+        env:
+          IMAGE: ghcr.io/agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
+          SMOKE_RUN: ${{ matrix.smoke_run }}
+        run: |
+          docker run --rm "$IMAGE" aasm --version
+          docker run --rm "$IMAGE" sh -c "$SMOKE_RUN"
