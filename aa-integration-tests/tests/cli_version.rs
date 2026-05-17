@@ -25,6 +25,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm version
@@ -55,4 +56,25 @@ async fn version_happy_path_reports_cli_and_gateway_rows() {
         stdout.contains("gateway"),
         "stdout should mention the `gateway` row\nstdout:\n{stdout}",
     );
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn version_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["version", "--output", fmt])
+        .output()
+        .expect("aasm version should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
