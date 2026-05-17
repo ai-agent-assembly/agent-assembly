@@ -511,3 +511,60 @@ async fn audit_export_writes_valid_csv_to_temp_file() {
 // =============================================================================
 // aasm audit verify-chain
 // =============================================================================
+
+/// Build a valid hash-linked `AuditEntry` chain of `n` entries rooted at
+/// the `[0u8; 32]` genesis hash. Returned in order, ready to serialize
+/// one-per-line into a JSONL file.
+fn make_valid_chain(n: u64) -> Vec<AuditEntry> {
+    let agent = AgentId::from_bytes([0x91; 16]);
+    let session = SessionId::from_bytes([0x92; 16]);
+    let mut entries = Vec::with_capacity(n as usize);
+    let mut prev_hash = [0u8; 32];
+    for seq in 0..n {
+        let entry = AuditEntry::new(
+            seq,
+            1_700_000_000_000_000_000 + seq * 1_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            format!(r#"{{"tool":"bash","result":"allow","policy":"default","seq":{seq}}}"#),
+            prev_hash,
+        );
+        prev_hash = *entry.entry_hash();
+        entries.push(entry);
+    }
+    entries
+}
+
+/// Write the given entries one-per-line as JSONL to `path`.
+fn write_jsonl(path: &std::path::Path, entries: &[AuditEntry]) {
+    use std::io::Write as _;
+    let mut f = std::fs::File::create(path).expect("create chain jsonl");
+    for e in entries {
+        writeln!(f, "{}", serde_json::to_string(e).expect("serialize entry")).expect("write entry line");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_verify_chain_returns_success_for_valid_chain() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let dir = tempfile::tempdir().expect("tempdir for chain file");
+    let path = dir.path().join("valid.jsonl");
+    write_jsonl(&path, &make_valid_chain(5));
+
+    let out = fixture
+        .cmd()
+        .args(["audit", "verify-chain", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("aasm audit verify-chain should execute");
+    assert!(
+        out.status.success(),
+        "valid chain should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OK") && stdout.contains("5 entries verified"),
+        "stdout should report \"OK — 5 entries verified\"; got:\n{stdout}"
+    );
+}
