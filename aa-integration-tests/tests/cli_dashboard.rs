@@ -541,3 +541,79 @@ async fn dashboard_start_proxies_gateway_api() {
 
     let _ = reap_child(child);
 }
+
+// ============================================================================
+// aasm dashboard start — edge cases (AAASM-1481)
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_start_port_collision() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    // Hold a listener on the port for the duration of the test so the
+    // dashboard hits a guaranteed collision.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+    let port = listener.local_addr().expect("local_addr").port();
+
+    let out = fixture
+        .cmd()
+        .args(["dashboard", "start", "--port", &port.to_string()])
+        .output()
+        .expect("aasm dashboard start should execute");
+
+    assert!(
+        !out.status.success(),
+        "dashboard start should fail on port collision; got status {:?}",
+        out.status,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    assert!(
+        stderr.contains("address already in use") || stderr.contains("eaddrinuse"),
+        "stderr should explain the collision (looking for 'address already in use' or 'eaddrinuse'); got:\n{stderr}",
+    );
+    drop(listener);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_start_invalid_gateway_url() {
+    // `--api-url` is rejected by clap when supplied twice, so we cannot
+    // simply append a second copy onto `CliFixture::cmd()` (which already
+    // pins it to the fixture's reachable gateway). Build a fresh Command
+    // manually that points at a deliberately bogus gateway, while still
+    // setting `AA_DATA_DIR` for PID-file isolation.
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let child = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "aa-cli",
+            "--bin",
+            "aasm",
+            "--",
+            "--api-url",
+            "http://nope.invalid:1",
+            "dashboard",
+            "start",
+            "--port",
+            &port.to_string(),
+        ])
+        .env("AA_DATA_DIR", fixture.data_dir())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm dashboard start should spawn");
+
+    // Confirms the documented contract: the gateway URL is only contacted
+    // lazily on `/api/*` calls, so an unreachable gateway does NOT prevent
+    // boot or block static-file serving at `/`.
+    assert_eq!(
+        wait_for_http(&url, Duration::from_secs(30)).await,
+        Some(200),
+        "dashboard should still serve `/` even with an unreachable gateway",
+    );
+
+    let _ = reap_child(child);
+}
