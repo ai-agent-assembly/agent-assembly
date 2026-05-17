@@ -1,15 +1,16 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiKeyList } from './ApiKeyList'
 import { ToastProvider } from '../../components/ToastProvider'
+import { _apiKeysInternal } from './apiKeys'
 import type { ApiKey } from './types'
 
-// In-memory ApiKey store is wired through `useApiKeysQuery` which reads from
-// the module-level seed in `apiKeys.ts`. The shape comes from there, so we
-// don't need a fetch stub — but we do need fresh QueryClients per render to
-// avoid cross-test leakage.
+// AAASM-1397: `useApiKeysQuery` now calls the typed openapi-fetch client.
+// `_apiKeysInternal.reset()` installs a default list override that serves
+// the seeded 3-row fixture, so these tests render against the same shape
+// the gateway produces without needing to mock the openapi-fetch client.
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -22,7 +23,12 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 const SEED_KEY_1_ID = 'key-1'
 
+beforeEach(() => {
+  _apiKeysInternal.reset()
+})
+
 afterEach(() => {
+  _apiKeysInternal.reset()
   vi.restoreAllMocks()
 })
 
