@@ -314,6 +314,33 @@ async fn audit_list_until_filter_excludes_events_after_cutoff() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_limit_caps_returned_rows() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xb6; 16];
+    fixture
+        .seed_audit_events(10, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed 10 events");
+
+    let out = fixture
+        .cmd()
+        .args(["--output", "json", "audit", "list", "--limit", "3"])
+        .output()
+        .expect("aasm audit list --limit should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let parsed = common::format::parse_json(&out.stdout);
+    let arr = parsed.as_array().expect("json stdout should be an array");
+    assert_eq!(
+        arr.len(),
+        3,
+        "--limit 3 should cap returned entries even when 10 were seeded; got:\n{parsed:#}"
+    );
+}
+
 // =============================================================================
 // aasm audit export
 // =============================================================================
