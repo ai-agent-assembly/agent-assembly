@@ -32,6 +32,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use aa_gateway::registry::{AgentRecord, AgentStatus};
+use tempfile::TempDir;
 
 use super::TopologyTestEnv;
 
@@ -49,6 +50,11 @@ static AGENT_SEED_COUNTER: AtomicU16 = AtomicU16::new(0);
 pub struct CliFixture {
     /// Underlying topology / HTTP test environment from AAASM-1066.
     pub env: TopologyTestEnv,
+    /// Per-fixture `AA_DATA_DIR` for filesystem-only CLI leaves
+    /// (`policy get` / `policy history` / `policy simulate`). Tests
+    /// can pre-populate `data_dir().join("policy-history")` before
+    /// invoking the CLI to exercise non-empty paths.
+    pub _data_dir: TempDir,
 }
 
 impl CliFixture {
@@ -56,7 +62,13 @@ impl CliFixture {
     pub async fn start() -> anyhow::Result<Self> {
         Ok(Self {
             env: TopologyTestEnv::start().await?,
+            _data_dir: tempfile::tempdir()?,
         })
+    }
+
+    /// Path the CLI sees as `AA_DATA_DIR` for filesystem-only leaves.
+    pub fn data_dir(&self) -> &Path {
+        self._data_dir.path()
     }
 
     /// Base URL of the in-process gateway (e.g. `http://127.0.0.1:PORT`).
@@ -75,7 +87,8 @@ impl CliFixture {
     pub fn cmd(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO"));
         cmd.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--", "--api-url"])
-            .arg(self.env.base_url());
+            .arg(self.env.base_url())
+            .env("AA_DATA_DIR", self.data_dir());
         cmd
     }
 
@@ -172,6 +185,33 @@ pub struct AgentSpec {
     pub framework: Option<String>,
     pub status: Option<AgentStatus>,
     pub team_id: Option<String>,
+}
+
+impl CliFixture {
+    /// POST a policy YAML to `/api/v1/policies` and return the response
+    /// body's `name` (SHA-256 prefix used by `policy get --version`).
+    ///
+    /// Used by `cli_policy.rs` (ST-3) to populate the gateway's policy
+    /// state before testing `aasm policy list` / `policy show`. The
+    /// harness boots with `AuthMode::Off`, which gives the request a
+    /// synthetic OrgAdmin caller — no auth header needed.
+    pub async fn seed_policy(&self, yaml: &str) -> anyhow::Result<String> {
+        let url = format!("{}/api/v1/policies", self.env.base_url());
+        let body = serde_json::json!({ "policy_yaml": yaml });
+        let resp = reqwest::Client::new().post(&url).json(&body).send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("seed_policy POST returned {status}: {text}");
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("seed_policy: response not JSON ({e}): {text}"))?;
+        parsed
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow::anyhow!("seed_policy: response missing 'name' field: {text}"))
+    }
 }
 
 impl CliFixture {
