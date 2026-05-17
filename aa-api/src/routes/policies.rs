@@ -203,6 +203,12 @@ pub async fn get_active_policy(
 ) -> Result<(StatusCode, Json<PolicyResponse>), ProblemDetail> {
     let info = state.policy_engine.active_policy_info();
 
+    // No named policy is loaded — honour the 404 documented in the OpenAPI spec.
+    let name = info.name.ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail("no active policy loaded".to_string())
+    })?;
+    let version = info.policy_version.unwrap_or_else(|| "unknown".to_string());
+
     // The active policy's YAML lives in the history store. We treat the
     // most-recent history entry as the active one (apply_yaml always
     // saves to history before swapping the engine). A startup-loaded
@@ -223,8 +229,8 @@ pub async fn get_active_policy(
     Ok((
         StatusCode::OK,
         Json(PolicyResponse {
-            name: info.name.unwrap_or_else(|| "unnamed".to_string()),
-            version: info.policy_version.unwrap_or_else(|| "unknown".to_string()),
+            name,
+            version,
             active: true,
             rule_count: info.rule_count,
             policy_yaml,
