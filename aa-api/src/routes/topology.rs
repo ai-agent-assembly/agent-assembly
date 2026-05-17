@@ -333,10 +333,8 @@ pub async fn get_team(
     }
 
     let member_ids = state.agent_registry.team_members(&team_id);
-    if member_ids.is_empty() {
-        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
-            .with_detail(format!("Team not found or has no agents: {team_id}")));
-    }
+    // Return 200 + empty list rather than 404 when no agents are registered for
+    // the team yet — distinguishes "team known but empty" from "route not found".
     let show_budget = params.show_budget.unwrap_or(false);
 
     let mut members: Vec<AgentNode> = member_ids
