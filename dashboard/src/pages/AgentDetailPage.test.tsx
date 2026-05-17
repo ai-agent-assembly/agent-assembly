@@ -77,6 +77,16 @@ function mockHappyPath() {
   vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
     mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
   )
+  // AAASM-1053: the Capability tab now renders InheritedPermissionsPanel,
+  // which calls useAgentCapabilitiesQuery. Mock to a stable empty cascade
+  // so the panel hits its no-cascade-contribution empty state.
+  vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+    mockQuery<agentsApi.EffectivePermissions>({
+      data: { allow: [], deny: [], sources: [] },
+      isLoading: false,
+      isError: false,
+    }),
+  )
 }
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -168,11 +178,15 @@ describe('AgentDetailPage tab navigation', () => {
     expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('switches to Capability empty-state when its tab is selected', async () => {
+  it('switches to the InheritedPermissionsPanel when the Capability tab is selected', async () => {
+    // AAASM-1053: Capability tab no longer renders the TabEmpty placeholder;
+    // it mounts the live InheritedPermissionsPanel. With mockHappyPath's
+    // empty cascade the panel renders its no-cascade-contribution empty
+    // state.
     mockHappyPath()
     renderApp('/agents/abc123')
     fireEvent.click(await screen.findByTestId('agent-detail-tab-capability'))
-    await waitFor(() => expect(screen.getByTestId('ad-tab-empty-capability')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('inherited-permissions-empty')).toBeInTheDocument())
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
