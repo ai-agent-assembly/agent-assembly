@@ -11,6 +11,7 @@ pub mod client;
 pub mod models;
 pub mod timeline;
 pub mod tree;
+pub mod wire;
 
 /// Visualization format for trace output.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
