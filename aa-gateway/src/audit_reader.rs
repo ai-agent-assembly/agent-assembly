@@ -42,7 +42,7 @@ impl AuditReader {
 
         // Parse filter values once.
         let agent_filter: Option<AgentId> = agent_id.and_then(parse_agent_id);
-        let event_filter: Option<AuditEventType> = event_type.and_then(parse_event_type);
+        let event_filter: Option<Vec<AuditEventType>> = event_type.and_then(parse_event_type);
 
         // Apply filters.
         if agent_filter.is_some() || event_filter.is_some() {
@@ -52,8 +52,8 @@ impl AuditReader {
                         return false;
                     }
                 }
-                if let Some(et) = &event_filter {
-                    if entry.event_type() != *et {
+                if let Some(types) = &event_filter {
+                    if !types.contains(&entry.event_type()) {
                         return false;
                     }
                 }
@@ -116,18 +116,93 @@ fn parse_agent_id(s: &str) -> Option<AgentId> {
     Some(AgentId::from_bytes(arr))
 }
 
-/// Parse an event type string (e.g. `"PolicyViolation"`) into an [`AuditEventType`].
-fn parse_event_type(s: &str) -> Option<AuditEventType> {
+/// Parse an event-type filter string into the set of [`AuditEventType`] variants it matches.
+///
+/// Accepts two wire forms so both API consumers stay supported:
+///
+/// * **CamelCase variant name** (e.g. `"PolicyViolation"`, `"ApprovalGranted"`) →
+///   matches that single variant. Used by callers that already know which
+///   exact variant they want.
+/// * **snake_case category** (e.g. `"violation"`, `"approval"`, `"budget"`) →
+///   matches the whole family of related variants. Used by `aasm logs --type`,
+///   whose `LogEventType::as_api_str` emits these.
+///
+/// Returns `None` for unrecognised strings so the caller drops the filter
+/// rather than silently filtering against nothing.
+fn parse_event_type(s: &str) -> Option<Vec<AuditEventType>> {
+    use AuditEventType::*;
     match s {
-        "ToolCallIntercepted" => Some(AuditEventType::ToolCallIntercepted),
-        "PolicyViolation" => Some(AuditEventType::PolicyViolation),
-        "CredentialLeakBlocked" => Some(AuditEventType::CredentialLeakBlocked),
-        "ApprovalRequested" => Some(AuditEventType::ApprovalRequested),
-        "ApprovalGranted" => Some(AuditEventType::ApprovalGranted),
-        "ApprovalDenied" => Some(AuditEventType::ApprovalDenied),
-        "BudgetLimitApproached" => Some(AuditEventType::BudgetLimitApproached),
-        "BudgetLimitExceeded" => Some(AuditEventType::BudgetLimitExceeded),
-        "ApprovalTimedOut" => Some(AuditEventType::ApprovalTimedOut),
+        // CamelCase variant names (1:1).
+        "ToolCallIntercepted" => Some(vec![ToolCallIntercepted]),
+        "PolicyViolation" => Some(vec![PolicyViolation]),
+        "CredentialLeakBlocked" => Some(vec![CredentialLeakBlocked]),
+        "ApprovalRequested" => Some(vec![ApprovalRequested]),
+        "ApprovalGranted" => Some(vec![ApprovalGranted]),
+        "ApprovalDenied" => Some(vec![ApprovalDenied]),
+        "ApprovalTimedOut" => Some(vec![ApprovalTimedOut]),
+        "BudgetLimitApproached" => Some(vec![BudgetLimitApproached]),
+        "BudgetLimitExceeded" => Some(vec![BudgetLimitExceeded]),
+
+        // snake_case categories (1:N) — matches `aasm logs --type` wire form.
+        "violation" => Some(vec![PolicyViolation]),
+        "approval" => Some(vec![
+            ApprovalRequested,
+            ApprovalGranted,
+            ApprovalDenied,
+            ApprovalTimedOut,
+            ApprovalRouted,
+            ApprovalEscalated,
+        ]),
+        "budget" => Some(vec![BudgetLimitApproached, BudgetLimitExceeded]),
+
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use AuditEventType::*;
+
+    #[test]
+    fn camel_case_variant_name_yields_singleton() {
+        assert_eq!(parse_event_type("PolicyViolation"), Some(vec![PolicyViolation]));
+        assert_eq!(parse_event_type("ApprovalGranted"), Some(vec![ApprovalGranted]));
+        assert_eq!(parse_event_type("BudgetLimitExceeded"), Some(vec![BudgetLimitExceeded]));
+    }
+
+    #[test]
+    fn snake_case_violation_matches_policy_violation() {
+        assert_eq!(parse_event_type("violation"), Some(vec![PolicyViolation]));
+    }
+
+    #[test]
+    fn snake_case_approval_matches_full_approval_family() {
+        let variants = parse_event_type("approval").expect("approval should parse");
+        for v in [
+            ApprovalRequested,
+            ApprovalGranted,
+            ApprovalDenied,
+            ApprovalTimedOut,
+            ApprovalRouted,
+            ApprovalEscalated,
+        ] {
+            assert!(variants.contains(&v), "expected {v:?} in `approval` family");
+        }
+        assert_eq!(variants.len(), 6, "approval should match exactly six variants");
+    }
+
+    #[test]
+    fn snake_case_budget_matches_both_budget_variants() {
+        let variants = parse_event_type("budget").expect("budget should parse");
+        assert!(variants.contains(&BudgetLimitApproached));
+        assert!(variants.contains(&BudgetLimitExceeded));
+        assert_eq!(variants.len(), 2);
+    }
+
+    #[test]
+    fn unknown_string_returns_none() {
+        assert_eq!(parse_event_type("garbage"), None);
+        assert_eq!(parse_event_type(""), None);
     }
 }
