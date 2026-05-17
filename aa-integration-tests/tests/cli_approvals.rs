@@ -193,3 +193,28 @@ async fn approvals_reject_without_reason_errors() {
         "stderr should mention the missing --reason flag\nstderr:\n{stderr}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_approve_unknown_id_errors() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    // Well-formed UUID that was never submitted to the queue → expect 404 from
+    // aa-api → CLI surfaces as non-zero exit with an error on stderr.
+    let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "approve", unknown_id, "--reason", "ok"])
+        .output()
+        .expect("aasm approvals approve should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "approve <unknown> should exit non-zero\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stderr.is_empty(),
+        "stderr should describe the not-found error\nstderr:\n{stderr}",
+    );
+}
