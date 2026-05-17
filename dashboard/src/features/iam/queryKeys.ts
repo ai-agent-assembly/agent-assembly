@@ -7,4 +7,8 @@ export const iamQueryKeys = {
   agents: () => [...iamQueryKeys.all, 'agents'] as const,
   agentPermissions: (agentId: string) =>
     [...iamQueryKeys.agents(), agentId, 'permissions'] as const,
+  // AAASM-1398 — Access Log tab query keys. Carrying the filter object
+  // in the key so React Query can cache one entry per filter shape.
+  accessLog: (filter: object) =>
+    [...iamQueryKeys.all, 'access-log', filter] as const,
 } as const
