@@ -45,7 +45,16 @@ function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
   )
 }
 
-export function ApiKeyList() {
+export interface ApiKeyListProps {
+  /** Currently-selected api-key id, drives the row highlight (AAASM-1396). */
+  selectedKeyId?: string | null
+  /** Row click handler; receives the full ApiKey record so the consumer
+   *  can render IdentityDetailCard without re-querying. Omit to disable
+   *  row selection (preserves the previous click-through-nothing behaviour). */
+  onSelect?: (key: ApiKey) => void
+}
+
+export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps = {}) {
   const { data, isLoading, isError, refetch } = useApiKeysQuery()
   const revoke = useRevokeApiKeyMutation()
   const { toast } = useToast()
@@ -97,8 +106,23 @@ export function ApiKeyList() {
           )}
           {data?.map((k) => {
             const revoked = k.status === 'revoked'
+            const selected = selectedKeyId === k.id
+            const classes = [
+              revoked ? 'iam-api-key-list__row--revoked' : '',
+              selected ? 'iam-api-key-list__row--selected' : '',
+              onSelect ? 'iam-api-key-list__row--clickable' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')
             return (
-              <tr key={k.id} data-testid={`api-key-row-${k.id}`} className={revoked ? 'iam-api-key-list__row--revoked' : ''}>
+              <tr
+                key={k.id}
+                data-testid={`api-key-row-${k.id}`}
+                data-selected={selected ? 'true' : undefined}
+                className={classes}
+                onClick={onSelect ? () => onSelect(k) : undefined}
+                aria-selected={onSelect ? selected : undefined}
+              >
                 <td className="iam-api-key-list__label">{k.label}</td>
                 <td className="iam-api-key-list__mono">{maskedPrefix(k.prefix)}</td>
                 <td>
@@ -119,7 +143,11 @@ export function ApiKeyList() {
                       type="button"
                       className="iam-api-key-list__revoke-btn"
                       data-testid={`api-key-revoke-${k.id}`}
-                      onClick={() => setPendingRevoke(k)}
+                      onClick={(e) => {
+                        // Don't bubble to the row's onClick selection handler.
+                        e.stopPropagation()
+                        setPendingRevoke(k)
+                      }}
                       disabled={revoke.isPending}
                     >
                       Revoke
