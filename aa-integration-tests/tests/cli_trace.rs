@@ -31,6 +31,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm trace <session-id>  (happy path — default --format tree)
@@ -91,6 +92,38 @@ async fn trace_seeded_session_timeline_format_succeeds() {
         String::from_utf8_lossy(&out.stderr),
     );
     assert!(!out.stdout.is_empty(), "stdout should not be empty");
+}
+
+// =============================================================================
+// aasm trace <session-id> --output {json|yaml|table}  (format coverage)
+// =============================================================================
+
+/// Every `--output` format must succeed for a seeded session. Parametrized
+/// over the three supported formats via `#[rstest]`. Marked `#[ignore]`
+/// pending the contract fix.
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on CLI/API trace contract reconciliation (TraceResponse spans vs SessionTrace events)"]
+async fn trace_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let session_id = "sess-aaasm-1468-format";
+    fixture.seed_trace_session(session_id, "agent-1468", 2);
+
+    let out = fixture
+        .cmd()
+        .args(["trace", session_id, "--output", fmt])
+        .output()
+        .expect("aasm trace should execute");
+
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
 
 // =============================================================================
