@@ -96,3 +96,90 @@ async fn topology_overview_json_and_yaml_are_structurally_equivalent() {
 
     assert_equivalent_objects(&json_out.stdout, &yaml_out.stdout);
 }
+
+// =============================================================================
+// aasm topology tree
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_tree_happy_path_renders_root_and_child() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (parent_id, child_id) = fixture.seed_parent_child("alpha");
+    let parent_hex = CliFixture::hex_id(&parent_id);
+    let child_hex = CliFixture::hex_id(&child_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "tree", &parent_hex, "--output", "json"])
+        .output()
+        .expect("aasm topology tree should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["id"].as_str(), Some(parent_hex.as_str()));
+    let children = v["children"].as_array().expect("children should be array");
+    assert_eq!(children.len(), 1, "parent should have one child");
+    assert_eq!(children[0]["id"].as_str(), Some(child_hex.as_str()));
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_tree_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (parent_id, _child_id) = fixture.seed_parent_child("alpha");
+    let parent_hex = CliFixture::hex_id(&parent_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "tree", &parent_hex, "--output", fmt])
+        .output()
+        .expect("aasm topology tree should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_tree_max_depth_zero_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let (parent_id, _) = fixture.seed_parent_child("alpha");
+    let parent_hex = CliFixture::hex_id(&parent_id);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "tree", &parent_hex, "--max-depth", "0"])
+        .output()
+        .expect("aasm topology tree --max-depth 0 should execute");
+    assert!(
+        !out.status.success(),
+        "--max-depth 0 should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_tree_missing_agent_id_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let bogus = "ffffffffffffffffffffffffffffffff";
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "tree", bogus])
+        .output()
+        .expect("aasm topology tree <bogus> should execute");
+    assert!(
+        !out.status.success(),
+        "unknown agent_id should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
