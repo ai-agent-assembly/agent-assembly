@@ -27,6 +27,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm cost summary
@@ -57,4 +58,25 @@ async fn cost_summary_happy_path_renders_daily_spend() {
         stdout.contains("Daily spend"),
         "stdout should mention `Daily spend` for the default --period today\nstdout:\n{stdout}",
     );
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_summary_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "summary", "--output", fmt])
+        .output()
+        .expect("aasm cost summary should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
