@@ -173,7 +173,20 @@ describe('ServiceIdentitiesPanel — generate-and-reveal flow', () => {
 })
 
 describe('ServiceIdentitiesPanel — revoke', () => {
-  it('confirms before revoking, then toggles the row to revoked', async () => {
+  it('confirms before revoking, calls the revoke endpoint, and removes the revoke button', async () => {
+    const revokedIds = new Set<string>()
+    _apiKeysInternal.setListOverride(() =>
+      Promise.resolve(
+        _apiKeysInternal.seedSnapshot().map((k) =>
+          revokedIds.has(k.id) ? { ...k, status: 'revoked' as const } : k,
+        ),
+      ),
+    )
+    const revokeSpy = vi.fn(async (id: string) => {
+      revokedIds.add(id)
+    })
+    _apiKeysInternal.setRevokeOverride(revokeSpy)
+
     const user = userEvent.setup()
     renderPanel()
     await screen.findByTestId('api-key-row-key-1')
@@ -182,10 +195,114 @@ describe('ServiceIdentitiesPanel — revoke', () => {
     expect(await screen.findByTestId('confirm-revoke-key')).toBeInTheDocument()
     await user.click(screen.getByTestId('confirm-revoke-confirm'))
 
+    await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith('key-1'))
     await waitFor(() =>
-      expect(_apiKeysInternal.snapshot().find((k) => k.id === 'key-1')?.status).toBe('revoked'),
+      expect(screen.queryByTestId('api-key-revoke-key-1')).not.toBeInTheDocument(),
     )
-    expect(screen.queryByTestId('api-key-revoke-key-1')).not.toBeInTheDocument()
+  })
+})
+
+describe('ServiceIdentitiesPanel — rotate', () => {
+  it('confirms before rotating, reveals the replacement key one-shot secret, and transitions the source row to revoked', async () => {
+    // Stateful override: when rotate is called for `key-1`, the next list
+    // refetch must show key-1 as `revoked` and a new entry with the new id /
+    // prefix as `active` — matching the contract the gateway provides.
+    const rotatedFrom = new Set<string>()
+    let newEntryId: string | null = null
+    let newEntryPrefix: string | null = null
+    _apiKeysInternal.setListOverride(() => {
+      const seed = _apiKeysInternal.seedSnapshot()
+      const transformed = seed.map((k) =>
+        rotatedFrom.has(k.id) ? { ...k, status: 'revoked' as const } : k,
+      )
+      if (newEntryId && newEntryPrefix) {
+        const source = seed.find((k) => rotatedFrom.has(k.id))
+        if (source) {
+          transformed.unshift({
+            ...source,
+            id: newEntryId,
+            prefix: newEntryPrefix,
+            status: 'active',
+          })
+        }
+      }
+      return Promise.resolve(transformed)
+    })
+    const rotateSpy = vi.fn(async (id: string) => {
+      rotatedFrom.add(id)
+      newEntryId = 'gen-rotated-1'
+      newEntryPrefix = 'aa_live_zzzz'
+      return {
+        id: 'gen-rotated-1',
+        prefix: 'aa_live_zzzz',
+        secret: 'aa_live_zzzz_freshlyminted9999',
+      }
+    })
+    _apiKeysInternal.setRotateOverride(rotateSpy)
+
+    const user = userEvent.setup()
+    renderPanel()
+    await screen.findByTestId('api-key-row-key-1')
+
+    // Open the rotate confirm.
+    await user.click(screen.getByTestId('api-key-rotate-key-1'))
+    expect(await screen.findByTestId('confirm-rotate-key')).toBeInTheDocument()
+
+    // Cancel path leaves the row alone.
+    await user.click(screen.getByTestId('confirm-rotate-cancel'))
+    expect(screen.queryByTestId('confirm-rotate-key')).not.toBeInTheDocument()
+    expect(rotateSpy).not.toHaveBeenCalled()
+
+    // Confirm path triggers the rotate + reveal.
+    await user.click(screen.getByTestId('api-key-rotate-key-1'))
+    await user.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    await waitFor(() => expect(rotateSpy).toHaveBeenCalledWith('key-1'))
+    const modal = await screen.findByTestId('reveal-once-modal')
+    expect(modal).toBeInTheDocument()
+    const secret = screen.getByTestId('reveal-once-secret') as HTMLInputElement
+    expect(secret.value).toBe('aa_live_zzzz_freshlyminted9999')
+
+    // The source row transitions to revoked (no rotate / revoke buttons),
+    // and the replacement row appears with the new prefix.
+    await waitFor(() =>
+      expect(screen.queryByTestId('api-key-rotate-key-1')).not.toBeInTheDocument(),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument(),
+    )
+    expect(
+      screen.getByTestId('api-key-row-gen-rotated-1').textContent,
+    ).toContain('aa_live_zzzz')
+  })
+
+  it('surfaces a failure via toast and closes the confirm without revealing', async () => {
+    const rotateSpy = vi.fn().mockRejectedValue(new Error('source key already revoked'))
+    _apiKeysInternal.setRotateOverride(rotateSpy)
+
+    const user = userEvent.setup()
+    renderPanel()
+    await screen.findByTestId('api-key-row-key-1')
+
+    await user.click(screen.getByTestId('api-key-rotate-key-1'))
+    await user.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    await waitFor(() => expect(rotateSpy).toHaveBeenCalledWith('key-1'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('confirm-rotate-key')).not.toBeInTheDocument(),
+    )
+    // No reveal modal must appear on failure.
+    expect(screen.queryByTestId('reveal-once-modal')).not.toBeInTheDocument()
+
+    const toastContainer = screen.getByTestId('toast-container')
+    expect(toastContainer.textContent).toContain('source key already revoked')
+  })
+
+  it('does not render a rotate button on already-revoked rows', async () => {
+    renderPanel()
+    await screen.findByTestId('api-key-row-key-3')
+    expect(screen.queryByTestId('api-key-rotate-key-3')).not.toBeInTheDocument()
+    expect(screen.getByTestId('api-key-rotate-key-1')).toBeInTheDocument()
   })
 })
 

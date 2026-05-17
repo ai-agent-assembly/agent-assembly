@@ -643,6 +643,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/iam/api-keys:
+    get:
+      tags:
+      - iam
+      summary: '`GET /api/v1/iam/api-keys` — list every API key the IAM store knows.'
+      description: |-
+        Returned in newest-first order. Active and revoked keys are both
+        included; the dashboard filters by status in its tabs.
+      operationId: list_api_keys
+      responses:
+        '200':
+          description: All API keys, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKeyResponse'
+    post:
+      tags:
+      - iam
+      summary: '`POST /api/v1/iam/api-keys` — issue a new API key.'
+      description: |-
+        IAM mutations are gated as a `Global`-scope policy update — the caller
+        must hold the `OrgAdmin` role.
+
+        The response `secret` field is shown to the caller **once**; the server
+        does not persist it.
+      operationId: generate_api_key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateApiKeyRequest'
+        required: true
+      responses:
+        '200':
+          description: Generated key (with one-shot secret)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedApiKeyResponse'
+        '403':
+          description: Caller lacks the role required to mutate IAM state
+  /api/v1/iam/api-keys/{id}/revoke:
+    post:
+      tags:
+      - iam
+      summary: '`POST /api/v1/iam/api-keys/{id}/revoke` — revoke an existing key.'
+      description: 404 if the key is unknown, 409 if it is already revoked.
+      operationId: revoke_api_key
+      parameters:
+      - name: id
+        in: path
+        description: API key id
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Key revoked
+        '403':
+          description: Caller lacks the role required to mutate IAM state
+        '404':
+          description: Unknown api key id
+        '409':
+          description: Key is already revoked
+  /api/v1/iam/api-keys/{id}/rotate:
+    post:
+      tags:
+      - iam
+      summary: |-
+        `POST /api/v1/iam/api-keys/{id}/rotate` — atomically revoke `id` and
+        issue a replacement carrying the same label, scopes, and owner.
+      description: |-
+        Returns the new key's one-shot reveal. 404 if `id` is unknown, 409 if
+        the source key is already revoked.
+      operationId: rotate_api_key
+      parameters:
+      - name: id
+        in: path
+        description: API key id to rotate
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Replacement key with one-shot secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedApiKeyResponse'
+        '403':
+          description: Caller lacks the role required to mutate IAM state
+        '404':
+          description: Unknown api key id
+        '409':
+          description: Source key is already revoked
   /api/v1/logs:
     get:
       tags:
@@ -1539,6 +1637,65 @@ components:
         timestamp:
           type: string
           description: ISO 8601 timestamp when the alert was raised.
+    ApiKeyResponse:
+      type: object
+      required:
+      - id
+      - label
+      - prefix
+      - scopes
+      - status
+      - created_at
+      - owner
+      - role
+      - assigned_policies
+      - recent_activity
+      properties:
+        assigned_policies:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+        id:
+          type: string
+        label:
+          type: string
+        last_used:
+          type:
+          - string
+          - 'null'
+        owner:
+          type: string
+        prefix:
+          type: string
+        recent_activity:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecentActivityResponse'
+        role:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyScopeResponse'
+        status:
+          $ref: '#/components/schemas/ApiKeyStatusResponse'
+    ApiKeyScopeResponse:
+      type: string
+      description: Scopes a key may hold. Wire form matches the dashboard's TS union.
+      enum:
+      - read:members
+      - write:members
+      - read:policies
+      - write:policies
+      - read:audit
+      - admin
+    ApiKeyStatusResponse:
+      type: string
+      enum:
+      - active
+      - revoked
     ApprovalPayload:
       type: object
       description: |-
@@ -2084,6 +2241,34 @@ components:
       - violation
       - approval
       - budget
+    GenerateApiKeyRequest:
+      type: object
+      required:
+      - label
+      - scopes
+      properties:
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyScopeResponse'
+    GeneratedApiKeyResponse:
+      type: object
+      description: |-
+        One-shot reveal shape returned by generate / rotate. `secret` MUST be
+        captured by the caller — the server does not store it.
+      required:
+      - id
+      - prefix
+      - secret
+      properties:
+        id:
+          type: string
+        prefix:
+          type: string
+        secret:
+          type: string
     GovernanceEvent:
       type: object
       description: |-
@@ -2426,6 +2611,22 @@ components:
         status: 404
         title: Not Found
         type: about:blank
+    RecentActivityResponse:
+      type: object
+      required:
+      - id
+      - timestamp
+      - action
+      - target
+      properties:
+        action:
+          type: string
+        id:
+          type: string
+        target:
+          type: string
+        timestamp:
+          type: string
     RecentEventResponse:
       type: object
       description: Summary of a recent event in the API response.
@@ -3195,3 +3396,5 @@ tags:
   description: Per-operation lifecycle actions (pause / resume / terminate)
 - name: capability
   description: Dashboard Capability Matrix — agent × resource × verb × decision view
+- name: iam
+  description: Identity & Access — API key list / generate / revoke / rotate

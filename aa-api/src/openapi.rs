@@ -13,7 +13,9 @@ use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
-use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, logs, ops, policies, topology, traces};
+use crate::routes::{
+    agents, alerts, approvals, auth, capability, costs, edges, iam, logs, ops, policies, topology, traces,
+};
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
 #[derive(OpenApi)]
@@ -42,6 +44,7 @@ use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, l
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
         (name = "ops", description = "Per-operation lifecycle actions (pause / resume / terminate)"),
         (name = "capability", description = "Dashboard Capability Matrix — agent × resource × verb × decision view"),
+        (name = "iam", description = "Identity & Access — API key list / generate / revoke / rotate"),
     ),
     paths(
         crate::routes::health::health,
@@ -78,6 +81,10 @@ use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, l
         ops::terminate_op,
         capability::get_matrix,
         capability::apply_override,
+        iam::list_api_keys,
+        iam::generate_api_key,
+        iam::revoke_api_key,
+        iam::rotate_api_key,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -147,6 +154,12 @@ use crate::routes::{agents, alerts, approvals, auth, capability, costs, edges, l
         CapabilityMatrix,
         CapabilityOverrideRequest,
         CapabilityOverrideResponse,
+        iam::ApiKeyScopeResponse,
+        iam::ApiKeyStatusResponse,
+        iam::RecentActivityResponse,
+        iam::ApiKeyResponse,
+        iam::GeneratedApiKeyResponse,
+        iam::GenerateApiKeyRequest,
     )),
     modifiers(&SecurityAddon),
 )]

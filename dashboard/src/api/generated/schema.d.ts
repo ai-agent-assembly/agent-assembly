@@ -406,6 +406,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/iam/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/iam/api-keys` — list every API key the IAM store knows.
+         * @description Returned in newest-first order. Active and revoked keys are both
+         *     included; the dashboard filters by status in its tabs.
+         */
+        get: operations["list_api_keys"];
+        put?: never;
+        /**
+         * `POST /api/v1/iam/api-keys` — issue a new API key.
+         * @description IAM mutations are gated as a `Global`-scope policy update — the caller
+         *     must hold the `OrgAdmin` role.
+         *
+         *     The response `secret` field is shown to the caller **once**; the server
+         *     does not persist it.
+         */
+        post: operations["generate_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/iam/api-keys/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/iam/api-keys/{id}/revoke` — revoke an existing key.
+         * @description 404 if the key is unknown, 409 if it is already revoked.
+         */
+        post: operations["revoke_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/iam/api-keys/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/iam/api-keys/{id}/rotate` — atomically revoke `id` and
+         *     issue a replacement carrying the same label, scopes, and owner.
+         * @description Returns the new key's one-shot reveal. 404 if `id` is unknown, 409 if
+         *     the source key is already revoked.
+         */
+        post: operations["rotate_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs": {
         parameters: {
             query?: never;
@@ -959,6 +1030,26 @@ export interface components {
             /** @description ISO 8601 timestamp when the alert was raised. */
             timestamp: string;
         };
+        ApiKeyResponse: {
+            assigned_policies: string[];
+            created_at: string;
+            id: string;
+            label: string;
+            last_used?: string | null;
+            owner: string;
+            prefix: string;
+            recent_activity: components["schemas"]["RecentActivityResponse"][];
+            role: string;
+            scopes: components["schemas"]["ApiKeyScopeResponse"][];
+            status: components["schemas"]["ApiKeyStatusResponse"];
+        };
+        /**
+         * @description Scopes a key may hold. Wire form matches the dashboard's TS union.
+         * @enum {string}
+         */
+        ApiKeyScopeResponse: "read:members" | "write:members" | "read:policies" | "write:policies" | "read:audit" | "admin";
+        /** @enum {string} */
+        ApiKeyStatusResponse: "active" | "revoked";
         /**
          * @description Payload for `event_type: "approval"` events.
          *
@@ -1261,6 +1352,19 @@ export interface components {
          * @enum {string}
          */
         EventType: "violation" | "approval" | "budget";
+        GenerateApiKeyRequest: {
+            label: string;
+            scopes: components["schemas"]["ApiKeyScopeResponse"][];
+        };
+        /**
+         * @description One-shot reveal shape returned by generate / rotate. `secret` MUST be
+         *     captured by the caller — the server does not store it.
+         */
+        GeneratedApiKeyResponse: {
+            id: string;
+            prefix: string;
+            secret: string;
+        };
         /**
          * @description A governance event delivered to WebSocket subscribers.
          *
@@ -1468,6 +1572,12 @@ export interface components {
             title: string;
             /** @description URI reference identifying the problem type. */
             type: string;
+        };
+        RecentActivityResponse: {
+            action: string;
+            id: string;
+            target: string;
+            timestamp: string;
         };
         /** @description Summary of a recent event in the API response. */
         RecentEventResponse: {
@@ -2585,6 +2695,143 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
                 };
+            };
+        };
+    };
+    list_api_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All API keys, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyResponse"][];
+                };
+            };
+        };
+    };
+    generate_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Generated key (with one-shot secret) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneratedApiKeyResponse"];
+                };
+            };
+            /** @description Caller lacks the role required to mutate IAM state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the role required to mutate IAM state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown api key id */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Key is already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotate_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id to rotate */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replacement key with one-shot secret */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneratedApiKeyResponse"];
+                };
+            };
+            /** @description Caller lacks the role required to mutate IAM state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown api key id */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source key is already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

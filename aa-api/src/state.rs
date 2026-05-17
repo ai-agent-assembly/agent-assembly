@@ -9,6 +9,7 @@ use aa_devtool::DiscoveryService;
 use aa_core::topology::EdgeRepo;
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;
+use aa_gateway::iam::IamApiKeyStore;
 use aa_gateway::policy::history::PolicyHistoryStore;
 use aa_gateway::registry::AgentRegistry;
 use aa_gateway::AuditReader;
@@ -80,4 +81,6 @@ pub struct AppState {
     pub topology_stats_cache: moka::future::Cache<&'static str, Arc<TopologyStats>>,
     /// Dashboard Capability Matrix store (AAASM-1366).
     pub capability_store: Arc<CapabilityStore>,
+    /// Dashboard Identity & Access — IAM API key management (AAASM-1397).
+    pub iam_api_key_store: Arc<IamApiKeyStore>,
 }

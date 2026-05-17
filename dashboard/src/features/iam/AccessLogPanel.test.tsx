@@ -2,9 +2,10 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AccessLogPanel } from './AccessLogPanel'
 import { _accessLogInternal, type AccessLogEvent } from './accessLog'
+import { _apiKeysInternal } from './apiKeys'
 
 function LocationDisplay() {
   const location = useLocation()
@@ -49,6 +50,14 @@ function makeEvent(over: Partial<AccessLogEvent>, hoursAgo: number): AccessLogEv
 describe('AccessLogPanel (AAASM-1398)', () => {
   beforeEach(() => {
     _accessLogInternal.reset()
+    // AAASM-1397: useApiKeysQuery now hits the openapi-fetch client; this
+    // installs the default list override that serves the seed (so the
+    // identity-filter dropdown's api-key options include `gateway-ci`).
+    _apiKeysInternal.reset()
+  })
+
+  afterEach(() => {
+    _apiKeysInternal.reset()
   })
 
   it('renders the iam-panel-access-log section with seeded rows', async () => {
