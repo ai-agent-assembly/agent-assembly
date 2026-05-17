@@ -96,4 +96,4 @@ export function createApiCapabilityClient(): CapabilityClient {
   }
 }
 
-export const capabilityClient: CapabilityClient = createMockCapabilityClient()
+export const capabilityClient: CapabilityClient = createApiCapabilityClient()
