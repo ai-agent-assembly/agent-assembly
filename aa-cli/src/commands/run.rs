@@ -246,6 +246,29 @@ fn build_child_env(handle: &RegistrationHandle, no_proxy: bool) -> HashMap<Strin
     env
 }
 
+/// Synthesize a `RegistrationHandle` for `--dry-run` without contacting the
+/// gateway. Used by the dry-run short-circuit so the planning preview works
+/// in CI runners where no AI dev tool is installed and no gateway is reachable.
+///
+/// All identity fields are prefixed `dry-run-` to make it obvious in stdout
+/// that no real registration occurred. The caller-supplied `--agent-id` /
+/// `--team-id` overrides are honored verbatim so the printed plan reflects
+/// what the live run *would* have submitted.
+fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
+    let agent_id = args
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| format!("dry-run-{}", Uuid::new_v4()));
+    RegistrationHandle {
+        agent_id,
+        registration_id: format!("dry-run-{}", Uuid::new_v4()),
+        trace_id: format!("dry-run-{}", Uuid::new_v4()),
+        session_id: format!("dry-run-{}", Uuid::new_v4()),
+        proxy_addr: None,
+        team_id: args.team_id.clone(),
+    }
+}
+
 /// Construct a default policy document used until a real loader is wired in.
 fn load_policy() -> PolicyDocument {
     PolicyDocument {
@@ -378,6 +401,11 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 /// Testable core of `execute`: detect, register, apply settings, spawn child.
 ///
 /// Returns the child process exit code, or 0 on `--dry-run`.
+///
+/// `--dry-run` short-circuits *before* `adapter.detect()` and
+/// `register_with_gateway()` so the planning preview works even when no AI
+/// dev tool is installed and no gateway is reachable (e.g. CI runners). The
+/// printed plan reflects what the live run *would* do with the same flags.
 pub async fn execute_with_adapters(
     args: &RunArgs,
     ctx: &ResolvedContext,
@@ -389,6 +417,17 @@ pub async fn execute_with_adapters(
             args.tool
         )
     })?;
+
+    if args.dry_run {
+        let handle = dry_run_handle(args);
+        let child_env = build_child_env(&handle, args.no_proxy);
+        let settings = "<dry-run: managed settings not generated>".to_string();
+        let mut cmd = std::process::Command::new(&args.tool);
+        cmd.args(&args.tool_args);
+        cmd.envs(&child_env);
+        print!("{}", format_dry_run_output(&handle, &settings, &cmd, &child_env));
+        return Ok(0);
+    }
 
     let info = adapter
         .detect()
@@ -411,12 +450,10 @@ pub async fn execute_with_adapters(
         .await
         .map_err(|e| anyhow::anyhow!("failed to generate managed settings: {e}"))?;
 
-    if !args.dry_run {
-        adapter
-            .apply_settings(&settings)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
-    }
+    adapter
+        .apply_settings(&settings)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
 
     let mut cmd = adapter
         .build_launch_command(
@@ -427,11 +464,6 @@ pub async fn execute_with_adapters(
         )
         .map_err(|e| anyhow::anyhow!("failed to build launch command: {e}"))?;
     cmd.envs(&child_env);
-
-    if args.dry_run {
-        print!("{}", format_dry_run_output(&handle, &settings, &cmd, &child_env));
-        return Ok(0);
-    }
 
     let mut guard = RegistrationGuard {
         registration_id: handle.registration_id.clone(),
@@ -923,6 +955,27 @@ mod tests {
     }
 
     // --- dry-run tests ---
+
+    #[tokio::test]
+    async fn dry_run_short_circuits_before_adapter_detect_and_gateway() {
+        // Adapter whose detect() returns None and whose other methods panic
+        // — proves --dry-run skips detect / generate_managed_settings /
+        // apply_settings / build_launch_command. The dummy ctx points at a
+        // port nothing's listening on; if --dry-run touched the gateway the
+        // POST would fail and the test would too.
+        let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+        adapters.insert("claude", Box::new(StubNotInstalled));
+
+        let mut args = run_args("claude");
+        args.dry_run = true;
+
+        let result = execute_with_adapters(&args, &dummy_ctx(), &adapters).await;
+        assert!(
+            result.is_ok(),
+            "--dry-run should succeed without detect() or gateway: {result:?}",
+        );
+        assert_eq!(result.unwrap(), 0, "--dry-run should exit 0");
+    }
 
     #[tokio::test]
     async fn dry_run_does_not_apply_settings() {
