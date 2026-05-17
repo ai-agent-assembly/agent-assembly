@@ -27,7 +27,7 @@
 mod common;
 
 use common::cli::CliFixture;
-use common::format::assert_equivalent_objects;
+use common::format::{assert_equivalent_objects, parse_json};
 use rstest::rstest;
 
 // =============================================================================
@@ -238,4 +238,73 @@ async fn cost_forecast_json_and_yaml_describe_equivalent_object() {
     // `cost forecast` emits a single `CostForecastDisplay` object (not a
     // collection), so structural object-equality is the right check.
     assert_equivalent_objects(&json_out.stdout, &yaml_out.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_forecast_structural_assertion_after_seed() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    // Seed enough spend that the projection is non-trivial. We never assert
+    // exact projected numbers (per AC: "Do NOT assert exact numbers — the
+    // forecasting algorithm may evolve") — only structural properties.
+    let agent_id = fixture.seed_agents(1)[0];
+    fixture.seed_cost_sample(agent_id, Some("topology-it"), "12.34");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "forecast", "--output", "json"])
+        .output()
+        .expect("aasm cost forecast --output json should execute");
+    assert!(out.status.success(), "should exit 0");
+
+    let v = parse_json(&out.stdout);
+
+    for field in [
+        "date",
+        "day_of_month",
+        "days_in_month",
+        "current_daily_spend",
+        "projected_monthly_spend",
+    ] {
+        assert!(
+            v.get(field).is_some(),
+            "forecast output should expose `{field}` field\nstdout:\n{v}",
+        );
+    }
+
+    let day_of_month = v["day_of_month"].as_u64().expect("day_of_month should be an integer");
+    let days_in_month = v["days_in_month"].as_u64().expect("days_in_month should be an integer");
+    assert!(
+        (1..=31).contains(&day_of_month),
+        "day_of_month should be 1..=31, got {day_of_month}",
+    );
+    assert!(
+        (28..=31).contains(&days_in_month),
+        "days_in_month should be 28..=31, got {days_in_month}",
+    );
+
+    let projected: f64 = v["projected_monthly_spend"]
+        .as_str()
+        .expect("projected_monthly_spend should be a string")
+        .parse()
+        .expect("projected_monthly_spend should parse as f64");
+    let current: f64 = v["current_daily_spend"]
+        .as_str()
+        .expect("current_daily_spend should be a string")
+        .parse()
+        .expect("current_daily_spend should parse as f64");
+    assert!(
+        projected >= 0.0,
+        "projected_monthly_spend should be non-negative, got {projected}"
+    );
+    assert!(
+        current >= 0.0,
+        "current_daily_spend should be non-negative, got {current}"
+    );
+    // Trivial sanity: projection over a full month should be at least the
+    // single-day spend (algorithm-agnostic — anything less means a bug).
+    assert!(
+        projected >= current,
+        "projected_monthly_spend ({projected}) should not be smaller than current_daily_spend ({current})",
+    );
 }
