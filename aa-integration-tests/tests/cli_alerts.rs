@@ -34,6 +34,9 @@
 
 mod common;
 
+use std::io::Write;
+use std::process::Stdio;
+
 use common::cli::CliFixture;
 use rstest::rstest;
 
@@ -333,6 +336,57 @@ async fn alerts_resolve_unknown_id_exits_non_zero_with_clean_error() {
     assert!(
         stderr.to_lowercase().contains("error"),
         "stderr should describe the failure; got:\n{stderr}",
+    );
+}
+
+/// Exercises the interactive confirmation prompt that the CLI shows when
+/// `--force` is omitted. The ticket's `--reason` matrix called for a
+/// stdin-form variant; `aasm alerts resolve` does not accept the reason
+/// via stdin (only `--reason`), but it does read stdin for the y/N
+/// confirmation. Per the ticket guidance "if stdin is not supported,
+/// test the prompt path or skip", this covers the prompt path: piping
+/// `n\n` makes the CLI print `Aborted.` on stderr and exit non-zero
+/// without ever calling the gateway — so this test is independent of
+/// the missing AAASM-1474 endpoints.
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_resolve_without_force_prompts_for_confirmation() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let mut child = fixture
+        .cmd()
+        .args(["alerts", "resolve", &id.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm alerts resolve should spawn");
+
+    // Decline the y/N prompt — CLI must print `Aborted.` and exit non-zero
+    // before reaching the network call (which would otherwise 404 on
+    // the unimplemented gateway endpoint).
+    child
+        .stdin
+        .as_mut()
+        .expect("child stdin should be piped")
+        .write_all(b"n\n")
+        .expect("write to child stdin should succeed");
+
+    let out = child.wait_with_output().expect("wait_with_output should succeed");
+    assert!(
+        !out.status.success(),
+        "declining the prompt should exit non-zero; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Are you sure"),
+        "stderr should include the confirmation prompt; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("Aborted."),
+        "stderr should include the abort message; got:\n{stderr}",
     );
 }
 
