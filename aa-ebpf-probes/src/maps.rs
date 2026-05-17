@@ -54,6 +54,19 @@ pub static WRITE_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> = HashMap::with_max_entri
 #[map]
 pub static WRITE_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
 
+/// Temporary map to pass the pathname (read from the syscall argument)
+/// from the unlink kprobe entry to the unlink kretprobe (keyed by
+/// `pid_tgid`). Unlinkat's path comes from `arg1`, not `FD_PATH_MAP`,
+/// so it must be stashed at entry for the kretprobe to emit.
+#[map]
+pub static UNLINK_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
+    HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the unlink kprobe
+/// entry to the unlink kretprobe (keyed by pid_tgid).
+#[map]
+pub static UNLINK_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
 /// Path pattern blocklist: paths that should trigger an alert.
 /// Key is a hash of the path prefix, value is 1 (deny).
 #[map]
