@@ -228,3 +228,45 @@ async fn policy_show_missing_agent_returns_error() {
         String::from_utf8_lossy(&out.stdout),
     );
 }
+
+// =============================================================================
+// aasm policy history
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_history_with_empty_data_dir_prints_empty_message() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    // AA_DATA_DIR is empty; history should report no versions and exit 0.
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "history"])
+        .output()
+        .expect("aasm policy history should execute");
+    assert!(
+        out.status.success(),
+        "empty history should still exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No policy versions"),
+        "should print empty-history message; got:\n{stdout}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_history_with_explicit_limit_still_runs_cleanly() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "history", "--limit", "5"])
+        .output()
+        .expect("aasm policy history --limit should execute");
+    assert!(
+        out.status.success(),
+        "--limit should be accepted; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
