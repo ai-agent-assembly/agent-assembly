@@ -11,7 +11,9 @@ import './MembersPanel.css'
 interface PendingChange {
   member: Member
   nextRole: Role
-  danger: DangerousRoleChange
+  /** Null for safe changes — modal still opens but renders a neutral message
+   *  (AAASM-1400: always confirm role changes, expanding the AAASM-1084 gate). */
+  danger: DangerousRoleChange | null
   resolve: (proceed: boolean) => void
 }
 
@@ -23,11 +25,14 @@ export function MembersPanel() {
   const { toast } = useToast()
 
   function handleBeforeRoleChange(member: Member, nextRole: Role): Promise<boolean> {
+    // AAASM-1400 — always open the confirm modal. The danger detector now
+    // shapes the message (danger reason vs neutral confirmation), but no
+    // role change applies inline. Parent Story AAASM-119 AC #3 wants every
+    // role change gated behind an explicit confirm step.
     const danger = detectDangerousRoleChange(member, nextRole, {
       allMembers: page?.items ?? [],
       currentUserId: CURRENT_USER_ID,
     })
-    if (!danger) return Promise.resolve(true)
     return new Promise<boolean>((resolve) => {
       setPending({ member, nextRole, danger, resolve })
     })
