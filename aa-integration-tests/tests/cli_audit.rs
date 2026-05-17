@@ -20,9 +20,44 @@
 
 mod common;
 
+use aa_core::audit::AuditEventType;
+use common::cli::CliFixture;
+
 // =============================================================================
 // aasm audit list
 // =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_happy_path_renders_table_with_seeded_events() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xa1; 16];
+    fixture
+        .seed_audit_events(5, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed_audit_events should succeed");
+
+    let out = fixture
+        .cmd()
+        .args(["audit", "list"])
+        .output()
+        .expect("aasm audit list should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("TIMESTAMP"),
+        "table header missing TIMESTAMP; got:\n{stdout}"
+    );
+    assert!(stdout.contains("ACTION"), "table header missing ACTION; got:\n{stdout}");
+    assert!(
+        stdout.contains("ToolCallIntercepted"),
+        "event_type row missing; got:\n{stdout}"
+    );
+    assert!(stdout.contains("bash"), "seeded tool name missing; got:\n{stdout}");
+}
 
 // =============================================================================
 // aasm audit export
