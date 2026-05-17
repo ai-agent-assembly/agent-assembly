@@ -71,6 +71,17 @@ impl AlertStore for InMemoryAlertStore {
         let buf = self.alerts.read().expect("alert store lock poisoned");
         buf.iter().find(|a| a.id == id).cloned()
     }
+
+    fn resolve(&self, id: u64, _reason: Option<&str>) -> Option<StoredAlert> {
+        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        let alert = buf.iter_mut().find(|a| a.id == id)?;
+        // Idempotent: don't bump `updated_at` on subsequent resolves.
+        if alert.status != "resolved" {
+            alert.status = "resolved".to_string();
+            alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+        Some(alert.clone())
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +209,44 @@ mod tests {
         store.record(&test_alert(90));
 
         assert!(store.get(id1).is_none(), "evicted id should return None");
+    }
+
+    #[test]
+    fn resolve_flips_status_and_sets_updated_at() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        let before = store.get(id).unwrap();
+        assert_eq!(before.status, "unresolved");
+        assert!(before.updated_at.is_none());
+
+        let after = store.resolve(id, Some("ack")).expect("known id resolves");
+        assert_eq!(after.status, "resolved");
+        assert!(after.updated_at.is_some());
+
+        let from_store = store.get(id).unwrap();
+        assert_eq!(from_store.status, "resolved");
+        assert_eq!(from_store.updated_at, after.updated_at);
+    }
+
+    #[test]
+    fn resolve_is_idempotent_on_repeat_calls() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+
+        let first = store.resolve(id, None).unwrap();
+        let first_ts = first.updated_at.clone();
+
+        // Second call: same record, same updated_at (no double-mutation).
+        let second = store.resolve(id, Some("again")).unwrap();
+        assert_eq!(second.status, "resolved");
+        assert_eq!(second.updated_at, first_ts);
+    }
+
+    #[test]
+    fn resolve_returns_none_for_unknown_id() {
+        let store = InMemoryAlertStore::new();
+        store.record(&test_alert(80));
+        assert!(store.resolve(9_999, None).is_none());
     }
 
     #[test]

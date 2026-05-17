@@ -117,4 +117,11 @@ pub trait AlertStore: Send + Sync {
     /// Retrieve a single alert by its numeric ID, or `None` if the ID is
     /// unknown or has been evicted by the ring buffer.
     fn get(&self, id: u64) -> Option<StoredAlert>;
+
+    /// Mark an alert as resolved. Returns the post-mutation record, or
+    /// `None` if the ID is unknown / evicted. Must be **idempotent** —
+    /// calling `resolve` on an already-resolved alert returns the same
+    /// record and does not bump `updated_at`. `_reason` is accepted for
+    /// API parity but the in-memory store does not persist it.
+    fn resolve(&self, id: u64, _reason: Option<&str>) -> Option<StoredAlert>;
 }
