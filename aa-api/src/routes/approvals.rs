@@ -63,6 +63,12 @@ pub struct ApprovalResponse {
     pub status: String,
     /// ISO 8601 timestamp when the request was created.
     pub created_at: String,
+    /// ISO 8601 timestamp at which the pending request expires
+    /// (`created_at` + the governing `approval_timeout_secs`). The
+    /// dashboard renders a countdown from this value. Empty string on
+    /// post-decision (`approved` / `rejected`) responses where
+    /// expiration is no longer meaningful.
+    pub expires_at: String,
     /// Structured routing metadata. Absent until the router has processed the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routing_status: Option<RoutingStatusInfo>,
@@ -121,6 +127,9 @@ pub async fn list_approvals(
                 created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
                     .map(|dt| dt.to_rfc3339())
                     .unwrap_or_default(),
+                expires_at: chrono::DateTime::from_timestamp(p.submitted_at.saturating_add(p.timeout_secs) as i64, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
                 routing_status,
                 team_id: p.team_id,
             }
@@ -177,6 +186,7 @@ pub async fn approve_action(
             reason: String::new(),
             status: "approved".to_string(),
             created_at: String::new(),
+            expires_at: String::new(),
             routing_status: None,
             team_id: None,
         }),
@@ -222,6 +232,7 @@ pub async fn reject_action(
             reason: String::new(),
             status: "rejected".to_string(),
             created_at: String::new(),
+            expires_at: String::new(),
             routing_status: None,
             team_id: None,
         }),

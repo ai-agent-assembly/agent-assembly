@@ -68,6 +68,10 @@ async fn list_approvals_returns_pending_requests() {
     assert_eq!(items[0]["id"], expected_id);
     assert_eq!(items[0]["agent_id"], "test-agent");
     assert_eq!(items[0]["status"], "pending");
+    // `created_at` = submitted_at = 1_700_000_000 → RFC 3339 → 2023-11-14T22:13:20+00:00
+    // `expires_at` = submitted_at + timeout_secs (600) = 1_700_000_600 → 22:23:20+00:00
+    assert_eq!(items[0]["created_at"], "2023-11-14T22:13:20+00:00");
+    assert_eq!(items[0]["expires_at"], "2023-11-14T22:23:20+00:00");
 }
 
 #[tokio::test]
