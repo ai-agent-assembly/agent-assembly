@@ -412,3 +412,84 @@ async fn agent_suspend_then_inspect_shows_suspended_status() {
         "agent status should be Suspended(Manual) after suspend",
     );
 }
+
+// =============================================================================
+// aasm agent resume
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_resume_happy_path_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_agent_with(AgentSpec {
+        status: Some(AgentStatus::Suspended(SuspendReason::Manual)),
+        ..AgentSpec::default()
+    });
+    let hex = CliFixture::hex_id(&id);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "resume", &hex, "--output", "json"])
+        .output()
+        .expect("aasm agent resume should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    assert_eq!(v.get("new_status").and_then(Value::as_str), Some("Active"));
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_resume_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_agent_with(AgentSpec {
+        status: Some(AgentStatus::Suspended(SuspendReason::Manual)),
+        ..AgentSpec::default()
+    });
+    let hex = CliFixture::hex_id(&id);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "resume", &hex, "--output", fmt])
+        .output()
+        .expect("aasm agent resume should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_suspend_then_resume_round_trip_returns_to_active() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let suspend = fixture
+        .cmd()
+        .args(["agent", "suspend", &hex, "--reason", "test", "--force"])
+        .output()
+        .expect("suspend should execute");
+    assert!(suspend.status.success());
+
+    let resume = fixture
+        .cmd()
+        .args(["agent", "resume", &hex, "--output", "json"])
+        .output()
+        .expect("resume should execute");
+    assert!(resume.status.success());
+    let v: Value = serde_json::from_slice(&resume.stdout).expect("resume stdout is JSON");
+    assert_eq!(
+        v.get("previous_status").and_then(Value::as_str),
+        Some("Suspended(Manual)"),
+    );
+    assert_eq!(v.get("new_status").and_then(Value::as_str), Some("Active"));
+}
