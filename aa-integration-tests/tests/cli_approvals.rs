@@ -22,6 +22,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm approvals list
@@ -50,4 +51,28 @@ async fn approvals_list_happy_path_returns_all_seeded() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout should be valid JSON array");
     let items = v.as_array().expect("stdout JSON should be an array");
     assert_eq!(items.len(), 3, "list should return all 3 seeded approvals");
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_list_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_approval("agent-a", "tool.invoke");
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "list", "--output", fmt])
+        .output()
+        .expect("aasm approvals list should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
