@@ -65,6 +65,35 @@ async fn trace_seeded_session_default_format_succeeds() {
 }
 
 // =============================================================================
+// aasm trace <session-id> --format timeline  (happy path)
+// =============================================================================
+
+/// `aasm trace <id> --format timeline` against a seeded session must exit
+/// cleanly. Marked `#[ignore]` for the same reason as the tree-format
+/// happy-path test above.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on CLI/API trace contract reconciliation (TraceResponse spans vs SessionTrace events)"]
+async fn trace_seeded_session_timeline_format_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let session_id = "sess-aaasm-1468-timeline";
+    fixture.seed_trace_session(session_id, "agent-1468", 4);
+
+    let out = fixture
+        .cmd()
+        .args(["trace", session_id, "--format", "timeline"])
+        .output()
+        .expect("aasm trace should execute");
+
+    assert!(
+        out.status.success(),
+        "should exit 0 for a seeded session with --format timeline\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "stdout should not be empty");
+}
+
+// =============================================================================
 // aasm trace <session-id>  (negative path)
 // =============================================================================
 
