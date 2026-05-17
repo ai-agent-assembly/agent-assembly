@@ -73,6 +73,9 @@ export function ServiceIdentitiesPanel() {
           <ApiKeyList
             selectedKeyId={selected?.id ?? null}
             onSelect={setSelected}
+            // AAASM-1397 — pipe the rotated key into the existing
+            // RevealOnceModal flow so the new secret is shown once.
+            onRotateRevealed={reveal.reveal}
           />
         </div>
         <div className="iam-services-panel__detail">
