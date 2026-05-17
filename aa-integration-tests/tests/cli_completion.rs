@@ -60,3 +60,32 @@ async fn completion_emits_shell_specific_marker(#[case] shell: &str, #[case] mar
         "shell={shell}: stdout should contain shell-specific marker {marker:?}\nstdout:\n{stdout}",
     );
 }
+
+// =============================================================================
+// aasm completion <shell> — negative paths
+// =============================================================================
+
+#[rstest]
+#[tokio::test(flavor = "multi_thread")]
+async fn completion_unknown_shell_errors_and_lists_supported_shells() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["completion", "bogus-shell"])
+        .output()
+        .expect("aasm completion bogus-shell should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "should exit non-zero for unknown shell\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        assert!(
+            stderr.contains(shell),
+            "stderr should name supported shell {shell:?}\nstderr:\n{stderr}",
+        );
+    }
+}
