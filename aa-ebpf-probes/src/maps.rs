@@ -43,6 +43,17 @@ pub static READ_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> = HashMap::with_max_entrie
 #[map]
 pub static READ_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
 
+/// Temporary map to pass the resolved path from the write kprobe entry
+/// to the write kretprobe (keyed by pid_tgid). Same fd-context reason
+/// as `READ_TMP`.
+#[map]
+pub static WRITE_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the write kprobe
+/// entry to the write kretprobe (keyed by pid_tgid).
+#[map]
+pub static WRITE_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
 /// Path pattern blocklist: paths that should trigger an alert.
 /// Key is a hash of the path prefix, value is 1 (deny).
 #[map]
