@@ -568,3 +568,46 @@ async fn audit_verify_chain_returns_success_for_valid_chain() {
         "stdout should report \"OK — 5 entries verified\"; got:\n{stdout}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_verify_chain_returns_failure_for_tampered_chain() {
+    use std::io::Write as _;
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let dir = tempfile::tempdir().expect("tempdir for tampered chain");
+    let path = dir.path().join("tampered.jsonl");
+
+    let entries = make_valid_chain(3);
+    // Replace entry[1] with a forged copy that keeps the original
+    // `previous_hash` and seq but mutates payload + event_type so
+    // entry_hash diverges, breaking integrity at that entry index.
+    let bad_entry = AuditEntry::new(
+        entries[1].seq(),
+        entries[1].timestamp_ns(),
+        AuditEventType::PolicyViolation,
+        entries[1].agent_id(),
+        entries[1].session_id(),
+        "TAMPERED".to_string(),
+        *entries[1].previous_hash(),
+    );
+    let mut f = std::fs::File::create(&path).expect("create tampered.jsonl");
+    writeln!(f, "{}", serde_json::to_string(&entries[0]).unwrap()).unwrap();
+    writeln!(f, "{}", serde_json::to_string(&bad_entry).unwrap()).unwrap();
+    writeln!(f, "{}", serde_json::to_string(&entries[2]).unwrap()).unwrap();
+    drop(f);
+
+    let out = fixture
+        .cmd()
+        .args(["audit", "verify-chain", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("aasm audit verify-chain should execute");
+    assert!(!out.status.success(), "tampered chain should exit non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("FAIL"), "stderr should announce FAIL; got:\n{stderr}");
+    // entry[1] is byte-swapped → integrity check fails at entry index 2
+    // (the third entry's `previous_hash` no longer matches the forged
+    // entry's `entry_hash`).
+    assert!(
+        stderr.contains("entry 2"),
+        "stderr should name the broken entry index; got:\n{stderr}"
+    );
+}
