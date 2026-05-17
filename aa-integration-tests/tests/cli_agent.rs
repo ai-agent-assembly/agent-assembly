@@ -305,3 +305,110 @@ async fn agent_kill_missing_agent_returns_error() {
         String::from_utf8_lossy(&out.stdout),
     );
 }
+
+// =============================================================================
+// aasm agent suspend
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_suspend_with_reason_and_force_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args([
+            "agent",
+            "suspend",
+            &hex,
+            "--reason",
+            "policy violation",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm agent suspend should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    assert_eq!(v.get("agent_id").and_then(Value::as_str), Some(hex.as_str()),);
+    // Gateway formats AgentStatus via `format!("{:?}", ...)` so suspend
+    // returns the full Debug form including the reason variant.
+    assert_eq!(v.get("new_status").and_then(Value::as_str), Some("Suspended(Manual)"),);
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_suspend_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args([
+            "agent", "suspend", &hex, "--reason", "fmt test", "--force", "--output", fmt,
+        ])
+        .output()
+        .expect("aasm agent suspend should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_suspend_without_reason_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "suspend", &hex, "--force"])
+        .output()
+        .expect("aasm agent suspend --force (no --reason) should execute");
+    assert!(
+        !out.status.success(),
+        "missing --reason should fail (clap-enforced); stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_suspend_then_inspect_shows_suspended_status() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let suspend = fixture
+        .cmd()
+        .args(["agent", "suspend", &hex, "--reason", "round-trip", "--force"])
+        .output()
+        .expect("suspend should execute");
+    assert!(suspend.status.success());
+
+    let inspect = fixture
+        .cmd()
+        .args(["agent", "inspect", &hex, "--output", "json"])
+        .output()
+        .expect("inspect should execute");
+    assert!(inspect.status.success());
+    let v: Value = serde_json::from_slice(&inspect.stdout).expect("inspect stdout is JSON");
+    assert_eq!(
+        v.get("status").and_then(Value::as_str),
+        Some("Suspended(Manual)"),
+        "agent status should be Suspended(Manual) after suspend",
+    );
+}
