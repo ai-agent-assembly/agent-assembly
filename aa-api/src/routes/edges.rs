@@ -1,7 +1,8 @@
 //! Mesh topology edge endpoints.
 //!
-//! Three endpoints:
+//! Four endpoints:
 //!   POST /topology/edges           — record a new directed edge (intake for SDK emitters)
+//!   GET  /topology/edges           — list all edges, optionally filtered by team
 //!   GET  /agents/{id}/edges        — paginated edge listing for one agent
 //!   GET  /agents/{id}/graph        — BFS subgraph reachable from one agent
 
@@ -420,4 +421,88 @@ pub async fn get_agent_graph(
             edges: edge_responses,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// GET /topology/edges — list all edges (optionally filtered by team)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for the topology-wide edge listing endpoint.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+pub struct TopologyEdgeListParams {
+    /// Return only edges where at least one endpoint belongs to this team.
+    #[param(example = "team-alpha")]
+    pub team_id: Option<String>,
+    /// Maximum number of edges to return. Defaults to 500, capped at 1000.
+    #[param(example = 500)]
+    pub limit: Option<u32>,
+}
+
+/// All edges in the topology graph, optionally filtered by team membership.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TopologyEdgeListResponse {
+    /// Matching edges, sorted newest-first within each edge type.
+    pub edges: Vec<EdgeResponse>,
+    /// Total number of edges returned.
+    pub count: usize,
+}
+
+/// List all topology edges, optionally filtered by team.
+///
+/// Iterates every known edge type and collects up to `limit` edges total
+/// (default 500, max 1 000). When `team_id` is provided, only edges where
+/// the source **or** target agent belongs to that team are returned.
+#[utoipa::path(
+    get,
+    path = "/api/v1/topology/edges",
+    params(TopologyEdgeListParams),
+    responses(
+        (status = 200, description = "Edge list", body = TopologyEdgeListResponse),
+        (status = 500, description = "Store error", body = ProblemDetail),
+    ),
+    tag = "topology"
+)]
+pub async fn list_topology_edges(
+    Extension(state): Extension<AppState>,
+    Query(params): Query<TopologyEdgeListParams>,
+) -> Result<(StatusCode, Json<TopologyEdgeListResponse>), ProblemDetail> {
+    let cap = params.limit.unwrap_or(500).min(1000) as usize;
+    // Epoch-0 acts as "no lower time bound" — list_by_type returns all records.
+    let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
+
+    let mut all_edges: Vec<Edge> = Vec::new();
+    for &et in EdgeType::ALL {
+        let batch = state.edge_repo.list_by_type(et, epoch, 1000).await.map_err(|e| {
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        })?;
+        all_edges.extend(batch);
+    }
+
+    // Optional team filter: keep edges where source or target belongs to the team.
+    let filtered: Vec<Edge> = match &params.team_id {
+        Some(tid) => all_edges
+            .into_iter()
+            .filter(|e| {
+                let src_team = state.agent_registry.get(e.source.as_bytes()).and_then(|r| r.team_id);
+                let tgt_team = state.agent_registry.get(e.target.as_bytes()).and_then(|r| r.team_id);
+                src_team.as_deref() == Some(tid.as_str()) || tgt_team.as_deref() == Some(tid.as_str())
+            })
+            .collect(),
+        None => all_edges,
+    };
+
+    // Stable newest-first order across types.
+    let mut sorted = filtered;
+    sorted.sort_by_key(|e| std::cmp::Reverse(e.created_at));
+    sorted.truncate(cap);
+
+    let cross_team_flags = compute_cross_team(&sorted, &state);
+    let edges: Vec<EdgeResponse> = sorted
+        .iter()
+        .zip(cross_team_flags.iter())
+        .map(|(e, &ct)| edge_to_response(e, ct))
+        .collect();
+
+    let count = edges.len();
+    Ok((StatusCode::OK, Json(TopologyEdgeListResponse { edges, count })))
 }
