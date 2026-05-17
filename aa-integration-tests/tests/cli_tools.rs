@@ -75,3 +75,85 @@ async fn tools_list_exits_zero_and_emits_friendly_message_or_full_table() {
          column headers (TOOL/VERSION/PATH/GOVERNANCE LEVEL); got:\n{stdout}",
     );
 }
+
+// ============================================================================
+// aasm tools — help banners
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_help_describes_purpose() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["tools", "list", "--help"])
+        .output()
+        .expect("aasm tools list --help should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Sourced from the `/// List all discovered AI dev tools on this system.`
+    // doc-comment on `ToolsSubcommand::List` in `aa-cli/src/commands/tools.rs`.
+    assert!(
+        stdout.contains("List all discovered AI dev tools"),
+        "list-leaf help should describe its purpose; got:\n{stdout}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_subcommand_help_lists_list_leaf() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["tools", "--help"])
+        .output()
+        .expect("aasm tools --help should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The Commands section of `tools --help` enumerates available leaves;
+    // catches accidental removal/renaming of the `list` leaf.
+    let commands_section_has_list = stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .take(10)
+        .any(|l| l.trim_start().starts_with("list "));
+    assert!(
+        commands_section_has_list,
+        "`tools --help` Commands section should enumerate the `list` leaf; got:\n{stdout}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_subcommand_help_uses_qualified_name_and_describes_group() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["tools", "--help"])
+        .output()
+        .expect("aasm tools --help should execute");
+    assert!(out.status.success(), "should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Catches an accidental rename of the parent subcommand (e.g.
+    // tools→devtools). Sourced from the `Usage: aasm tools …` clap line
+    // plus the parent doc-comment "List and manage AI dev tools on this
+    // system".
+    assert!(
+        stdout.contains("aasm tools"),
+        "banner should contain the qualified subcommand name 'aasm tools'; got:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("List and manage AI dev tools"),
+        "parent help should describe the group's purpose; got:\n{stdout}",
+    );
+}
