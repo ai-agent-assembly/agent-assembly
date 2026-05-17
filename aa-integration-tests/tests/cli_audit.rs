@@ -151,6 +151,39 @@ async fn audit_list_agent_filter_narrows_to_one_agent() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_action_filter_narrows_to_one_event_type() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xb3; 16];
+    fixture
+        .seed_audit_events(2, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed tool-call events");
+    fixture
+        .seed_audit_events(3, agent, AuditEventType::PolicyViolation)
+        .expect("seed policy-violation events");
+
+    let out = fixture
+        .cmd()
+        .args(["--output", "json", "audit", "list", "--action", "PolicyViolation"])
+        .output()
+        .expect("aasm audit list --action should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let entries = common::format::parse_json(&out.stdout);
+    let arr = entries.as_array().expect("json stdout should be an array");
+    assert_eq!(
+        arr.len(),
+        3,
+        "should return only the 3 PolicyViolation events; got:\n{entries:#}"
+    );
+    for e in arr {
+        assert_eq!(e.get("event_type").and_then(|v| v.as_str()), Some("PolicyViolation"));
+    }
+}
+
 // =============================================================================
 // aasm audit export
 // =============================================================================
