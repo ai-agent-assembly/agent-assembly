@@ -145,6 +145,18 @@ pub struct PendingApprovalRequest {
 // ResolvedRecord  (outward-facing snapshot of a decided request)
 // ---------------------------------------------------------------------------
 
+/// Result of [`ApprovalQueue::get_by_id`]: a request may currently be pending
+/// or already resolved. Callers (e.g. the `GET /approvals/{id}` HTTP handler)
+/// dispatch on this to decide what to render.
+#[derive(Debug, Clone)]
+pub enum ApprovalLookup {
+    /// The request is still pending.
+    Pending(PendingApprovalRequest),
+    /// The request has been decided. Returned from the bounded
+    /// resolved-history; may be evicted under load (cap = 1000 by default).
+    Resolved(ResolvedRecord),
+}
+
 /// Outward-facing snapshot of a request that has been approved, rejected, or
 /// timed out. Stored in [`ApprovalQueue`]'s bounded resolved-history so the
 /// HTTP `GET /approvals/{id}` endpoint and `?status=APPROVED|REJECTED` list
@@ -373,6 +385,52 @@ impl ApprovalQueue {
                     routing_history: meta.as_ref().map(|m| m.history.clone()).unwrap_or_default(),
                 }
             })
+            .collect()
+    }
+
+    /// Look up a request by id across both pending state and the bounded
+    /// resolved-history. Returns `None` if the id is not pending and has
+    /// already been evicted from history (or was never submitted).
+    ///
+    /// AAASM-1477 — required by `GET /api/v1/approvals/{id}`.
+    pub fn get_by_id(&self, id: ApprovalRequestId) -> Option<ApprovalLookup> {
+        if self.pending.contains_key(&id) {
+            return self
+                .list()
+                .into_iter()
+                .find(|p| p.request_id == id)
+                .map(ApprovalLookup::Pending);
+        }
+        let guard = self.resolved_history.lock().ok()?;
+        guard
+            .iter()
+            .rev() // newest first: a re-decision under the same id would dominate
+            .find(|r| r.request_id == id)
+            .cloned()
+            .map(ApprovalLookup::Resolved)
+    }
+
+    /// Return all resolved records, optionally filtered by status
+    /// (`"approved"` / `"rejected"` / `"timed_out"`) and/or by `agent_id`.
+    /// Order is oldest-first (insertion order).
+    ///
+    /// AAASM-1477 — required by `GET /approvals?status=…&agent=…`.
+    pub fn list_resolved(&self, status_filter: Option<&str>, agent_filter: Option<&str>) -> Vec<ResolvedRecord> {
+        let guard = match self.resolved_history.lock() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        guard
+            .iter()
+            .filter(|r| match status_filter {
+                Some(s) => r.status == s,
+                None => true,
+            })
+            .filter(|r| match agent_filter {
+                Some(a) => r.agent_id == a,
+                None => true,
+            })
+            .cloned()
             .collect()
     }
 
@@ -1237,6 +1295,118 @@ mod tests {
         assert_eq!(history[0].status, "timed_out");
         assert_eq!(history[0].decided_by, "timeout");
         assert!(history[0].decision_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_by_id_returns_pending_for_unresolved_request() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        let lookup = q.get_by_id(id).expect("pending request should be found");
+        match lookup {
+            ApprovalLookup::Pending(p) => assert_eq!(p.request_id, id),
+            ApprovalLookup::Resolved(_) => panic!("expected Pending variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_by_id_returns_resolved_after_decide() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+            },
+        )
+        .expect("decide should succeed");
+
+        let lookup = q.get_by_id(id).expect("resolved request should be found");
+        match lookup {
+            ApprovalLookup::Resolved(r) => {
+                assert_eq!(r.request_id, id);
+                assert_eq!(r.status, "approved");
+            }
+            ApprovalLookup::Pending(_) => panic!("expected Resolved variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_by_id_returns_none_for_unknown_id() {
+        let q = ApprovalQueue::new();
+        assert!(q.get_by_id(Uuid::new_v4()).is_none());
+    }
+
+    #[tokio::test]
+    async fn list_resolved_filters_by_status() {
+        let q = ApprovalQueue::new();
+        let approved = make_request(60);
+        let approved_id = approved.request_id;
+        let rejected = make_request(60);
+        let rejected_id = rejected.request_id;
+        let (_, _) = q.submit(approved);
+        let (_, _) = q.submit(rejected);
+
+        q.decide(
+            approved_id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+            },
+        )
+        .unwrap();
+        q.decide(
+            rejected_id,
+            ApprovalDecision::Rejected {
+                by: "bob".to_string(),
+                reason: "no".to_string(),
+            },
+        )
+        .unwrap();
+
+        let approved_only = q.list_resolved(Some("approved"), None);
+        assert_eq!(approved_only.len(), 1);
+        assert_eq!(approved_only[0].request_id, approved_id);
+
+        let rejected_only = q.list_resolved(Some("rejected"), None);
+        assert_eq!(rejected_only.len(), 1);
+        assert_eq!(rejected_only[0].request_id, rejected_id);
+
+        let all = q.list_resolved(None, None);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_resolved_filters_by_agent() {
+        let q = ApprovalQueue::new();
+        let mut alice_req = make_request(60);
+        alice_req.agent_id = "alice-agent".to_string();
+        let alice_id = alice_req.request_id;
+        let mut bob_req = make_request(60);
+        bob_req.agent_id = "bob-agent".to_string();
+        let bob_id = bob_req.request_id;
+        let (_, _) = q.submit(alice_req);
+        let (_, _) = q.submit(bob_req);
+
+        for id in [alice_id, bob_id] {
+            q.decide(
+                id,
+                ApprovalDecision::Approved {
+                    by: "tester".to_string(),
+                    reason: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let alice_only = q.list_resolved(None, Some("alice-agent"));
+        assert_eq!(alice_only.len(), 1);
+        assert_eq!(alice_only[0].agent_id, "alice-agent");
     }
 
     #[tokio::test]
