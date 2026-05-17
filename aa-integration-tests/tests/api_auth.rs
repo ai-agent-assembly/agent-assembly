@@ -103,3 +103,70 @@ async fn auth_token_with_scoped_api_key_returns_scoped_jwt() {
         "JWT scope must match the API key's scopes"
     );
 }
+
+// ─── error paths ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn auth_token_with_unknown_api_key_returns_401() {
+    let (plaintext, entry) = common::make_api_key("key-1", vec![Scope::Read]);
+    let env = common::TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    // Generate a fresh key that was never registered in the store.
+    let (unknown_plaintext, _) = common::make_api_key("key-unknown", vec![Scope::Read]);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&unknown_plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    // Suppress unused-variable warning; plaintext kept to make the store non-empty.
+    let _ = plaintext;
+}
+
+#[tokio::test]
+async fn auth_token_without_auth_header_returns_401() {
+    let (_, entry) = common::make_api_key("key-1", vec![Scope::Read]);
+    let env = common::TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn auth_token_with_revoked_key_returns_401() {
+    let (plaintext, entry) = common::make_api_key("key-1", vec![Scope::Read]);
+    let env = common::TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    // Revoke the key via the shared Arc before making the request.
+    env.key_store.revoke("key-1");
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("revoked"),
+        "error detail must mention 'revoked'; got: {detail}"
+    );
+}
