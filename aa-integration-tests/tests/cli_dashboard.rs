@@ -77,3 +77,45 @@ async fn dashboard_subcommand_name_appears_in_banner() {
         "banner should contain the qualified subcommand name 'aasm dashboard'; got:\n{stdout}",
     );
 }
+
+// ============================================================================
+// aasm dashboard --help — clap parser smoke for global flags
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_help_accepts_global_api_url_flag() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    // Global `--api-url` is declared on the top-level `Cli` struct with
+    // `global = true`, so clap must accept it next to any subcommand
+    // including `dashboard --help`. The flag value is irrelevant to
+    // `--help`; this just verifies clap doesn't choke.
+    let out = fixture
+        .cmd()
+        .args(["dashboard", "--help", "--api-url", "http://x"])
+        .output()
+        .expect("aasm dashboard --help --api-url … should execute");
+    assert!(
+        out.status.success(),
+        "clap should accept global --api-url next to dashboard --help\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_help_accepts_global_output_format_flag() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["dashboard", "--help", "--output", "json"])
+        .output()
+        .expect("aasm dashboard --help --output json should execute");
+    assert!(
+        out.status.success(),
+        "clap should accept global --output next to dashboard --help\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
