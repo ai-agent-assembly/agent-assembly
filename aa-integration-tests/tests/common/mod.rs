@@ -25,7 +25,7 @@ pub mod scenario;
 pub mod sdk_driver;
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,6 +75,10 @@ pub struct TopologyTestEnv {
     /// observe via the HTTP plane.
     #[allow(dead_code)]
     pub approval_queue: Arc<ApprovalQueue>,
+    /// On-disk JSONL audit directory the harness's `AuditReader` scans.
+    /// Exposed so per-leaf seed helpers (e.g. `CliFixture::seed_audit_events`)
+    /// can write entries that the `aasm logs` snapshot path observes.
+    pub audit_dir: PathBuf,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -89,7 +93,7 @@ impl TopologyTestEnv {
     /// Spin up the harness: build the AppState, bind axum to a free port,
     /// spawn the server task, and poll `/api/v1/health` until ready.
     pub async fn start() -> anyhow::Result<Self> {
-        let state = build_test_state()?;
+        let (state, audit_dir) = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
@@ -115,6 +119,7 @@ impl TopologyTestEnv {
             agent_registry,
             trace_store,
             approval_queue,
+            audit_dir,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -197,7 +202,7 @@ fn uuid_string(key: &[u8; 16]) -> String {
 /// Build a minimal `AppState` for the harness. Adapted from
 /// `aa-api/tests/common/mod.rs::test_state_with_auth` to avoid pulling that
 /// crate's `dev-dependencies` test helpers across crate boundaries.
-fn build_test_state() -> anyhow::Result<AppState> {
+fn build_test_state() -> anyhow::Result<(AppState, PathBuf)> {
     let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let policy_dir = std::env::temp_dir().join(format!("aa-topology-it-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir)?;
@@ -256,45 +261,48 @@ spec:
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let audit_dir = std::env::temp_dir().join(format!("aa-topology-it-audit-{}-{audit_id}", std::process::id()));
     std::fs::create_dir_all(&audit_dir)?;
-    let audit_reader = Arc::new(AuditReader::new(audit_dir));
+    let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
 
-    Ok(AppState {
-        agent_registry,
-        policy_engine,
-        budget_tracker,
-        approval_queue,
-        policy_history,
-        alert_store,
-        events,
-        replay_buffer: ReplayBuffer::new(),
-        next_event_id: Arc::new(AtomicU64::new(0)),
-        auth_config,
-        key_store,
-        rate_limiter,
-        jwt_signer,
-        jwt_verifier,
-        trace_store: Arc::new(InMemoryTraceStore::new()),
-        audit_reader,
-        startup_time: Instant::now(),
-        active_connections: Arc::new(AtomicI64::new(0)),
-        discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
-        edge_repo: Arc::new(InMemoryEdgeRepo::new()),
-        topology_overview_cache: moka::future::Cache::builder()
-            .time_to_live(Duration::from_secs(1))
-            .build(),
-        topology_tree_cache: moka::future::Cache::builder()
-            .time_to_live(Duration::from_secs(5))
-            .build(),
-        topology_team_cache: moka::future::Cache::builder()
-            .time_to_live(Duration::from_secs(5))
-            .build(),
-        topology_lineage_cache: moka::future::Cache::builder()
-            .time_to_live(Duration::from_secs(5))
-            .build(),
-        topology_stats_cache: moka::future::Cache::builder()
-            .time_to_live(Duration::from_secs(10))
-            .build(),
-        capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
-        iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
-    })
+    Ok((
+        AppState {
+            agent_registry,
+            policy_engine,
+            budget_tracker,
+            approval_queue,
+            policy_history,
+            alert_store,
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+        },
+        audit_dir,
+    ))
 }
