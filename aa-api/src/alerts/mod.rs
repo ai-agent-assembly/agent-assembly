@@ -113,4 +113,8 @@ pub trait AlertStore: Send + Sync {
     ///
     /// Returns `(alerts, total_count)`. Results are ordered newest-first.
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64);
+
+    /// Retrieve a single alert by its numeric ID, or `None` if the ID is
+    /// unknown or has been evicted by the ring buffer.
+    fn get(&self, id: u64) -> Option<StoredAlert>;
 }
