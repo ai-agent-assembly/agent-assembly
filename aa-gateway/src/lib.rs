@@ -12,6 +12,7 @@ pub mod budget;
 pub mod edges;
 pub mod engine;
 pub mod events;
+pub mod iam;
 pub mod message_router;
 pub mod policy;
 pub mod registry;
