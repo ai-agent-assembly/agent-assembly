@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 
+use aa_api::models::trace::TraceSpan;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
+use chrono::{Duration as ChronoDuration, Utc};
 use tempfile::TempDir;
 
 use super::TopologyTestEnv;
@@ -283,5 +285,35 @@ impl CliFixture {
             .register(record)
             .expect("seed_parent_child: register child should succeed");
         (parent_id, child_id)
+    }
+
+    /// Seed a session's trace store with `n_spans` flat spans (no
+    /// parent-child links). Span IDs are `span-0`, `span-1`, … and
+    /// timestamps are spaced one second apart starting at `now() - n_spans s`
+    /// so the resulting trace has a strictly ascending `start_time` order
+    /// regardless of insertion order.
+    ///
+    /// Used by `cli_trace.rs` (AAASM-1468 / F121 ST-12) to populate trace
+    /// state before invoking `aasm trace <session-id>`. Inserts directly
+    /// into the in-memory trace store via [`TopologyTestEnv::trace_store`]
+    /// — the gateway exposes no HTTP route for span ingestion.
+    pub fn seed_trace_session(&self, session_id: &str, agent_id: &str, n_spans: usize) {
+        let now = Utc::now();
+        for i in 0..n_spans {
+            let offset = ChronoDuration::seconds((i as i64) - (n_spans as i64));
+            let start = now + offset;
+            let span = TraceSpan {
+                span_id: format!("span-{i}"),
+                parent_span_id: None,
+                operation: format!("op-{i}"),
+                decision: Some("allow".to_string()),
+                start_time: start,
+                end_time: Some(start + ChronoDuration::milliseconds(100)),
+            };
+            self.env
+                .trace_store
+                .record_span(session_id, agent_id, span)
+                .expect("seed_trace_session: record_span should succeed");
+        }
     }
 }
