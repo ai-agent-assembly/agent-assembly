@@ -4,6 +4,7 @@ use std::path::Path;
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use dashmap::DashMap;
 use rand::RngExt as _;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -96,6 +97,8 @@ pub struct ApiKeyEntry {
 /// In-memory store of API key entries loaded from a JSON file.
 pub struct ApiKeyStore {
     entries: Vec<ApiKeyEntry>,
+    /// Runtime-revoked key IDs; checked during every `validate_detailed` call.
+    revoked_ids: DashMap<String, ()>,
 }
 
 impl ApiKeyStore {
@@ -104,21 +107,53 @@ impl ApiKeyStore {
     /// Returns an empty store if the file does not exist.
     pub fn load(path: &Path) -> Result<Self, ApiKeyError> {
         if !path.exists() {
-            return Ok(Self { entries: Vec::new() });
+            return Ok(Self {
+                entries: Vec::new(),
+                revoked_ids: DashMap::new(),
+            });
         }
 
         let content = std::fs::read_to_string(path).map_err(|e| ApiKeyError::Io(e.to_string()))?;
         let entries: Vec<ApiKeyEntry> =
             serde_json::from_str(&content).map_err(|e| ApiKeyError::ParseError(e.to_string()))?;
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            revoked_ids: DashMap::new(),
+        })
+    }
+
+    /// Mark a key ID as revoked; subsequent `validate_detailed` calls for that
+    /// key will return `Err(KeyNotValid::Revoked)`.
+    pub fn revoke(&self, key_id: &str) {
+        self.revoked_ids.insert(key_id.to_string(), ());
+    }
+
+    /// Validate a raw API key and distinguish *revoked* from *not-found*.
+    ///
+    /// Returns `Ok(&ApiKeyEntry)` on success, `Err(KeyNotValid::Revoked)` if the
+    /// key exists but has been revoked, or `Err(KeyNotValid::NotFound)` for any
+    /// other failure (parse error, wrong hash, unknown key).
+    pub fn validate_detailed(&self, raw_key: &str) -> Result<&ApiKeyEntry, KeyNotValid> {
+        let key = ApiKey::parse(raw_key).map_err(|_| KeyNotValid::NotFound)?;
+        match self.entries.iter().find(|entry| key.verify(&entry.key_hash)) {
+            None => Err(KeyNotValid::NotFound),
+            Some(entry) => {
+                if self.revoked_ids.contains_key(&entry.id) {
+                    Err(KeyNotValid::Revoked)
+                } else {
+                    Ok(entry)
+                }
+            }
+        }
     }
 
     /// Validate a raw API key string against stored entries.
     ///
     /// Returns the matching entry if the key is valid, or `None` if no match.
+    /// Use [`validate_detailed`](Self::validate_detailed) when the caller needs
+    /// to distinguish revoked keys from unknown keys.
     pub fn validate(&self, raw_key: &str) -> Option<&ApiKeyEntry> {
-        let key = ApiKey::parse(raw_key).ok()?;
-        self.entries.iter().find(|entry| key.verify(&entry.key_hash))
+        self.validate_detailed(raw_key).ok()
     }
 
     /// Return the number of stored entries.
@@ -245,7 +280,10 @@ mod tests {
             created_at: 1700000000,
             label: Some("test key".to_string()),
         };
-        let store = ApiKeyStore { entries: vec![entry] };
+        let store = ApiKeyStore {
+            entries: vec![entry],
+            revoked_ids: DashMap::new(),
+        };
 
         let result = store.validate(key.as_str());
         assert!(result.is_some());
@@ -264,7 +302,10 @@ mod tests {
             created_at: 1700000000,
             label: None,
         };
-        let store = ApiKeyStore { entries: vec![entry] };
+        let store = ApiKeyStore {
+            entries: vec![entry],
+            revoked_ids: DashMap::new(),
+        };
 
         let result = store.validate(key2.as_str());
         assert!(result.is_none());
