@@ -12,25 +12,19 @@
 //! | get     | `<alert_id>` | —                              | one `AlertResponse`         |
 //! | resolve | `<alert_id>` | `--reason`, `--force`          | one `AlertResponse`         |
 //!
-//! ## Gateway-coverage gap (tracked by AAASM-1474)
+//! ## Gateway coverage
 //!
-//! Only `GET /api/v1/alerts` is wired up in `aa-api/src/routes/alerts.rs`.
-//! `GET /alerts/:id` and `POST /alerts/:id/resolve` are not implemented,
-//! so the `get` / `resolve` **happy-path** tests in this file are
-//! `#[ignore]`d with a doc-comment pointer to AAASM-1474. Once those
-//! endpoints land, drop the `#[ignore]` attributes.
+//! All three endpoints the CLI calls (`GET /alerts`, `GET /alerts/:id`,
+//! `POST /alerts/:id/resolve`) are wired up in `aa-api/src/routes/alerts.rs`
+//! — `:id` lookup and `resolve` landed via AAASM-1474.
 //!
-//! The `get <unknown-id>` and `resolve <unknown-id>` **negative-path**
-//! tests run unconditionally — they assert non-zero exit and a clean
-//! error, which is the correct behaviour regardless of whether the
-//! endpoint is missing (current 404) or implemented (future 404).
+//! ## Persisted alert shape
 //!
-//! ## Persisted alert shape (current API)
-//!
-//! `aa-api`'s `AlertResponse` has no `status` field today; the CLI's
-//! response model defaults `status` to `"unresolved"` via serde. As a
-//! result, `aasm alerts list --status resolved` returns an empty list
-//! against any seeded alert. This is also tracked under AAASM-1474.
+//! `aa-api`'s `AlertResponse` does not include a `status` field on the
+//! `list` payload itself; the CLI's response model defaults `status` to
+//! `"unresolved"` via serde. As a result, `aasm alerts list --status resolved`
+//! returns an empty list against alerts that have never been resolved
+//! (covered by `alerts_list_status_resolved_currently_returns_empty_against_persisted_alerts`).
 
 mod common;
 
@@ -263,12 +257,7 @@ async fn alerts_get_unknown_id_exits_non_zero_with_clean_error() {
     );
 }
 
-/// Happy-path coverage for `aasm alerts get <id>` is gated on the
-/// gateway implementing `GET /api/v1/alerts/:id` (tracked under
-/// AAASM-1474). Drop the `#[ignore]` once that endpoint ships and
-/// assert `id` / `severity` / `agent_id` / `created_at` / `status`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1474 — GET /api/v1/alerts/:id not implemented"]
 async fn alerts_get_happy_path_returns_seeded_record() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let id = fixture.seed_alert(95, [0x11; 16]);
@@ -289,10 +278,7 @@ async fn alerts_get_happy_path_returns_seeded_record() {
     assert_eq!(v["severity"].as_str(), Some("critical"));
 }
 
-/// Format equivalence for `aasm alerts get <id>` — gated on the same
-/// endpoint as `alerts_get_happy_path_returns_seeded_record`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1474 — GET /api/v1/alerts/:id not implemented"]
 async fn alerts_get_json_and_yaml_describe_the_same_record() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let id = fixture.seed_alert(95, [0x11; 16]);
@@ -390,12 +376,7 @@ async fn alerts_resolve_without_force_prompts_for_confirmation() {
     );
 }
 
-/// Happy-path coverage for `aasm alerts resolve <id> --force` — gated on
-/// the gateway implementing `POST /api/v1/alerts/:id/resolve` (tracked
-/// under AAASM-1474). Drop the `#[ignore]` once that endpoint ships
-/// and assert exit 0 plus updated status on the returned record.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
 async fn alerts_resolve_happy_path_flips_status_to_resolved() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let id = fixture.seed_alert(95, [0x11; 16]);
@@ -415,11 +396,7 @@ async fn alerts_resolve_happy_path_flips_status_to_resolved() {
     assert_eq!(v["status"].as_str(), Some("resolved"));
 }
 
-/// `--reason` flag coverage — gated on the same resolve endpoint.
-/// Drop `#[ignore]` once AAASM-1474 lands and assert the reason is
-/// reflected in the returned record's context / updated_at.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
 async fn alerts_resolve_with_reason_flag_passes_reason_through() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let id = fixture.seed_alert(95, [0x11; 16]);
@@ -446,9 +423,8 @@ async fn alerts_resolve_with_reason_flag_passes_reason_through() {
 }
 
 /// Idempotency: a second `resolve` on the same id must return the same
-/// record with `updated_at` unchanged. Gated on AAASM-1474.
+/// record with `updated_at` unchanged.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
 async fn alerts_resolve_is_idempotent_on_already_resolved_alert() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let id = fixture.seed_alert(95, [0x11; 16]);
