@@ -624,6 +624,43 @@ paths:
                 $ref: '#/components/schemas/ApprovalResponse'
         '404':
           description: Approval request not found
+  /api/v1/audit/violations-by-lineage:
+    get:
+      tags:
+      - audit
+      summary: '`GET /api/v1/audit/violations-by-lineage` — policy violation heatmap by lineage.'
+      description: |-
+        Returns all agents that recorded at least one `PolicyViolation` event within
+        the requested time window, together with their violation count and the top 3
+        most-violated policy rules.  The optional `root` parameter scopes the result
+        to a single delegation subtree.
+      operationId: get_violations_by_lineage
+      parameters:
+      - name: root
+        in: query
+        description: Hex-encoded root agent ID; scopes results to that delegation subtree.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: window
+        in: query
+        description: 'Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Violation heatmap nodes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ViolationsByLineageResponse'
+        '400':
+          description: Invalid query parameter
   /api/v1/auth/token:
     post:
       tags:
@@ -3420,6 +3457,44 @@ components:
       - write
       - delete
       - exec
+    ViolationNode:
+      type: object
+      description: A single node in the policy-violations-by-lineage heatmap.
+      required:
+      - agent_id
+      - violation_count
+      - top_policies
+      properties:
+        agent_id:
+          type: string
+          description: Hex-encoded agent ID.
+        depth:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: Delegation depth (0 = root agent).
+          minimum: 0
+        parent_agent_id:
+          type:
+          - string
+          - 'null'
+          description: Hex-encoded parent agent ID, if known.
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the agent belongs to, if registered.
+        top_policies:
+          type: array
+          items:
+            type: string
+          description: Top 3 most-frequently violated policy rules in the window.
+        violation_count:
+          type: integer
+          format: int64
+          description: Number of `PolicyViolation` audit events in the requested window.
+          minimum: 0
     ViolationPayload:
       oneOf:
       - type: object
@@ -3524,6 +3599,27 @@ components:
 
         Represents a governance audit event from the pipeline — either an
         action that violated policy or an interception layer degradation.
+    ViolationsByLineageResponse:
+      type: object
+      description: Response for `GET /api/v1/audit/violations-by-lineage`.
+      required:
+      - nodes
+      - window_secs
+      - generated_at
+      properties:
+        generated_at:
+          type: string
+          description: ISO 8601 UTC timestamp when this response was generated.
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ViolationNode'
+          description: Heatmap nodes — one entry per agent that recorded at least one violation.
+        window_secs:
+          type: integer
+          format: int64
+          description: Time window used for aggregation, in seconds.
+          minimum: 0
   securitySchemes:
     bearer_auth:
       type: http
@@ -3559,3 +3655,5 @@ tags:
   description: Dashboard Capability Matrix — agent × resource × verb × decision view
 - name: iam
   description: Identity & Access — API key list / generate / revoke / rotate
+- name: audit
+  description: Audit log aggregations — violation heatmaps and lineage analytics

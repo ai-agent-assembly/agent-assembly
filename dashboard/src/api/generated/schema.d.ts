@@ -2090,6 +2090,11 @@ export interface components {
             /** @description Start time of the span (ISO 8601). */
             start_time: string;
         };
+        /**
+         * @description Verb a capability cell scopes its decision to.
+         * @enum {string}
+         */
+        Verb: "read" | "write" | "delete" | "exec";
         /** @description A single node in the policy-violations-by-lineage heatmap. */
         ViolationNode: {
             /** @description Hex-encoded agent ID. */
@@ -2111,11 +2116,6 @@ export interface components {
              */
             violation_count: number;
         };
-        /**
-         * @description Verb a capability cell scopes its decision to.
-         * @enum {string}
-         */
-        Verb: "read" | "write" | "delete" | "exec";
         /**
          * @description Payload for `event_type: "violation"` events.
          *
