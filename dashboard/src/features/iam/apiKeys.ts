@@ -22,6 +22,14 @@ const SEED_API_KEYS: ApiKey[] = [
     status: 'active',
     created_at: '2026-04-30T09:12:00Z',
     last_used: '2026-05-13T07:55:00Z',
+    owner: 'alice',
+    role: 'service:reader',
+    assigned_policies: ['read-only-baseline', 'audit-export-allow'],
+    recent_activity: [
+      { id: 'act-1-a', timestamp: '2026-05-13T07:55:00Z', action: 'called', target: 'GET /api/v1/agents' },
+      { id: 'act-1-b', timestamp: '2026-05-13T07:54:00Z', action: 'called', target: 'GET /api/v1/policies' },
+      { id: 'act-1-c', timestamp: '2026-04-30T09:12:00Z', action: 'issued', target: 'key issued by alice' },
+    ],
   },
   {
     id: 'key-2',
@@ -31,6 +39,12 @@ const SEED_API_KEYS: ApiKey[] = [
     status: 'active',
     created_at: '2026-05-02T14:30:00Z',
     last_used: null,
+    owner: 'carol',
+    role: 'service:observer',
+    assigned_policies: ['audit-export-allow'],
+    recent_activity: [
+      { id: 'act-2-a', timestamp: '2026-05-02T14:30:00Z', action: 'issued', target: 'key issued by carol' },
+    ],
   },
   {
     id: 'key-3',
@@ -40,6 +54,14 @@ const SEED_API_KEYS: ApiKey[] = [
     status: 'revoked',
     created_at: '2026-03-14T11:00:00Z',
     last_used: '2026-04-21T10:18:00Z',
+    owner: 'bob',
+    role: 'service:admin',
+    assigned_policies: ['admin-baseline'],
+    recent_activity: [
+      { id: 'act-3-a', timestamp: '2026-04-25T16:00:00Z', action: 'revoked', target: 'key revoked by alice' },
+      { id: 'act-3-b', timestamp: '2026-04-21T10:18:00Z', action: 'called', target: 'POST /api/v1/policies' },
+      { id: 'act-3-c', timestamp: '2026-03-14T11:00:00Z', action: 'issued', target: 'key issued by bob' },
+    ],
   },
 ]
 
@@ -71,14 +93,24 @@ function generateApiKey(input: GenerateApiKeyInput): Promise<GeneratedApiKey> {
   const id = `key-gen-${++_keySeq}`
   const prefix = `aa_live_${randomSuffix(4)}`
   const secret = `${prefix}_${randomSuffix(32)}`
+  const nowIso = new Date().toISOString()
   const record: ApiKey = {
     id,
     label: input.label,
     prefix,
     scopes: [...input.scopes],
     status: 'active',
-    created_at: new Date().toISOString(),
+    created_at: nowIso,
     last_used: null,
+    // AAASM-1396 defaults — overwritten once an owner / role assignment
+    // surface exists; for now the generation flow names the implicit
+    // "self-issued" owner so the IdentityDetailCard has non-empty fields.
+    owner: 'self',
+    role: 'service:reader',
+    assigned_policies: [],
+    recent_activity: [
+      { id: `${id}-act-issue`, timestamp: nowIso, action: 'issued', target: `key issued (label ${input.label})` },
+    ],
   }
   keyStore.keys = [record, ...keyStore.keys]
   return Promise.resolve({ id, prefix, secret })
