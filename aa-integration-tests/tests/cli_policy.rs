@@ -102,3 +102,43 @@ async fn policy_list_succeeds_for_every_output_format(#[case] fmt: &str) {
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
+
+// =============================================================================
+// aasm policy get
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_get_with_empty_data_dir_exits_failure() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    // AA_DATA_DIR is set to the fixture's empty TempDir, so no policy
+    // history exists — `policy get` should report "No policy versions
+    // found" and exit non-zero.
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "get"])
+        .output()
+        .expect("aasm policy get should execute");
+    assert!(
+        !out.status.success(),
+        "empty history should fail; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_get_unknown_version_exits_failure() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "get", "--version", "deadbeefcafe"])
+        .output()
+        .expect("aasm policy get --version should execute");
+    assert!(
+        !out.status.success(),
+        "unknown version should fail; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
