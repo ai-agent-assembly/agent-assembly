@@ -27,11 +27,16 @@
 //!   spawns an independent runtime that gets dropped between tests).
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aa_api::models::trace::TraceSpan;
+use aa_core::audit::AuditEventType;
+use aa_core::{AgentId, AuditEntry, SessionId};
 use aa_gateway::registry::{AgentRecord, AgentStatus};
 use aa_runtime::approval::{ApprovalRequest, ApprovalRequestId};
 use chrono::{Duration as ChronoDuration, Utc};
@@ -352,5 +357,54 @@ impl CliFixture {
                 .record_span(session_id, agent_id, span)
                 .expect("seed_trace_session: record_span should succeed");
         }
+    }
+}
+
+impl CliFixture {
+    /// Append one audit entry to the per-fixture JSONL file in
+    /// [`TopologyTestEnv::audit_dir`]. Lets per-leaf tests control timestamp,
+    /// agent, and event type independently — used by `cli_logs.rs` filter
+    /// tests where `seed_audit_events` (bulk-stride helper below) is too
+    /// coarse.
+    pub fn seed_audit_event(
+        &self,
+        timestamp_ns: u64,
+        agent_id: [u8; 16],
+        event_type: AuditEventType,
+        payload: &str,
+    ) -> anyhow::Result<()> {
+        let entry = AuditEntry::new(
+            0,
+            timestamp_ns,
+            event_type,
+            AgentId::from_bytes(agent_id),
+            SessionId::from_bytes([0u8; 16]),
+            payload.to_string(),
+            [0u8; 32],
+        );
+        let line = serde_json::to_string(&entry)?;
+        let path = self.env.audit_dir.join("seed.jsonl");
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+
+    /// Seed `n` audit entries for `agent_id` with `event_type`, timestamps
+    /// spaced one second apart ending at "now". Returns the nanosecond
+    /// timestamp of the oldest entry so the caller can build `--since`
+    /// boundaries relative to it.
+    pub fn seed_audit_events(&self, n: usize, agent_id: [u8; 16], event_type: AuditEventType) -> anyhow::Result<u64> {
+        // Pin "now" against UNIX_EPOCH so all entries share a stable base;
+        // back off by `n` seconds so the newest entry lands within the last
+        // second (keeps `--since 1h` happy without needing system clock games).
+        let now_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
+        let stride_ns: u64 = Duration::from_secs(1).as_nanos() as u64;
+        let oldest_ns = now_ns - stride_ns * n as u64;
+        for i in 0..n {
+            let ts = oldest_ns + stride_ns * i as u64;
+            self.seed_audit_event(ts, agent_id, event_type, &format!("seed-{i}"))?;
+        }
+        Ok(oldest_ns)
     }
 }
