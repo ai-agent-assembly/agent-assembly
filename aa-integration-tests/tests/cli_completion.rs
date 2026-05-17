@@ -37,6 +37,7 @@ use rstest::rstest;
 #[case::bash("bash", "_aasm()")]
 #[case::zsh("zsh", "#compdef aasm")]
 #[case::fish("fish", "__fish_aasm_global_optspecs")]
+#[case::powershell("powershell", "Register-ArgumentCompleter")]
 #[tokio::test(flavor = "multi_thread")]
 async fn completion_emits_shell_specific_marker(#[case] shell: &str, #[case] marker: &str) {
     let fixture = CliFixture::start().await.expect("fixture should start");
