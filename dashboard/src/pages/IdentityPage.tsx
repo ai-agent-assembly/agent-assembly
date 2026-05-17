@@ -2,6 +2,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { MembersPanel } from '../features/iam/MembersPanel'
 import { ServiceIdentitiesPanel } from '../features/iam/ServiceIdentitiesPanel'
 import { RolesPermissionsPanel } from '../features/iam/RolesPermissionsPanel'
+import { AccessLogPanel } from '../features/iam/AccessLogPanel'
 import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
@@ -20,6 +21,7 @@ function ActiveTabContent({ tab }: { tab: IamTabKey }) {
   if (tab === 'members') return <MembersPanel />
   if (tab === 'services') return <ServiceIdentitiesPanel />
   if (tab === 'roles') return <RolesPermissionsPanel />
+  if (tab === 'access-log') return <AccessLogPanel />
   return <TabPlaceholder tab={tab} />
 }
 
