@@ -104,3 +104,29 @@ async fn logs_succeeds_for_every_output_format(#[case] fmt: &str) {
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_agent_filter_only_returns_matching() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agents = fixture.seed_agents(2);
+    let (agent_a, agent_b) = (agents[0], agents[1]);
+    fixture
+        .seed_audit_events(3, agent_a, AuditEventType::PolicyViolation)
+        .expect("seed A should succeed");
+    fixture
+        .seed_audit_events(2, agent_b, AuditEventType::PolicyViolation)
+        .expect("seed B should succeed");
+
+    let agent_a_hex = CliFixture::hex_id(&agent_a);
+    let out = fixture
+        .cmd()
+        .args(["logs", "--agent", &agent_a_hex, "--output", "json"])
+        .output()
+        .expect("aasm logs --agent should execute");
+    assert!(out.status.success());
+    let entries = parse_jsonl(&out.stdout);
+    assert_eq!(entries.len(), 3, "only agent_a events expected");
+    for e in &entries {
+        assert_eq!(e["agent_id"], agent_a_hex, "stray non-matching event in stdout");
+    }
+}
