@@ -293,6 +293,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-integration-tests"
+version = "0.0.1"
+dependencies = [
+ "aa-api",
+ "aa-core",
+ "aa-devtool",
+ "aa-gateway",
+ "aa-runtime",
+ "anyhow",
+ "assert_cmd",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "moka",
+ "portpicker",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "aa-proto"
 version = "0.0.1"
 dependencies = [
@@ -357,27 +378,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
-]
-
-[[package]]
-name = "aa-topology-integration-tests"
-version = "0.0.1"
-dependencies = [
- "aa-api",
- "aa-core",
- "aa-devtool",
- "aa-gateway",
- "aa-runtime",
- "anyhow",
- "assert_cmd",
- "axum",
- "chrono",
- "chrono-tz",
- "moka",
- "portpicker",
- "reqwest",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
