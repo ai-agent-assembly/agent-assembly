@@ -104,3 +104,30 @@ async fn cost_summary_json_and_yaml_describe_equivalent_object() {
     // collection), so structural object-equality is the right check here.
     assert_equivalent_objects(&json_out.stdout, &yaml_out.stdout);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_summary_period_month_switches_rendered_label() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "summary", "--period", "month"])
+        .output()
+        .expect("aasm cost summary --period month should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Monthly spend"),
+        "--period month should render `Monthly spend` instead of `Daily spend`\nstdout:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("COST SUMMARY (Monthly)"),
+        "section header should carry the period label\nstdout:\n{stdout}",
+    );
+}
