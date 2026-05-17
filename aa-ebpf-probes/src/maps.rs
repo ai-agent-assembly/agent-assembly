@@ -67,6 +67,19 @@ pub static UNLINK_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
 #[map]
 pub static UNLINK_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
 
+/// Temporary map to pass the source pathname (read from `renameat2`'s
+/// `arg1` = `oldpath`) from the rename kprobe entry to the rename
+/// kretprobe (keyed by `pid_tgid`). Same arg-source reason as
+/// `UNLINK_TMP`.
+#[map]
+pub static RENAME_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
+    HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the rename kprobe
+/// entry to the rename kretprobe (keyed by pid_tgid).
+#[map]
+pub static RENAME_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
 /// Path pattern blocklist: paths that should trigger an alert.
 /// Key is a hash of the path prefix, value is 1 (deny).
 #[map]
