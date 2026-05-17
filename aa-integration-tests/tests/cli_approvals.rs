@@ -170,3 +170,26 @@ async fn approvals_reject_happy_path_consumes_pending_entry() {
         items.len(),
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_reject_without_reason_errors() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_approval("agent-a", "tool.invoke");
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "reject", &id.to_string()])
+        .output()
+        .expect("aasm approvals reject (no --reason) should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "reject without --reason should exit non-zero\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("--reason"),
+        "stderr should mention the missing --reason flag\nstderr:\n{stderr}",
+    );
+}
