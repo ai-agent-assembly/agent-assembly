@@ -42,7 +42,7 @@ use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
-use aa_gateway::registry::AgentRegistry;
+use aa_gateway::registry::{AgentRegistry, OrphanMode};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use tokio::sync::oneshot;
@@ -63,6 +63,10 @@ pub struct TopologyTestEnv {
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
     server_handle: Option<JoinHandle<()>>,
+    /// Idempotency guard for the cleanup helper — set once `cleanup()` runs
+    /// successfully so an explicit cleanup + Drop don't double-tap the
+    /// registry.
+    cleaned: bool,
 }
 
 impl TopologyTestEnv {
@@ -93,6 +97,7 @@ impl TopologyTestEnv {
             agent_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
+            cleaned: false,
         };
         env.await_ready().await?;
         Ok(env)
@@ -102,6 +107,31 @@ impl TopologyTestEnv {
     #[allow(dead_code)]
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// Tear down per-test state: cascade-deregister every agent under the
+    /// `topology-it` team from the shared `Arc<AgentRegistry>`. Adapted
+    /// from the ticket AC text (DELETE + TRUNCATE against Postgres) — see
+    /// the ST-1 / ST-3 divergence notes for why registry deregistration is
+    /// the in-process equivalent. Idempotent via `self.cleaned`; errors
+    /// are logged but never panic so `Drop` stays safe.
+    pub fn cleanup(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        let team_id = "topology-it";
+        for agent_key in self.agent_registry.team_members(team_id) {
+            if let Err(err) = self
+                .agent_registry
+                .deregister(&agent_key, OrphanMode::CascadeDeregister)
+            {
+                eprintln!(
+                    "topology-it cleanup: failed to deregister agent {}: {err:?}",
+                    uuid_string(&agent_key),
+                );
+            }
+        }
+        self.cleaned = true;
     }
 
     /// Poll `/api/v1/health` until it returns 200 or a 5 s budget is exhausted.
@@ -123,6 +153,10 @@ impl TopologyTestEnv {
 
 impl Drop for TopologyTestEnv {
     fn drop(&mut self) {
+        // Cleanup runs unconditionally but is idempotent (guarded by
+        // `self.cleaned`), so an explicit `env.cleanup()` in test code
+        // doesn't double-deregister.
+        self.cleanup();
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -132,6 +166,12 @@ impl Drop for TopologyTestEnv {
             handle.abort();
         }
     }
+}
+
+/// Render a 16-byte agent key as the 32-char lowercase hex string used
+/// across the test surface (matches `aa_api::models::topology::format_id`).
+fn uuid_string(key: &[u8; 16]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build a minimal `AppState` for the harness. Adapted from
