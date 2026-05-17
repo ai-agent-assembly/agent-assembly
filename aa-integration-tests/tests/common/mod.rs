@@ -94,6 +94,11 @@ pub struct TopologyTestEnv {
     /// without trait downcasting. Populated by `cli_alerts.rs` (AAASM-1460).
     #[allow(dead_code)]
     pub alert_store: Arc<InMemoryAlertStore>,
+    /// Shared API key store — same Arc the running server holds.
+    /// Auth integration tests (AAASM-1485) call `key_store.revoke()` here
+    /// to exercise the revocation path without restarting the server.
+    #[allow(dead_code)]
+    pub key_store: Arc<ApiKeyStore>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -108,7 +113,7 @@ impl TopologyTestEnv {
     /// Spin up the harness: build the AppState, bind axum to a free port,
     /// spawn the server task, and poll `/api/v1/health` until ready.
     pub async fn start() -> anyhow::Result<Self> {
-        let (state, audit_dir, alert_store) = build_test_state()?;
+        let (state, audit_dir, alert_store, key_store) = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
@@ -138,6 +143,7 @@ impl TopologyTestEnv {
             audit_dir,
             budget_tracker,
             alert_store,
+            key_store,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -221,13 +227,10 @@ fn uuid_string(key: &[u8; 16]) -> String {
 /// `aa-api/tests/common/mod.rs::test_state_with_auth` to avoid pulling that
 /// crate's `dev-dependencies` test helpers across crate boundaries.
 ///
-/// Returns the populated state, the on-disk audit dir the `AuditReader`
-/// scans (so per-leaf helpers like `seed_audit_events` can write entries
-/// the `aasm logs` snapshot path observes), and a concrete handle on
-/// the in-memory alert store so per-leaf seed helpers (e.g.
-/// `CliFixture::seed_alert`) can call `record()` directly without
-/// trait downcasting from `Arc<dyn AlertStore>`.
-fn build_test_state() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>)> {
+/// Returns the populated state, the on-disk audit dir, a concrete handle on
+/// the in-memory alert store, and the key store Arc so callers can mutate it
+/// (e.g. call `revoke()`) after construction.
+fn build_test_state() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
     let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let policy_dir = std::env::temp_dir().join(format!("aa-topology-it-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir)?;
@@ -277,6 +280,7 @@ spec:
         ApiKeyStore::load(Path::new("/dev/null"))
             .unwrap_or_else(|_| ApiKeyStore::load(Path::new("/nonexistent")).expect("empty key store")),
     );
+    let key_store_handle = Arc::clone(&key_store);
     const TEST_SECRET: &[u8] = b"topology-it-test-secret-32-bytes-long-padding";
     let jwt_signer = Arc::new(JwtSigner::new(TEST_SECRET));
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
@@ -331,5 +335,6 @@ spec:
         },
         audit_dir,
         alert_store_handle,
+        key_store_handle,
     ))
 }
