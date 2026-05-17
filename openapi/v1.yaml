@@ -1709,6 +1709,7 @@ components:
       - condition_triggered
       - submitted_at
       - timeout_secs
+      - expires_at
       properties:
         action:
           type: string
@@ -1716,6 +1717,15 @@ components:
         condition_triggered:
           type: string
           description: Policy condition that triggered this request.
+        expires_at:
+          type: integer
+          format: int64
+          description: |-
+            Unix epoch timestamp (seconds) at which the request expires
+            (`submitted_at + timeout_secs`). Provided as a pre-computed
+            absolute timestamp so dashboard consumers can render the
+            auto-expire countdown without local-clock drift.
+          minimum: 0
         request_id:
           type: string
           description: Unique ID for the approval request (UUID v4).
@@ -1739,6 +1749,7 @@ components:
       - reason
       - status
       - created_at
+      - expires_at
       properties:
         action:
           type: string
@@ -1749,6 +1760,14 @@ components:
         created_at:
           type: string
           description: ISO 8601 timestamp when the request was created.
+        expires_at:
+          type: string
+          description: |-
+            ISO 8601 timestamp at which the pending request expires
+            (`created_at` + the governing `approval_timeout_secs`). The
+            dashboard renders a countdown from this value. Empty string on
+            post-decision (`approved` / `rejected`) responses where
+            expiration is no longer meaningful.
         id:
           type: string
           description: Unique approval request identifier.

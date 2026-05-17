@@ -68,6 +68,7 @@ const MOCK_APPROVAL: Approval = {
   reason: 'requires elevated permission',
   status: 'pending',
   created_at: '2026-05-12T10:00:00Z',
+  expires_at: '2026-05-12T11:00:00Z',
   routing_status: null,
   team_id: null,
 }
@@ -79,6 +80,7 @@ const MOCK_APPROVAL_2: Approval = {
   reason: 'blocked by egress policy',
   status: 'pending',
   created_at: '2026-05-12T10:05:00Z',
+  expires_at: '2026-05-12T11:05:00Z',
   routing_status: null,
   team_id: null,
 }
@@ -175,6 +177,7 @@ describe('ApprovalsPage', () => {
         condition_triggered: 'blocked by shell policy',
         submitted_at: 1715513200,
         timeout_secs: 300,
+        expires_at: 1715513500,
       },
     }
 

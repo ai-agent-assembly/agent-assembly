@@ -22,7 +22,9 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 const MOCK_APPROVAL: Approval = {
   id: 'a1', agent_id: 'agent-1', action: 'send_email', reason: 'r',
-  status: 'pending', created_at: '2026-05-13T00:00:00Z', routing_status: null, team_id: null,
+  status: 'pending', created_at: '2026-05-13T00:00:00Z',
+  expires_at: '2026-05-13T01:00:00Z',
+  routing_status: null, team_id: null,
 }
 
 afterEach(() => { vi.restoreAllMocks() })
