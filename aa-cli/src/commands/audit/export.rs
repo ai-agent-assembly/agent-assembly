@@ -21,8 +21,14 @@ pub struct ExportArgs {
     pub compliance: Option<ComplianceFormat>,
 
     /// Write output to a file instead of stdout.
+    ///
+    /// Renamed from `--output` to `--output-file` to avoid a clap
+    /// matches-store id collision with the top-level
+    /// `Cli::output: OutputFormat` global flag — the duplicate id used
+    /// to panic on downcast at every `aasm audit export` invocation
+    /// (AAASM-1479).
     #[arg(long)]
-    pub output: Option<String>,
+    pub output_file: Option<String>,
 
     /// Filter by agent identifier.
     #[arg(long)]
@@ -188,7 +194,7 @@ pub fn run(args: ExportArgs, ctx: &ResolvedContext) -> ExitCode {
     let filtered = apply_filters(&paginated.items, &list_args);
 
     // Determine output destination.
-    let write_result: Result<(), Box<dyn std::error::Error>> = if let Some(ref path) = args.output {
+    let write_result: Result<(), Box<dyn std::error::Error>> = if let Some(ref path) = args.output_file {
         let file = match std::fs::File::create(path) {
             Ok(f) => f,
             Err(e) => {
@@ -312,7 +318,7 @@ mod tests {
         let args = ExportArgs {
             format: ExportFormat::Csv,
             compliance: None,
-            output: None,
+            output_file: None,
             agent: None,
             action: None,
             result: None,
@@ -334,7 +340,7 @@ mod tests {
         let args = ExportArgs {
             format: ExportFormat::Json,
             compliance: None,
-            output: None,
+            output_file: None,
             agent: Some("aa001".to_string()),
             action: Some("PolicyViolation".to_string()),
             result: None,
@@ -352,7 +358,7 @@ mod tests {
         let args = ExportArgs {
             format: ExportFormat::Csv,
             compliance: None,
-            output: None,
+            output_file: None,
             agent: Some("aa001".to_string()),
             action: Some("PolicyViolation".to_string()),
             result: Some(AuditResult::Deny),
