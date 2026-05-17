@@ -1,0 +1,7 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: cli-it-allow-all
+  version: "0.1.0"
+spec:
+  rules: []

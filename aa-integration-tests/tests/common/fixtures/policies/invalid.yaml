@@ -1,0 +1,9 @@
+# Intentionally malformed for `aasm policy validate` negative-path tests.
+# `spec:` is missing the required `rules` key; `metadata.version` has the
+# wrong type (number instead of string).
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: cli-it-invalid
+  version: 99
+spec: not-a-mapping

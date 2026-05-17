@@ -1,0 +1,11 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: cli-it-deny-websearch
+  version: "0.1.0"
+spec:
+  rules:
+    - id: deny-websearch
+      match:
+        tool: WebSearch
+      action: deny
