@@ -314,6 +314,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

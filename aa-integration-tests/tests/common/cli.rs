@@ -33,8 +33,10 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use aa_api::models::trace::TraceSpan;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
+use aa_runtime::approval::{ApprovalRequest, ApprovalRequestId};
 use chrono::{Duration as ChronoDuration, Utc};
 use tempfile::TempDir;
+use uuid::Uuid;
 
 use super::TopologyTestEnv;
 
@@ -213,6 +215,41 @@ impl CliFixture {
             .and_then(|v| v.as_str())
             .map(String::from)
             .ok_or_else(|| anyhow::anyhow!("seed_policy: response missing 'name' field: {text}"))
+    }
+
+    /// Submit a pending approval request directly into the in-process
+    /// `ApprovalQueue`. Returns the assigned request id.
+    ///
+    /// Used by `cli_status.rs` (ST-10) and any future `cli_approvals.rs`
+    /// (ST-13). Direct submission is the pragmatic equivalent of the
+    /// production "policy engine triggers an approval requirement" path —
+    /// `aa-api` exposes only `/approve` and `/reject` endpoints, not a
+    /// `POST /approvals` write, so HTTP-based seeding would require
+    /// stand-up of the policy engine + runtime, which is well beyond the
+    /// scope of these CLI tests.
+    ///
+    /// The request is submitted with a 1-hour timeout so the background
+    /// auto-resolve task does not race in-test assertions; the returned
+    /// `ApprovalFuture` is dropped (the queue retains the pending entry
+    /// regardless).
+    #[allow(dead_code)]
+    pub fn seed_approval(&self, agent_id: &str, action: &str) -> ApprovalRequestId {
+        let request = ApprovalRequest {
+            request_id: Uuid::new_v4(),
+            agent_id: agent_id.to_string(),
+            action: action.to_string(),
+            condition_triggered: "cli-it-seed".to_string(),
+            submitted_at: chrono::Utc::now().timestamp() as u64,
+            timeout_secs: 3600,
+            fallback: aa_core::PolicyResult::Deny {
+                reason: "cli-it timeout".to_string(),
+            },
+            team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+        let (id, _future) = self.env.approval_queue.submit(request);
+        id
     }
 }
 
