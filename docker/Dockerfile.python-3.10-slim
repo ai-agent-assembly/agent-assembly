@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1.7
+#
+# AAASM Python 3.10 base image
+# ----------------------------
+# Ships the AAASM Python SDK (`agent_assembly`) + the `aasm` operator
+# binary pre-installed, so containerised agents get governance on first
+# run with no extra install step.
+#
+# Use:
+#   FROM ghcr.io/agent-assembly/python:3.10-slim
+#
+# Transitional install paths (will simplify once these Stories ship):
+#   * `aasm` is built from source until AAASM-1201 publishes a curl|sh
+#     installer; stage 1 collapses to a `COPY --from=ghcr.io/...` then.
+#   * The Python SDK is installed from git until AAASM-1202 publishes
+#     `agent-assembly` to PyPI; the `pip install` line simplifies then.
+#
+# Issue: AAASM-1443 (sub-task of AAASM-1441 / F114b)
+# Epic:  AAASM-1199 (Release & Distribution Pipeline)
+
+# -----------------------------------------------------------------------------
+# Stage 1 — build the `aasm` binary from source.
+# -----------------------------------------------------------------------------
+FROM rust:alpine AS aasm-builder
+
+# Build deps. `protobuf-dev` is required by aa-proto's `build.rs`; `musl-dev`
+# + `openssl-dev` + `pkgconfig` round out the toolchain for a static musl
+# build that is portable across glibc and musl runtimes.
+RUN apk add --no-cache musl-dev protobuf-dev openssl-dev pkgconfig
+
+WORKDIR /build
+
+# BuildKit cache mounts let us re-use the cargo registry and target dir
+# across PR builds — same pattern as `aa-runtime/Dockerfile`.
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p aa-cli --bin aasm \
+ && cp /build/target/release/aasm /usr/local/bin/aasm
+
+# -----------------------------------------------------------------------------
+# Stage 2 — Python 3.10 runtime.
+# -----------------------------------------------------------------------------
+FROM python:3.10-slim
+
+# git is needed at build time only — to pip-install the SDK from its git
+# repository (transitional path until AAASM-1202 publishes to PyPI).
+# Remove it at the end of the layer so it doesn't bloat the runtime image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+
+# Drop the prebuilt `aasm` binary into the image PATH.
+COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
+
+# Install the AAASM Python SDK. Transitional git source; switches to
+# `pip install agent-assembly` once AAASM-1202 lands.
+RUN pip install --no-cache-dir \
+        'agent-assembly @ git+https://github.com/AI-agent-assembly/python-sdk.git'
+
+# Build-time smoke tests — fail the image build (not a runtime surprise)
+# if either side of the install ends up broken.
+RUN aasm --version
+RUN python -c "from agent_assembly import init_assembly"
+
+# Remove git after install to keep the runtime image lean.
+RUN apt-get purge -y git \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
+LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+      org.opencontainers.image.description="AAASM governed Python 3.10 agent base image" \
+      org.opencontainers.image.licenses="Apache-2.0"
