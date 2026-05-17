@@ -260,6 +260,55 @@ async fn alerts_get_unknown_id_exits_non_zero_with_clean_error() {
     );
 }
 
+/// Happy-path coverage for `aasm alerts get <id>` is gated on the
+/// gateway implementing `GET /api/v1/alerts/:id` (tracked under
+/// AAASM-1474). Drop the `#[ignore]` once that endpoint ships and
+/// assert `id` / `severity` / `agent_id` / `created_at` / `status`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1474 — GET /api/v1/alerts/:id not implemented"]
+async fn alerts_get_happy_path_returns_seeded_record() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "get", &id.to_string(), "--output", "json"])
+        .output()
+        .expect("aasm alerts get should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v = common::format::parse_json(&out.stdout);
+    assert_eq!(v["id"].as_str(), Some(id.to_string().as_str()));
+    assert_eq!(v["severity"].as_str(), Some("critical"));
+}
+
+/// Format equivalence for `aasm alerts get <id>` — gated on the same
+/// endpoint as `alerts_get_happy_path_returns_seeded_record`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1474 — GET /api/v1/alerts/:id not implemented"]
+async fn alerts_get_json_and_yaml_describe_the_same_record() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let json_out = fixture
+        .cmd()
+        .args(["alerts", "get", &id.to_string(), "--output", "json"])
+        .output()
+        .expect("json call should execute");
+    let yaml_out = fixture
+        .cmd()
+        .args(["alerts", "get", &id.to_string(), "--output", "yaml"])
+        .output()
+        .expect("yaml call should execute");
+    assert!(json_out.status.success() && yaml_out.status.success());
+
+    common::format::assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "id");
+}
+
 // =============================================================================
 // aasm alerts resolve
 // =============================================================================
@@ -284,5 +333,91 @@ async fn alerts_resolve_unknown_id_exits_non_zero_with_clean_error() {
     assert!(
         stderr.to_lowercase().contains("error"),
         "stderr should describe the failure; got:\n{stderr}",
+    );
+}
+
+/// Happy-path coverage for `aasm alerts resolve <id> --force` — gated on
+/// the gateway implementing `POST /api/v1/alerts/:id/resolve` (tracked
+/// under AAASM-1474). Drop the `#[ignore]` once that endpoint ships
+/// and assert exit 0 plus updated status on the returned record.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
+async fn alerts_resolve_happy_path_flips_status_to_resolved() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "resolve", &id.to_string(), "--force", "--output", "json"])
+        .output()
+        .expect("aasm alerts resolve should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v = common::format::parse_json(&out.stdout);
+    assert_eq!(v["status"].as_str(), Some("resolved"));
+}
+
+/// `--reason` flag coverage — gated on the same resolve endpoint.
+/// Drop `#[ignore]` once AAASM-1474 lands and assert the reason is
+/// reflected in the returned record's context / updated_at.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
+async fn alerts_resolve_with_reason_flag_passes_reason_through() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let out = fixture
+        .cmd()
+        .args([
+            "alerts",
+            "resolve",
+            &id.to_string(),
+            "--force",
+            "--reason",
+            "false-positive",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm alerts resolve --reason should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Idempotency: a second `resolve` on the same id must return the same
+/// record with `updated_at` unchanged. Gated on AAASM-1474.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1474 — POST /api/v1/alerts/:id/resolve not implemented"]
+async fn alerts_resolve_is_idempotent_on_already_resolved_alert() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_alert(95, [0x11; 16]);
+
+    let first = fixture
+        .cmd()
+        .args(["alerts", "resolve", &id.to_string(), "--force", "--output", "json"])
+        .output()
+        .expect("first resolve should execute");
+    assert!(first.status.success());
+    let first_v = common::format::parse_json(&first.stdout);
+    let first_updated_at = first_v["updated_at"].as_str().map(String::from);
+
+    let second = fixture
+        .cmd()
+        .args(["alerts", "resolve", &id.to_string(), "--force", "--output", "json"])
+        .output()
+        .expect("second resolve should execute");
+    assert!(second.status.success(), "second resolve should still exit 0");
+    let second_v = common::format::parse_json(&second.stdout);
+    assert_eq!(
+        second_v["updated_at"].as_str().map(String::from),
+        first_updated_at,
+        "updated_at must not advance on a no-op resolve",
     );
 }
