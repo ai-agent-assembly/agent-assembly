@@ -70,6 +70,11 @@ pub struct TopologyTestEnv {
     /// test-only equivalent (same pattern as `agent_registry`).
     #[allow(dead_code)]
     pub trace_store: Arc<dyn TraceStore>,
+    /// Shared approval queue — used by `CliFixture::seed_approval` (ST-10)
+    /// to submit pending requests that `aasm status` / `aasm approvals` then
+    /// observe via the HTTP plane.
+    #[allow(dead_code)]
+    pub approval_queue: Arc<ApprovalQueue>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -87,6 +92,7 @@ impl TopologyTestEnv {
         let state = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -108,6 +114,7 @@ impl TopologyTestEnv {
             addr: bound_addr,
             agent_registry,
             trace_store,
+            approval_queue,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
