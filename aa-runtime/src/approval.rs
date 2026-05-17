@@ -200,6 +200,11 @@ pub struct ApprovalQueue {
     audit_seq: AtomicU64,
     audit_last_hash: Mutex<[u8; 32]>,
     event_tx: broadcast::Sender<ApprovalRequest>,
+    /// Broadcast channel that fires when a pending request auto-expires
+    /// (its per-request timeout fires before any human decision arrives).
+    /// Separate from `event_tx` so subscribers can distinguish submission
+    /// from expiry without inspecting payload contents. AAASM-1453.
+    expiry_event_tx: broadcast::Sender<ApprovalRequest>,
 }
 
 /// Hash a string into a 16-byte identifier using SHA-256 truncation.
@@ -214,6 +219,7 @@ impl ApprovalQueue {
     /// Creates a new, empty queue wrapped in an [`Arc`].
     pub fn new() -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
+        let (expiry_event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
             routing_meta: DashMap::new(),
@@ -221,6 +227,7 @@ impl ApprovalQueue {
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new([0u8; 32]),
             event_tx,
+            expiry_event_tx,
         })
     }
 
@@ -230,6 +237,7 @@ impl ApprovalQueue {
     /// as `AuditEntry` values on the given channel.
     pub fn with_audit(audit_tx: mpsc::Sender<AuditEntry>, initial_hash: [u8; 32]) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
+        let (expiry_event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         Arc::new(Self {
             pending: DashMap::new(),
             routing_meta: DashMap::new(),
@@ -237,6 +245,7 @@ impl ApprovalQueue {
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new(initial_hash),
             event_tx,
+            expiry_event_tx,
         })
     }
 
@@ -248,6 +257,17 @@ impl ApprovalQueue {
     /// dropped.
     pub fn subscribe_events(&self) -> broadcast::Receiver<ApprovalRequest> {
         self.event_tx.subscribe()
+    }
+
+    /// Subscribe to approval auto-expiration events.
+    ///
+    /// Fires when a pending request's per-request timeout elapses before any
+    /// human decision arrives (i.e., the timer-spawned `resolve` call with
+    /// `ApprovalDecision::TimedOut`). The broadcast payload is a clone of
+    /// the original [`ApprovalRequest`]; subscribers can derive the
+    /// expired-at timestamp as `submitted_at + timeout_secs`. AAASM-1453.
+    pub fn subscribe_expirations(&self) -> broadcast::Receiver<ApprovalRequest> {
+        self.expiry_event_tx.subscribe()
     }
 
     /// Returns a snapshot of all currently pending requests.
@@ -445,6 +465,14 @@ impl ApprovalQueue {
                         }
                     }
                 }
+            }
+
+            // Broadcast auto-expiration so subscribers (WS dashboard,
+            // audit consumers) can surface the transition without polling.
+            // Ignore send errors — no subscribers means no delivery needed.
+            // AAASM-1453.
+            if matches!(decision, ApprovalDecision::TimedOut { .. }) {
+                let _ = self.expiry_event_tx.send(req.clone());
             }
 
             // Ignore send errors: the receiver may have been dropped (caller
@@ -771,6 +799,52 @@ mod tests {
 
         let decision = fut.await.expect("future should resolve after timeout");
         assert!(matches!(decision, ApprovalDecision::TimedOut { .. }));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_broadcast_fires_on_timeout() {
+        // AAASM-1453: timer-driven auto-expiration should fan out on
+        // `subscribe_expirations()` so the WS layer can surface the
+        // transition without polling.
+        let q = ApprovalQueue::new();
+        let mut expiry_rx = q.subscribe_expirations();
+        let req = make_request(5);
+        let id = req.request_id;
+        let (_rid, fut) = q.submit(req);
+
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        let _ = fut.await;
+
+        let broadcasted = expiry_rx.try_recv().expect("expiry broadcast should fire on TimedOut");
+        assert_eq!(broadcasted.request_id, id);
+    }
+
+    #[tokio::test]
+    async fn expiry_broadcast_does_not_fire_on_manual_decision() {
+        // Approved / Rejected resolutions must not be misclassified as
+        // auto-expirations on the new channel.
+        let q = ApprovalQueue::new();
+        let mut expiry_rx = q.subscribe_expirations();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+            },
+        )
+        .expect("decide should succeed");
+
+        assert!(
+            matches!(
+                expiry_rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "manual approval must not emit on the expiry channel"
+        );
     }
 
     #[tokio::test]

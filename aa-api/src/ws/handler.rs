@@ -87,6 +87,7 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     // Subscribe to live broadcast channels.
     let mut pipeline_rx = state.events.subscribe_pipeline();
     let mut approval_rx = state.events.subscribe_approvals();
+    let mut approval_expiry_rx = state.events.subscribe_approval_expirations();
     let mut budget_rx = state.events.subscribe_budget();
 
     let live_sender = sender.clone();
@@ -159,6 +160,23 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
                     agent_id: approval_ev.agent_id.clone(),
                     payload: serde_json::to_value(EventPayload::Approval(
                         build_approval_payload(&approval_ev),
+                    ))
+                    .unwrap_or_default(),
+                    timestamp: chrono::Utc::now(),
+                })
+            }
+            Ok(expired_ev) = approval_expiry_rx.recv() => {
+                // AAASM-1453: a pending request's per-request timeout
+                // elapsed without a human decision. Propagate as an
+                // `approval` event with `status: "expired"` so the
+                // dashboard can move the row to the Expired section.
+                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(GovernanceEvent {
+                    id,
+                    event_type: EventType::Approval,
+                    agent_id: expired_ev.agent_id.clone(),
+                    payload: serde_json::to_value(EventPayload::Approval(
+                        build_expired_approval_payload(&expired_ev),
                     ))
                     .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
@@ -335,6 +353,22 @@ fn build_approval_payload(ev: &aa_runtime::approval::ApprovalRequest) -> Approva
         submitted_at: ev.submitted_at,
         timeout_secs: ev.timeout_secs,
         expires_at: ev.submitted_at.saturating_add(ev.timeout_secs),
+        status: "pending".to_string(),
+    }
+}
+
+/// Build a structured `ApprovalPayload` for an auto-expiration event
+/// (AAASM-1453). Carries `status: "expired"` so the dashboard can
+/// distinguish it from the original `"pending"` submission event.
+fn build_expired_approval_payload(ev: &aa_runtime::approval::ApprovalRequest) -> ApprovalPayload {
+    ApprovalPayload {
+        request_id: ev.request_id.to_string(),
+        action: ev.action.clone(),
+        condition_triggered: ev.condition_triggered.clone(),
+        submitted_at: ev.submitted_at,
+        timeout_secs: ev.timeout_secs,
+        expires_at: ev.submitted_at.saturating_add(ev.timeout_secs),
+        status: "expired".to_string(),
     }
 }
 
@@ -796,6 +830,7 @@ mod tests {
             payload.expires_at, 1_700_000_300,
             "expires_at = submitted_at + timeout_secs"
         );
+        assert_eq!(payload.status, "pending", "submission emits status=pending");
 
         // JSON-shape check — the discriminator + fields must match the
         // ApprovalPayload OpenAPI schema (no extra fields leaking through).
@@ -803,8 +838,43 @@ mod tests {
         assert_eq!(json["action"], "send_external_email");
         assert_eq!(json["timeout_secs"], 300);
         assert_eq!(json["expires_at"], 1_700_000_300_u64);
+        assert_eq!(json["status"], "pending");
         assert!(json.get("team_id").is_none(), "internal routing fields must not leak");
         assert!(json.get("fallback").is_none(), "internal routing fields must not leak");
+    }
+
+    #[test]
+    fn expired_approval_payload_carries_status_expired() {
+        // AAASM-1453: the auto-expiration path emits the same payload
+        // shape as a fresh submission but with `status: "expired"` so
+        // the dashboard can route it to the Expired section.
+        use aa_core::PolicyResult;
+        use aa_runtime::approval::ApprovalRequest;
+        use uuid::Uuid;
+
+        let request = ApprovalRequest {
+            request_id: Uuid::new_v4(),
+            agent_id: "support-agent".into(),
+            action: "send_external_email".into(),
+            condition_triggered: "outbound_email_to_unknown_domain".into(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 300,
+            fallback: PolicyResult::Allow,
+            team_id: Some("support".into()),
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+
+        let payload = build_expired_approval_payload(&request);
+        assert_eq!(payload.status, "expired");
+        assert_eq!(
+            payload.expires_at, 1_700_000_300,
+            "expires_at carries the original deadline so the dashboard can backfill the row"
+        );
+
+        let json = serde_json::to_value(EventPayload::Approval(payload)).unwrap();
+        assert_eq!(json["status"], "expired");
+        assert_eq!(json["expires_at"], 1_700_000_300_u64);
     }
 
     #[test]

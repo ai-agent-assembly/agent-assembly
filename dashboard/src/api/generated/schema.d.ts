@@ -1053,8 +1053,10 @@ export interface components {
         /**
          * @description Payload for `event_type: "approval"` events.
          *
-         *     Represents a human-in-the-loop approval request submitted by the
-         *     policy engine when an action requires explicit authorisation.
+         *     Represents either a freshly-submitted human-in-the-loop approval
+         *     request or a status-change notification (e.g. auto-expiration). The
+         *     `status` field discriminates: `"pending"` for new requests,
+         *     `"expired"` for auto-expirations (AAASM-1453).
          */
         ApprovalPayload: {
             /** @description Human-readable description of the action awaiting approval. */
@@ -1071,6 +1073,14 @@ export interface components {
             expires_at: number;
             /** @description Unique ID for the approval request (UUID v4). */
             request_id: string;
+            /**
+             * @description Lifecycle status — `"pending"` for newly-submitted requests
+             *     (the original event semantics) or `"expired"` when the
+             *     per-request timeout has elapsed without a human decision
+             *     (AAASM-1453). Defaults to `"pending"` for legacy producers
+             *     pre-AAASM-1453 that haven't been updated.
+             */
+            status?: string;
             /**
              * Format: int64
              * @description Unix epoch timestamp (seconds) when the request was submitted.

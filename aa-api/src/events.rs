@@ -20,6 +20,9 @@ const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 pub struct EventBroadcast {
     pipeline_tx: broadcast::Sender<PipelineEvent>,
     approval_tx: broadcast::Sender<ApprovalRequest>,
+    /// Mirror of `ApprovalQueue.expiry_event_tx` for the API layer.
+    /// Fires when a pending request auto-expires (AAASM-1453).
+    approval_expiry_tx: broadcast::Sender<ApprovalRequest>,
     budget_tx: broadcast::Sender<BudgetAlert>,
 }
 
@@ -28,10 +31,12 @@ impl EventBroadcast {
     pub fn new(capacity: usize) -> Self {
         let (pipeline_tx, _) = broadcast::channel(capacity);
         let (approval_tx, _) = broadcast::channel(capacity);
+        let (approval_expiry_tx, _) = broadcast::channel(capacity);
         let (budget_tx, _) = broadcast::channel(capacity);
         Self {
             pipeline_tx,
             approval_tx,
+            approval_expiry_tx,
             budget_tx,
         }
     }
@@ -44,6 +49,15 @@ impl EventBroadcast {
     /// Subscribe to human-approval request events.
     pub fn subscribe_approvals(&self) -> broadcast::Receiver<ApprovalRequest> {
         self.approval_tx.subscribe()
+    }
+
+    /// Subscribe to approval auto-expiration events (AAASM-1453).
+    ///
+    /// Fires when a pending request's per-request timeout elapses before
+    /// any human decision arrives. The WS dispatch loop forwards these
+    /// to the client as `approval` events with `status: "expired"`.
+    pub fn subscribe_approval_expirations(&self) -> broadcast::Receiver<ApprovalRequest> {
+        self.approval_expiry_tx.subscribe()
     }
 
     /// Subscribe to budget threshold alerts.
@@ -59,6 +73,11 @@ impl EventBroadcast {
     /// Get a clone of the approval event sender.
     pub fn approval_sender(&self) -> broadcast::Sender<ApprovalRequest> {
         self.approval_tx.clone()
+    }
+
+    /// Get a clone of the approval-expiration event sender (AAASM-1453).
+    pub fn approval_expiry_sender(&self) -> broadcast::Sender<ApprovalRequest> {
+        self.approval_expiry_tx.clone()
     }
 
     /// Get a clone of the budget alert sender.
