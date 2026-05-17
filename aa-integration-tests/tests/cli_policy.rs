@@ -142,3 +142,89 @@ async fn policy_get_unknown_version_exits_failure() {
         String::from_utf8_lossy(&out.stderr),
     );
 }
+
+// =============================================================================
+// aasm policy show
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_show_with_show_permissions_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "show", &hex, "--show-permissions", "--output", "json"])
+        .output()
+        .expect("aasm policy show should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_show_with_show_budget_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "show", &hex, "--show-budget", "--output", "json"])
+        .output()
+        .expect("aasm policy show should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_show_with_both_flags_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args([
+            "policy",
+            "show",
+            &hex,
+            "--show-permissions",
+            "--show-budget",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm policy show should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_show_missing_agent_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let bogus = "ffffffffffffffffffffffffffffffff";
+
+    let out = fixture
+        .cmd()
+        .args(["policy", "show", bogus, "--show-permissions"])
+        .output()
+        .expect("aasm policy show should execute");
+    assert!(
+        !out.status.success(),
+        "unknown agent should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
