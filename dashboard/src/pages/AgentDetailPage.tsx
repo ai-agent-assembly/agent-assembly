@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
@@ -8,6 +8,12 @@ import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
+import { LoadingState } from '../components/LoadingState'
+// AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
+// detail page does not pay its bundle cost up front" (recharts is large).
+const SubtreeBurnChart = lazy(() =>
+  import('../components/SubtreeBurnChart').then((m) => ({ default: m.SubtreeBurnChart })),
+)
 import './AgentDetailDrawer.css'
 
 function TrustGauge({ score }: { score: number | null }) {
@@ -339,6 +345,12 @@ export function AgentDetailPage() {
                         wired in a follow-up sub-task
                       </div>
                     </div>
+                  </section>
+
+                  <section className="ad-card ad-card--span-2" data-testid="agent-subtree-burn">
+                    <Suspense fallback={<LoadingState page="generic" />}>
+                      <SubtreeBurnChart agentId={agent.id} />
+                    </Suspense>
                   </section>
 
                   <section className="ad-card ad-card--span-2" data-testid="agent-events">

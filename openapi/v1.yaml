@@ -305,6 +305,53 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+  /api/v1/agents/{id}/subtree-burn:
+    get:
+      tags:
+      - agents
+      summary: '`GET /api/v1/agents/{id}/subtree-burn` — per-direct-child subtree spend time series.'
+      description: |-
+        Reads `BudgetTracker::agent_spend_history` for the agent itself and each
+        direct descendant from `AgentRegistry::children_of`, then aligns the
+        per-child series day-by-day so the response has one point per day in the
+        requested window (`7d` default, `30d` opt-in). Days with no recorded
+        spend appear with `spent_usd = "0"` for that child rather than being
+        omitted, so the dashboard's stacked area renders without gaps.
+
+        The agent's own spend is included as a synthetic `child_name: "(self)"`
+        row whenever it has any recorded spend across the window, so the stack
+        adds up to the subtree total.
+
+        The history store is in-memory only (not persisted across restarts);
+        the chart will populate progressively as agents accrue spend after
+        the most recent gateway start.
+      operationId: get_agent_subtree_burn
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded agent UUID
+        required: true
+        schema:
+          type: string
+      - name: period
+        in: query
+        description: 'Period string: `7d` (default) or `30d`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Subtree-burn time series
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtreeBurnResponse'
+        '400':
+          description: Invalid agent ID format
+        '404':
+          description: Agent not found
   /api/v1/agents/{id}/suspend:
     post:
       tags:
@@ -1821,6 +1868,23 @@ components:
       - unchanged
       - tightened
       - false-positive
+    ChildSpendResponse:
+      type: object
+      description: Per-direct-child contribution to a single day's subtree spend.
+      required:
+      - child_agent_id
+      - child_name
+      - spent_usd
+      properties:
+        child_agent_id:
+          type: string
+          description: Hex-encoded child agent ID.
+        child_name:
+          type: string
+          description: Display name of the child agent.
+        spent_usd:
+          type: string
+          description: USD spent by this child on the given date (string-encoded Decimal).
     CostSummary:
       type: object
       description: JSON representation of the cost/budget summary.
@@ -1877,6 +1941,25 @@ components:
 
             Used for RBAC authorization — the caller must hold the role required
             to mutate policies at this scope. Defaults to `"global"` when absent.
+    DailyBurnPointResponse:
+      type: object
+      description: One point in the subtree-burn time series.
+      required:
+      - date
+      - per_child
+      - total_usd
+      properties:
+        date:
+          type: string
+          description: ISO 8601 calendar date (YYYY-MM-DD) the point covers.
+        per_child:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChildSpendResponse'
+          description: Per-direct-child contributions, ordered by child agent ID for stability.
+        total_usd:
+          type: string
+          description: Total subtree spend for the date (root + descendants, string-encoded Decimal).
     DecideRequest:
       type: object
       description: Request body for approval decide actions.
@@ -2569,6 +2652,25 @@ components:
       - read
       - write
       - admin
+    SubtreeBurnResponse:
+      type: object
+      description: Response for `GET /api/v1/agents/{id}/subtree-burn`.
+      required:
+      - agent_id
+      - period
+      - points
+      properties:
+        agent_id:
+          type: string
+          description: Hex-encoded root agent ID.
+        period:
+          type: string
+          description: 'Requested period: `"7d"` or `"30d"`.'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyBurnPointResponse'
+          description: Time series, ordered oldest → newest.
     SuspendRequest:
       type: object
       description: Request body for `POST /api/v1/agents/:id/suspend`.

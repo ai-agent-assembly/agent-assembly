@@ -73,6 +73,11 @@ pub struct BudgetTracker {
     /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
     /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
     pub(crate) parent_locks: DashMap<AgentId, std::sync::Arc<parking_lot::Mutex<()>>>,
+    /// Per-agent daily spend history (in-memory; not persisted across restarts).
+    /// Powers the subtree-burn time-series surface (AAASM-1055). Keyed by
+    /// agent, then by calendar date (in `timezone`). Values are the
+    /// running total for that date.
+    pub(crate) spend_history: DashMap<AgentId, std::collections::BTreeMap<chrono::NaiveDate, Decimal>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
 }
@@ -111,6 +116,7 @@ impl BudgetTracker {
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            spend_history: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -184,6 +190,7 @@ impl BudgetTracker {
             team_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            spend_history: DashMap::new(),
             alert_tx,
             timezone,
         }
@@ -323,24 +330,36 @@ impl BudgetTracker {
     /// and [`record_raw_spend`](Self::record_raw_spend).
     fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
         let has_monthly = self.monthly_limit_usd.is_some() || self.team_monthly_limit_usd.is_some();
+        let today = today_in_tz(self.timezone);
 
         self.per_agent
             .entry(agent_id)
             .and_modify(|s| {
-                s.maybe_reset(today_in_tz(self.timezone));
+                s.maybe_reset(today);
                 s.spent_usd += cost;
                 if let Some(m) = s.monthly_spent_usd.as_mut() {
                     *m += cost;
                 }
             })
             .or_insert_with(|| {
-                let mut s = BudgetState::new_for_date(today_in_tz(self.timezone));
+                let mut s = BudgetState::new_for_date(today);
                 s.spent_usd += cost;
                 if has_monthly {
                     s.monthly_spent_usd = Some(cost);
                 }
                 s
             });
+
+        // Append to per-agent daily history (AAASM-1055). In-memory only; not
+        // persisted across restarts. The subtree-burn endpoint reads this to
+        // build a real time-series chart instead of the original today-only
+        // single-point preview.
+        self.spend_history
+            .entry(agent_id)
+            .or_default()
+            .entry(today)
+            .and_modify(|v| *v += cost)
+            .or_insert(cost);
 
         if let Some(tid) = team_id {
             self.team_budgets
@@ -551,6 +570,35 @@ impl BudgetTracker {
         self.per_agent.get(agent_id).map(|s| s.clone())
     }
 
+    /// Return the last `days` calendar days of recorded daily spend for the
+    /// given agent, in oldest-first order.
+    ///
+    /// Each entry is `(date, spent_usd)`. Days with no recorded spend appear
+    /// as `(date, Decimal::ZERO)` so the caller can stack a dense time series
+    /// without gap handling. `days = 0` returns an empty vec.
+    ///
+    /// The history is in-memory only — it does not survive process restarts
+    /// and is not part of the persisted budget snapshot. Powers the
+    /// subtree-burn time series surface (AAASM-1055).
+    pub fn agent_spend_history(&self, agent_id: &AgentId, days: u32) -> Vec<(chrono::NaiveDate, Decimal)> {
+        if days == 0 {
+            return Vec::new();
+        }
+        let today = today_in_tz(self.timezone);
+        let start = today - chrono::Duration::days(i64::from(days) - 1);
+        let history = self.spend_history.get(agent_id);
+        (0..days)
+            .map(|d| {
+                let date = start + chrono::Duration::days(i64::from(d));
+                let amount = history
+                    .as_ref()
+                    .and_then(|m| m.get(&date).copied())
+                    .unwrap_or(Decimal::ZERO);
+                (date, amount)
+            })
+            .collect()
+    }
+
     /// Return a snapshot of the current global (all-agents combined) budget state.
     pub fn global_state(&self) -> BudgetState {
         self.global
@@ -610,6 +658,41 @@ mod tests {
     fn new_tracker_has_empty_per_agent_map() {
         let t = new_tracker();
         assert!(t.per_agent.is_empty());
+    }
+
+    #[test]
+    fn agent_spend_history_returns_dense_zero_filled_window_for_unknown_agent() {
+        let t = new_tracker();
+        let aid = AgentId::from_bytes([0xAA; 16]);
+        let history = t.agent_spend_history(&aid, 7);
+        assert_eq!(history.len(), 7, "should return one entry per requested day");
+        for (_, amount) in &history {
+            assert_eq!(*amount, Decimal::ZERO);
+        }
+        // Dates should be strictly ascending.
+        for win in history.windows(2) {
+            assert!(win[0].0 < win[1].0);
+        }
+    }
+
+    #[test]
+    fn agent_spend_history_records_todays_spend() {
+        let t = new_tracker();
+        let aid = AgentId::from_bytes([0xAA; 16]);
+        t.record_raw_spend(aid, None, Decimal::new(125, 2));
+        t.record_raw_spend(aid, None, Decimal::new(375, 2));
+
+        let history = t.agent_spend_history(&aid, 1);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].1, Decimal::new(500, 2), "should accumulate same-day spend");
+    }
+
+    #[test]
+    fn agent_spend_history_zero_days_returns_empty_vec() {
+        let t = new_tracker();
+        let aid = AgentId::from_bytes([0xAA; 16]);
+        t.record_raw_spend(aid, None, Decimal::ONE);
+        assert!(t.agent_spend_history(&aid, 0).is_empty());
     }
 
     #[test]

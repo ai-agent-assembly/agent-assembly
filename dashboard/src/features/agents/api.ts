@@ -4,6 +4,10 @@ import type { components } from '../../api/generated/schema'
 
 export type Agent = components['schemas']['AgentResponse']
 export type LogEntry = components['schemas']['LogEntry']
+export type SubtreeBurn = components['schemas']['SubtreeBurnResponse']
+export type DailyBurnPoint = components['schemas']['DailyBurnPointResponse']
+export type ChildSpend = components['schemas']['ChildSpendResponse']
+export type BurnPeriod = '7d' | '30d'
 
 export function useAgentsQuery() {
   return useQuery({
@@ -26,6 +30,21 @@ export function useAgentQuery(id: string) {
         params: { path: { id } },
       })
       if (error) throw new Error('Failed to fetch agent')
+      return data
+    },
+    enabled: !!id,
+  })
+}
+
+export function useAgentSubtreeBurnQuery(id: string, period: BurnPeriod = '7d') {
+  return useQuery<SubtreeBurn>({
+    queryKey: ['agents', id, 'subtree-burn', period],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/agents/{id}/subtree-burn', {
+        params: { path: { id }, query: { period } },
+      })
+      if (error) throw new Error('Failed to fetch subtree burn')
+      if (!data) throw new Error('Subtree burn response was empty')
       return data
     },
     enabled: !!id,

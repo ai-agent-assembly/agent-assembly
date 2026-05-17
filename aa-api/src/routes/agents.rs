@@ -530,6 +530,195 @@ pub async fn get_agent_budget(
     Ok((StatusCode::OK, Json(BudgetRollupResponse { rows })))
 }
 
+// ---------------------------------------------------------------------------
+// Subtree-burn (AAASM-1055 / F100)
+// ---------------------------------------------------------------------------
+
+/// Per-direct-child contribution to a single day's subtree spend.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ChildSpendResponse {
+    /// Hex-encoded child agent ID.
+    pub child_agent_id: String,
+    /// Display name of the child agent.
+    pub child_name: String,
+    /// USD spent by this child on the given date (string-encoded Decimal).
+    pub spent_usd: String,
+}
+
+/// One point in the subtree-burn time series.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DailyBurnPointResponse {
+    /// ISO 8601 calendar date (YYYY-MM-DD) the point covers.
+    pub date: String,
+    /// Per-direct-child contributions, ordered by child agent ID for stability.
+    pub per_child: Vec<ChildSpendResponse>,
+    /// Total subtree spend for the date (root + descendants, string-encoded Decimal).
+    pub total_usd: String,
+}
+
+/// Response for `GET /api/v1/agents/{id}/subtree-burn`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SubtreeBurnResponse {
+    /// Hex-encoded root agent ID.
+    pub agent_id: String,
+    /// Requested period: `"7d"` or `"30d"`.
+    pub period: String,
+    /// Time series, ordered oldest → newest.
+    pub points: Vec<DailyBurnPointResponse>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct SubtreeBurnParams {
+    /// Period string: `7d` (default) or `30d`.
+    pub period: Option<String>,
+}
+
+fn parse_subtree_burn_period(s: Option<&str>) -> (&'static str, u32) {
+    match s {
+        Some("30d") => ("30d", 30),
+        _ => ("7d", 7),
+    }
+}
+
+/// `GET /api/v1/agents/{id}/subtree-burn` — per-direct-child subtree spend time series.
+///
+/// Reads `BudgetTracker::agent_spend_history` for the agent itself and each
+/// direct descendant from `AgentRegistry::children_of`, then aligns the
+/// per-child series day-by-day so the response has one point per day in the
+/// requested window (`7d` default, `30d` opt-in). Days with no recorded
+/// spend appear with `spent_usd = "0"` for that child rather than being
+/// omitted, so the dashboard's stacked area renders without gaps.
+///
+/// The agent's own spend is included as a synthetic `child_name: "(self)"`
+/// row whenever it has any recorded spend across the window, so the stack
+/// adds up to the subtree total.
+///
+/// The history store is in-memory only (not persisted across restarts);
+/// the chart will populate progressively as agents accrue spend after
+/// the most recent gateway start.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/subtree-burn",
+    params(
+        ("id" = String, Path, description = "Hex-encoded agent UUID"),
+        SubtreeBurnParams,
+    ),
+    responses(
+        (status = 200, description = "Subtree-burn time series", body = SubtreeBurnResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_subtree_burn(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<SubtreeBurnParams>,
+) -> Result<(StatusCode, Json<SubtreeBurnResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+    let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+
+    if state.agent_registry.get(&agent_id_bytes).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
+    }
+
+    let (period_label, period_days) = parse_subtree_burn_period(params.period.as_deref());
+
+    // Materialise the per-child history grids once, then transpose into
+    // per-day points. Each grid entry shares the same date sequence (the
+    // tracker zero-fills any day with no spend), so the dates align across
+    // children for stable stacking on the dashboard chart.
+    struct ChildGrid {
+        agent_id_hex: String,
+        name: String,
+        series: Vec<(chrono::NaiveDate, rust_decimal::Decimal)>,
+    }
+
+    let mut grids: Vec<ChildGrid> = Vec::new();
+
+    // Root's own spend appears first as the synthetic "(self)" row when
+    // anything was recorded for it across the window.
+    let root_series = state.budget_tracker.agent_spend_history(&agent_id, period_days);
+    if root_series
+        .iter()
+        .any(|(_, amount)| *amount > rust_decimal::Decimal::ZERO)
+    {
+        grids.push(ChildGrid {
+            agent_id_hex: hex::encode(agent_id.as_bytes()),
+            name: "(self)".to_string(),
+            series: root_series,
+        });
+    }
+
+    // Direct children, sorted for deterministic stack ordering.
+    let mut children = state.agent_registry.children_of(&agent_id_bytes);
+    children.sort();
+    for child_id_bytes in children {
+        let child_id = aa_core::identity::AgentId::from_bytes(child_id_bytes);
+        let series = state.budget_tracker.agent_spend_history(&child_id, period_days);
+        // Skip children with no recorded spend across the entire window — they
+        // would render as a flat zero band and add noise to the legend.
+        if !series.iter().any(|(_, amount)| *amount > rust_decimal::Decimal::ZERO) {
+            continue;
+        }
+        let child_name = state
+            .agent_registry
+            .get(&child_id_bytes)
+            .map(|rec| rec.name)
+            .unwrap_or_else(|| hex::encode(child_id_bytes));
+        grids.push(ChildGrid {
+            agent_id_hex: hex::encode(child_id_bytes),
+            name: child_name,
+            series,
+        });
+    }
+
+    // Build the dense per-day point list. If no child ever recorded spend
+    // (grids empty), still emit one zero-point per day so the chart shows
+    // an empty axis rather than a "no data" placeholder.
+    let day_count = if grids.is_empty() {
+        period_days as usize
+    } else {
+        grids[0].series.len()
+    };
+    let mut points: Vec<DailyBurnPointResponse> = Vec::with_capacity(day_count);
+    for day_idx in 0..day_count {
+        let date = if let Some(first) = grids.first() {
+            first.series[day_idx].0
+        } else {
+            // No spend ever recorded — synthesise dates from the tracker
+            // accessor on the root agent (returns zero-filled today-back).
+            state.budget_tracker.agent_spend_history(&agent_id, period_days)[day_idx].0
+        };
+
+        let mut per_child: Vec<ChildSpendResponse> = Vec::with_capacity(grids.len());
+        let mut total = rust_decimal::Decimal::ZERO;
+        for grid in &grids {
+            let amount = grid.series[day_idx].1;
+            per_child.push(ChildSpendResponse {
+                child_agent_id: grid.agent_id_hex.clone(),
+                child_name: grid.name.clone(),
+                spent_usd: amount.to_string(),
+            });
+            total += amount;
+        }
+        points.push(DailyBurnPointResponse {
+            date: date.to_string(),
+            per_child,
+            total_usd: total.to_string(),
+        });
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(SubtreeBurnResponse {
+            agent_id: hex::encode(agent_id.as_bytes()),
+            period: period_label.to_string(),
+            points,
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
