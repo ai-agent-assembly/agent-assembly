@@ -193,3 +193,44 @@ async fn alerts_list_status_resolved_currently_returns_empty_against_persisted_a
         "expected empty-list sentinel, got:\n{stdout}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_combined_severity_and_agent_filter_narrows_correctly() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let target_id = [0xCD; 16];
+    // The combined filter should match only this seed: critical AND target agent.
+    fixture.seed_alert(95, target_id);
+    // Same agent but warning severity — excluded by `--severity critical`.
+    fixture.seed_alert(80, target_id);
+    // Critical severity but different agent — excluded by `--agent`.
+    fixture.seed_alert(95, [0x99; 16]);
+    let target_hex: String = target_id.iter().map(|b| format!("{b:02x}")).collect();
+
+    let out = fixture
+        .cmd()
+        .args([
+            "alerts",
+            "list",
+            "--severity",
+            "critical",
+            "--agent",
+            &target_hex,
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm alerts list (combined filters) should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let arr = common::format::parse_json(&out.stdout)
+        .as_array()
+        .expect("output should be a JSON array")
+        .clone();
+    assert_eq!(arr.len(), 1, "exactly one alert matches both filters");
+    assert_eq!(arr[0]["severity"].as_str(), Some("critical"));
+    assert_eq!(arr[0]["agent_id"].as_str(), Some(target_hex.as_str()));
+}
