@@ -218,3 +218,26 @@ async fn approvals_approve_unknown_id_errors() {
         "stderr should describe the not-found error\nstderr:\n{stderr}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_reject_unknown_id_errors() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let unknown_id = "00000000-0000-0000-0000-000000000000";
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "reject", unknown_id, "--reason", "no"])
+        .output()
+        .expect("aasm approvals reject should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "reject <unknown> should exit non-zero\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stderr.is_empty(),
+        "stderr should describe the not-found error\nstderr:\n{stderr}",
+    );
+}
