@@ -8,7 +8,16 @@
  * and the percent of subtree total for that day.
  */
 import { useMemo, useState } from 'react'
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { useAgentSubtreeBurnQuery, type BurnPeriod, type SubtreeBurn } from '../features/agents/api'
 import { LoadingState } from './LoadingState'
 import { ErrorState } from './ErrorState'
@@ -84,7 +93,7 @@ export function SubtreeBurnChart({ agentId }: { agentId: string }) {
       </header>
 
       <ResponsiveContainer width="100%" height={240}>
-        <AreaChart data={rows} margin={{ top: 12, right: 16, left: 8, bottom: 8 }}>
+        <ComposedChart data={rows} margin={{ top: 12, right: 16, left: 8, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line-2)" />
           <XAxis dataKey="date" stroke="var(--ink-4)" fontSize={11} />
           <YAxis stroke="var(--ink-4)" fontSize={11} tickFormatter={formatUsd} />
@@ -101,7 +110,19 @@ export function SubtreeBurnChart({ agentId }: { agentId: string }) {
               name={childName.get(cid) ?? cid}
             />
           ))}
-        </AreaChart>
+          {/* AAASM-1055 AC: "Aggregate line on top shows total subtree spend".
+              Rendered after the stacked Areas so it overlays cleanly; not part
+              of the `subtree` stack id, so it tracks the per-row `total` value. */}
+          <Line
+            type="monotone"
+            dataKey="total"
+            stroke="var(--ink-2, #1a1a1a)"
+            strokeWidth={2}
+            dot={false}
+            isAnimationActive={false}
+            name="Total subtree spend"
+          />
+        </ComposedChart>
       </ResponsiveContainer>
     </section>
   )
@@ -123,7 +144,7 @@ function transform(data: SubtreeBurn | undefined): {
     }
   }
 
-  const sortedChildIds = Array.from(childIds).sort()
+  const sortedChildIds = Array.from(childIds).sort((a, b) => a.localeCompare(b))
 
   const rows: ChartRow[] = (data?.points ?? []).map((point) => {
     const row: ChartRow = { date: point.date, total: parseFloat(point.total_usd) || 0 }
@@ -164,15 +185,29 @@ interface BurnTooltipProps {
   readonly childName: Map<string, string>
 }
 
-function BurnTooltip({ active, payload, label, childName }: BurnTooltipProps) {
+/**
+ * Custom recharts tooltip for `SubtreeBurnChart`. Exported so tests can
+ * exercise its content directly with synthesised payloads — recharts SVG
+ * rendering requires a real layout pass that jsdom does not provide, so a
+ * chart-mounted tooltip cannot be inspected via `mouseover` in vitest.
+ */
+export function BurnTooltip({ active, payload, label, childName }: BurnTooltipProps) {
   if (!active || !payload || payload.length === 0) return null
-  const total = payload.reduce((acc, p) => acc + (p.value ?? 0), 0)
+
+  // The aggregate `total` Line and the stacked per-child Areas both surface
+  // through the tooltip payload. Split them so per-child rows don't include
+  // the total (would double-count) and use the Line's value as the authoritative
+  // total when present.
+  const totalEntry = payload.find((p) => p.dataKey === 'total')
+  const childEntries = payload.filter((p) => p.dataKey !== 'total')
+  const total =
+    totalEntry?.value ?? childEntries.reduce((acc, p) => acc + (p.value ?? 0), 0)
 
   return (
     <div className="sbc__tooltip" data-testid="subtree-burn-tooltip">
       <p className="sbc__tooltip-date">{label}</p>
       <ul className="sbc__tooltip-rows">
-        {payload.map((p) => {
+        {childEntries.map((p) => {
           const name = childName.get(p.dataKey) ?? p.dataKey
           const pct = total > 0 ? Math.round((p.value / total) * 100) : 0
           return (
