@@ -22,6 +22,7 @@ mod common;
 
 use aa_core::audit::AuditEventType;
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm audit list
@@ -57,6 +58,31 @@ async fn audit_list_happy_path_renders_table_with_seeded_events() {
         "event_type row missing; got:\n{stdout}"
     );
     assert!(stdout.contains("bash"), "seeded tool name missing; got:\n{stdout}");
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xa2; 16];
+    fixture
+        .seed_audit_events(3, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed_audit_events");
+
+    let out = fixture
+        .cmd()
+        .args(["--output", fmt, "audit", "list"])
+        .output()
+        .expect("aasm audit list should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
 
 // =============================================================================
