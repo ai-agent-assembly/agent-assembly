@@ -76,4 +76,31 @@ describe('createApiCapabilityClient', () => {
     expect(res.updated).toHaveLength(1)
     expect(res.updated[0].id).toBe('support-triage')
   })
+
+  it('applyOverride throws when the gateway returns an error response', async () => {
+    vi.spyOn(api, 'POST').mockResolvedValue({
+      data: undefined,
+      error: { status: 403, detail: 'policy mutation denied' },
+    } as unknown as never)
+
+    const client = createApiCapabilityClient()
+    await expect(
+      client.applyOverride({
+        agentIds: ['support-triage'],
+        resourceId: 'pg',
+        verb: 'write',
+        decision: 'deny',
+      }),
+    ).rejects.toThrow(/capability override rejected by gateway/)
+  })
+
+  it('getMatrix throws when the gateway returns an error response', async () => {
+    vi.spyOn(api, 'GET').mockResolvedValue({
+      data: undefined,
+      error: { status: 500, detail: 'internal error' },
+    } as unknown as never)
+
+    const client = createApiCapabilityClient()
+    await expect(client.getMatrix()).rejects.toThrow(/capability matrix fetch failed/)
+  })
 })
