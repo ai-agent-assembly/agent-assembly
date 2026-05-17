@@ -183,3 +183,175 @@ async fn list_alerts_pagination_with_multiple_alerts() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], "1");
 }
+
+// ============================================================================
+// GET /api/v1/alerts/:id  (AAASM-1474)
+// ============================================================================
+
+#[tokio::test]
+async fn get_alert_returns_200_with_full_detail_for_known_id() {
+    let state = common::test_state();
+    let alert_store = state.alert_store.clone();
+
+    let id = alert_store.record(&BudgetAlert {
+        agent_id: AgentId::from_bytes([0x11; 16]),
+        team_id: None,
+        threshold_pct: 95,
+        spent_usd: 9.5,
+        limit_usd: 10.0,
+    });
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/alerts/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], id.to_string());
+    assert_eq!(json["severity"], "critical");
+    assert_eq!(json["status"], "unresolved");
+    assert!(json["updated_at"].is_null(), "updated_at must be null pre-resolve");
+}
+
+#[tokio::test]
+async fn get_alert_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/alerts/9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_alert_returns_404_for_non_numeric_id() {
+    let app = common::test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/alerts/not-a-number")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ============================================================================
+// POST /api/v1/alerts/:id/resolve  (AAASM-1474)
+// ============================================================================
+
+#[tokio::test]
+async fn resolve_alert_flips_status_and_sets_updated_at() {
+    let state = common::test_state();
+    let alert_store = state.alert_store.clone();
+    let id = alert_store.record(&BudgetAlert {
+        agent_id: AgentId::from_bytes([0x22; 16]),
+        team_id: None,
+        threshold_pct: 90,
+        spent_usd: 9.0,
+        limit_usd: 10.0,
+    });
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/alerts/{id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"reason":"ack"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "resolved");
+    assert!(json["updated_at"].is_string(), "updated_at must be set post-resolve");
+}
+
+#[tokio::test]
+async fn resolve_alert_is_idempotent_on_second_call() {
+    let state = common::test_state();
+    let alert_store = state.alert_store.clone();
+    let id = alert_store.record(&BudgetAlert {
+        agent_id: AgentId::from_bytes([0x33; 16]),
+        team_id: None,
+        threshold_pct: 85,
+        spent_usd: 8.5,
+        limit_usd: 10.0,
+    });
+
+    let app = aa_api::server::build_app(state);
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/alerts/{id}/resolve"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let first_body = axum::body::to_bytes(first.into_body(), usize::MAX).await.unwrap();
+    let first_json: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+    let first_updated_at = first_json["updated_at"].clone();
+
+    let second = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/alerts/{id}/resolve"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = axum::body::to_bytes(second.into_body(), usize::MAX).await.unwrap();
+    let second_json: serde_json::Value = serde_json::from_slice(&second_body).unwrap();
+
+    assert_eq!(second_json["status"], "resolved");
+    assert_eq!(
+        second_json["updated_at"], first_updated_at,
+        "second resolve must not bump updated_at",
+    );
+}
+
+#[tokio::test]
+async fn resolve_alert_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts/9999/resolve")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
