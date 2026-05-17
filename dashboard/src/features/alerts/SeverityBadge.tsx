@@ -1,5 +1,16 @@
 import type { Severity } from './types'
 
+/**
+ * 4-bucket severity colour scheme — each severity gets its own token
+ * (red / orange / yellow / blue). The Sub-task AC for AAASM-1073
+ * originally specified only 3 buckets (CRITICAL+HIGH share red), but
+ * the parent Story (AAASM-118) AC prescribed 4 distinct colours; the
+ * more specific spec wins.
+ *
+ * AAASM-1374 formalised this decision (Option 1 — keep 4 colours).
+ * AAASM-1395's design-fidelity spec asserts each of the four
+ * `--severity-*` tokens; collapsing buckets here would break it.
+ */
 const SEVERITY_BG: Record<Severity, string> = {
   CRITICAL: 'var(--severity-critical)',
   HIGH: 'var(--severity-high)',
