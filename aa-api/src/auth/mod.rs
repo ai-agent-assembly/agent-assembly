@@ -18,7 +18,7 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use self::api_key::ApiKeyStore;
+use self::api_key::{ApiKeyStore, KeyNotValid};
 use self::config::{AuthConfig, AuthMode};
 use self::jwt::JwtVerifier;
 use self::rate_limit::RateLimiter;
@@ -137,9 +137,15 @@ where
                 .get::<Arc<ApiKeyStore>>()
                 .expect("ApiKeyStore extension missing");
 
-            let entry = key_store
-                .validate(token)
-                .ok_or_else(|| AuthError::InvalidToken("invalid API key".into()))?;
+            let entry = match key_store.validate_detailed(token) {
+                Ok(e) => e,
+                Err(KeyNotValid::Revoked) => {
+                    return Err(AuthError::InvalidToken("revoked API key".into()));
+                }
+                Err(KeyNotValid::NotFound) => {
+                    return Err(AuthError::InvalidToken("invalid API key".into()));
+                }
+            };
 
             AuthenticatedCaller {
                 key_id: entry.id.clone(),
