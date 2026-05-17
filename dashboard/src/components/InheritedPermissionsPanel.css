@@ -1,0 +1,132 @@
+.ipp {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 0;
+}
+
+.ipp__summary {
+  display: flex;
+  gap: 24px;
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+}
+
+.ipp__summary-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.ipp__summary-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.ipp__summary-label {
+  font-size: 11px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ipp__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ipp__group-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.ipp__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ipp__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+}
+
+.ipp__capability {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-1);
+}
+
+.ipp__chips {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ipp__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid transparent;
+}
+
+.ipp__chip--allow {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.ipp__chip--deny {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.ipp--empty {
+  align-items: flex-start;
+  padding: 24px 0;
+}
+
+.ipp__empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 0 0 4px 0;
+}
+
+.ipp__empty-body {
+  font-size: 12px;
+  color: var(--ink-4);
+  margin: 0;
+  max-width: 56ch;
+  line-height: 1.5;
+}
+
+.ipp__empty-body code {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
