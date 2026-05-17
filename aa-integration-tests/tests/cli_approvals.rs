@@ -76,3 +76,51 @@ async fn approvals_list_succeeds_for_every_output_format(#[case] fmt: &str) {
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
+
+// =============================================================================
+// aasm approvals approve
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_approve_happy_path_consumes_pending_entry() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let id = fixture.seed_approval("agent-a", "tool.invoke");
+    let id_str = id.to_string();
+
+    let out = fixture
+        .cmd()
+        .args(["approvals", "approve", &id_str, "--reason", "ok"])
+        .output()
+        .expect("aasm approvals approve should execute");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "approve should exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("Approved"),
+        "stdout should report Approved\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&id_str),
+        "stdout should echo the approval id\nstdout:\n{stdout}"
+    );
+
+    // The pending queue should have lost the entry after the transition.
+    let list_out = fixture
+        .cmd()
+        .args(["approvals", "list", "--output", "json"])
+        .output()
+        .expect("aasm approvals list should execute");
+    let list_stdout = String::from_utf8_lossy(&list_out.stdout);
+    let v: serde_json::Value =
+        serde_json::from_slice(&list_out.stdout).expect("list stdout should be valid JSON array");
+    let items = v.as_array().expect("list stdout should be a JSON array");
+    assert!(
+        items.is_empty(),
+        "approved entry should leave the pending queue (got {} item(s))\nstdout:\n{list_stdout}",
+        items.len(),
+    );
+}
