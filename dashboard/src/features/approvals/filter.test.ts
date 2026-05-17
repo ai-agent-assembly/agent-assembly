@@ -4,11 +4,11 @@ import type { Approval } from './api'
 
 const APPROVALS: Approval[] = [
   // age 15 min → high
-  { id: '1', agent_id: 'a1', team_id: 't1', action: 'send_email', reason: 'r', status: 'pending', created_at: '2026-05-13T12:45:00Z', routing_status: null },
+  { id: '1', agent_id: 'a1', team_id: 't1', action: 'send_email', reason: 'r', status: 'pending', created_at: '2026-05-13T12:45:00Z', expires_at: '2026-05-13T13:45:00Z', routing_status: null },
   // age 3 h → medium
-  { id: '2', agent_id: 'a2', team_id: 't1', action: 'exec_shell',  reason: 'r', status: 'pending', created_at: '2026-05-13T10:00:00Z', routing_status: null },
+  { id: '2', agent_id: 'a2', team_id: 't1', action: 'exec_shell',  reason: 'r', status: 'pending', created_at: '2026-05-13T10:00:00Z', expires_at: '2026-05-13T11:00:00Z', routing_status: null },
   // age 25 h → low
-  { id: '3', agent_id: 'a1', team_id: 't2', action: 'write_file',  reason: 'r', status: 'pending', created_at: '2026-05-12T12:00:00Z', routing_status: null },
+  { id: '3', agent_id: 'a1', team_id: 't2', action: 'write_file',  reason: 'r', status: 'pending', created_at: '2026-05-12T12:00:00Z', expires_at: '2026-05-12T13:00:00Z', routing_status: null },
 ]
 
 const NOW = new Date('2026-05-13T13:00:00Z').getTime()

@@ -970,6 +970,14 @@ export interface components {
             action: string;
             /** @description Policy condition that triggered this request. */
             condition_triggered: string;
+            /**
+             * Format: int64
+             * @description Unix epoch timestamp (seconds) at which the request expires
+             *     (`submitted_at + timeout_secs`). Provided as a pre-computed
+             *     absolute timestamp so dashboard consumers can render the
+             *     auto-expire countdown without local-clock drift.
+             */
+            expires_at: number;
             /** @description Unique ID for the approval request (UUID v4). */
             request_id: string;
             /**
@@ -991,6 +999,14 @@ export interface components {
             agent_id: string;
             /** @description ISO 8601 timestamp when the request was created. */
             created_at: string;
+            /**
+             * @description ISO 8601 timestamp at which the pending request expires
+             *     (`created_at` + the governing `approval_timeout_secs`). The
+             *     dashboard renders a countdown from this value. Empty string on
+             *     post-decision (`approved` / `rejected`) responses where
+             *     expiration is no longer meaningful.
+             */
+            expires_at: string;
             /** @description Unique approval request identifier. */
             id: string;
             /** @description Human-readable reason for the approval request. */

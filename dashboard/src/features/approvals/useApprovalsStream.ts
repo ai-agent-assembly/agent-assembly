@@ -54,6 +54,9 @@ export function useApprovalsStream(): { connected: boolean } {
             reason: payload.condition_triggered,
             status: 'pending',
             created_at: event.timestamp,
+            // WS `expires_at` is unix seconds; the REST shape uses RFC 3339,
+            // so convert to ISO 8601 for consistency with the cached list view.
+            expires_at: new Date(payload.expires_at * 1000).toISOString(),
             routing_status: null,
             team_id: null,
           }
