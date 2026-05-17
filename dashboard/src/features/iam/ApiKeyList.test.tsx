@@ -1,10 +1,11 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiKeyList } from './ApiKeyList'
+import { _apiKeysInternal } from './apiKeys'
 import { ToastProvider } from '../../components/ToastProvider'
-import type { ApiKey } from './types'
+import type { ApiKey, GeneratedApiKey } from './types'
 
 // In-memory ApiKey store is wired through `useApiKeysQuery` which reads from
 // the module-level seed in `apiKeys.ts`. The shape comes from there, so we
@@ -114,5 +115,124 @@ describe('ApiKeyList — Story-level column vocabulary (AAASM-1399)', () => {
 
     await userEvent.click(screen.getByTestId(`api-key-revoke-${SEED_KEY_1_ID}`))
     expect(onSelect).not.toHaveBeenCalled()
+  })
+})
+
+describe('ApiKeyList — Rotate API key flow (AAASM-1397)', () => {
+  beforeEach(() => {
+    _apiKeysInternal.reset()
+  })
+
+  it('renders a Rotate action on every active row, but never on revoked rows', async () => {
+    render(<ApiKeyList />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    // key-1 and key-2 are active; key-3 is revoked in the seed.
+    expect(screen.getByTestId('api-key-rotate-key-1')).toBeInTheDocument()
+    expect(screen.getByTestId('api-key-rotate-key-2')).toBeInTheDocument()
+    expect(screen.queryByTestId('api-key-rotate-key-3')).not.toBeInTheDocument()
+  })
+
+  it('clicking Rotate opens the ConfirmRotate modal without firing onSelect', async () => {
+    const onSelect = vi.fn()
+    render(<ApiKeyList selectedKeyId={null} onSelect={onSelect} />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+
+    expect(screen.getByTestId('confirm-rotate-key')).toBeInTheDocument()
+    // stopPropagation must keep the row selection handler from firing.
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('Cancel closes the modal without invoking the rotate override', async () => {
+    const rotateOverride = vi.fn<(id: string) => Promise<GeneratedApiKey>>()
+    _apiKeysInternal.setRotateOverride(rotateOverride)
+
+    render(<ApiKeyList />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+    await userEvent.click(screen.getByTestId('confirm-rotate-cancel'))
+
+    expect(screen.queryByTestId('confirm-rotate-key')).not.toBeInTheDocument()
+    expect(rotateOverride).not.toHaveBeenCalled()
+  })
+
+  it('Confirm fires onRotateRevealed with the freshly-issued {id, prefix, secret}', async () => {
+    const onRotateRevealed = vi.fn<(g: GeneratedApiKey) => void>()
+    const generated: GeneratedApiKey = {
+      id: 'key-rotated-stub',
+      prefix: 'aa_live_test',
+      secret: 'aa_live_test_xxxxxxxxxxxx',
+    }
+    _apiKeysInternal.setRotateOverride(() => Promise.resolve(generated))
+
+    render(<ApiKeyList onRotateRevealed={onRotateRevealed} />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+    await userEvent.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    await waitFor(() => expect(onRotateRevealed).toHaveBeenCalledOnce())
+    expect(onRotateRevealed).toHaveBeenCalledWith(generated)
+    // No fallback toast when the consumer is piping through RevealOnceModal —
+    // the modal is the loud signal.
+    expect(screen.queryByText(/Rotated gateway-ci/i)).not.toBeInTheDocument()
+  })
+
+  it('without onRotateRevealed, the rotate confirmation surfaces a toast', async () => {
+    _apiKeysInternal.setRotateOverride(() =>
+      Promise.resolve({
+        id: 'key-rotated-stub',
+        prefix: 'aa_live_test',
+        secret: 'aa_live_test_xxxxxxxxxxxx',
+      }),
+    )
+
+    render(<ApiKeyList />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+    await userEvent.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    expect(await screen.findByText(/Rotated gateway-ci/i)).toBeInTheDocument()
+  })
+
+  it('rotate failure surfaces an error toast and closes the modal', async () => {
+    _apiKeysInternal.setRotateOverride(() => Promise.reject(new Error('upstream 503')))
+
+    render(<ApiKeyList />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+    await userEvent.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    expect(await screen.findByText(/upstream 503/i)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.queryByTestId('confirm-rotate-key')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('default (no override) flips the old row to revoked and prepends the new active row', async () => {
+    render(<ApiKeyList />, { wrapper: Wrapper })
+    await screen.findByTestId('api-key-row-key-1')
+
+    await userEvent.click(screen.getByTestId('api-key-rotate-key-1'))
+    await userEvent.click(screen.getByTestId('confirm-rotate-confirm'))
+
+    // After the rotation flushes, the old row's status cell must read "revoked".
+    await waitFor(() => {
+      expect(screen.getByTestId('api-key-cell-status-key-1')).toHaveTextContent('revoked')
+    })
+    // And a brand-new active row (label inherited) sits at the top of the list.
+    const snapshot = _apiKeysInternal.snapshot()
+    expect(snapshot[0].label).toBe('gateway-ci')
+    expect(snapshot[0].status).toBe('active')
+    expect(snapshot[0].id).not.toBe('key-1')
+    expect(snapshot[0].assigned_policies).toEqual([
+      'read-only-baseline',
+      'audit-export-allow',
+    ])
   })
 })
