@@ -73,6 +73,7 @@ const keyStore: KeyStore = { keys: [...SEED_API_KEYS] }
 
 let _generateOverride: ((input: GenerateApiKeyInput) => Promise<GeneratedApiKey>) | null = null
 let _revokeOverride: ((id: string) => Promise<void>) | null = null
+let _rotateOverride: ((id: string) => Promise<GeneratedApiKey>) | null = null
 let _keySeq = 0
 
 function fetchApiKeys(): Promise<ApiKey[]> {
@@ -125,6 +126,59 @@ function revokeApiKey(id: string): Promise<void> {
   return Promise.resolve()
 }
 
+/**
+ * Rotate an active API key (AAASM-1397). Atomic in the in-memory store:
+ * the old row is flipped to `revoked` and a fresh `active` row inherits
+ * the previous owner / role / scopes / assigned_policies / label so the
+ * caller's downstream policies survive the rotation. Recent-activity
+ * gets a synthetic "rotated" entry on the new row.
+ *
+ * Returns `{id, prefix, secret}` — the secret MUST be surfaced to the
+ * operator once via `<RevealOnceModal>` and never persisted alongside
+ * the ApiKey record.
+ */
+function rotateApiKey(id: string): Promise<GeneratedApiKey> {
+  if (_rotateOverride) return _rotateOverride(id)
+  const idx = keyStore.keys.findIndex((k) => k.id === id)
+  if (idx === -1) return Promise.reject(new Error(`api key ${id} not found`))
+  const existing = keyStore.keys[idx]
+  if (existing.status !== 'active') {
+    return Promise.reject(new Error(`api key ${id} is not active (status=${existing.status})`))
+  }
+  const newId = `key-gen-${++_keySeq}`
+  const newPrefix = `aa_live_${randomSuffix(4)}`
+  const newSecret = `${newPrefix}_${randomSuffix(32)}`
+  const nowIso = new Date().toISOString()
+  const revokedOld: ApiKey = { ...existing, status: 'revoked' }
+  const fresh: ApiKey = {
+    id: newId,
+    label: existing.label,
+    prefix: newPrefix,
+    scopes: [...existing.scopes],
+    status: 'active',
+    created_at: nowIso,
+    last_used: null,
+    // Inherit owner / role / assigned_policies so the rotation is
+    // transparent for downstream consumers.
+    owner: existing.owner,
+    role: existing.role,
+    assigned_policies: [...existing.assigned_policies],
+    recent_activity: [
+      {
+        id: `${newId}-act-rotate`,
+        timestamp: nowIso,
+        action: 'rotated',
+        target: `replaces ${existing.prefix} (id ${existing.id})`,
+      },
+    ],
+  }
+  // Replace old row in place, then prepend the new row so it surfaces at
+  // the top of the list (mirrors the generateApiKey ordering).
+  const without = [...keyStore.keys.slice(0, idx), revokedOld, ...keyStore.keys.slice(idx + 1)]
+  keyStore.keys = [fresh, ...without]
+  return Promise.resolve({ id: newId, prefix: newPrefix, secret: newSecret })
+}
+
 export function useApiKeysQuery() {
   return useQuery({
     queryKey: iamQueryKeys.apiKeys(),
@@ -152,16 +206,28 @@ export function useRevokeApiKeyMutation() {
   })
 }
 
+export function useRotateApiKeyMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => rotateApiKey(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+    },
+  })
+}
+
 export const _apiKeysInternal: {
   reset: () => void
   snapshot: () => readonly ApiKey[]
   setGenerateOverride: (fn: ((input: GenerateApiKeyInput) => Promise<GeneratedApiKey>) | null) => void
   setRevokeOverride: (fn: ((id: string) => Promise<void>) | null) => void
+  setRotateOverride: (fn: ((id: string) => Promise<GeneratedApiKey>) | null) => void
 } = {
   reset(): void {
     keyStore.keys = [...SEED_API_KEYS]
     _generateOverride = null
     _revokeOverride = null
+    _rotateOverride = null
     _keySeq = 0
   },
   snapshot(): readonly ApiKey[] {
@@ -172,5 +238,8 @@ export const _apiKeysInternal: {
   },
   setRevokeOverride(fn) {
     _revokeOverride = fn
+  },
+  setRotateOverride(fn) {
+    _rotateOverride = fn
   },
 }
