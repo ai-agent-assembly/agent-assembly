@@ -31,6 +31,55 @@ pub static OPENAT_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
 #[map]
 pub static OPENAT_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
 
+/// Temporary map to pass the resolved path from the read kprobe entry
+/// to the read kretprobe (keyed by pid_tgid). The fd is only available
+/// at entry, so the path is looked up via `FD_PATH_MAP` there and
+/// stashed here for the kretprobe to read.
+#[map]
+pub static READ_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the read kprobe entry
+/// to the read kretprobe (keyed by pid_tgid).
+#[map]
+pub static READ_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the resolved path from the write kprobe entry
+/// to the write kretprobe (keyed by pid_tgid). Same fd-context reason
+/// as `READ_TMP`.
+#[map]
+pub static WRITE_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the write kprobe
+/// entry to the write kretprobe (keyed by pid_tgid).
+#[map]
+pub static WRITE_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the pathname (read from the syscall argument)
+/// from the unlink kprobe entry to the unlink kretprobe (keyed by
+/// `pid_tgid`). Unlinkat's path comes from `arg1`, not `FD_PATH_MAP`,
+/// so it must be stashed at entry for the kretprobe to emit.
+#[map]
+pub static UNLINK_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
+    HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the unlink kprobe
+/// entry to the unlink kretprobe (keyed by pid_tgid).
+#[map]
+pub static UNLINK_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the source pathname (read from `renameat2`'s
+/// `arg1` = `oldpath`) from the rename kprobe entry to the rename
+/// kretprobe (keyed by `pid_tgid`). Same arg-source reason as
+/// `UNLINK_TMP`.
+#[map]
+pub static RENAME_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
+    HashMap::with_max_entries(MAX_ENTRIES, 0);
+
+/// Temporary map to pass the entry timestamp from the rename kprobe
+/// entry to the rename kretprobe (keyed by pid_tgid).
+#[map]
+pub static RENAME_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
+
 /// Path pattern blocklist: paths that should trigger an alert.
 /// Key is a hash of the path prefix, value is 1 (deny).
 #[map]
