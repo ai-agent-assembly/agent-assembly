@@ -173,3 +173,75 @@ pub struct AgentSpec {
     pub status: Option<AgentStatus>,
     pub team_id: Option<String>,
 }
+
+impl CliFixture {
+    /// Seed `n` agents into the given team. Returns their 16-byte ids in
+    /// registration order. Used by `topology team` tests that need a
+    /// specific team populated.
+    pub fn seed_team_members(&self, team_id: &str, n: usize) -> Vec<[u8; 16]> {
+        (0..n)
+            .map(|_| {
+                self.seed_agent_with(AgentSpec {
+                    team_id: Some(team_id.to_string()),
+                    ..AgentSpec::default()
+                })
+            })
+            .collect()
+    }
+
+    /// Seed a parent + child pair under the given team. Returns
+    /// `(parent_id, child_id)`. The parent has depth 0 and no parent;
+    /// the child has depth 1 and references the parent. Used by
+    /// `topology tree` and `topology lineage` tests.
+    pub fn seed_parent_child(&self, team_id: &str) -> ([u8; 16], [u8; 16]) {
+        let parent_id = self.seed_agent_with(AgentSpec {
+            team_id: Some(team_id.to_string()),
+            name: Some(format!("parent-{}", &Self::hex_id(&[0; 16])[..4])),
+            ..AgentSpec::default()
+        });
+        let counter = AGENT_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid_bytes = std::process::id().to_le_bytes();
+        let counter_bytes = counter.to_le_bytes();
+        let mut child_id = [0u8; 16];
+        child_id[0..4].copy_from_slice(&pid_bytes);
+        child_id[4..6].copy_from_slice(&counter_bytes);
+
+        let parent_hex = Self::hex_id(&parent_id);
+        let record = AgentRecord {
+            agent_id: child_id,
+            name: format!("child-{:04x}", counter),
+            framework: "cli-it".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "cli-it-token".into(),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: Some(parent_hex),
+            team_id: Some(team_id.to_string()),
+            depth: 1,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some(parent_id),
+            children: vec![],
+            parent_key: Some(parent_id),
+        };
+        self.env
+            .agent_registry
+            .register(record)
+            .expect("seed_parent_child: register child should succeed");
+        (parent_id, child_id)
+    }
+}
