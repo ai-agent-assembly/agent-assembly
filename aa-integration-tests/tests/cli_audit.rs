@@ -85,6 +85,31 @@ async fn audit_list_succeeds_for_every_output_format(#[case] fmt: &str) {
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn audit_list_json_and_yaml_describe_equivalent_records() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent: [u8; 16] = [0xa3; 16];
+    fixture
+        .seed_audit_events(4, agent, AuditEventType::ToolCallIntercepted)
+        .expect("seed_audit_events");
+
+    let json_out = fixture
+        .cmd()
+        .args(["--output", "json", "audit", "list"])
+        .output()
+        .expect("aasm audit list --output json should execute");
+    assert!(json_out.status.success(), "json case should exit 0");
+
+    let yaml_out = fixture
+        .cmd()
+        .args(["--output", "yaml", "audit", "list"])
+        .output()
+        .expect("aasm audit list --output yaml should execute");
+    assert!(yaml_out.status.success(), "yaml case should exit 0");
+
+    common::format::assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "agent_id");
+}
+
 // =============================================================================
 // aasm audit export
 // =============================================================================
