@@ -234,3 +234,28 @@ async fn alerts_list_combined_severity_and_agent_filter_narrows_correctly() {
     assert_eq!(arr[0]["severity"].as_str(), Some("critical"));
     assert_eq!(arr[0]["agent_id"].as_str(), Some(target_hex.as_str()));
 }
+
+// =============================================================================
+// aasm alerts get
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_get_unknown_id_exits_non_zero_with_clean_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "get", "does-not-exist"])
+        .output()
+        .expect("aasm alerts get should execute");
+    assert!(
+        !out.status.success(),
+        "unknown id should exit non-zero; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.to_lowercase().contains("error"),
+        "stderr should describe the failure; got:\n{stderr}",
+    );
+}
