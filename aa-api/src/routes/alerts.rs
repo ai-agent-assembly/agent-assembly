@@ -7,6 +7,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::alerts::StoredAlert;
+use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
 
@@ -79,4 +80,33 @@ pub async fn list_alerts(
             total,
         }),
     )
+}
+
+/// `GET /api/v1/alerts/:id` — fetch one governance alert by ID.
+///
+/// Returns 404 with an RFC 7807 problem detail if the alert is unknown
+/// or has been evicted from the in-memory ring buffer.
+#[utoipa::path(
+    get,
+    path = "/api/v1/alerts/{id}",
+    params(("id" = String, Path, description = "Numeric alert identifier")),
+    responses(
+        (status = 200, description = "Alert detail", body = AlertResponse),
+        (status = 404, description = "Alert not found")
+    ),
+    tag = "alerts"
+)]
+pub async fn get_alert(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+    let numeric_id = id
+        .parse::<u64>()
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
+
+    let stored = state.alert_store.get(numeric_id).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+    })?;
+
+    Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
 }
