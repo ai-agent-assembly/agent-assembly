@@ -88,6 +88,12 @@ pub struct TopologyTestEnv {
     /// ST adds its own seed plumbing against the resource it touches.
     #[allow(dead_code)]
     pub budget_tracker: Arc<BudgetTracker>,
+    /// Concrete handle on the in-memory alert store backing the API. Held
+    /// here (rather than reached through the `Arc<dyn AlertStore>` on
+    /// `AppState`) so per-leaf seed helpers can call `record()` directly
+    /// without trait downcasting. Populated by `cli_alerts.rs` (AAASM-1460).
+    #[allow(dead_code)]
+    pub alert_store: Arc<InMemoryAlertStore>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -102,7 +108,7 @@ impl TopologyTestEnv {
     /// Spin up the harness: build the AppState, bind axum to a free port,
     /// spawn the server task, and poll `/api/v1/health` until ready.
     pub async fn start() -> anyhow::Result<Self> {
-        let (state, audit_dir) = build_test_state()?;
+        let (state, audit_dir, alert_store) = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
@@ -131,6 +137,7 @@ impl TopologyTestEnv {
             approval_queue,
             audit_dir,
             budget_tracker,
+            alert_store,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -213,7 +220,14 @@ fn uuid_string(key: &[u8; 16]) -> String {
 /// Build a minimal `AppState` for the harness. Adapted from
 /// `aa-api/tests/common/mod.rs::test_state_with_auth` to avoid pulling that
 /// crate's `dev-dependencies` test helpers across crate boundaries.
-fn build_test_state() -> anyhow::Result<(AppState, PathBuf)> {
+///
+/// Returns the populated state, the on-disk audit dir the `AuditReader`
+/// scans (so per-leaf helpers like `seed_audit_events` can write entries
+/// the `aasm logs` snapshot path observes), and a concrete handle on
+/// the in-memory alert store so per-leaf seed helpers (e.g.
+/// `CliFixture::seed_alert`) can call `record()` directly without
+/// trait downcasting from `Arc<dyn AlertStore>`.
+fn build_test_state() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>)> {
     let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let policy_dir = std::env::temp_dir().join(format!("aa-topology-it-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir)?;
@@ -268,6 +282,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let audit_dir = std::env::temp_dir().join(format!("aa-topology-it-audit-{}-{audit_id}", std::process::id()));
@@ -315,5 +330,6 @@ spec:
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         },
         audit_dir,
+        alert_store_handle,
     ))
 }
