@@ -1,37 +1,37 @@
-name: Topology integration tests
+name: Integration tests
 
-# End-to-end topology integration test suite (AAASM-1066). Runs the
-# `aa-topology-integration-tests` crate on Linux + macOS so the assertion
-# tests (REST + CLI roundtrip) are exercised on both platforms before
-# anything depending on them ships.
+# End-to-end integration test suite. Runs the `aa-integration-tests` crate
+# on Linux + macOS so the topology HTTP roundtrip (AAASM-1066) and the CLI
+# subcommand coverage (AAASM-1258, AAASM-1441 follow-up) are exercised on
+# both platforms before anything depending on them ships.
 
 on:
   push:
     branches: [master]
     paths:
-      - "aa-topology-integration-tests/**"
+      - "aa-integration-tests/**"
       - "aa-api/**"
       - "aa-gateway/**"
       - "aa-cli/**"
       - "aa-runtime/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/topology-integration.yml"
+      - ".github/workflows/integration-tests.yml"
   pull_request:
     branches: [master]
     paths:
-      - "aa-topology-integration-tests/**"
+      - "aa-integration-tests/**"
       - "aa-api/**"
       - "aa-gateway/**"
       - "aa-cli/**"
       - "aa-runtime/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/topology-integration.yml"
+      - ".github/workflows/integration-tests.yml"
 
 jobs:
-  topology-integration-tests:
-    name: Topology integration tests (${{ matrix.os }})
+  integration-tests:
+    name: Integration tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -65,24 +65,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          key: topology-it-${{ matrix.os }}
+          key: integration-tests-${{ matrix.os }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
 
-      - name: Run topology integration tests
+      - name: Run integration tests
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
-        run: cargo nextest run -p aa-topology-integration-tests --test-threads=1
+        run: cargo nextest run -p aa-integration-tests --test-threads=1
 
       - name: Upload gateway logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: topology-it-gateway-logs-${{ matrix.os }}
+          name: integration-tests-gateway-logs-${{ matrix.os }}
           path: |
             target/nextest/**/*.log
-            target/debug/build/aa-topology-integration-tests-*/output
+            target/debug/build/aa-integration-tests-*/output
             **/*.log
           if-no-files-found: ignore
           retention-days: 7

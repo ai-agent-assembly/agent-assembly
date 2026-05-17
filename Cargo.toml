@@ -21,7 +21,7 @@ members = [
     "aa-devtool-copilot",
     "aa-devtool-saas",
     "aa-devtool-windsurf",
-    "aa-topology-integration-tests",
+    "aa-integration-tests",
 ]
 resolver = "2"
 

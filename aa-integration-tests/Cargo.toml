@@ -1,11 +1,11 @@
 [package]
-name = "aa-topology-integration-tests"
+name = "aa-integration-tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "End-to-end integration tests for the AAASM topology pipeline (SDK → gateway → REST → CLI). Test-only crate."
+description = "End-to-end integration tests for AAASM (topology HTTP roundtrip + CLI subcommand coverage). Test-only crate."
 
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
