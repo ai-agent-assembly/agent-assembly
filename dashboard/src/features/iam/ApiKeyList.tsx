@@ -84,24 +84,25 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
       <table className="iam-api-key-list" data-testid="api-key-list">
         <thead>
           <tr>
-            <th>Label</th>
-            <th>Prefix</th>
-            <th>Scopes</th>
-            <th>Created</th>
-            <th>Last used</th>
-            <th>Status</th>
+            <th data-testid="api-key-col-id">ID</th>
+            <th data-testid="api-key-col-name">Name</th>
+            <th data-testid="api-key-col-owner">Owner</th>
+            <th data-testid="api-key-col-role">Role</th>
+            <th data-testid="api-key-col-status">Status</th>
+            <th data-testid="api-key-col-last-seen">Last seen</th>
+            <th data-testid="api-key-col-policy-count">Policy count</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           {isLoading && (
             <tr data-testid="api-key-list-loading">
-              <td colSpan={7} className="iam-api-key-list__loading">Loading…</td>
+              <td colSpan={8} className="iam-api-key-list__loading">Loading…</td>
             </tr>
           )}
           {!isLoading && data?.length === 0 && (
             <tr data-testid="api-key-list-empty">
-              <td colSpan={7} className="iam-api-key-list__empty">No API keys issued yet.</td>
+              <td colSpan={8} className="iam-api-key-list__empty">No API keys issued yet.</td>
             </tr>
           )}
           {data?.map((k) => {
@@ -114,6 +115,12 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
             ]
               .filter(Boolean)
               .join(' ')
+            // AAASM-1399 reshaped the columns to the Story-level vocabulary
+            // (AAASM-119 AC #4): ID · name · owner · role · status · last seen ·
+            // policy count. Scope / created details still live on the row record
+            // and are surfaced by IdentityDetailCard (AAASM-1396) when a row is
+            // selected — keeps the table itself scannable.
+            const policyCount = k.assigned_policies.length
             return (
               <tr
                 key={k.id}
@@ -123,19 +130,43 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
                 onClick={onSelect ? () => onSelect(k) : undefined}
                 aria-selected={onSelect ? selected : undefined}
               >
-                <td className="iam-api-key-list__label">{k.label}</td>
-                <td className="iam-api-key-list__mono">{maskedPrefix(k.prefix)}</td>
-                <td>
-                  <div className="iam-api-key-list__scopes">
-                    {k.scopes.map((s) => (
-                      <span key={s} className="iam-scope-chip">{s}</span>
-                    ))}
-                  </div>
+                <td
+                  className="iam-api-key-list__mono"
+                  data-testid={`api-key-cell-id-${k.id}`}
+                >
+                  {maskedPrefix(k.prefix)}
                 </td>
-                <td className="iam-api-key-list__mono">{formatDate(k.created_at)}</td>
-                <td className="iam-api-key-list__mono">{formatDate(k.last_used)}</td>
-                <td>
-                  <span className={`iam-status iam-status--${k.status === 'active' ? 'active' : 'suspended'}`}>{k.status}</span>
+                <td
+                  className="iam-api-key-list__label"
+                  data-testid={`api-key-cell-name-${k.id}`}
+                >
+                  {k.label}
+                </td>
+                <td data-testid={`api-key-cell-owner-${k.id}`}>{k.owner}</td>
+                <td
+                  className="iam-api-key-list__mono"
+                  data-testid={`api-key-cell-role-${k.id}`}
+                >
+                  {k.role}
+                </td>
+                <td data-testid={`api-key-cell-status-${k.id}`}>
+                  <span
+                    className={`iam-status iam-status--${k.status === 'active' ? 'active' : 'suspended'}`}
+                  >
+                    {k.status}
+                  </span>
+                </td>
+                <td
+                  className="iam-api-key-list__mono"
+                  data-testid={`api-key-cell-last-seen-${k.id}`}
+                >
+                  {formatDate(k.last_used)}
+                </td>
+                <td
+                  className="iam-api-key-list__mono"
+                  data-testid={`api-key-cell-policy-count-${k.id}`}
+                >
+                  {policyCount}
                 </td>
                 <td>
                   {!revoked && (
