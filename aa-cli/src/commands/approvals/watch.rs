@@ -30,8 +30,15 @@ pub struct WatchArgs {
 }
 
 /// Establish a WebSocket connection to the approval events endpoint.
+///
+/// The `types=approval` filter matches the snake_case wire value of
+/// `aa_api::models::EventType::Approval` — see `EventType::parse_filter`,
+/// which accepts only `"violation"`, `"approval"`, `"budget"`. Earlier
+/// revisions of this call passed `"approval_required"`, which the
+/// server silently dropped, so the WS connection succeeded but no
+/// events ever matched the filter.
 pub async fn connect_approval_ws(ctx: &ResolvedContext) -> Result<WsStream, CliError> {
-    let url = client::build_ws_url(&ctx.api_url, "approval_required")?;
+    let url = client::build_ws_url(&ctx.api_url, "approval")?;
     let (ws, _response) = tokio_tungstenite::connect_async(&url)
         .await
         .map_err(|e| CliError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)))?;

@@ -226,9 +226,6 @@ async fn approvals_approve_unknown_id_errors() {
 // aasm approvals watch — streaming
 // =============================================================================
 
-#[ignore = "AAASM-1480: aa-cli build_ws_url targets /api/v1/events but aa-api wires \
-            /api/v1/ws/events — WS connect 404s and the child exits immediately. \
-            Drop this #[ignore] once the WS URL contract is fixed."]
 #[tokio::test(flavor = "multi_thread")]
 async fn approvals_watch_runs_until_killed() {
     // Establishes that the `watch` subcommand wires the WebSocket connection

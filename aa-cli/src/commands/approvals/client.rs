@@ -83,7 +83,8 @@ pub async fn reject_action(ctx: &ResolvedContext, id: &str, reason: &str) -> Res
 /// Convert an HTTP(S) base URL to a WebSocket URL for the events endpoint.
 ///
 /// `http://` becomes `ws://`, `https://` becomes `wss://`.
-/// Appends `/api/v1/events?types={types}`.
+/// Appends `/api/v1/ws/events?types={types}` — matches the route mounted by
+/// `aa-api` (see `aa-api::routes::mod::v1_router` and `aa-api::ws::handler::ws_events_handler`).
 pub fn build_ws_url(base: &str, types: &str) -> Result<String, CliError> {
     let mut parsed =
         Url::parse(base).map_err(|e| CliError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
@@ -98,7 +99,7 @@ pub fn build_ws_url(base: &str, types: &str) -> Result<String, CliError> {
         ))
     })?;
     let base_str = parsed.as_str().trim_end_matches('/');
-    Ok(format!("{base_str}/api/v1/events?types={types}"))
+    Ok(format!("{base_str}/api/v1/ws/events?types={types}"))
 }
 
 #[cfg(test)]
@@ -123,14 +124,14 @@ mod tests {
 
     #[test]
     fn build_ws_url_http_to_ws() {
-        let url = build_ws_url("http://localhost:8080", "approval_required").unwrap();
-        assert_eq!(url, "ws://localhost:8080/api/v1/events?types=approval_required");
+        let url = build_ws_url("http://localhost:8080", "approval").unwrap();
+        assert_eq!(url, "ws://localhost:8080/api/v1/ws/events?types=approval");
     }
 
     #[test]
     fn build_ws_url_https_to_wss() {
-        let url = build_ws_url("https://api.example.com", "approval_required").unwrap();
-        assert_eq!(url, "wss://api.example.com/api/v1/events?types=approval_required");
+        let url = build_ws_url("https://api.example.com", "approval").unwrap();
+        assert_eq!(url, "wss://api.example.com/api/v1/ws/events?types=approval");
     }
 
     #[tokio::test]
