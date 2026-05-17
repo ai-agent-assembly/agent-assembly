@@ -73,6 +73,7 @@ export function ServiceIdentitiesPanel() {
           <ApiKeyList
             selectedKeyId={selected?.id ?? null}
             onSelect={setSelected}
+            onRotated={(generated) => reveal.reveal(generated)}
           />
         </div>
         <div className="iam-services-panel__detail">

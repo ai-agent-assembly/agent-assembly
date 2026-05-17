@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useApiKeysQuery, useRevokeApiKeyMutation } from './apiKeys'
+import { useApiKeysQuery, useRevokeApiKeyMutation, useRotateApiKeyMutation } from './apiKeys'
 import { useToast } from '../../components/Toast'
-import type { ApiKey } from './types'
+import type { ApiKey, GeneratedApiKey } from './types'
 import './ApiKeyList.css'
 
 function maskedPrefix(prefix: string): string {
@@ -45,6 +45,46 @@ function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
   )
 }
 
+function ConfirmRotate({ keyRecord, onCancel, onConfirm, isPending }: {
+  keyRecord: ApiKey
+  onCancel: () => void
+  onConfirm: () => void
+  isPending: boolean
+}) {
+  return (
+    <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-rotate-key">
+      <div className="iam-dialog">
+        <h2 className="iam-dialog__title">Rotate API key?</h2>
+        <p style={{ fontSize: '0.9rem', margin: 0 }}>
+          Rotating <strong>{keyRecord.label}</strong> ({keyRecord.prefix}…) revokes it
+          immediately and issues a replacement with the same label, scopes, and owner.
+          The new secret is shown <strong>once</strong> — copy it before closing the reveal.
+        </p>
+        <div className="iam-dialog__actions">
+          <button
+            type="button"
+            className="iam-dialog__btn"
+            onClick={onCancel}
+            data-testid="confirm-rotate-cancel"
+            disabled={isPending}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="iam-dialog__btn iam-dialog__btn--primary"
+            onClick={onConfirm}
+            data-testid="confirm-rotate-confirm"
+            disabled={isPending}
+          >
+            {isPending ? 'Rotating…' : 'Rotate'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export interface ApiKeyListProps {
   /** Currently-selected api-key id, drives the row highlight (AAASM-1396). */
   selectedKeyId?: string | null
@@ -52,13 +92,19 @@ export interface ApiKeyListProps {
    *  can render IdentityDetailCard without re-querying. Omit to disable
    *  row selection (preserves the previous click-through-nothing behaviour). */
   onSelect?: (key: ApiKey) => void
+  /** Receives the new key's one-shot reveal when a rotate succeeds, so
+   *  the parent panel can drive the RevealOnceModal exactly as it does
+   *  for the generate flow (AAASM-1397). */
+  onRotated?: (generated: GeneratedApiKey) => void
 }
 
-export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps = {}) {
+export function ApiKeyList({ selectedKeyId = null, onSelect, onRotated }: ApiKeyListProps = {}) {
   const { data, isLoading, isError, refetch } = useApiKeysQuery()
   const revoke = useRevokeApiKeyMutation()
+  const rotate = useRotateApiKeyMutation()
   const { toast } = useToast()
   const [pendingRevoke, setPendingRevoke] = useState<ApiKey | null>(null)
+  const [pendingRotate, setPendingRotate] = useState<ApiKey | null>(null)
 
   if (isError) {
     return (
@@ -76,6 +122,22 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
     revoke.mutate(target.id, {
       onSuccess: () => toast(`Revoked ${target.label}`, 'success'),
       onError: (err) => toast(err instanceof Error ? err.message : 'Revoke failed', 'error'),
+    })
+  }
+
+  function handleConfirmRotate() {
+    if (!pendingRotate) return
+    const target = pendingRotate
+    rotate.mutate(target.id, {
+      onSuccess: (generated) => {
+        setPendingRotate(null)
+        toast(`Rotated ${target.label}`, 'success')
+        onRotated?.(generated)
+      },
+      onError: (err) => {
+        setPendingRotate(null)
+        toast(err instanceof Error ? err.message : 'Rotate failed', 'error')
+      },
     })
   }
 
@@ -170,19 +232,33 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
                 </td>
                 <td>
                   {!revoked && (
-                    <button
-                      type="button"
-                      className="iam-api-key-list__revoke-btn"
-                      data-testid={`api-key-revoke-${k.id}`}
-                      onClick={(e) => {
-                        // Don't bubble to the row's onClick selection handler.
-                        e.stopPropagation()
-                        setPendingRevoke(k)
-                      }}
-                      disabled={revoke.isPending}
-                    >
-                      Revoke
-                    </button>
+                    <div className="iam-api-key-list__row-actions">
+                      <button
+                        type="button"
+                        className="iam-api-key-list__rotate-btn"
+                        data-testid={`api-key-rotate-${k.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setPendingRotate(k)
+                        }}
+                        disabled={rotate.isPending}
+                      >
+                        Rotate
+                      </button>
+                      <button
+                        type="button"
+                        className="iam-api-key-list__revoke-btn"
+                        data-testid={`api-key-revoke-${k.id}`}
+                        onClick={(e) => {
+                          // Don't bubble to the row's onClick selection handler.
+                          e.stopPropagation()
+                          setPendingRevoke(k)
+                        }}
+                        disabled={revoke.isPending}
+                      >
+                        Revoke
+                      </button>
+                    </div>
                   )}
                 </td>
               </tr>
@@ -196,6 +272,15 @@ export function ApiKeyList({ selectedKeyId = null, onSelect }: ApiKeyListProps =
           keyRecord={pendingRevoke}
           onCancel={() => setPendingRevoke(null)}
           onConfirm={handleConfirmRevoke}
+        />
+      )}
+
+      {pendingRotate && (
+        <ConfirmRotate
+          keyRecord={pendingRotate}
+          onCancel={() => setPendingRotate(null)}
+          onConfirm={handleConfirmRotate}
+          isPending={rotate.isPending}
         />
       )}
     </>

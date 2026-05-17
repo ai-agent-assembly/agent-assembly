@@ -53,6 +53,12 @@
   color: var(--shell-text);
 }
 
+.iam-api-key-list__row-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
 .iam-api-key-list__revoke-btn {
   border: 1px solid var(--status-danger);
   background: transparent;
@@ -64,9 +70,21 @@
   cursor: pointer;
 }
 
-.iam-api-key-list__revoke-btn:disabled {
+.iam-api-key-list__revoke-btn:disabled,
+.iam-api-key-list__rotate-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.iam-api-key-list__rotate-btn {
+  border: 1px solid var(--shell-border-subtle);
+  background: transparent;
+  color: var(--shell-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
 }
 
 .iam-api-key-list__row--revoked {
