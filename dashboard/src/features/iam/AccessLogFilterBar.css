@@ -1,0 +1,34 @@
+.iam-access-log-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--shell-border-subtle);
+  margin-bottom: 0.75rem;
+}
+
+.iam-access-log-filter-bar__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 12rem;
+}
+
+.iam-access-log-filter-bar__label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--shell-text-muted);
+}
+
+.iam-access-log-filter-bar__select,
+.iam-access-log-filter-bar__date {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--shell-border-subtle);
+  border-radius: 0.25rem;
+  background: var(--shell-surface);
+  color: var(--shell-text);
+}

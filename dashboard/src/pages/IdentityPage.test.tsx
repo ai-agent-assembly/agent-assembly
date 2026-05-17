@@ -85,4 +85,17 @@ describe('IdentityPage', () => {
     const link = screen.getByTestId('iam-audit-link')
     expect(link).toHaveAttribute('href', '/audit')
   })
+
+  it('renders the AccessLogPanel (not the placeholder) on ?tab=access-log', async () => {
+    renderAt(['/identity?tab=access-log'])
+    expect(screen.getByTestId('iam-tab-access-log')).toHaveAttribute('aria-selected', 'true')
+    // The placeholder body text from TabPlaceholder must NOT render — the
+    // real panel takes over. Both share `iam-panel-access-log` as the
+    // section testid, so we discriminate on the panel's heading + an
+    // element only the real panel renders (the filter bar).
+    expect(await screen.findByTestId('access-log-filter-bar')).toBeInTheDocument()
+    expect(
+      screen.queryByText(/Content for the Access Log tab lands in a follow-up/i),
+    ).not.toBeInTheDocument()
+  })
 })
