@@ -38,6 +38,19 @@ pub struct WireTraceSpan {
     pub end_time: Option<DateTime<Utc>>,
 }
 
+/// Compute milliseconds elapsed between `start` and `end`. Returns `0`
+/// if `end` is missing (span still in progress) or if `end < start`
+/// (clock skew — we never report negative durations).
+pub fn duration_ms_from(start: DateTime<Utc>, end: Option<DateTime<Utc>>) -> u64 {
+    let Some(end) = end else { return 0 };
+    let delta = end.signed_duration_since(start).num_milliseconds();
+    if delta <= 0 {
+        0
+    } else {
+        delta as u64
+    }
+}
+
 /// Derive a [`TraceEventKind`] for a span from its `operation` name and
 /// `decision`. The CLI renderer uses kinds to pick icons / colors; the
 /// API only exposes the operation string + optional decision, so this
@@ -91,5 +104,25 @@ mod tests {
     fn unknown_operation_defaults_to_policy_allow() {
         assert_eq!(kind_from_span("op-42", Some("allow")), TraceEventKind::PolicyAllow,);
         assert_eq!(kind_from_span("misc", None), TraceEventKind::PolicyAllow);
+    }
+
+    #[test]
+    fn duration_ms_returns_zero_when_end_missing() {
+        let start = Utc::now();
+        assert_eq!(duration_ms_from(start, None), 0);
+    }
+
+    #[test]
+    fn duration_ms_computes_positive_delta() {
+        let start = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 1, 0, 0, 0).unwrap();
+        let end = start + chrono::Duration::milliseconds(250);
+        assert_eq!(duration_ms_from(start, Some(end)), 250);
+    }
+
+    #[test]
+    fn duration_ms_clamps_negative_to_zero() {
+        let start = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 1, 0, 0, 0).unwrap();
+        let end = start - chrono::Duration::milliseconds(100);
+        assert_eq!(duration_ms_from(start, Some(end)), 0);
     }
 }
