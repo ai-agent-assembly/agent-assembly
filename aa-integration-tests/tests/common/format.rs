@@ -112,6 +112,29 @@ pub fn assert_equivalent_records(json_out: &[u8], yaml_out: &[u8], id_field: &st
     );
 }
 
+/// Asserts the JSON and YAML representations describe the same single
+/// object (nested structure). Used by endpoints that emit one logical
+/// record rather than a collection — e.g. `aasm topology overview`,
+/// `topology tree`, `topology stats`.
+///
+/// The two values are compared by round-tripping the YAML through
+/// `serde_json::Value` so any ordering differences in serde_yaml's
+/// `Mapping` don't cause false negatives.
+pub fn assert_equivalent_objects(json_out: &[u8], yaml_out: &[u8]) {
+    let json_v = parse_json(json_out);
+    let yaml_v = parse_yaml(yaml_out);
+    let yaml_as_json: serde_json::Value =
+        serde_json::to_value(&yaml_v).expect("YAML value should round-trip to serde_json::Value");
+    assert_eq!(
+        json_v,
+        yaml_as_json,
+        "JSON and YAML object structures diverge\n\
+         json stdout:\n{}\nyaml stdout:\n{}",
+        String::from_utf8_lossy(json_out),
+        String::from_utf8_lossy(yaml_out),
+    );
+}
+
 fn extract_json_ids(v: &serde_json::Value, field: &str) -> Vec<String> {
     if let Some(arr) = v.as_array() {
         return arr
