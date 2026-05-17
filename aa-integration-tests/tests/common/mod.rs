@@ -279,5 +279,6 @@ spec:
             .time_to_live(Duration::from_secs(10))
             .build(),
         capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+        iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
     })
 }
