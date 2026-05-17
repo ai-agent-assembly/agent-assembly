@@ -35,6 +35,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use rstest::rstest;
 
 // =============================================================================
 // aasm alerts list
@@ -61,4 +62,26 @@ async fn alerts_list_happy_path_returns_seeded_records() {
     let v = common::format::parse_json(&out.stdout);
     let arr = v.as_array().expect("list output should be a JSON array");
     assert_eq!(arr.len(), 3, "should return all 3 seeded alerts");
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_alert(95, [0x11; 16]);
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "list", "--output", fmt])
+        .output()
+        .expect("aasm alerts list should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
