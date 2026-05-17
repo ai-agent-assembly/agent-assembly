@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use aa_runtime::approval::{ApprovalDecision, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
+use aa_runtime::approval::{ApprovalDecision, ApprovalError, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
 use utoipa::IntoParams;
 
 use crate::error::ProblemDetail;
@@ -307,8 +307,12 @@ pub async fn approve_action(
         reason: body.reason,
     };
 
-    state.approval_queue.decide(uuid, decision).map_err(|_| {
-        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+    state.approval_queue.decide(uuid, decision).map_err(|e| match e {
+        ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail(format!("Approval request has already been decided: {id}")),
+        ApprovalError::NotFound => {
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+        }
     })?;
 
     Ok((
@@ -353,8 +357,12 @@ pub async fn reject_action(
         reason: body.reason.unwrap_or_else(|| "rejected via API".to_string()),
     };
 
-    state.approval_queue.decide(uuid, decision).map_err(|_| {
-        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+    state.approval_queue.decide(uuid, decision).map_err(|e| match e {
+        ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail(format!("Approval request has already been decided: {id}")),
+        ApprovalError::NotFound => {
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+        }
     })?;
 
     Ok((
