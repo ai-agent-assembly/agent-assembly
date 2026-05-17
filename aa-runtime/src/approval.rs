@@ -135,6 +135,43 @@ pub struct PendingApprovalRequest {
 }
 
 // ---------------------------------------------------------------------------
+// ResolvedRecord  (outward-facing snapshot of a decided request)
+// ---------------------------------------------------------------------------
+
+/// Outward-facing snapshot of a request that has been approved, rejected, or
+/// timed out. Stored in [`ApprovalQueue`]'s bounded resolved-history so the
+/// HTTP `GET /approvals/{id}` endpoint and `?status=APPROVED|REJECTED` list
+/// filter can observe state after a decision.
+///
+/// AAASM-1477: introduced as a prereq for ST-13b idempotency tests. The
+/// resolved history is in-memory and bounded; entries evict oldest-first
+/// once the cap (default 1000) is reached.
+#[derive(Debug, Clone)]
+pub struct ResolvedRecord {
+    /// Unique ID of the original request.
+    pub request_id: ApprovalRequestId,
+    /// The agent that triggered the approval requirement.
+    pub agent_id: String,
+    /// Human-readable description of the action that was decided.
+    pub action: String,
+    /// Name or description of the policy condition that triggered the request.
+    pub condition_triggered: String,
+    /// Unix epoch timestamp (seconds) when the request was submitted.
+    pub submitted_at: u64,
+    /// Unix epoch timestamp (seconds) when the decision was applied.
+    pub decided_at: u64,
+    /// Final status: `"approved"`, `"rejected"`, or `"timed_out"`.
+    pub status: String,
+    /// Identifier of the operator who decided, or `"timeout"` for auto-expiry.
+    pub decided_by: String,
+    /// Optional free-text rationale recorded with the decision. `None` for
+    /// approvals with no reason and for `"timed_out"` records.
+    pub decision_reason: Option<String>,
+    /// Team identifier carried from the originating request, if any.
+    pub team_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // ApprovalDecision  (placeholder — full definition added in next commit)
 // ---------------------------------------------------------------------------
 
