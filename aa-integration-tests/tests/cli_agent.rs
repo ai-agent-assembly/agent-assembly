@@ -245,3 +245,63 @@ async fn agent_inspect_missing_agent_returns_error() {
         String::from_utf8_lossy(&out.stdout),
     );
 }
+
+// =============================================================================
+// aasm agent kill
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_kill_with_force_succeeds() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "kill", &hex, "--force"])
+        .output()
+        .expect("aasm agent kill --force should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_kill_without_force_aborts_on_non_tty_stdin() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let ids = fixture.seed_agents(1);
+    let hex = CliFixture::hex_id(&ids[0]);
+
+    // Command::output() = no TTY on stdin → prompt read_line returns "",
+    // confirmation fails, exit non-zero. Documents the safety property.
+    let out = fixture
+        .cmd()
+        .args(["agent", "kill", &hex])
+        .output()
+        .expect("aasm agent kill (no --force) should execute");
+    assert!(
+        !out.status.success(),
+        "without --force on non-TTY stdin should abort; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_kill_missing_agent_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let bogus = "ffffffffffffffffffffffffffffffff";
+
+    let out = fixture
+        .cmd()
+        .args(["agent", "kill", bogus, "--force"])
+        .output()
+        .expect("aasm agent kill --force should execute");
+    assert!(
+        !out.status.success(),
+        "unknown agent should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
