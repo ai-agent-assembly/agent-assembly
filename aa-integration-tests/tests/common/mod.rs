@@ -16,6 +16,8 @@
 //! binary in the workspace).
 
 #[allow(dead_code)]
+pub mod cli;
+#[allow(dead_code)]
 pub mod format;
 #[allow(dead_code)]
 pub mod scenario;
