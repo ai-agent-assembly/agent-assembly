@@ -12,6 +12,7 @@ pub mod client;
 pub mod get;
 pub mod list;
 pub mod models;
+pub mod reason_io;
 pub mod reject;
 pub mod watch;
 

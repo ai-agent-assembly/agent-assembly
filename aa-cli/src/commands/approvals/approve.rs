@@ -21,8 +21,10 @@ pub struct ApproveArgs {
 
 /// Execute the `aasm approvals approve` subcommand.
 pub fn run_approve(args: ApproveArgs, ctx: &ResolvedContext) -> ExitCode {
+    // AAASM-1477: if --reason is omitted and stdin is a pipe, read it.
+    let reason = super::reason_io::resolve_reason_from_process_stdin(args.reason);
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let result = rt.block_on(client::approve_action(ctx, &args.id, args.reason.as_deref()));
+    let result = rt.block_on(client::approve_action(ctx, &args.id, reason.as_deref()));
 
     match result {
         Ok(resp) => {
