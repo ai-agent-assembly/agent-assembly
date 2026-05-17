@@ -310,6 +310,7 @@ dependencies = [
  "portpicker",
  "reqwest",
  "rstest 0.23.0",
+ "rust_decimal",
  "serde_json",
  "serde_yaml",
  "tempfile",

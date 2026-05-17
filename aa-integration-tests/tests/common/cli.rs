@@ -31,6 +31,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -40,6 +41,7 @@ use aa_core::{AgentId, AuditEntry, SessionId};
 use aa_gateway::registry::{AgentRecord, AgentStatus};
 use aa_runtime::approval::{ApprovalRequest, ApprovalRequestId};
 use chrono::{Duration as ChronoDuration, Utc};
+use rust_decimal::Decimal;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -357,6 +359,22 @@ impl CliFixture {
                 .record_span(session_id, agent_id, span)
                 .expect("seed_trace_session: record_span should succeed");
         }
+    }
+
+    /// Seed one cost sample for the given agent (and optionally its team)
+    /// into the shared `BudgetTracker`. The amount is parsed as a decimal
+    /// USD string (e.g. `"8.10"`) so callers can express precise figures
+    /// without floating-point round-tripping.
+    ///
+    /// Used by `cli_cost.rs` (AAASM-1470 / F121 ST-14) to populate spend
+    /// state before invoking `aasm cost summary` / `cost forecast`. The
+    /// gateway exposes no HTTP route for recording cost samples, so direct
+    /// insertion is the test-only equivalent — same pattern as
+    /// `seed_agent_with` (registry) and `seed_trace_session` (trace store).
+    pub fn seed_cost_sample(&self, agent_id: [u8; 16], team_id: Option<&str>, usd: &str) {
+        let amount = Decimal::from_str(usd).expect("seed_cost_sample: invalid USD amount");
+        let agent_id = AgentId::from_bytes(agent_id);
+        self.env.budget_tracker.record_raw_spend(agent_id, team_id, amount);
     }
 }
 
