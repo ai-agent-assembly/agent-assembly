@@ -352,9 +352,13 @@ pub async fn reject_action(
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
 
+    let reason = body.reason.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("Rejection requires a non-empty reason")
+    })?;
+
     let decision = ApprovalDecision::Rejected {
         by: body.by.unwrap_or_else(|| "api".to_string()),
-        reason: body.reason.unwrap_or_else(|| "rejected via API".to_string()),
+        reason,
     };
 
     state.approval_queue.decide(uuid, decision).map_err(|e| match e {
