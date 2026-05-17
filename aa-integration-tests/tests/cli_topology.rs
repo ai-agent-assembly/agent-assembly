@@ -183,3 +183,86 @@ async fn topology_tree_missing_agent_id_returns_error() {
         String::from_utf8_lossy(&out.stdout),
     );
 }
+
+// =============================================================================
+// aasm topology team
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_team_happy_path_returns_members() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 3);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "team", "alpha", "--output", "json"])
+        .output()
+        .expect("aasm topology team should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["team_id"].as_str(), Some("alpha"));
+    let members = v["members"].as_array().expect("members should be array");
+    assert_eq!(members.len(), 3, "3 seeded members expected");
+}
+
+#[rstest]
+#[case::json("json")]
+#[case::yaml("yaml")]
+#[case::table("table")]
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_team_succeeds_for_every_output_format(#[case] fmt: &str) {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 2);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "team", "alpha", "--output", fmt])
+        .output()
+        .expect("aasm topology team should execute");
+    assert!(
+        out.status.success(),
+        "{fmt} should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_team_unknown_team_returns_error() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "team", "no-such-team"])
+        .output()
+        .expect("aasm topology team should execute");
+    assert!(
+        !out.status.success(),
+        "unknown team should fail; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_team_show_budget_flag_does_not_break_output() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_team_members("alpha", 1);
+
+    let out = fixture
+        .cmd()
+        .args(["topology", "team", "alpha", "--show-budget", "--output", "json"])
+        .output()
+        .expect("aasm topology team --show-budget should execute");
+    assert!(
+        out.status.success(),
+        "--show-budget should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_json(&out.stdout);
+    assert_eq!(v["team_id"].as_str(), Some("alpha"));
+}
