@@ -9,11 +9,20 @@
  * cascade explicitly denies it, where it was `denied_by_ancestor`.
  */
 import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useAgentCapabilitiesQuery } from '../features/agents/api'
 import type { EffectivePermissions, PermissionSource } from '../features/agents/api'
 import { LoadingState } from './LoadingState'
 import { ErrorState } from './ErrorState'
 import './InheritedPermissionsPanel.css'
+
+// Route the granted-by / denied-by chips navigate to. There's no
+// per-policy detail route in the dashboard yet, so the chip jumps to the
+// policy list page where the operator can find the matching scope. The
+// helper is centralised so a follow-up Subtask can swap in
+// `/policies/:id` once the wire schema exposes a policy_id alongside the
+// scope label.
+const POLICY_HREF = '/policies'
 
 const CATEGORY_ORDER: ReadonlyArray<Category> = [
   'Filesystem',
@@ -98,14 +107,24 @@ export function InheritedPermissionsPanel({ agentId }: { agentId: string }) {
                   <code className="ipp__capability">{row.capability}</code>
                   <div className="ipp__chips">
                     {row.grantedBy && (
-                      <span className="ipp__chip ipp__chip--allow" data-testid={`ipp-allow-${row.capability}`}>
+                      <Link
+                        className="ipp__chip ipp__chip--allow"
+                        data-testid={`ipp-allow-${row.capability}`}
+                        to={POLICY_HREF}
+                        aria-label={`Jump to policies — granted by ${row.grantedBy.scope}`}
+                      >
                         granted by <strong>{row.grantedBy.scope}</strong>
-                      </span>
+                      </Link>
                     )}
                     {row.deniedByAncestor && (
-                      <span className="ipp__chip ipp__chip--deny" data-testid={`ipp-deny-${row.capability}`}>
+                      <Link
+                        className="ipp__chip ipp__chip--deny"
+                        data-testid={`ipp-deny-${row.capability}`}
+                        to={POLICY_HREF}
+                        aria-label={`Jump to policies — denied by ${row.deniedByAncestor.scope}`}
+                      >
                         denied by <strong>{row.deniedByAncestor.scope}</strong>
-                      </span>
+                      </Link>
                     )}
                   </div>
                 </li>

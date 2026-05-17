@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { InheritedPermissionsPanel } from './InheritedPermissionsPanel'
@@ -17,7 +18,9 @@ function mockQuery<T>(partial: Partial<UseQueryResult<T, Error>>): UseQueryResul
 function renderPanel(agentId = 'aabbccdd00112233aabbccdd00112233') {
   return render(
     <QueryClientProvider client={makeClient()}>
-      <InheritedPermissionsPanel agentId={agentId} />
+      <MemoryRouter>
+        <InheritedPermissionsPanel agentId={agentId} />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -128,5 +131,21 @@ describe('InheritedPermissionsPanel — populated cascade', () => {
     renderPanel()
     expect(screen.getByTestId('ipp-allow-file_write')).toHaveTextContent('global')
     expect(screen.getByTestId('ipp-deny-file_write')).toHaveTextContent('team:platform')
+  })
+
+  it('renders granted-by and denied-by chips as Links to /policies', () => {
+    // AC: "granted-by-scope (clickable -> jumps to that policy)". The
+    // dashboard currently has only the /policies list page, so the chip
+    // navigates there for now. The link helper is centralised in the
+    // component; a follow-up will retarget to /policies/:id once the wire
+    // schema exposes a policy_id alongside scope.
+    renderPanel()
+    const allowChip = screen.getByTestId('ipp-allow-file_read')
+    expect(allowChip.tagName).toBe('A')
+    expect(allowChip).toHaveAttribute('href', '/policies')
+
+    const denyChip = screen.getByTestId('ipp-deny-file_write')
+    expect(denyChip.tagName).toBe('A')
+    expect(denyChip).toHaveAttribute('href', '/policies')
   })
 })
