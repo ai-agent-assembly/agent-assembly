@@ -21,6 +21,9 @@
 
 mod common;
 
+use std::process::Stdio;
+use std::time::Duration;
+
 use common::cli::CliFixture;
 use rstest::rstest;
 
@@ -217,6 +220,38 @@ async fn approvals_approve_unknown_id_errors() {
         !stderr.is_empty(),
         "stderr should describe the not-found error\nstderr:\n{stderr}",
     );
+}
+
+// =============================================================================
+// aasm approvals watch — streaming
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_watch_runs_until_killed() {
+    // Establishes that the `watch` subcommand wires the WebSocket connection
+    // and enters its event loop without crashing. The "≥N events" assertion
+    // from the AC is intentionally not made here — Rust's stdout is
+    // block-buffered to pipes and in-flight bytes are lost on kill (see the
+    // matching note on `cli_agent::agent_list_watch_runs_until_killed`).
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let mut child = fixture
+        .cmd()
+        .args(["approvals", "watch"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm approvals watch should spawn");
+
+    // Give the CLI enough time to open the WS connection and enter its loop.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        child.try_wait().expect("try_wait should work").is_none(),
+        "approvals watch should keep the process alive (not exit on its own)",
+    );
+
+    child.kill().expect("kill should succeed");
+    let _ = child.wait_with_output();
 }
 
 #[tokio::test(flavor = "multi_thread")]
