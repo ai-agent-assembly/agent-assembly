@@ -9,6 +9,7 @@ on:
     branches: [master]
     paths:
       - "aa-runtime/**"
+      - "docker/**"
       - ".github/workflows/docker.yml"
       - "!**/*.md"
       - "!**/LICENSE"
