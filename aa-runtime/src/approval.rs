@@ -225,14 +225,18 @@ pub enum ApprovalDecision {
 /// Errors returned by [`ApprovalQueue::decide`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApprovalError {
-    /// No pending request exists for the given ID (already resolved or never submitted).
+    /// No pending request exists for the given ID and it is not in the resolved history.
     NotFound,
+    /// The request has already been decided (approved, rejected, or timed out).
+    /// Distinct from `NotFound` so callers can return 409 Conflict rather than 404.
+    AlreadyDecided,
 }
 
 impl std::fmt::Display for ApprovalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => write!(f, "approval request not found"),
+            Self::AlreadyDecided => write!(f, "approval request has already been decided"),
         }
     }
 }
@@ -504,11 +508,24 @@ impl ApprovalQueue {
 
     /// Apply an [`ApprovalDecision`] to the request identified by `id`.
     ///
-    /// Returns `Err(ApprovalError::NotFound)` if no pending request exists for
-    /// `id` (already resolved, timed out, or never submitted).
+    /// Returns:
+    /// - `Ok(())` — decision applied successfully.
+    /// - `Err(ApprovalError::AlreadyDecided)` — the request exists in the
+    ///   resolved history (already approved, rejected, or timed out).
+    /// - `Err(ApprovalError::NotFound)` — the id is unknown (never submitted
+    ///   or evicted from the bounded resolved history).
     pub fn decide(&self, id: ApprovalRequestId, decision: ApprovalDecision) -> Result<(), ApprovalError> {
         if self.resolve(id, decision) {
-            Ok(())
+            return Ok(());
+        }
+        // Distinguish "already decided" (in resolved history) from "never submitted".
+        let in_history = self
+            .resolved_history
+            .lock()
+            .map(|g| g.iter().any(|r| r.request_id == id))
+            .unwrap_or(false);
+        if in_history {
+            Err(ApprovalError::AlreadyDecided)
         } else {
             Err(ApprovalError::NotFound)
         }
@@ -930,7 +947,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decide_after_resolve_returns_not_found() {
+    async fn decide_after_resolve_returns_already_decided() {
         let q = ApprovalQueue::new();
         let req = make_request(60);
         let id = req.request_id;
@@ -952,7 +969,7 @@ mod tests {
                 reason: "too late".to_string(),
             },
         );
-        assert_eq!(result, Err(ApprovalError::NotFound));
+        assert_eq!(result, Err(ApprovalError::AlreadyDecided));
     }
 
     #[tokio::test(start_paused = true)]
