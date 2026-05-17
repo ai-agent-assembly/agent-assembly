@@ -1,9 +1,16 @@
 //! HTTP client for fetching session traces from the gateway API.
+//!
+//! `aa-api` returns `TraceResponse { session_id, agent_id, spans }` — a
+//! flat list of spans linked via `parent_span_id`. The CLI renderer
+//! consumes a hierarchical [`SessionTrace`]. This module deserializes
+//! the wire shape into [`WireTraceResponse`] and converts to
+//! `SessionTrace` via the `From` impl in [`super::wire`] (AAASM-1475).
 
 use crate::config::ResolvedContext;
 use crate::error::CliError;
 
 use super::models::SessionTrace;
+use super::wire::WireTraceResponse;
 
 /// Build the full URL for the trace endpoint.
 pub fn build_trace_url(ctx: &ResolvedContext, session_id: &str) -> String {
@@ -21,6 +28,6 @@ pub async fn fetch_trace(ctx: &ResolvedContext, session_id: &str) -> Result<Sess
     }
 
     let response = request.send().await?.error_for_status()?;
-    let trace: SessionTrace = response.json().await?;
-    Ok(trace)
+    let wire: WireTraceResponse = response.json().await?;
+    Ok(SessionTrace::from(wire))
 }
