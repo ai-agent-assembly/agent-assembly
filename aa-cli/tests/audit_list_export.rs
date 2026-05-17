@@ -150,7 +150,7 @@ async fn audit_export_csv_returns_success() {
         let args = aa_cli::commands::audit::export::ExportArgs {
             format: aa_cli::commands::audit::models::ExportFormat::Csv,
             compliance: None,
-            output: None,
+            output_file: None,
             agent: None,
             action: None,
             result: None,
@@ -186,7 +186,7 @@ async fn audit_export_json_to_file_creates_output() {
         let args = aa_cli::commands::audit::export::ExportArgs {
             format: aa_cli::commands::audit::models::ExportFormat::Json,
             compliance: None,
-            output: Some(tmp_path),
+            output_file: Some(tmp_path),
             agent: None,
             action: None,
             result: None,
@@ -227,7 +227,7 @@ async fn audit_export_csv_with_compliance_header() {
         let args = aa_cli::commands::audit::export::ExportArgs {
             format: aa_cli::commands::audit::models::ExportFormat::Csv,
             compliance: Some(aa_cli::commands::audit::models::ComplianceFormat::EuAiAct),
-            output: Some(tmp_path),
+            output_file: Some(tmp_path),
             agent: None,
             action: None,
             result: None,
