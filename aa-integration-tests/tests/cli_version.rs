@@ -152,3 +152,60 @@ async fn version_build_metadata_field_shape() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn version_gateway_unreachable_degrades_gracefully() {
+    // Reserve a free port, then immediately release it. The kernel won't
+    // reassign it within the few seconds the test runs, so any connection
+    // to the URL will fast-refuse and `aasm version` should still exit 0
+    // with the gateway / api rows marked `unreachable`.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test should be able to bind to ephemeral port");
+    let port = listener.local_addr().expect("listener should have a local addr").port();
+    drop(listener);
+    let dead_url = format!("http://127.0.0.1:{port}");
+
+    let out = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "aa-cli",
+            "--bin",
+            "aasm",
+            "--",
+            "--api-url",
+            &dead_url,
+            "version",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm version should execute even against a dead gateway");
+    assert!(
+        out.status.success(),
+        "version should exit 0 even when the gateway is unreachable\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let v = parse_json(&out.stdout);
+    let rows = v.as_array().expect("version output should be a JSON array");
+    let gateway_row = rows
+        .iter()
+        .find(|row| row.get("component").and_then(|c| c.as_str()) == Some("gateway"))
+        .expect("gateway row should be present");
+    assert_eq!(
+        gateway_row["status"].as_str(),
+        Some("unreachable"),
+        "gateway row should report `unreachable` status\nrow:\n{gateway_row}",
+    );
+    let api_row = rows
+        .iter()
+        .find(|row| row.get("component").and_then(|c| c.as_str()) == Some("api"))
+        .expect("api row should be present");
+    assert_eq!(
+        api_row["status"].as_str(),
+        Some("unreachable"),
+        "api row should report `unreachable` status\nrow:\n{api_row}",
+    );
+}
