@@ -12,7 +12,10 @@ use aya_ebpf::{
 };
 
 use crate::helpers::{emit_event, get_pid_tgid, should_monitor};
-use crate::maps::{FD_PATH_MAP, OPENAT_ENTRY_TS, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST};
+use crate::maps::{
+    FD_PATH_MAP, OPENAT_ENTRY_TS, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST, READ_ENTRY_TS,
+    READ_TMP,
+};
 
 /// kprobe on `sys_openat` — captures the filename argument and stashes
 /// it in `OPENAT_TMP` keyed by `pid_tgid` so the kretprobe can pair it
@@ -122,7 +125,8 @@ fn try_sys_openat_ret(ctx: &RetProbeContext) -> Result<u32, u32> {
 }
 
 /// kprobe on `sys_read` — resolves the fd to a file path via
-/// `FD_PATH_MAP` and emits a read event.
+/// `FD_PATH_MAP`, stashes the path + entry timestamp keyed by
+/// `pid_tgid`, and defers event emission to the kretprobe.
 #[kprobe]
 pub fn aa_sys_read(ctx: ProbeContext) -> u32 {
     match try_sys_read(&ctx) {
@@ -132,7 +136,7 @@ pub fn aa_sys_read(ctx: ProbeContext) -> u32 {
 }
 
 fn try_sys_read(ctx: &ProbeContext) -> Result<u32, u32> {
-    let (tgid, pid) = get_pid_tgid();
+    let (tgid, _pid) = get_pid_tgid();
     if !should_monitor(tgid) {
         return Ok(0);
     }
@@ -141,13 +145,39 @@ fn try_sys_read(ctx: &ProbeContext) -> Result<u32, u32> {
     let fd: u64 = ctx.arg(0).ok_or(1u32)?;
     let key = FdPathKey { pid: tgid, fd };
 
+    // Resolve the path now (fd is only available at entry). If the fd
+    // wasn't opened through our openat probe we have nothing to record.
     let path = unsafe { FD_PATH_MAP.get(&key).ok_or(1u32)? };
 
-    // Allowlist: if the path is explicitly allowed, suppress the event.
-    if unsafe { PATH_ALLOWLIST.get(path).is_some() } {
+    let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
+    let _ = READ_TMP.insert(&pid_tgid, path, 0);
+
+    let entry_ts = unsafe { bpf_ktime_get_ns() };
+    let _ = READ_ENTRY_TS.insert(&pid_tgid, &entry_ts, 0);
+
+    Ok(0)
+}
+
+/// kretprobe on `sys_read` — pairs the resolved path stashed by the
+/// entry kprobe with the syscall return code, computes the end-to-end
+/// duration, checks the path lists, and emits a `FileIoEventRaw`.
+#[kretprobe]
+pub fn aa_sys_read_ret(ctx: RetProbeContext) -> u32 {
+    match try_sys_read_ret(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_sys_read_ret(ctx: &RetProbeContext) -> Result<u32, u32> {
+    let (tgid, pid) = get_pid_tgid();
+    if !should_monitor(tgid) {
         return Ok(0);
     }
 
+    let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
+
+    let path = unsafe { READ_TMP.get(&pid_tgid).ok_or(1u32)? };
     let mut event = FileIoEventRaw {
         pid: tgid,
         tid: pid,
@@ -158,6 +188,23 @@ fn try_sys_read(ctx: &ProbeContext) -> Result<u32, u32> {
         duration_ns: 0,
         path: *path,
     };
+
+    if let Some(&entry_ts) = unsafe { READ_ENTRY_TS.get(&pid_tgid) } {
+        let now = unsafe { bpf_ktime_get_ns() };
+        event.duration_ns = now.saturating_sub(entry_ts);
+        let _ = READ_ENTRY_TS.remove(&pid_tgid);
+    }
+
+    let _ = READ_TMP.remove(&pid_tgid);
+
+    // rc is bytes read (>= 0) or negative errno.
+    let rc: i64 = ctx.ret().ok_or(1u32)?;
+    event.return_code = rc;
+
+    // Allowlist: if the path is explicitly allowed, suppress the event.
+    if unsafe { PATH_ALLOWLIST.get(&event.path).is_some() } {
+        return Ok(0);
+    }
 
     if unsafe { PATH_BLOCKLIST.get(&event.path).is_some() } {
         event.flags = 1;
