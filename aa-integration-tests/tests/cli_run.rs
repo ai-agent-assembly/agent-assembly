@@ -31,6 +31,8 @@
 
 use std::process::Command;
 
+use rstest::rstest;
+
 /// Build a fresh `cargo run` command for `aasm run …` invocations. Inherits
 /// the integration-test crate's cargo so the workspace lockfile is reused.
 fn aasm_cmd() -> Command {
@@ -79,5 +81,41 @@ fn run_without_positional_tool_fails_with_clap_usage_error() {
     assert!(
         stderr.contains("required") || stderr.contains("Usage"),
         "stderr should surface a clap usage error:\n{stderr}",
+    );
+}
+
+// =============================================================================
+// aasm run <tool> --dry-run
+// =============================================================================
+
+#[rstest]
+#[case::claude("claude")]
+#[case::codex("codex")]
+#[case::copilot("copilot")]
+#[case::windsurf("windsurf")]
+fn run_dry_run_succeeds_for_every_supported_tool(#[case] tool: &str) {
+    let out = aasm_cmd()
+        .args(["run", tool, "--dry-run"])
+        .output()
+        .expect("aasm run <tool> --dry-run should execute");
+
+    assert!(
+        out.status.success(),
+        "{tool} --dry-run should exit 0; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--- aasm run dry-run ---"),
+        "{tool} --dry-run should print the dry-run banner:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("--- launch command ---"),
+        "{tool} --dry-run should print the launch command section:\n{stdout}",
+    );
+    assert!(
+        stdout.contains(tool),
+        "{tool} --dry-run plan should name the tool in the launch command:\n{stdout}",
     );
 }
