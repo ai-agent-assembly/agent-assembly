@@ -203,11 +203,40 @@ describe('ServiceIdentitiesPanel — revoke', () => {
 })
 
 describe('ServiceIdentitiesPanel — rotate', () => {
-  it('confirms before rotating, then reveals the replacement key one-shot secret', async () => {
-    const rotateSpy = vi.fn().mockResolvedValue({
-      id: 'gen-rotated-1',
-      prefix: 'aa_live_zzzz',
-      secret: 'aa_live_zzzz_freshlyminted9999',
+  it('confirms before rotating, reveals the replacement key one-shot secret, and transitions the source row to revoked', async () => {
+    // Stateful override: when rotate is called for `key-1`, the next list
+    // refetch must show key-1 as `revoked` and a new entry with the new id /
+    // prefix as `active` — matching the contract the gateway provides.
+    const rotatedFrom = new Set<string>()
+    let newEntryId: string | null = null
+    let newEntryPrefix: string | null = null
+    _apiKeysInternal.setListOverride(() => {
+      const seed = _apiKeysInternal.seedSnapshot()
+      const transformed = seed.map((k) =>
+        rotatedFrom.has(k.id) ? { ...k, status: 'revoked' as const } : k,
+      )
+      if (newEntryId && newEntryPrefix) {
+        const source = seed.find((k) => rotatedFrom.has(k.id))
+        if (source) {
+          transformed.unshift({
+            ...source,
+            id: newEntryId,
+            prefix: newEntryPrefix,
+            status: 'active',
+          })
+        }
+      }
+      return Promise.resolve(transformed)
+    })
+    const rotateSpy = vi.fn(async (id: string) => {
+      rotatedFrom.add(id)
+      newEntryId = 'gen-rotated-1'
+      newEntryPrefix = 'aa_live_zzzz'
+      return {
+        id: 'gen-rotated-1',
+        prefix: 'aa_live_zzzz',
+        secret: 'aa_live_zzzz_freshlyminted9999',
+      }
     })
     _apiKeysInternal.setRotateOverride(rotateSpy)
 
@@ -233,6 +262,18 @@ describe('ServiceIdentitiesPanel — rotate', () => {
     expect(modal).toBeInTheDocument()
     const secret = screen.getByTestId('reveal-once-secret') as HTMLInputElement
     expect(secret.value).toBe('aa_live_zzzz_freshlyminted9999')
+
+    // The source row transitions to revoked (no rotate / revoke buttons),
+    // and the replacement row appears with the new prefix.
+    await waitFor(() =>
+      expect(screen.queryByTestId('api-key-rotate-key-1')).not.toBeInTheDocument(),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument(),
+    )
+    expect(
+      screen.getByTestId('api-key-row-gen-rotated-1').textContent,
+    ).toContain('aa_live_zzzz')
   })
 
   it('surfaces a failure via toast and closes the confirm without revealing', async () => {
