@@ -50,6 +50,7 @@ pub fn v1_router() -> Router {
         .route("/policies/active", get(policies::get_active_policy))
         // Approvals
         .route("/approvals", get(approvals::list_approvals))
+        .route("/approvals/{id}", get(approvals::get_approval))
         .route("/approvals/{id}/approve", post(approvals::approve_action))
         .route("/approvals/{id}/reject", post(approvals::reject_action))
         // Costs

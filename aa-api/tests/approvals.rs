@@ -190,3 +190,106 @@ async fn approve_action_returns_400_for_invalid_uuid() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+// =============================================================================
+// GET /api/v1/approvals/:id (AAASM-1477)
+// =============================================================================
+
+#[tokio::test]
+async fn get_approval_returns_pending_when_id_is_in_queue() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id.to_string();
+    let (_rid, _fut) = state.approval_queue.submit(req);
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/approvals/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], id);
+    assert_eq!(json["status"], "pending");
+    assert_eq!(json["agent_id"], "test-agent");
+}
+
+#[tokio::test]
+async fn get_approval_returns_resolved_after_decide() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let uuid = req.request_id;
+    let id = uuid.to_string();
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    state
+        .approval_queue
+        .decide(
+            uuid,
+            aa_runtime::approval::ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: Some("looks good".to_string()),
+            },
+        )
+        .expect("decide should succeed");
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/approvals/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["id"], id);
+    assert_eq!(json["status"], "approved");
+    assert_eq!(json["agent_id"], "test-agent");
+    // `expires_at` is intentionally empty for resolved records.
+    assert_eq!(json["expires_at"], "");
+}
+
+#[tokio::test]
+async fn get_approval_returns_404_for_unknown_id() {
+    let app = common::test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/approvals/{}", uuid::Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_approval_returns_400_for_invalid_uuid() {
+    let app = common::test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/approvals/not-a-uuid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

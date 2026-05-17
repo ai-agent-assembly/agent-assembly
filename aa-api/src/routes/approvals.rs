@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use aa_runtime::approval::ApprovalDecision;
+use aa_runtime::approval::{ApprovalDecision, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
 
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
@@ -77,6 +77,65 @@ pub struct ApprovalResponse {
     pub team_id: Option<String>,
 }
 
+/// Render a `PendingApprovalRequest` (returned by `ApprovalQueue::list`)
+/// as the wire-format `ApprovalResponse` consumed by the dashboard and CLI.
+/// Factored out so `list_approvals`, `get_approval`, and any future handler
+/// share one mapping path.
+fn pending_to_response(p: PendingApprovalRequest) -> ApprovalResponse {
+    let routing_status = p.routing_status.map(|status| RoutingStatusInfo {
+        status,
+        target_team_id: p.team_id.clone(),
+        target_role: p.target_role,
+        escalate_at: p.escalate_at,
+        routed_at: p.routed_at,
+        history: p
+            .routing_history
+            .into_iter()
+            .map(|e| RoutingHistoryEntry {
+                at: e.at,
+                action: e.action,
+                from_role: e.from_role,
+                to_role: e.to_role,
+            })
+            .collect(),
+    });
+    ApprovalResponse {
+        id: p.request_id.to_string(),
+        agent_id: p.agent_id,
+        action: p.action,
+        reason: p.condition_triggered,
+        status: "pending".to_string(),
+        created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        expires_at: chrono::DateTime::from_timestamp(p.submitted_at.saturating_add(p.timeout_secs) as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        routing_status,
+        team_id: p.team_id,
+    }
+}
+
+/// Render a `ResolvedRecord` (returned by `ApprovalQueue::get_by_id` or
+/// `list_resolved`) as the wire-format `ApprovalResponse`. `expires_at`
+/// is intentionally left empty for resolved entries — the field semantically
+/// only applies to pending requests; see [`ApprovalResponse::expires_at`].
+fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
+    ApprovalResponse {
+        id: r.request_id.to_string(),
+        agent_id: r.agent_id,
+        action: r.action,
+        reason: r.condition_triggered,
+        status: r.status,
+        created_at: chrono::DateTime::from_timestamp(r.submitted_at as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        expires_at: String::new(),
+        routing_status: None,
+        team_id: r.team_id,
+    }
+}
+
 /// `GET /api/v1/approvals` — list pending approval requests.
 ///
 /// List pending human-in-the-loop approval requests with pagination.
@@ -100,40 +159,7 @@ pub async fn list_approvals(
         .into_iter()
         .skip(params.offset())
         .take(params.per_page() as usize)
-        .map(|p| {
-            let routing_status = p.routing_status.map(|status| RoutingStatusInfo {
-                status,
-                target_team_id: p.team_id.clone(),
-                target_role: p.target_role,
-                escalate_at: p.escalate_at,
-                routed_at: p.routed_at,
-                history: p
-                    .routing_history
-                    .into_iter()
-                    .map(|e| RoutingHistoryEntry {
-                        at: e.at,
-                        action: e.action,
-                        from_role: e.from_role,
-                        to_role: e.to_role,
-                    })
-                    .collect(),
-            });
-            ApprovalResponse {
-                id: p.request_id.to_string(),
-                agent_id: p.agent_id,
-                action: p.action,
-                reason: p.condition_triggered,
-                status: "pending".to_string(),
-                created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                expires_at: chrono::DateTime::from_timestamp(p.submitted_at.saturating_add(p.timeout_secs) as i64, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                routing_status,
-                team_id: p.team_id,
-            }
-        })
+        .map(pending_to_response)
         .collect();
 
     (
@@ -145,6 +171,41 @@ pub async fn list_approvals(
             total: total as u64,
         }),
     )
+}
+
+/// `GET /api/v1/approvals/:id` — look up a single approval by ID.
+///
+/// Returns the request whether it is currently pending or has been
+/// resolved (approved / rejected / timed-out). Resolved entries come
+/// from a bounded in-memory history (default cap 1000) — older entries
+/// may have been evicted under load.
+#[utoipa::path(
+    get,
+    path = "/api/v1/approvals/{id}",
+    params(("id" = String, Path, description = "Approval request identifier")),
+    responses(
+        (status = 200, description = "Approval found", body = ApprovalResponse),
+        (status = 404, description = "Approval request not found or evicted from history")
+    ),
+    tag = "approvals"
+)]
+pub async fn get_approval(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+
+    let resp = match state.approval_queue.get_by_id(uuid) {
+        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
+        Some(ApprovalLookup::Resolved(r)) => resolved_to_response(r),
+        None => {
+            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("Approval request not found: {id}")));
+        }
+    };
+
+    Ok((StatusCode::OK, Json(resp)))
 }
 
 /// `POST /api/v1/approvals/:id/approve` — approve a pending action.
