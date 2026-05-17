@@ -54,6 +54,7 @@ async fn audit_list_happy_path_renders_table_with_seeded_events() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let agent_hex = CliFixture::hex_id(&agent);
     assert!(
         stdout.contains("TIMESTAMP"),
         "table header missing TIMESTAMP; got:\n{stdout}"
@@ -61,9 +62,12 @@ async fn audit_list_happy_path_renders_table_with_seeded_events() {
     assert!(stdout.contains("ACTION"), "table header missing ACTION; got:\n{stdout}");
     assert!(
         stdout.contains("ToolCallIntercepted"),
-        "event_type row missing; got:\n{stdout}"
+        "seeded event_type row missing; got:\n{stdout}"
     );
-    assert!(stdout.contains("bash"), "seeded tool name missing; got:\n{stdout}");
+    assert!(
+        stdout.contains(&agent_hex),
+        "seeded agent_id missing from stdout; got:\n{stdout}"
+    );
 }
 
 #[rstest]
