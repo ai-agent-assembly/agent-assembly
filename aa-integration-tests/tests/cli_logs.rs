@@ -33,6 +33,9 @@
 
 mod common;
 
+use std::process::Stdio;
+use std::time::Duration;
+
 use aa_core::audit::AuditEventType;
 use common::cli::CliFixture;
 use rstest::rstest;
@@ -288,6 +291,49 @@ async fn logs_combined_filters_narrow_correctly() {
     for e in &entries {
         assert_eq!(e["agent_id"], agent_a_hex);
     }
+}
+
+// =============================================================================
+// aasm logs --follow (streaming mode)
+// =============================================================================
+
+// Follows the cli_agent.rs `--watch` precedent (cli_agent.rs:155-179): spawn
+// the streaming command, give it ~1.5 s to connect to the WS endpoint and
+// enter its event loop, assert it stays alive (didn't exit on its own with
+// an error), then SIGTERM and `wait_with_output()` so no zombie leaks
+// between tests. We deliberately do not assert on stdout-event count — Rust
+// stdout is block-buffered to pipes and the in-flight bytes are lost on
+// SIGKILL, which is why cli_agent.rs documents the strict-count assertion as
+// flaky. The 3 s ticket-AC budget is preserved (we cap at 1.5 s + tear-down).
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_follow_runs_until_killed() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let mut child = fixture
+        .cmd()
+        .args(["logs", "--follow", "--output", "json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("aasm logs --follow should spawn");
+
+    // Let the WebSocket connect and the stream loop enter — cli_agent.rs uses
+    // the same 1500 ms budget for `--watch`.
+    std::thread::sleep(Duration::from_millis(1500));
+    let alive = child.try_wait().expect("try_wait should work").is_none();
+    if !alive {
+        let out = child.wait_with_output().unwrap_or_else(|_| std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: vec![],
+            stderr: vec![],
+        });
+        panic!(
+            "--follow exited prematurely; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    child.kill().expect("kill should succeed");
+    let _ = child.wait_with_output();
 }
 
 #[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
