@@ -617,3 +617,35 @@ async fn dashboard_start_invalid_gateway_url() {
 
     let _ = reap_child(child);
 }
+
+// ============================================================================
+// aasm dashboard open — CLI smoke only (AAASM-1481)
+// ============================================================================
+
+// We intentionally do NOT invoke `aasm dashboard open` for real: it tries
+// to launch the system browser via `open::that(...)`, which is unreliable
+// (and disruptive) in CI runners and on local-developer machines alike.
+// The `--help` banner is enough to pin the clap parser surface and catch
+// accidental flag renames; the `open.rs` reachability+launch path is
+// covered indirectly by its own unit tests in `aa-cli`.
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_open_help_lists_flags() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let out = fixture
+        .cmd()
+        .args(["dashboard", "open", "--help"])
+        .output()
+        .expect("aasm dashboard open --help should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--port"),
+        "open --help banner should list the --port flag; got:\n{stdout}",
+    );
+}
