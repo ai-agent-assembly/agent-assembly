@@ -39,7 +39,7 @@ use aa_api::events::EventBroadcast;
 use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
-use aa_api::trace_store::InMemoryTraceStore;
+use aa_api::trace_store::{InMemoryTraceStore, TraceStore};
 use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
@@ -63,6 +63,13 @@ pub struct TopologyTestEnv {
     /// test just checks the HTTP plane.
     #[allow(dead_code)]
     pub agent_registry: Arc<AgentRegistry>,
+    /// Shared trace store. Exposed so the `aasm trace` CLI integration
+    /// tests (AAASM-1468 / ST-12) can seed session spans directly into
+    /// the same store the HTTP route reads from — the gateway exposes
+    /// no HTTP route for span ingestion, so direct insertion is the
+    /// test-only equivalent (same pattern as `agent_registry`).
+    #[allow(dead_code)]
+    pub trace_store: Arc<dyn TraceStore>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -79,6 +86,7 @@ impl TopologyTestEnv {
     pub async fn start() -> anyhow::Result<Self> {
         let state = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -99,6 +107,7 @@ impl TopologyTestEnv {
         let env = Self {
             addr: bound_addr,
             agent_registry,
+            trace_store,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
