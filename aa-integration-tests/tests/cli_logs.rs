@@ -224,6 +224,72 @@ async fn logs_limit_caps_returned_entries() {
     assert_eq!(entries.len(), 3, "--limit 3 should cap output to 3 entries");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_combined_filters_narrow_correctly() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agents = fixture.seed_agents(2);
+    let (agent_a, agent_b) = (agents[0], agents[1]);
+
+    let now_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let two_hours_ns: u64 = 2 * 60 * 60 * 1_000_000_000;
+    // Agent A: 2 old (2 h ago) + 3 recent.
+    for i in 0..2 {
+        fixture
+            .seed_audit_event(
+                now_ns - two_hours_ns + i,
+                agent_a,
+                AuditEventType::PolicyViolation,
+                "a-old",
+            )
+            .unwrap();
+    }
+    for i in 0..3 {
+        fixture
+            .seed_audit_event(
+                now_ns - (3 - i) * 1_000_000_000,
+                agent_a,
+                AuditEventType::PolicyViolation,
+                "a-new",
+            )
+            .unwrap();
+    }
+    // Agent B: 2 recent — should be excluded by --agent <A>.
+    fixture
+        .seed_audit_events(2, agent_b, AuditEventType::PolicyViolation)
+        .unwrap();
+
+    let agent_a_hex = CliFixture::hex_id(&agent_a);
+    // `--type violation` is included for matrix coverage; per AAASM-1476 it
+    // is a no-op against the audit reader, so the binding filters here are
+    // `--agent` (server-side) and `--since` (client-side trim).
+    let out = fixture
+        .cmd()
+        .args([
+            "logs",
+            "--agent",
+            &agent_a_hex,
+            "--type",
+            "violation",
+            "--since",
+            "30m",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("aasm logs combined filters should execute");
+    assert!(out.status.success());
+    let entries = parse_jsonl(&out.stdout);
+    assert_eq!(
+        entries.len(),
+        3,
+        "agent A + last 30 minutes should match the 3 recent A-violations"
+    );
+    for e in &entries {
+        assert_eq!(e["agent_id"], agent_a_hex);
+    }
+}
+
 #[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_only_returns_matching() {
