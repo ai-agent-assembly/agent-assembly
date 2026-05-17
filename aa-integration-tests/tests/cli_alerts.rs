@@ -85,3 +85,24 @@ async fn alerts_list_succeeds_for_every_output_format(#[case] fmt: &str) {
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_json_and_yaml_describe_the_same_record_set() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_alert(80, [0x11; 16]);
+    fixture.seed_alert(95, [0x22; 16]);
+
+    let json_out = fixture
+        .cmd()
+        .args(["alerts", "list", "--output", "json"])
+        .output()
+        .expect("json call should execute");
+    let yaml_out = fixture
+        .cmd()
+        .args(["alerts", "list", "--output", "yaml"])
+        .output()
+        .expect("yaml call should execute");
+    assert!(json_out.status.success() && yaml_out.status.success());
+
+    common::format::assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "id");
+}
