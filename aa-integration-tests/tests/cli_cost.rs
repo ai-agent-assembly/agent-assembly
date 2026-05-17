@@ -131,3 +131,36 @@ async fn cost_summary_period_month_switches_rendered_label() {
         "section header should carry the period label\nstdout:\n{stdout}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_summary_group_by_agent_renders_per_agent_table_after_seed() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    // Seed one agent with $8.10 of spend so the per-agent table has at
+    // least one row to render. Without seeded spend, `render_agent_table`
+    // is skipped (early-return on empty `per_agent`).
+    let agent_id = fixture.seed_agents(1)[0];
+    fixture.seed_cost_sample(agent_id, Some("topology-it"), "8.10");
+
+    let out = fixture
+        .cmd()
+        .args(["cost", "summary", "--group-by", "agent"])
+        .output()
+        .expect("aasm cost summary --group-by agent should execute");
+    assert!(
+        out.status.success(),
+        "should exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("AGENT_ID"),
+        "--group-by agent should render the per-agent table header `AGENT_ID`\nstdout:\n{stdout}",
+    );
+    assert!(
+        stdout.contains("DAILY_SPEND"),
+        "per-agent table should include `DAILY_SPEND` column\nstdout:\n{stdout}",
+    );
+}
