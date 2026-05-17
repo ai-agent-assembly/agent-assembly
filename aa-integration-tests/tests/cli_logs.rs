@@ -170,6 +170,42 @@ async fn logs_type_filter_smoke_accepts_flag_and_returns_matching() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_since_filter_only_returns_recent() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent = fixture.seed_agents(1)[0];
+
+    let now_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let two_hours_ns: u64 = 2 * 60 * 60 * 1_000_000_000;
+    // 2 events in the past (2 h ago) — should be excluded by --since 30m.
+    for i in 0..2 {
+        fixture
+            .seed_audit_event(now_ns - two_hours_ns + i, agent, AuditEventType::PolicyViolation, "old")
+            .expect("seed old should succeed");
+    }
+    // 3 events in the last few seconds — should be included.
+    for i in 0..3 {
+        fixture
+            .seed_audit_event(
+                now_ns - (3 - i) * 1_000_000_000,
+                agent,
+                AuditEventType::PolicyViolation,
+                "new",
+            )
+            .expect("seed new should succeed");
+    }
+
+    let out = fixture
+        .cmd()
+        .args(["logs", "--since", "30m", "--output", "json"])
+        .output()
+        .expect("aasm logs --since should execute");
+    assert!(out.status.success());
+    let entries = parse_jsonl(&out.stdout);
+    assert_eq!(entries.len(), 3, "only the 3 recent events should pass --since 30m");
+}
+
 #[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_only_returns_matching() {
