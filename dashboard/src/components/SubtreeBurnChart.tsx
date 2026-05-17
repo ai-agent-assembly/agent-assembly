@@ -1,11 +1,14 @@
 /**
  * AAASM-1055 (F100) — Subtree budget-burn stacked-area chart.
  *
- * Consumes `GET /api/v1/agents/{id}/subtree-burn` (preview endpoint that
- * currently returns a single data point for today; the chart renders
- * whatever `points.length` is). One `<Area>` per direct child stacks the
- * per-child contributions; the tooltip shows child name, period spend,
- * and the percent of subtree total for that day.
+ * Consumes `GET /api/v1/agents/{id}/subtree-burn`, which returns a dense
+ * time series (one point per day in the requested window, 7d / 30d) sourced
+ * from `BudgetTracker::agent_spend_history`. One `<Area>` per direct child
+ * stacks the per-child contributions; an overlaid `<Line>` shows the
+ * aggregate subtree total. The tooltip surfaces child name, period spend,
+ * and percent of subtree total for the hovered day. The chart is mounted
+ * via `React.lazy` from `AgentDetailPage` so its Recharts bundle isn't
+ * paid up front by callers that never open the Overview tab.
  */
 import { useMemo, useState } from 'react'
 import {
