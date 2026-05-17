@@ -73,6 +73,20 @@
   opacity: 0.55;
 }
 
+/* AAASM-1396 — selectable row hover + selected highlight */
+.iam-api-key-list__row--clickable {
+  cursor: pointer;
+}
+
+.iam-api-key-list__row--clickable:hover {
+  background: var(--shell-surface-subtle);
+}
+
+.iam-api-key-list__row--selected {
+  background: var(--shell-surface-subtle);
+  box-shadow: inset 3px 0 0 0 var(--button-primary-bg);
+}
+
 .iam-api-key-list__error {
   display: flex;
   align-items: center;

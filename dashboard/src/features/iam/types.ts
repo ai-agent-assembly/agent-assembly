@@ -43,6 +43,22 @@ export type ApiKeyScope = (typeof API_KEY_SCOPES)[number]
 export const API_KEY_STATUSES = ['active', 'revoked'] as const
 export type ApiKeyStatus = (typeof API_KEY_STATUSES)[number]
 
+/**
+ * One entry in the "Recent activity" timeline shown in IdentityDetailCard
+ * (AAASM-1396). Until the gateway exposes per-identity audit-event queries,
+ * these are seeded inline alongside the ApiKey record.
+ */
+export interface RecentActivityEntry {
+  /** Stable id for React key + test lookup. */
+  id: string
+  /** ISO 8601 timestamp. */
+  timestamp: string
+  /** Short verb like "called", "rotated", "scoped". */
+  action: string
+  /** Human-readable target (e.g. "GET /api/v1/agents", "key rotated by alice"). */
+  target: string
+}
+
 export interface ApiKey {
   id: string
   label: string
@@ -51,6 +67,14 @@ export interface ApiKey {
   status: ApiKeyStatus
   created_at: string
   last_used: string | null
+  /**
+   * AAASM-1396 IdentityDetailCard fields. Backed by the in-memory store
+   * until `/v1/iam/api-keys` lands; defaults are seeded in apiKeys.ts.
+   */
+  owner: string
+  role: string
+  assigned_policies: string[]
+  recent_activity: RecentActivityEntry[]
 }
 
 export interface GenerateApiKeyInput {

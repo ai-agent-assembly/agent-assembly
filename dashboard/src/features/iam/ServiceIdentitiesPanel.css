@@ -34,3 +34,33 @@
   color: var(--alert-banner-text);
   margin-bottom: 1rem;
 }
+
+/* AAASM-1396 — side-by-side list + IdentityDetailCard layout.
+   Mirrors the proportions used by RolesPermissionsPanel. */
+
+.iam-services-panel__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  gap: 1rem;
+}
+
+.iam-services-panel__list,
+.iam-services-panel__detail {
+  min-width: 0;
+}
+
+.iam-services-panel__hint {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--shell-text-muted);
+  font-size: 0.85rem;
+  border: 1px dashed var(--shell-border-subtle);
+  border-radius: 0.5rem;
+  background: var(--shell-surface-subtle);
+}
+
+@media (max-width: 60rem) {
+  .iam-services-panel__layout {
+    grid-template-columns: 1fr;
+  }
+}
