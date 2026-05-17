@@ -62,6 +62,7 @@ use crate::routes::{
         policies::create_policy,
         policies::get_active_policy,
         approvals::list_approvals,
+        approvals::get_approval,
         approvals::approve_action,
         approvals::reject_action,
         costs::get_cost_summary,

@@ -219,7 +219,7 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
     let mut state = InteractiveState::new();
 
     // Pre-populate with current pending approvals.
-    if let Ok(paginated) = client::list_approvals(ctx).await {
+    if let Ok(paginated) = client::list_approvals(ctx, None, None).await {
         state.items = paginated.items;
         state.dirty = true;
     }

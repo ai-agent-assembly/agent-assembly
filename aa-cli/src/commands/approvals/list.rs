@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use chrono::Utc;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use comfy_table::{Cell, Color, Table};
 
 use crate::config::ResolvedContext;
@@ -13,12 +13,42 @@ use super::client;
 
 use super::models::{compute_timeout_color, format_countdown, ApprovalResponse, TimeoutColor};
 
+/// Approval lifecycle status filter for `aasm approvals list --status` (AAASM-1477).
+///
+/// `Pending` is the default when `--status` is omitted. `Approved` /
+/// `Rejected` query the resolved history (bounded; default cap 1000 entries
+/// — older decisions may have been evicted on a busy gateway).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ApprovalStatusFilter {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl ApprovalStatusFilter {
+    /// Lowercase wire-format value sent on the `?status=` query param.
+    pub fn as_query_value(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 /// Arguments for the `aasm approvals list` subcommand.
 #[derive(Debug, Args)]
 pub struct ListArgs {
     /// Output format override for this subcommand.
     #[arg(long, value_enum)]
     pub output: Option<OutputFormat>,
+    /// Filter by approval status: `pending`, `approved`, or `rejected`.
+    /// Omitted ⇒ pending only (matches pre-AAASM-1477 behavior).
+    #[arg(long, value_enum)]
+    pub status: Option<ApprovalStatusFilter>,
+    /// Filter to approvals submitted by this agent id (exact match).
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 /// Render a list of approval responses as a colored table to stdout.
@@ -58,7 +88,8 @@ pub fn render_approvals_table(items: &[ApprovalResponse], now_epoch: i64) {
 /// Execute the `aasm approvals list` subcommand.
 pub fn run_list(args: ListArgs, ctx: &ResolvedContext, global_output: OutputFormat) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let result = rt.block_on(client::list_approvals(ctx));
+    let status = args.status.map(|s| s.as_query_value());
+    let result = rt.block_on(client::list_approvals(ctx, status, args.agent.as_deref()));
 
     match result {
         Ok(paginated) => {

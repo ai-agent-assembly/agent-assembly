@@ -483,40 +483,89 @@ paths:
     get:
       tags:
       - approvals
-      summary: '`GET /api/v1/approvals` — list pending approval requests.'
-      description: List pending human-in-the-loop approval requests with pagination.
+      summary: '`GET /api/v1/approvals` — list approval requests with optional filters.'
+      description: |-
+        Without `status` returns pending requests only (backwards-compatible).
+        With `status=PENDING|APPROVED|REJECTED` (case-insensitive) returns the
+        matching slice. The `agent` filter narrows by `agent_id` exact match
+        across both states.
       operationId: list_approvals
       parameters:
       - name: page
         in: query
-        description: Page number (1-indexed). Defaults to 1.
+        description: Page number (1-indexed). Same semantics as [`PaginationParams::page`].
         required: false
         schema:
           type:
           - integer
           - 'null'
           format: int32
-          minimum: 1
+          minimum: 0
       - name: per_page
         in: query
-        description: Items per page (max 100). Defaults to 50.
+        description: Items per page. Same semantics as [`PaginationParams::per_page`].
         required: false
         schema:
           type:
           - integer
           - 'null'
           format: int32
-          maximum: 100
-          minimum: 1
+          minimum: 0
+      - name: status
+        in: query
+        description: |-
+          Filter by approval status: `pending` | `approved` | `rejected`
+          (case-insensitive). When absent, returns pending requests only —
+          matches the pre-AAASM-1477 contract.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agent
+        in: query
+        description: Filter by `agent_id` exact match.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
       responses:
         '200':
-          description: Paginated list of pending approvals
+          description: Paginated list of approvals
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/ApprovalResponse'
+  /api/v1/approvals/{id}:
+    get:
+      tags:
+      - approvals
+      summary: '`GET /api/v1/approvals/:id` — look up a single approval by ID.'
+      description: |-
+        Returns the request whether it is currently pending or has been
+        resolved (approved / rejected / timed-out). Resolved entries come
+        from a bounded in-memory history (default cap 1000) — older entries
+        may have been evicted under load.
+      operationId: get_approval
+      parameters:
+      - name: id
+        in: path
+        description: Approval request identifier
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Approval found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '404':
+          description: Approval request not found or evicted from history
   /api/v1/approvals/{id}/approve:
     post:
       tags:

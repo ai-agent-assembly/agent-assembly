@@ -7,11 +7,59 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use aa_runtime::approval::ApprovalDecision;
+use aa_runtime::approval::{ApprovalDecision, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
+use utoipa::IntoParams;
 
 use crate::error::ProblemDetail;
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginatedResponse;
 use crate::state::AppState;
+
+/// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
+///
+/// Adds `status` and `agent` filters on top of [`PaginationParams`].
+///
+/// * `status` is case-insensitive; accepted values are `pending`,
+///   `approved`, `rejected`. Omitted ⇒ pending-only (backwards-compatible).
+/// * `agent` matches `agent_id` exactly across both pending and resolved.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct ListApprovalsParams {
+    /// Page number (1-indexed). Same semantics as [`PaginationParams::page`].
+    pub page: Option<u32>,
+    /// Items per page. Same semantics as [`PaginationParams::per_page`].
+    pub per_page: Option<u32>,
+    /// Filter by approval status: `pending` | `approved` | `rejected`
+    /// (case-insensitive). When absent, returns pending requests only —
+    /// matches the pre-AAASM-1477 contract.
+    pub status: Option<String>,
+    /// Filter by `agent_id` exact match.
+    pub agent: Option<String>,
+}
+
+impl ListApprovalsParams {
+    /// 1-indexed page number, defaulting to 1.
+    pub fn page(&self) -> u32 {
+        self.page.unwrap_or(1).max(1)
+    }
+    /// Items per page, clamped to [1, 100].
+    pub fn per_page(&self) -> u32 {
+        self.per_page.unwrap_or(20).clamp(1, 100)
+    }
+    /// Offset = (page-1) * per_page.
+    pub fn offset(&self) -> usize {
+        ((self.page() - 1) * self.per_page()) as usize
+    }
+    /// Normalize the optional status string to one of the canonical
+    /// lower-case values used internally (`"pending"`, `"approved"`,
+    /// `"rejected"`). Returns `None` for absent/empty inputs and `Some(_)`
+    /// for any other value (so unknown statuses just return empty rather
+    /// than erroring — matches the established CLI tolerance pattern).
+    pub fn normalized_status(&self) -> Option<String> {
+        self.status
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+    }
+}
 
 /// One step in the routing history of an approval request.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -77,63 +125,114 @@ pub struct ApprovalResponse {
     pub team_id: Option<String>,
 }
 
-/// `GET /api/v1/approvals` — list pending approval requests.
+/// Render a `PendingApprovalRequest` (returned by `ApprovalQueue::list`)
+/// as the wire-format `ApprovalResponse` consumed by the dashboard and CLI.
+/// Factored out so `list_approvals`, `get_approval`, and any future handler
+/// share one mapping path.
+fn pending_to_response(p: PendingApprovalRequest) -> ApprovalResponse {
+    let routing_status = p.routing_status.map(|status| RoutingStatusInfo {
+        status,
+        target_team_id: p.team_id.clone(),
+        target_role: p.target_role,
+        escalate_at: p.escalate_at,
+        routed_at: p.routed_at,
+        history: p
+            .routing_history
+            .into_iter()
+            .map(|e| RoutingHistoryEntry {
+                at: e.at,
+                action: e.action,
+                from_role: e.from_role,
+                to_role: e.to_role,
+            })
+            .collect(),
+    });
+    ApprovalResponse {
+        id: p.request_id.to_string(),
+        agent_id: p.agent_id,
+        action: p.action,
+        reason: p.condition_triggered,
+        status: "pending".to_string(),
+        created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        expires_at: chrono::DateTime::from_timestamp(p.submitted_at.saturating_add(p.timeout_secs) as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        routing_status,
+        team_id: p.team_id,
+    }
+}
+
+/// Render a `ResolvedRecord` (returned by `ApprovalQueue::get_by_id` or
+/// `list_resolved`) as the wire-format `ApprovalResponse`. `expires_at`
+/// is intentionally left empty for resolved entries — the field semantically
+/// only applies to pending requests; see [`ApprovalResponse::expires_at`].
+fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
+    ApprovalResponse {
+        id: r.request_id.to_string(),
+        agent_id: r.agent_id,
+        action: r.action,
+        reason: r.condition_triggered,
+        status: r.status,
+        created_at: chrono::DateTime::from_timestamp(r.submitted_at as i64, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default(),
+        expires_at: String::new(),
+        routing_status: None,
+        team_id: r.team_id,
+    }
+}
+
+/// `GET /api/v1/approvals` — list approval requests with optional filters.
 ///
-/// List pending human-in-the-loop approval requests with pagination.
+/// Without `status` returns pending requests only (backwards-compatible).
+/// With `status=PENDING|APPROVED|REJECTED` (case-insensitive) returns the
+/// matching slice. The `agent` filter narrows by `agent_id` exact match
+/// across both states.
 #[utoipa::path(
     get,
     path = "/api/v1/approvals",
-    params(PaginationParams),
+    params(ListApprovalsParams),
     responses(
-        (status = 200, description = "Paginated list of pending approvals", body = Vec<ApprovalResponse>)
+        (status = 200, description = "Paginated list of approvals", body = Vec<ApprovalResponse>)
     ),
     tag = "approvals"
 )]
 pub async fn list_approvals(
     Extension(state): Extension<AppState>,
-    axum::extract::Query(params): axum::extract::Query<PaginationParams>,
+    axum::extract::Query(params): axum::extract::Query<ListApprovalsParams>,
 ) -> impl IntoResponse {
-    let pending = state.approval_queue.list();
-    let total = pending.len();
+    let agent_filter = params.agent.as_deref();
+    let all: Vec<ApprovalResponse> = match params.normalized_status().as_deref() {
+        // No status filter — preserve the pre-AAASM-1477 contract:
+        // pending only, optionally narrowed by `agent`.
+        None | Some("pending") => state
+            .approval_queue
+            .list()
+            .into_iter()
+            .filter(|p| match agent_filter {
+                None => true,
+                Some(a) => p.agent_id == a,
+            })
+            .map(pending_to_response)
+            .collect(),
+        Some(status @ ("approved" | "rejected" | "timed_out")) => state
+            .approval_queue
+            .list_resolved(Some(status), agent_filter)
+            .into_iter()
+            .map(resolved_to_response)
+            .collect(),
+        // Unknown status value — empty page, not an error. Matches the
+        // established CLI tolerance for typos in filter values.
+        Some(_) => Vec::new(),
+    };
 
-    let items: Vec<ApprovalResponse> = pending
+    let total = all.len();
+    let items: Vec<ApprovalResponse> = all
         .into_iter()
         .skip(params.offset())
         .take(params.per_page() as usize)
-        .map(|p| {
-            let routing_status = p.routing_status.map(|status| RoutingStatusInfo {
-                status,
-                target_team_id: p.team_id.clone(),
-                target_role: p.target_role,
-                escalate_at: p.escalate_at,
-                routed_at: p.routed_at,
-                history: p
-                    .routing_history
-                    .into_iter()
-                    .map(|e| RoutingHistoryEntry {
-                        at: e.at,
-                        action: e.action,
-                        from_role: e.from_role,
-                        to_role: e.to_role,
-                    })
-                    .collect(),
-            });
-            ApprovalResponse {
-                id: p.request_id.to_string(),
-                agent_id: p.agent_id,
-                action: p.action,
-                reason: p.condition_triggered,
-                status: "pending".to_string(),
-                created_at: chrono::DateTime::from_timestamp(p.submitted_at as i64, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                expires_at: chrono::DateTime::from_timestamp(p.submitted_at.saturating_add(p.timeout_secs) as i64, 0)
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_default(),
-                routing_status,
-                team_id: p.team_id,
-            }
-        })
         .collect();
 
     (
@@ -145,6 +244,41 @@ pub async fn list_approvals(
             total: total as u64,
         }),
     )
+}
+
+/// `GET /api/v1/approvals/:id` — look up a single approval by ID.
+///
+/// Returns the request whether it is currently pending or has been
+/// resolved (approved / rejected / timed-out). Resolved entries come
+/// from a bounded in-memory history (default cap 1000) — older entries
+/// may have been evicted under load.
+#[utoipa::path(
+    get,
+    path = "/api/v1/approvals/{id}",
+    params(("id" = String, Path, description = "Approval request identifier")),
+    responses(
+        (status = 200, description = "Approval found", body = ApprovalResponse),
+        (status = 404, description = "Approval request not found or evicted from history")
+    ),
+    tag = "approvals"
+)]
+pub async fn get_approval(
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+
+    let resp = match state.approval_queue.get_by_id(uuid) {
+        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
+        Some(ApprovalLookup::Resolved(r)) => resolved_to_response(r),
+        None => {
+            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("Approval request not found: {id}")));
+        }
+    };
+
+    Ok((StatusCode::OK, Json(resp)))
 }
 
 /// `POST /api/v1/approvals/:id/approve` — approve a pending action.

@@ -32,7 +32,12 @@ pub fn validate_reject_reason(reason: &Option<String>) -> Result<&str, &'static 
 
 /// Execute the `aasm approvals reject` subcommand.
 pub fn run_reject(args: RejectArgs, ctx: &ResolvedContext) -> ExitCode {
-    let reason = match validate_reject_reason(&args.reason) {
+    // AAASM-1477: if --reason is omitted and stdin is a pipe, read it.
+    // Convert the resolved reason back to Option<String> for the
+    // existing validator, which still rejects empty / whitespace input
+    // (now meaning neither flag nor stdin supplied non-empty content).
+    let resolved = super::reason_io::resolve_reason_from_process_stdin(args.reason);
+    let reason = match validate_reject_reason(&resolved) {
         Ok(r) => r.to_string(),
         Err(msg) => {
             eprintln!("{msg}");

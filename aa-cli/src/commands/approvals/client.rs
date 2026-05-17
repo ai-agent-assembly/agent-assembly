@@ -16,9 +16,36 @@ pub fn build_approvals_url(base: &str) -> String {
     format!("{base}/api/v1/approvals")
 }
 
-/// Fetch all pending approval requests from the API.
-pub async fn list_approvals(ctx: &ResolvedContext) -> Result<PaginatedResponse<ApprovalResponse>, CliError> {
-    let url = build_approvals_url(&ctx.api_url);
+/// Build the list-approvals URL with optional `?status=` and `?agent=`
+/// query parameters. Pure function so the URL composition is testable
+/// independently from the network call.
+pub fn build_list_approvals_url(base: &str, status: Option<&str>, agent: Option<&str>) -> String {
+    let mut url = build_approvals_url(base);
+    let mut params: Vec<String> = Vec::new();
+    if let Some(s) = status {
+        params.push(format!("status={s}"));
+    }
+    if let Some(a) = agent {
+        params.push(format!("agent={a}"));
+    }
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
+    url
+}
+
+/// Fetch approval requests from the API, optionally filtered (AAASM-1477).
+///
+/// `status` accepts `"pending"`, `"approved"`, or `"rejected"`. When
+/// `None`, the server returns pending requests only — the pre-AAASM-1477
+/// contract is preserved. `agent` is an exact `agent_id` match.
+pub async fn list_approvals(
+    ctx: &ResolvedContext,
+    status: Option<&str>,
+    agent: Option<&str>,
+) -> Result<PaginatedResponse<ApprovalResponse>, CliError> {
+    let url = build_list_approvals_url(&ctx.api_url, status, agent);
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
     if let Some(ref key) = ctx.api_key {
@@ -162,10 +189,37 @@ mod tests {
             api_url: mock_server.uri(),
             api_key: None,
         };
-        let result = list_approvals(&ctx).await.unwrap();
+        let result = list_approvals(&ctx, None, None).await.unwrap();
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].id, "abc-123");
         assert_eq!(result.total, 1);
+    }
+
+    #[test]
+    fn build_list_approvals_url_omits_query_when_no_filters() {
+        let url = build_list_approvals_url("http://localhost:8080", None, None);
+        assert_eq!(url, "http://localhost:8080/api/v1/approvals");
+    }
+
+    #[test]
+    fn build_list_approvals_url_adds_status_only() {
+        let url = build_list_approvals_url("http://localhost:8080", Some("approved"), None);
+        assert_eq!(url, "http://localhost:8080/api/v1/approvals?status=approved");
+    }
+
+    #[test]
+    fn build_list_approvals_url_adds_agent_only() {
+        let url = build_list_approvals_url("http://localhost:8080", None, Some("alice-agent"));
+        assert_eq!(url, "http://localhost:8080/api/v1/approvals?agent=alice-agent");
+    }
+
+    #[test]
+    fn build_list_approvals_url_combines_status_and_agent() {
+        let url = build_list_approvals_url("http://localhost:8080", Some("rejected"), Some("bob-agent"));
+        assert_eq!(
+            url,
+            "http://localhost:8080/api/v1/approvals?status=rejected&agent=bob-agent"
+        );
     }
 
     #[tokio::test]
