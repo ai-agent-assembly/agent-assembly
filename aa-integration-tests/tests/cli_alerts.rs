@@ -106,3 +106,90 @@ async fn alerts_list_json_and_yaml_describe_the_same_record_set() {
 
     common::format::assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "id");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_severity_filter_narrows_to_matching_records() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_alert(95, [0x11; 16]); // critical
+    fixture.seed_alert(80, [0x22; 16]); // warning
+    fixture.seed_alert(50, [0x33; 16]); // info
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "list", "--severity", "critical", "--output", "json"])
+        .output()
+        .expect("aasm alerts list --severity critical should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let arr = common::format::parse_json(&out.stdout)
+        .as_array()
+        .expect("output should be a JSON array")
+        .clone();
+    assert_eq!(arr.len(), 1, "exactly one critical alert was seeded");
+    assert_eq!(arr[0]["severity"].as_str(), Some("critical"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_agent_filter_narrows_to_matching_records() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let target_id = [0xAB; 16];
+    fixture.seed_alert(80, target_id);
+    fixture.seed_alert(95, [0x22; 16]);
+    fixture.seed_alert(50, [0x33; 16]);
+    let target_hex: String = target_id.iter().map(|b| format!("{b:02x}")).collect();
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "list", "--agent", &target_hex, "--output", "json"])
+        .output()
+        .expect("aasm alerts list --agent should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let arr = common::format::parse_json(&out.stdout)
+        .as_array()
+        .expect("output should be a JSON array")
+        .clone();
+    assert_eq!(arr.len(), 1, "exactly one alert references the target agent");
+    assert_eq!(arr[0]["agent_id"].as_str(), Some(target_hex.as_str()));
+}
+
+/// Documents the current behaviour: the API's `AlertResponse` has no
+/// `status` field, so the CLI's serde default fills in `"unresolved"`
+/// for every record — meaning `--status resolved` always returns empty.
+///
+/// Tracked under AAASM-1474; once the API gains `status`, replace this
+/// with an assertion that the `resolved` filter returns the seeded
+/// resolved record.
+#[tokio::test(flavor = "multi_thread")]
+async fn alerts_list_status_resolved_currently_returns_empty_against_persisted_alerts() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    fixture.seed_alert(95, [0x11; 16]);
+    fixture.seed_alert(80, [0x22; 16]);
+
+    let out = fixture
+        .cmd()
+        .args(["alerts", "list", "--status", "resolved", "--output", "json"])
+        .output()
+        .expect("aasm alerts list --status resolved should execute");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The CLI prints "No alerts found." when the filter matches nothing —
+    // not a JSON array — so check stdout directly.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No alerts found."),
+        "expected empty-list sentinel, got:\n{stdout}",
+    );
+}
