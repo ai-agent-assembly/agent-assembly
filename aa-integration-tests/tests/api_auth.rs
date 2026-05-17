@@ -170,3 +170,37 @@ async fn auth_token_with_revoked_key_returns_401() {
         "error detail must mention 'revoked'; got: {detail}"
     );
 }
+
+// ─── rate limit ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn auth_token_rate_limit_applies_per_api_key() {
+    let (plaintext, entry) = common::make_api_key("key-1", vec![Scope::Read]);
+    // Set rate limit to 5 requests per minute so it is easily triggered in tests.
+    let env = common::TopologyTestEnv::start_with_auth(&[entry], 5).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let mut statuses = Vec::new();
+    for _ in 0..10 {
+        let resp = client
+            .post(format!("{}/api/v1/auth/token", env.base_url()))
+            .bearer_auth(&plaintext)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(resp.status());
+    }
+
+    let ok_count = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+    let rate_limited = statuses.contains(&StatusCode::TOO_MANY_REQUESTS);
+
+    assert!(
+        ok_count >= 1,
+        "at least one request should succeed before the limit kicks in"
+    );
+    assert!(
+        rate_limited,
+        "some requests must be rate-limited (429) when limit is 5 rpm"
+    );
+}
