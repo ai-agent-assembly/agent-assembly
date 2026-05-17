@@ -25,6 +25,7 @@
 mod common;
 
 use common::cli::CliFixture;
+use common::format::assert_equivalent_records;
 use rstest::rstest;
 
 // =============================================================================
@@ -77,4 +78,29 @@ async fn version_succeeds_for_every_output_format(#[case] fmt: &str) {
         String::from_utf8_lossy(&out.stderr),
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn version_json_and_yaml_describe_equivalent_records() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let json_out = fixture
+        .cmd()
+        .args(["version", "--output", "json"])
+        .output()
+        .expect("aasm version --output json should execute");
+    assert!(json_out.status.success(), "json variant should exit 0");
+
+    let yaml_out = fixture
+        .cmd()
+        .args(["version", "--output", "yaml"])
+        .output()
+        .expect("aasm version --output yaml should execute");
+    assert!(yaml_out.status.success(), "yaml variant should exit 0");
+
+    // `version` emits a flat array keyed by `component`; equivalence asserts
+    // both formats describe the same {cli, gateway, api} record set. Per-row
+    // `status` is reachability-dependent and excluded by the helper (it
+    // compares only the `component` id field).
+    assert_equivalent_records(&json_out.stdout, &yaml_out.stdout, "component");
 }
