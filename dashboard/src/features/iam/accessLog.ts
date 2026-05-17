@@ -67,7 +67,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-1',
     timestamp: isoMinusHours(1),
-    identity: 'alice@example.com',
+    identity: 'alice@agent-assembly.dev',
     event_type: 'login',
     target: 'dashboard',
     result: 'success',
@@ -76,7 +76,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-2',
     timestamp: isoMinusHours(3),
-    identity: 'alice@example.com',
+    identity: 'alice@agent-assembly.dev',
     event_type: 'policy_change',
     target: 'policy:read-only-baseline',
     result: 'success',
@@ -94,7 +94,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-4',
     timestamp: isoMinusHours(20),
-    identity: 'carol@example.com',
+    identity: 'carol@agent-assembly.dev',
     event_type: 'member_invite',
     target: 'invite:dave@example.com',
     result: 'success',
@@ -103,7 +103,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-5',
     timestamp: isoMinusHours(48),
-    identity: 'carol@example.com',
+    identity: 'carol@agent-assembly.dev',
     event_type: 'permission_grant',
     target: 'role:service:observer',
     result: 'success',
@@ -121,7 +121,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-7',
     timestamp: isoMinusHours(120),
-    identity: 'bob@example.com',
+    identity: 'bob@agent-assembly.dev',
     event_type: 'policy_change',
     target: 'policy:admin-baseline',
     result: 'failure',
@@ -130,7 +130,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-8',
     timestamp: isoMinusHours(168),
-    identity: 'bob@example.com',
+    identity: 'bob@agent-assembly.dev',
     event_type: 'logout',
     target: 'dashboard',
     result: 'success',
@@ -139,7 +139,7 @@ const SEED_ACCESS_LOG: AccessLogEvent[] = [
   {
     id: 'evt-9',
     timestamp: isoMinusHours(360),
-    identity: 'alice@example.com',
+    identity: 'alice@agent-assembly.dev',
     event_type: 'key_rotate',
     target: 'key:retired-runner',
     result: 'success',

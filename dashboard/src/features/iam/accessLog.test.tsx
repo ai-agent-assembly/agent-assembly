@@ -56,13 +56,13 @@ describe('accessLog seed + filter (AAASM-1398)', () => {
 
   it('identity filter narrows rows to that identity only', async () => {
     const { result } = renderHook(
-      () => useAccessLogQuery({ identity: 'alice@example.com' }),
+      () => useAccessLogQuery({ identity: 'alice@agent-assembly.dev' }),
       { wrapper: makeWrapper() },
     )
     await waitFor(() => expect(result.current.data).toBeDefined())
     const data = result.current.data as AccessLogEvent[]
     expect(data.length).toBeGreaterThan(0)
-    for (const e of data) expect(e.identity).toBe('alice@example.com')
+    for (const e of data) expect(e.identity).toBe('alice@agent-assembly.dev')
   })
 
   it('eventType filter narrows rows to that type only', async () => {

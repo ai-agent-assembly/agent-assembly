@@ -1,0 +1,116 @@
+.iam-access-log-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.iam-access-log-panel__intro {
+  margin: 0 0 0.5rem;
+  color: var(--shell-text-muted);
+  font-size: 0.85rem;
+}
+
+.iam-access-log-panel__loading,
+.iam-access-log-panel__empty {
+  padding: 1.5rem 0;
+  text-align: center;
+  color: var(--shell-text-muted);
+}
+
+.iam-access-log-panel__error {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: var(--status-danger-hover-text);
+  padding: 0.75rem 0;
+}
+
+.iam-access-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.iam-access-log-table th,
+.iam-access-log-table td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--shell-border-subtle);
+}
+
+.iam-access-log-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--shell-text-muted);
+}
+
+.iam-access-log-table__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.8rem;
+}
+
+.iam-access-log-table__row {
+  cursor: pointer;
+}
+
+.iam-access-log-table__row:hover {
+  background: var(--shell-surface-subtle);
+}
+
+.iam-access-log-table__result {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.iam-access-log-table__result--success {
+  background: var(--status-success-bg, rgba(46, 160, 67, 0.15));
+  color: var(--status-success, #2ea043);
+}
+
+.iam-access-log-table__result--failure {
+  background: var(--status-danger-bg, rgba(218, 54, 51, 0.15));
+  color: var(--status-danger, #da3633);
+}
+
+.iam-access-log-table__link {
+  color: var(--shell-accent);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.iam-access-log-table__link:hover {
+  text-decoration: underline;
+}
+
+.iam-access-log-panel__pagination {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  justify-content: flex-end;
+  padding: 0.75rem 0;
+  font-size: 0.85rem;
+  color: var(--shell-text-muted);
+}
+
+.iam-access-log-panel__pagination button {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--shell-border-subtle);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--shell-text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.iam-access-log-panel__pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
