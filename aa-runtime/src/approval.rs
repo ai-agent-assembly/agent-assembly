@@ -5,8 +5,9 @@
 //! until a human operator calls [`ApprovalQueue::decide`], or the per-request
 //! timeout elapses and the queue auto-resolves it as [`ApprovalDecision::TimedOut`].
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -20,6 +21,12 @@ use aa_core::{AuditEntry, AuditEventType};
 
 /// Capacity of the internal approval event broadcast channel.
 const APPROVAL_EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Default cap on the in-memory resolved-history (AAASM-1477). Once reached,
+/// the oldest entry is evicted on each new insert. Sized for tens of minutes
+/// of typical operator activity; ST-13b idempotency tests cycle through
+/// far fewer than this.
+pub const DEFAULT_RESOLVED_HISTORY_CAP: usize = 1000;
 
 // ---------------------------------------------------------------------------
 // Public type aliases
@@ -233,6 +240,16 @@ pub struct ApprovalQueue {
     pending: DashMap<ApprovalRequestId, (ApprovalRequest, oneshot::Sender<ApprovalDecision>)>,
     /// Structured routing metadata; updated on initial routing and escalation.
     routing_meta: DashMap<ApprovalRequestId, RoutingMeta>,
+    /// Bounded history of requests that have been approved, rejected, or
+    /// timed out. Pushed by [`resolve`](Self::resolve) after a decision is
+    /// applied. Capped at `resolved_history_cap`; oldest entries are evicted
+    /// on insert. AAASM-1477 — enables `GET /approvals/{id}` and
+    /// `?status=APPROVED|REJECTED` to observe state after a decision.
+    resolved_history: StdMutex<VecDeque<ResolvedRecord>>,
+    /// Soft cap on `resolved_history` length. Defaults to
+    /// [`DEFAULT_RESOLVED_HISTORY_CAP`]; constructors that need a different
+    /// cap should add a future builder.
+    resolved_history_cap: usize,
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
     audit_seq: AtomicU64,
     audit_last_hash: Mutex<[u8; 32]>,
@@ -260,6 +277,28 @@ impl ApprovalQueue {
         Arc::new(Self {
             pending: DashMap::new(),
             routing_meta: DashMap::new(),
+            resolved_history: StdMutex::new(VecDeque::with_capacity(DEFAULT_RESOLVED_HISTORY_CAP)),
+            resolved_history_cap: DEFAULT_RESOLVED_HISTORY_CAP,
+            audit_tx: None,
+            audit_seq: AtomicU64::new(0),
+            audit_last_hash: Mutex::new([0u8; 32]),
+            event_tx,
+            expiry_event_tx,
+        })
+    }
+
+    /// Test-only constructor that lets the resolved-history cap be overridden,
+    /// so cap-eviction can be exercised without inserting
+    /// [`DEFAULT_RESOLVED_HISTORY_CAP`] + 1 entries per assertion.
+    #[cfg(test)]
+    pub fn with_resolved_history_cap_for_tests(cap: usize) -> Arc<Self> {
+        let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
+        let (expiry_event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
+        Arc::new(Self {
+            pending: DashMap::new(),
+            routing_meta: DashMap::new(),
+            resolved_history: StdMutex::new(VecDeque::with_capacity(cap)),
+            resolved_history_cap: cap,
             audit_tx: None,
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new([0u8; 32]),
@@ -278,6 +317,8 @@ impl ApprovalQueue {
         Arc::new(Self {
             pending: DashMap::new(),
             routing_meta: DashMap::new(),
+            resolved_history: StdMutex::new(VecDeque::with_capacity(DEFAULT_RESOLVED_HISTORY_CAP)),
+            resolved_history_cap: DEFAULT_RESOLVED_HISTORY_CAP,
             audit_tx: Some(audit_tx),
             audit_seq: AtomicU64::new(0),
             audit_last_hash: Mutex::new(initial_hash),
@@ -428,6 +469,36 @@ impl ApprovalQueue {
                 ApprovalDecision::Rejected { by, .. } => ("ApprovalDenied", by.clone()),
                 ApprovalDecision::TimedOut { .. } => ("ApprovalTimedOut", "timeout".to_string()),
             };
+            // Capture the resolved record before any audit/broadcast work
+            // so the HTTP `GET /approvals/{id}` + `?status=…` filter can
+            // observe the decision (AAASM-1477).
+            let (status_str, decision_reason) = match &decision {
+                ApprovalDecision::Approved { reason, .. } => ("approved", reason.clone()),
+                ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone())),
+                ApprovalDecision::TimedOut { .. } => ("timed_out", None),
+            };
+            let decided_at = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let record = ResolvedRecord {
+                request_id: req.request_id,
+                agent_id: req.agent_id.clone(),
+                action: req.action.clone(),
+                condition_triggered: req.condition_triggered.clone(),
+                submitted_at: req.submitted_at,
+                decided_at,
+                status: status_str.to_string(),
+                decided_by: decided_by.clone(),
+                decision_reason,
+                team_id: req.team_id.clone(),
+            };
+            if let Ok(mut guard) = self.resolved_history.lock() {
+                if guard.len() >= self.resolved_history_cap {
+                    guard.pop_front();
+                }
+                guard.push_back(record);
+            }
             tracing::info!(
                 event_type = event_type_str,
                 request_id = %req.request_id,
@@ -1090,5 +1161,109 @@ mod tests {
 
         let decision = fut.await.expect("future should resolve");
         assert!(matches!(decision, ApprovalDecision::Approved { .. }));
+    }
+
+    // --- ApprovalQueue::resolved_history (AAASM-1477) ---
+
+    /// Snapshot helper for the tests below: clones the current resolved
+    /// history without exposing the internal Mutex.
+    fn snapshot_resolved(q: &ApprovalQueue) -> Vec<ResolvedRecord> {
+        q.resolved_history.lock().unwrap().iter().cloned().collect()
+    }
+
+    #[tokio::test]
+    async fn decide_approved_pushes_resolved_record_into_history() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: Some("looks good".to_string()),
+            },
+        )
+        .expect("decide should succeed");
+
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].request_id, id);
+        assert_eq!(history[0].status, "approved");
+        assert_eq!(history[0].decided_by, "alice");
+        assert_eq!(history[0].decision_reason.as_deref(), Some("looks good"));
+    }
+
+    #[tokio::test]
+    async fn decide_rejected_pushes_resolved_record_into_history() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        q.decide(
+            id,
+            ApprovalDecision::Rejected {
+                by: "bob".to_string(),
+                reason: "policy violation".to_string(),
+            },
+        )
+        .expect("decide should succeed");
+
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "rejected");
+        assert_eq!(history[0].decided_by, "bob");
+        assert_eq!(history[0].decision_reason.as_deref(), Some("policy violation"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_pushes_resolved_record_with_status_timed_out() {
+        let q = ApprovalQueue::new();
+        let mut expiry_rx = q.subscribe_expirations();
+        let req = make_request(5);
+        let _ = q.submit(req);
+
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        // Block on the expiry broadcast — guarantees the timeout task has
+        // run resolve() (and therefore pushed into resolved_history) before
+        // we snapshot. yield_now() alone is not enough on tokio's paused
+        // runtime to schedule the spawned timeout task.
+        let _ = expiry_rx.recv().await.expect("expiry should fire");
+
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "timed_out");
+        assert_eq!(history[0].decided_by, "timeout");
+        assert!(history[0].decision_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolved_history_caps_oldest_first() {
+        let cap = 3;
+        let q = ApprovalQueue::with_resolved_history_cap_for_tests(cap);
+        let mut ids = Vec::new();
+        for _ in 0..(cap + 2) {
+            let req = make_request(60);
+            ids.push(req.request_id);
+            let (_rid, _fut) = q.submit(req);
+        }
+        for id in &ids {
+            q.decide(
+                *id,
+                ApprovalDecision::Approved {
+                    by: "tester".to_string(),
+                    reason: None,
+                },
+            )
+            .expect("decide should succeed");
+        }
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), cap, "history should not exceed cap");
+        // The first two inserts must have been evicted; the last `cap` ids
+        // remain in insertion order.
+        let kept_ids: Vec<_> = history.iter().map(|r| r.request_id).collect();
+        assert_eq!(kept_ids, ids[ids.len() - cap..].to_vec());
     }
 }
