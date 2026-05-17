@@ -173,7 +173,20 @@ describe('ServiceIdentitiesPanel — generate-and-reveal flow', () => {
 })
 
 describe('ServiceIdentitiesPanel — revoke', () => {
-  it('confirms before revoking, then toggles the row to revoked', async () => {
+  it('confirms before revoking, calls the revoke endpoint, and removes the revoke button', async () => {
+    const revokedIds = new Set<string>()
+    _apiKeysInternal.setListOverride(() =>
+      Promise.resolve(
+        _apiKeysInternal.seedSnapshot().map((k) =>
+          revokedIds.has(k.id) ? { ...k, status: 'revoked' as const } : k,
+        ),
+      ),
+    )
+    const revokeSpy = vi.fn(async (id: string) => {
+      revokedIds.add(id)
+    })
+    _apiKeysInternal.setRevokeOverride(revokeSpy)
+
     const user = userEvent.setup()
     renderPanel()
     await screen.findByTestId('api-key-row-key-1')
@@ -182,10 +195,10 @@ describe('ServiceIdentitiesPanel — revoke', () => {
     expect(await screen.findByTestId('confirm-revoke-key')).toBeInTheDocument()
     await user.click(screen.getByTestId('confirm-revoke-confirm'))
 
+    await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith('key-1'))
     await waitFor(() =>
-      expect(_apiKeysInternal.snapshot().find((k) => k.id === 'key-1')?.status).toBe('revoked'),
+      expect(screen.queryByTestId('api-key-revoke-key-1')).not.toBeInTheDocument(),
     )
-    expect(screen.queryByTestId('api-key-revoke-key-1')).not.toBeInTheDocument()
   })
 })
 
