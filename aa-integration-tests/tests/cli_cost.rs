@@ -216,3 +216,26 @@ async fn cost_forecast_succeeds_for_every_output_format(#[case] fmt: &str) {
     );
     assert!(!out.stdout.is_empty(), "{fmt} stdout should not be empty");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_forecast_json_and_yaml_describe_equivalent_object() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+
+    let json_out = fixture
+        .cmd()
+        .args(["cost", "forecast", "--output", "json"])
+        .output()
+        .expect("aasm cost forecast --output json should execute");
+    assert!(json_out.status.success(), "json variant should exit 0");
+
+    let yaml_out = fixture
+        .cmd()
+        .args(["cost", "forecast", "--output", "yaml"])
+        .output()
+        .expect("aasm cost forecast --output yaml should execute");
+    assert!(yaml_out.status.success(), "yaml variant should exit 0");
+
+    // `cost forecast` emits a single `CostForecastDisplay` object (not a
+    // collection), so structural object-equality is the right check.
+    assert_equivalent_objects(&json_out.stdout, &yaml_out.stdout);
+}
