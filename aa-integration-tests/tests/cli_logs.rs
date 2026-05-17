@@ -206,6 +206,24 @@ async fn logs_since_filter_only_returns_recent() {
     assert_eq!(entries.len(), 3, "only the 3 recent events should pass --since 30m");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn logs_limit_caps_returned_entries() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let agent = fixture.seed_agents(1)[0];
+    fixture
+        .seed_audit_events(10, agent, AuditEventType::PolicyViolation)
+        .expect("seed 10 should succeed");
+
+    let out = fixture
+        .cmd()
+        .args(["logs", "--limit", "3", "--output", "json"])
+        .output()
+        .expect("aasm logs --limit should execute");
+    assert!(out.status.success());
+    let entries = parse_jsonl(&out.stdout);
+    assert_eq!(entries.len(), 3, "--limit 3 should cap output to 3 entries");
+}
+
 #[ignore = "blocked by AAASM-1476 — aa-gateway audit_reader::parse_event_type expects CamelCase but CLI sends snake_case"]
 #[tokio::test(flavor = "multi_thread")]
 async fn logs_type_filter_only_returns_matching() {
