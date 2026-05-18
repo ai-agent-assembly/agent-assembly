@@ -233,7 +233,9 @@ async fn topology_team_succeeds_for_every_output_format(#[case] fmt: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn topology_team_unknown_team_returns_error() {
+async fn topology_team_unknown_team_returns_empty() {
+    // An unknown team returns 200 + empty members list (not an error exit).
+    // The CLI should succeed and report 0 agents for the team.
     let fixture = CliFixture::start().await.expect("fixture should start");
 
     let out = fixture
@@ -242,10 +244,13 @@ async fn topology_team_unknown_team_returns_error() {
         .output()
         .expect("aasm topology team should execute");
     assert!(
-        !out.status.success(),
-        "unknown team should fail; stdout:\n{}",
+        out.status.success(),
+        "unknown team should succeed with empty output; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains('0'), "output should indicate 0 agents; got:\n{stdout}",);
 }
 
 #[tokio::test(flavor = "multi_thread")]
