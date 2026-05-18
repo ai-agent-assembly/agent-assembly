@@ -92,3 +92,26 @@ async fn health_returns_api_version() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["api_version"], "v1");
 }
+
+#[tokio::test]
+async fn health_returns_subsystem_checks_map() {
+    let app = common::test_app();
+
+    let response = app
+        .oneshot(Request::builder().uri("/api/v1/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let checks = json["checks"].as_object().expect("checks should be a JSON object");
+    for subsystem in ["policy_engine", "registry", "audit", "alerts"] {
+        assert!(
+            checks.contains_key(subsystem),
+            "checks should include subsystem: {subsystem}"
+        );
+        assert_eq!(checks[subsystem], "ok", "subsystem {subsystem} should report ok");
+    }
+}
