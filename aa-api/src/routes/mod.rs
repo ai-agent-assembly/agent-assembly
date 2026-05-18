@@ -20,7 +20,7 @@ pub mod tools;
 pub mod topology;
 pub mod traces;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::error::ProblemDetail;
@@ -59,6 +59,7 @@ pub fn v1_router() -> Router {
         // Capability matrix (dashboard) — AAASM-1366
         .route("/capability/matrix", get(capability::get_matrix))
         .route("/capability/override", get(capability::list_overrides).post(capability::apply_override))
+        .route("/capability/override/{id}", delete(capability::revoke_override))
         // Identity & Access — API key management (dashboard) — AAASM-1397
         .route("/iam/api-keys", get(iam::list_api_keys).post(iam::generate_api_key))
         .route("/iam/api-keys/{id}/revoke", post(iam::revoke_api_key))
