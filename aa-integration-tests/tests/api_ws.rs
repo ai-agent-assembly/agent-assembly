@@ -96,3 +96,14 @@ fn make_governance_event(id: u64) -> GovernanceEvent {
         timestamp: Utc::now(),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_connect_returns_101_upgrade() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    let (_ws, resp) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("WS connect should succeed");
+    assert_eq!(resp.status(), 101, "expected 101 Switching Protocols");
+}
