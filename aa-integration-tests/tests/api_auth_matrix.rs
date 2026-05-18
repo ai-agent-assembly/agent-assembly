@@ -173,3 +173,21 @@ async fn auth_api_key_via_bearer_header_grants_access() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn auth_api_key_query_param_unsupported_returns_401() {
+    // Query-param API key auth is not implemented; only Authorization: Bearer is supported
+    let (plaintext, entry) = make_api_key("key-1", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    // Provide key via query param only — no Authorization header.
+    // Use an auth-protected endpoint so we can observe the 401.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token?api_key={plaintext}", env.base_url()))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
