@@ -11,7 +11,6 @@
 //   AA_SELFTEST=1 AA_GATEWAY_ADDR=dummy pnpm exec tsx root_sub_agents/langgraph_hierarchy.ts
 
 import { loadConfig, emit, type AgentConfig } from "../_shared.js";
-import { initAssembly } from "@agent-assembly/sdk";
 import { StateGraph, Annotation } from "@langchain/langgraph";
 
 const StateAnnotation = Annotation.Root({
@@ -23,6 +22,7 @@ const StateAnnotation = Annotation.Root({
 });
 
 async function runReal(cfg: AgentConfig): Promise<void> {
+  const { initAssembly } = await import("@agent-assembly/sdk");
   const rootCtx = await initAssembly({
     gatewayUrl: `http://${cfg.gatewayAddr}`,
     apiKey: "e2e-test-key",

@@ -11,9 +11,9 @@
 //   AA_SELFTEST=1 AA_GATEWAY_ADDR=dummy pnpm exec tsx agent_team/langchain_team.ts
 
 import { loadConfig, emit, type AgentConfig } from "../_shared.js";
-import { initAssembly } from "@agent-assembly/sdk";
 
 async function runReal(cfg: AgentConfig): Promise<void> {
+  const { initAssembly } = await import("@agent-assembly/sdk");
   const rootCtx = await initAssembly({
     gatewayUrl: `http://${cfg.gatewayAddr}`,
     apiKey: "e2e-test-key",
