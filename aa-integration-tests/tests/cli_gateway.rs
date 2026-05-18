@@ -582,23 +582,27 @@ async fn gateway_logs_follow_streams_new_entries() {
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let log_file = tmp.path().join("gateway.log");
+    let follow_out = tmp.path().join("follow_out.txt");
 
     // Create an empty log file so `logs -f` can open it.
     std::fs::File::create(&log_file).unwrap();
 
-    // Spawn `aasm gateway logs -f` and capture its stdout.
-    // stdout uses LineWriter so each println! call flushes immediately,
-    // making the output available to wait_with_output() even after SIGTERM.
-    let child = ctx
+    // Redirect stdout to a file instead of a pipe.
+    // `cargo run` passes the file FD directly to the aasm child, so each
+    // println! flushes via LineWriter straight to the file — avoiding the
+    // cargo-intermediate pipe that drains to empty when cargo exits on SIGTERM.
+    let out_fd = std::fs::File::create(&follow_out).expect("create follow output file");
+    let mut child = ctx
         .cmd()
         .args(["gateway", "logs", "-f", "--log-file", log_file.to_str().unwrap()])
-        .stdout(Stdio::piped())
+        .stdout(out_fd)
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn gateway logs -f");
 
-    // Give the follow process time to open the file and seek to EOF.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Give the follow process time to open the log file and seek to EOF.
+    // 500ms is generous for CI machines where cargo may still be starting.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Append one new tracing-style log line.
     let new_line = "2026-05-18T11:00:00Z  INFO aa_gateway: streamed";
@@ -607,15 +611,16 @@ async fn gateway_logs_follow_streams_new_entries() {
         writeln!(f, "{new_line}").unwrap();
     }
 
-    // Follow polls every 100ms; allow 2s for the line to appear in stdout.
+    // Follow polls every 100ms; allow 2s for the line to appear in the file.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let child_pid = child.id();
     kill_process(child_pid, libc::SIGTERM);
-    let result = child.wait_with_output().expect("wait_with_output");
-    let stdout = String::from_utf8_lossy(&result.stdout);
+    child.wait().expect("wait for follow process to exit");
+
+    let output = std::fs::read_to_string(&follow_out).expect("read follow output file");
     assert!(
-        stdout.contains("streamed"),
-        "follow output must contain the appended line 'streamed';\ngot:\n{stdout}"
+        output.contains("streamed"),
+        "follow output must contain the appended line 'streamed';\ngot:\n{output}"
     );
 }
