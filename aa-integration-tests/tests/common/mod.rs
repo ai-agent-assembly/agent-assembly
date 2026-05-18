@@ -40,6 +40,7 @@ use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
 use aa_api::trace_store::{InMemoryTraceStore, TraceStore};
+use aa_core::DevToolAdapter;
 use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
 use aa_gateway::budget::tracker::BudgetTracker;
@@ -163,6 +164,56 @@ impl TopologyTestEnv {
     #[allow(dead_code)]
     pub async fn start_with_auth(entries: &[ApiKeyEntry], rate_limit_rpm: u32) -> anyhow::Result<Self> {
         let (state, audit_dir, alert_store, key_store) = build_test_state_with_auth(entries, rate_limit_rpm)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
+    /// Spin up the harness with a custom set of [`DevToolAdapter`]s injected
+    /// into the [`DiscoveryService`].
+    ///
+    /// Used by `api_tools.rs` (AAASM-1495 / F122 ST-N) to seed stub adapters
+    /// so that `GET /api/v1/tools` returns a deterministic non-empty list.
+    /// The default harness wires `DiscoveryService::with_adapters(vec![])`,
+    /// which returns `[]` on every CI machine; this variant overrides that.
+    #[allow(dead_code)]
+    pub async fn start_with_discovery(adapters: Vec<Box<dyn DevToolAdapter>>) -> anyhow::Result<Self> {
+        let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
+        state.discovery = Arc::new(DiscoveryService::with_adapters(adapters));
+
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
