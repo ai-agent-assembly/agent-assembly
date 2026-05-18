@@ -44,3 +44,15 @@ async fn recv_event(
         .expect("ws error");
     serde_json::from_str(&msg.into_text().unwrap()).unwrap()
 }
+
+#[allow(dead_code)]
+fn make_pipeline_event(agent_id: &str) -> PipelineEvent {
+    PipelineEvent::Audit(Box::new(EnrichedEvent {
+        inner: Default::default(),
+        received_at_ms: 0,
+        source: EventSource::Sdk,
+        agent_id: agent_id.to_string(),
+        connection_id: 0,
+        sequence_number: 0,
+    }))
+}
