@@ -191,3 +191,28 @@ async fn auth_api_key_query_param_unsupported_returns_401() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn auth_api_key_revoked_returns_401() {
+    let (plaintext, entry) = make_api_key("key-rev", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    // Revoke the key at runtime — the server holds the same Arc<ApiKeyStore>.
+    env.key_store.revoke("key-rev");
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["detail"].as_str().unwrap_or("").contains("revoked"),
+        "expected 'revoked' in detail, got: {:?}",
+        body["detail"]
+    );
+}
