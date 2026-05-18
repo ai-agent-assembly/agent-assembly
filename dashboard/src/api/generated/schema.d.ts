@@ -415,11 +415,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/v1/capability/matrix` — return the full agent × resource ×
-         *     verb × decision matrix that backs the dashboard Capability Matrix page.
-         * @description Returns the full snapshot — resources, agents (each with a `caps` map),
-         *     policies, and sample calls — in the exact shape the dashboard's
-         *     `CapabilityClient.getMatrix()` consumes.
+         * `GET /api/v1/capability/matrix` — return the agent × resource × verb ×
+         *     decision matrix that backs the dashboard Capability Matrix page.
+         * @description Optional filters:
+         *     - `team_id` — return only the agent row whose `id` matches.
+         *     - `tool` — return only the resource column whose `id` matches and filter
+         *       each agent's `caps` map to that single key.
+         *     - `effective_only=true` — exclude cells where all four verb decisions are `na`.
          */
         get: operations["get_matrix"];
         put?: never;
@@ -2899,14 +2901,31 @@ export interface operations {
     };
     get_matrix: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Return only the agent row whose `id` matches this value.
+                 * @example research-bot-04
+                 */
+                team_id?: string | null;
+                /**
+                 * @description Return only the resource column whose `id` matches this value, and
+                 *     filter each agent's caps map to that single resource key.
+                 * @example gmail
+                 */
+                tool?: string | null;
+                /**
+                 * @description When `true`, exclude capability cells where all four verb decisions are `na`.
+                 * @example true
+                 */
+                effective_only?: boolean | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Full capability matrix snapshot */
+            /** @description Capability matrix snapshot (filtered) */
             200: {
                 headers: {
                     [name: string]: unknown;
