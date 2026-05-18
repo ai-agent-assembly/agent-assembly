@@ -1,18 +1,8 @@
-//! Per-operation lifecycle endpoints — pause / resume / terminate.
+//! Per-operation lifecycle endpoints (AAASM-1525).
 //!
-//! These endpoints accept a request to change an in-flight operation's
-//! lifecycle state and return `202 Accepted`. They are intentionally
-//! **stubs** today:
-//!
-//! * No in-flight-ops registry exists in the gateway yet, so there is no
-//!   state machine to update.
-//! * No SDK-side enforcement channel exists, so the agent is not actually
-//!   paused / resumed / terminated.
-//!
-//! The handlers exist so the Live Ops dashboard can call the conventional
-//! `POST /api/v1/ops/{id}/{action}` paths without 404-ing, which exercises
-//! its optimistic UI's success path instead of its rollback path. Real
-//! enforcement is tracked under a separate architecture follow-up Task.
+//! Backed by [`crate::ops::OpsRegistry`] on [`crate::state::AppState`].
+//! Each operation is registered via `POST /api/v1/ops` and then driven
+//! through its lifecycle with the `pause`, `resume`, and `terminate` actions.
 
 use axum::extract::Path;
 use axum::http::StatusCode;
