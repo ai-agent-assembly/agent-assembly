@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::auth::AuthenticatedCaller;
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, CallStackNode, EventPayload, ViolationPayload};
 use crate::models::{EventType, GovernanceEvent};
 use crate::state::AppState;
@@ -55,6 +56,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
     tag = "events"
 )]
 pub async fn ws_events_handler(
+    _caller: AuthenticatedCaller,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
     Extension(state): Extension<AppState>,
