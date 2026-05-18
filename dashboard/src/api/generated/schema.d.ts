@@ -448,6 +448,10 @@ export interface paths {
          *     uses this to drive an optimistic-UI rollback when an override fails.
          *     An unknown `agentId` rejects the request with 400 and leaves the store
          *     untouched; an unknown `resourceId` on an agent is silently skipped.
+         *
+         *     When `ttlSeconds` is present the override is automatically reverted after
+         *     that many seconds and the response status is **201 Created**. Without a
+         *     TTL the response is **200 OK** (unchanged behaviour).
          */
         post: operations["apply_override"];
         delete?: never;
@@ -1351,6 +1355,13 @@ export interface components {
             decision: components["schemas"]["Decision"];
             /** @description Identifier of the resource whose cell is being overridden. */
             resourceId: string;
+            /**
+             * Format: int64
+             * @description Optional TTL in seconds. When set, the override is automatically
+             *     reverted to the pre-override value after this duration elapses.
+             *     The endpoint returns 201 Created instead of 200 OK when TTL is provided.
+             */
+            ttlSeconds?: number | null;
             /** @description Verb (read / write / delete / exec) within the cell. */
             verb: components["schemas"]["Verb"];
         };
@@ -2930,8 +2941,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated agent rows */
+            /** @description Updated agent rows (no TTL) */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityOverrideResponse"];
+                };
+            };
+            /** @description Updated agent rows with TTL scheduled */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
