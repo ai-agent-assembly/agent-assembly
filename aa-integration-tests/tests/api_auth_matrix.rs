@@ -344,3 +344,44 @@ async fn auth_rate_limit_within_budget_succeeds() {
         assert_eq!(resp.status(), StatusCode::OK, "request within budget should succeed");
     }
 }
+
+#[tokio::test]
+async fn auth_rate_limit_burst_returns_429_with_retry_after() {
+    let (plaintext, entry) = make_api_key("key-rl", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 2).await.unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/auth/token", env.base_url());
+
+    // First 2 requests should succeed (rpm=2, bucket starts full).
+    for _ in 0..2 {
+        let resp = client
+            .post(&url)
+            .bearer_auth(&plaintext)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "first requests should succeed");
+    }
+
+    // Third request should be rate-limited.
+    let resp_429 = client
+        .post(&url)
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp_429.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        resp_429.headers().contains_key("retry-after"),
+        "429 response must include retry-after header"
+    );
+    let body: Value = resp_429.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        detail.contains("rate") || detail.contains("limit") || detail.contains("retry"),
+        "expected rate-limit detail, got: {:?}",
+        body["detail"]
+    );
+}
