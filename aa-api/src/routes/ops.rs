@@ -115,10 +115,12 @@ pub async fn pause_op(
         .map_err(ops_error_to_problem)
 }
 
-/// `POST /api/v1/ops/{id}/resume` — request that a paused operation resume.
+/// `POST /api/v1/ops/{id}/resume` — transition a paused operation back to running.
 ///
-/// Stub today: returns 202 Accepted and logs the request without updating
-/// any state. Real enforcement awaits the in-flight-ops registry architecture.
+/// * `200 OK` — op transitioned `paused → running`.
+/// * `400 Bad Request` — whitespace-only op id.
+/// * `404 Not Found` — no op with this id is registered.
+/// * `409 Conflict` — op is running or terminated.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/resume",
@@ -127,12 +129,22 @@ pub async fn pause_op(
         ("id" = String, Path, description = "Operation id (string form of `GovernanceEvent.id`).")
     ),
     responses(
-        (status = 202, description = "Resume request accepted", body = OpActionAck),
-        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail)
+        (status = 200, description = "Op resumed", body = OpActionAck),
+        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail),
+        (status = 404, description = "Op not found", body = ProblemDetail),
+        (status = 409, description = "Invalid state transition", body = ProblemDetail)
     )
 )]
-pub async fn resume_op(Path(id): Path<String>) -> Result<impl IntoResponse, ProblemDetail> {
-    Ok(ack(validate_op_id(&id)?, "resume"))
+pub async fn resume_op(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    let op_id = validate_op_id(&id)?;
+    state
+        .ops_registry
+        .resume(&op_id)
+        .map(|record| lifecycle_ok(record, "resume"))
+        .map_err(ops_error_to_problem)
 }
 
 /// `POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.
