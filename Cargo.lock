@@ -53,6 +53,7 @@ dependencies = [
  "aa-devtool-codex",
  "aa-devtool-windsurf",
  "aa-gateway",
+ "aa-proxy",
  "anyhow",
  "assert_cmd",
  "async-trait",
