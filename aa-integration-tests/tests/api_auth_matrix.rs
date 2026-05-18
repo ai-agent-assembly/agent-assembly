@@ -700,3 +700,29 @@ async fn auth_policy_rbac_admin_scope_allows_global_policy_mutation() {
         "Admin scope (OrgAdmin role) must be allowed to POST a global policy"
     );
 }
+
+#[tokio::test]
+async fn auth_policy_rbac_write_scope_denied_at_global_level() {
+    // Write-scoped JWT maps to Developer role → denied from POSTing global policies.
+    // The default policy scope is Global; Developer role requires a team scope.
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    let jwt = JwtSigner::new(AUTH_IT_JWT_SECRET)
+        .sign("dev-user", &[Scope::Write])
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/policies", env.base_url()))
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "policy_yaml": RBAC_POLICY_YAML }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Write scope (Developer role) must be denied from POSTing a global policy (got {})",
+        resp.status()
+    );
+}
