@@ -19,6 +19,7 @@ pub mod dashboard;
 pub mod logs;
 pub mod permissions;
 pub mod policy;
+pub mod proxy;
 pub mod run;
 pub mod status;
 pub mod tools;
@@ -61,6 +62,8 @@ pub enum Commands {
     Tools(tools::ToolsArgs),
     /// Visualize agent topology, trees, lineage, and statistics.
     Topology(topology::TopologyArgs),
+    /// Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing.
+    Proxy(proxy::ProxyArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -82,5 +85,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Run(args) => run::dispatch(args, ctx, output),
         Commands::Tools(args) => tools::dispatch(args),
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
+        Commands::Proxy(args) => proxy::dispatch(args),
     }
 }
