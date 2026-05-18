@@ -59,8 +59,15 @@ RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
+#
+# `go list -m <module>@latest` is a self-contained query against GOPROXY:
+# it doesn't need a local go.mod (works from `/`), and it asserts the
+# module is resolvable. The plain `go list <import>` form needs both a
+# module context AND a package at the import path — neither holds here
+# (go-sdk's module root has no .go files; sources are under assembly/,
+# internal/ffi/, examples/minimal/). See AAASM-1508.
 RUN aasm --version
-RUN go list github.com/AI-agent-assembly/go-sdk
+RUN go list -m github.com/AI-agent-assembly/go-sdk@latest
 
 LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.26 agent base image" \
