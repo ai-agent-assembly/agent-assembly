@@ -174,3 +174,30 @@ async fn ws_multiple_concurrent_clients_each_receive_events() {
         assert_eq!(event.agent_id, "fan-out-agent");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_event_types_filter_only_delivers_matching() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    // Only subscribe to approval events.
+    let url = format!("ws://{}/api/v1/ws/events?types=approval", env.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Publish a violation (should be filtered out).
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("filter-agent"))
+        .unwrap();
+
+    // Publish an approval (should be delivered).
+    env.events.approval_sender().send(make_approval_request()).unwrap();
+
+    // Must receive the approval event, not the violation.
+    let event = recv_event(&mut ws).await;
+    assert_eq!(
+        event.event_type,
+        EventType::Approval,
+        "only approval events should be delivered when types=approval"
+    );
+}
