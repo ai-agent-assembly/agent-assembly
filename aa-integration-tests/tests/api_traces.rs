@@ -247,3 +247,66 @@ async fn traces_response_includes_all_seeded_span_operations() {
     assert!(ops.contains(&"llm_completion"), "llm_completion should be present");
     assert!(ops.contains(&"policy_eval"), "policy_eval should be present");
 }
+
+// ── TC-6: filter (adapted) — parent_span_id links preserved at every depth ───
+//
+// The handler has no ?max_depth= filter. This test seeds a 3-level chain
+// (root → child → grandchild) and verifies that parent_span_id is correctly
+// preserved at each depth in the response, proving the hierarchy is intact.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_parent_span_id_links_preserved_in_response() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-06";
+
+    env.trace_store
+        .record_span(session_id, "agent-it-06", make_span("root-06", "policy_eval", 10))
+        .unwrap();
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-06",
+            TraceSpan {
+                parent_span_id: Some("root-06".to_string()),
+                ..make_span("child-06", "tool_call", 11)
+            },
+        )
+        .unwrap();
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-06",
+            TraceSpan {
+                parent_span_id: Some("child-06".to_string()),
+                ..make_span("grandchild-06", "llm_completion", 12)
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans array");
+    assert_eq!(spans.len(), 3, "all 3 depth levels should be present");
+
+    let find = |id: &str| spans.iter().find(|s| s["span_id"].as_str() == Some(id)).cloned();
+
+    assert!(
+        find("root-06").unwrap()["parent_span_id"].is_null(),
+        "depth 0: no parent"
+    );
+    assert_eq!(
+        find("child-06").unwrap()["parent_span_id"].as_str(),
+        Some("root-06"),
+        "depth 1"
+    );
+    assert_eq!(
+        find("grandchild-06").unwrap()["parent_span_id"].as_str(),
+        Some("child-06"),
+        "depth 2"
+    );
+}
