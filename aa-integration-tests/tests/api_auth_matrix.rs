@@ -487,7 +487,6 @@ async fn auth_rate_limit_per_key_isolation() {
 ///
 /// This is the canonical CVE: a JWT with header `{"alg":"none"}` and an
 /// empty signature. A correctly implemented verifier must reject it.
-#[allow(dead_code)]
 fn build_alg_none_jwt() -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
@@ -588,5 +587,26 @@ async fn auth_bypass_path_traversal_no_effect() {
     assert!(
         s2 == StatusCode::NOT_FOUND || s2 == StatusCode::BAD_REQUEST || s2 == StatusCode::UNAUTHORIZED,
         "percent-encoded path traversal must not expose unintended routes (got {s2})"
+    );
+}
+
+#[tokio::test]
+async fn auth_bypass_jwt_alg_none_rejected() {
+    // Classic alg:none vulnerability — jsonwebtoken crate rejects unsigned tokens
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+    let token = build_alg_none_jwt();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "alg:none JWT must be rejected with 401"
     );
 }
