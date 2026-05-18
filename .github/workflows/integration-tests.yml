@@ -70,10 +70,20 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Setup Python agent fixtures
+        working-directory: aa-integration-tests/tests/fixtures/agents/python
+        run: uv sync --extra all
+
       - name: Run integration tests
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
         run: cargo nextest run -p aa-integration-tests --test-threads=1
+
 
       - name: Upload gateway logs on failure
         if: failure()
