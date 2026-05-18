@@ -280,3 +280,34 @@ async fn ws_since_event_id_replays_buffered() {
     assert_eq!(ev2.id, 2);
     assert_eq!(ev3.id, 3);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_since_future_id_starts_live_only() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    // Seed some events into the replay buffer.
+    for i in 1u64..=3 {
+        env.replay_buffer.push(make_governance_event(i));
+    }
+
+    // Connect with a since value beyond the latest buffered id — no replay.
+    let url = format!("ws://{}/api/v1/ws/events?since=9999999", env.addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // No replay message should arrive.
+    let no_replay = tokio::time::timeout(Duration::from_millis(200), ws.next()).await;
+    assert!(
+        no_replay.is_err(),
+        "no buffered events should be replayed for a future since id"
+    );
+
+    // A subsequently published live event should arrive.
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("live-only-agent"))
+        .unwrap();
+
+    let event = recv_event(&mut ws).await;
+    assert_eq!(event.agent_id, "live-only-agent");
+}
