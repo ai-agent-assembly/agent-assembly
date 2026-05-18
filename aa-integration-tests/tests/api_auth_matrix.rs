@@ -655,3 +655,48 @@ async fn auth_bypass_repeated_auth_headers_first_wins_or_rejected() {
         "repeated Authorization headers must be handled safely (got {status})"
     );
 }
+
+// ── Section 6 — Policy RBAC integration ─────────────────────────────────────
+//
+// PolicyWriteAuth maps scopes to roles:
+//   Scope::Read  → Viewer  (no write access)
+//   Scope::Write → Developer (write access for team-scoped policies only)
+//   Scope::Admin → OrgAdmin  (write access for global policies)
+//
+// POST /api/v1/policies uses PolicyWriteAuth (default scope = Global).
+// A write-scope (Developer) token can write team-scoped policies but is denied
+// at the global level; an admin-scope (OrgAdmin) token can write global policies.
+
+const RBAC_POLICY_YAML: &str = r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: rbac-test-policy
+  version: "1.0.0"
+spec:
+  rules: []
+"#;
+
+#[tokio::test]
+async fn auth_policy_rbac_admin_scope_allows_global_policy_mutation() {
+    // Admin-scoped JWT maps to OrgAdmin role → may POST global policies.
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    let jwt = JwtSigner::new(AUTH_IT_JWT_SECRET)
+        .sign("admin-user", &[Scope::Admin])
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/policies", env.base_url()))
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "policy_yaml": RBAC_POLICY_YAML }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "Admin scope (OrgAdmin role) must be allowed to POST a global policy"
+    );
+}
