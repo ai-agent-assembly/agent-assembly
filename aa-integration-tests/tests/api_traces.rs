@@ -210,3 +210,40 @@ async fn traces_invalid_session_id_format_returns_404() {
         "malformed session_id with no matching session should return 404"
     );
 }
+
+// ── TC-5: filter (adapted) — all seeded operation types present in response ───
+//
+// The handler has no ?span_type= filter. This test seeds spans of three
+// distinct operation types and verifies all three appear in the unfiltered
+// response — confirming the endpoint does not silently drop span types.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_response_includes_all_seeded_span_operations() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-05";
+
+    for (id, op, hour) in [
+        ("s1", "tool_call", 10u32),
+        ("s2", "llm_completion", 11),
+        ("s3", "policy_eval", 12),
+    ] {
+        env.trace_store
+            .record_span(session_id, "agent-it-05", make_span(id, op, hour))
+            .unwrap();
+    }
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans array");
+    assert_eq!(spans.len(), 3, "all 3 seeded spans should be present");
+
+    let ops: Vec<&str> = spans.iter().filter_map(|s| s["operation"].as_str()).collect();
+    assert!(ops.contains(&"tool_call"), "tool_call should be present");
+    assert!(ops.contains(&"llm_completion"), "llm_completion should be present");
+    assert!(ops.contains(&"policy_eval"), "policy_eval should be present");
+}
