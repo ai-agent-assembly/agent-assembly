@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
 
-use aa_proto::assembly::audit::v1::{audit_event, AuditEvent, LlmCallDetail};
+use aa_proto::assembly::audit::v1::{audit_event, AuditEvent, LlmCallDetail, NetworkCallDetail, PolicyViolation};
 use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::pipeline::event::{EnrichedEvent, EventSource};
 use aa_runtime::pipeline::PipelineEvent;
@@ -44,6 +44,57 @@ impl Interceptor {
     /// to use a custom-configured [`CredentialScanner`].
     pub fn with_scanner(event_tx: broadcast::Sender<PipelineEvent>, scanner: Option<CredentialScanner>) -> Self {
         Self { event_tx, scanner }
+    }
+
+    /// Emit an audit event recording the policy decision for a CONNECT tunnel.
+    ///
+    /// - `host`: the target hostname from the CONNECT request line.
+    /// - `denied`: `true` if the connection was blocked (403 returned),
+    ///   `false` if the connection was allowed through.
+    ///
+    /// The event is emitted on the broadcast channel; if there are no receivers
+    /// (standalone proxy with no runtime attached) the send is silently ignored.
+    pub async fn emit_policy_decision(&self, host: &str, denied: bool) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let (action_type, detail) = if denied {
+            let violation = PolicyViolation {
+                blocked_action: format!("CONNECT {host}"),
+                reason: "host is on the deny list".into(),
+                ..Default::default()
+            };
+            (ActionType::NetworkCall, audit_event::Detail::Violation(violation))
+        } else {
+            let network = NetworkCallDetail {
+                host: host.to_string(),
+                protocol: "https".into(),
+                succeeded: true,
+                ..Default::default()
+            };
+            (ActionType::NetworkCall, audit_event::Detail::Network(network))
+        };
+
+        let audit = AuditEvent {
+            action_type: action_type.into(),
+            detail: Some(detail),
+            ..Default::default()
+        };
+
+        let enriched = EnrichedEvent {
+            inner: audit,
+            received_at_ms: now_ms,
+            source: EventSource::Proxy,
+            agent_id: String::new(),
+            connection_id: 0,
+            sequence_number: 0,
+        };
+
+        // send() returns Err only when there are zero receivers — normal for
+        // standalone proxy operation (no runtime attached).
+        let _ = self.event_tx.send(PipelineEvent::Audit(Box::new(enriched)));
     }
 
     /// Inspect an intercepted exchange, extract LLM fields from the body,

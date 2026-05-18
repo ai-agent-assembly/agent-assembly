@@ -6,8 +6,9 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-use rustls::ServerConfig;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -21,6 +22,51 @@ use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
 use crate::intercept::Interceptor;
 use crate::tls::{CaStore, CertCache};
+
+/// A TLS `ServerCertVerifier` that accepts any certificate.
+///
+/// This is intentionally insecure — it exists only to allow integration tests
+/// to use self-signed upstream servers without installing their CAs.
+/// Gated behind [`ProxyConfig::skip_upstream_tls_verify`].
+#[derive(Debug)]
+struct NoCertVerifier;
+
+impl ServerCertVerifier for NoCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
 
 /// The running proxy server.
 ///
@@ -117,6 +163,21 @@ impl ProxyServer {
                 }
             }
 
+            // Extract hostname (strip port) for deny check and certificate generation.
+            let host = target.split(':').next().unwrap_or(target);
+
+            // Deny check: if the host is on the deny list, return 403 immediately.
+            if self.config.denied_hosts.iter().any(|denied| denied == host) {
+                tracing::info!(%host, "CONNECT denied by host policy");
+                let inner = reader.into_inner();
+                let mut stream = inner;
+                stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+                self.interceptor.emit_policy_decision(host, true).await;
+                return Ok(());
+            }
+
             // Send 200 Connection Established to tell the client the tunnel is open.
             let inner = reader.into_inner();
             let mut stream = inner;
@@ -124,8 +185,8 @@ impl ProxyServer {
 
             tracing::debug!(host = target, "CONNECT tunnel established");
 
-            // Extract hostname (strip port) for certificate generation.
-            let host = target.split(':').next().unwrap_or(target);
+            // Emit allow audit event for the accepted connection.
+            self.interceptor.emit_policy_decision(host, false).await;
 
             // When llm_only is enabled, skip TLS MitM for non-LLM hosts and
             // just tunnel the raw TCP bytes transparently.
@@ -157,14 +218,23 @@ impl ProxyServer {
 
             // --- TLS client: connect to the real upstream ---
             let upstream_tcp = TcpStream::connect(target).await?;
-            let mut root_store = rustls::RootCertStore::empty();
-            let native = rustls_native_certs::load_native_certs();
-            for cert in native.certs {
-                let _ = root_store.add(cert);
-            }
-            let client_config = rustls::ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
+            let client_config = if self.config.skip_upstream_tls_verify {
+                // Integration-test-only path: skip certificate verification so tests
+                // can use self-signed upstream servers without installing their CAs.
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
+                    .with_no_client_auth()
+            } else {
+                let mut root_store = rustls::RootCertStore::empty();
+                let native = rustls_native_certs::load_native_certs();
+                for cert in native.certs {
+                    let _ = root_store.add(cert);
+                }
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth()
+            };
             let connector = TlsConnector::from(Arc::new(client_config));
             let server_name = ServerName::try_from(host.to_string()).map_err(|e| ProxyError::Tls(e.to_string()))?;
             let upstream_tls = connector
