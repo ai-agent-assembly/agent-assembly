@@ -278,17 +278,27 @@ async fn costs_reflects_seeded_per_team_spend_and_sorted_order() {
     let find_team = |id: &str| teams.iter().find(|e| e["team_id"].as_str() == Some(id)).cloned();
 
     let entry_a = find_team(TEAM_ID).expect("per_team should contain f122-costs-it");
+    let spend_a: Decimal = entry_a["daily_spend_usd"]
+        .as_str()
+        .expect("daily_spend_usd")
+        .parse()
+        .expect("parseable decimal");
     assert_eq!(
-        entry_a["daily_spend_usd"].as_str().unwrap(),
-        "2",
-        "f122-costs-it daily spend should be 2",
+        spend_a,
+        Decimal::new(200, 2),
+        "f122-costs-it daily spend should be 2.00"
     );
 
     let entry_b = find_team(TEAM_ID_B).expect("per_team should contain f122-costs-it-b");
+    let spend_b: Decimal = entry_b["daily_spend_usd"]
+        .as_str()
+        .expect("daily_spend_usd")
+        .parse()
+        .expect("parseable decimal");
     assert_eq!(
-        entry_b["daily_spend_usd"].as_str().unwrap(),
-        "6",
-        "f122-costs-it-b daily spend should be 6",
+        spend_b,
+        Decimal::new(600, 2),
+        "f122-costs-it-b daily spend should be 6.00"
     );
 
     // Verify the handler's sort_by(team_id) — lexicographic ascending.
