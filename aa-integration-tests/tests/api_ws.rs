@@ -56,3 +56,32 @@ fn make_pipeline_event(agent_id: &str) -> PipelineEvent {
         sequence_number: 0,
     }))
 }
+
+#[allow(dead_code)]
+fn make_approval_request() -> ApprovalRequest {
+    ApprovalRequest {
+        request_id: Uuid::new_v4(),
+        agent_id: "test-agent".into(),
+        action: "test-action".into(),
+        condition_triggered: "test-condition".into(),
+        submitted_at: 0,
+        timeout_secs: 60,
+        fallback: PolicyResult::Deny {
+            reason: "timeout".into(),
+        },
+        team_id: None,
+        timeout_override_secs: None,
+        escalation_role_override: None,
+    }
+}
+
+#[allow(dead_code)]
+fn make_budget_alert() -> BudgetAlert {
+    BudgetAlert {
+        agent_id: AgentId::from_bytes([0u8; 16]),
+        team_id: None,
+        threshold_pct: 80,
+        spent_usd: 8.0,
+        limit_usd: 10.0,
+    }
+}
