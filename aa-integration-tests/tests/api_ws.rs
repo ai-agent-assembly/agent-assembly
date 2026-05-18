@@ -366,3 +366,33 @@ async fn ws_reconnect_with_last_event_id_resumes_correctly() {
     let no_more = tokio::time::timeout(Duration::from_millis(200), ws2.next()).await;
     assert!(no_more.is_err(), "no further replay after the buffer is exhausted");
 }
+
+/// A slow client (client A that doesn't read) must not block event delivery to
+/// other clients (client B). Tokio broadcast channels are non-blocking for the
+/// sender, so lagging receivers get RecvError::Lagged rather than stalling
+/// other subscribers.
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_slow_client_does_not_block_other_clients() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    // Client A: connect but never read.
+    let (_ws_a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Client B: will read all events.
+    let (mut ws_b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Publish 50 events.
+    for i in 0..50 {
+        env.events
+            .pipeline_sender()
+            .send(make_pipeline_event(&format!("agent-{i}")))
+            .unwrap();
+    }
+
+    // Client B must receive all 50 within the timeout.
+    for _ in 0..50 {
+        recv_event(&mut ws_b).await;
+    }
+}
