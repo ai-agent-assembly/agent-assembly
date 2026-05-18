@@ -1,0 +1,34 @@
+[project]
+name = "aa-agent-fixtures"
+version = "0.0.0"
+description = "Sample AI agent scripts for aa-integration-tests F116 E2E acceptance tests"
+requires-python = ">=3.12"
+dependencies = ["agent-assembly"]
+
+[project.optional-dependencies]
+langchain = ["langchain>=0.3,<0.4", "langchain-openai>=0.2,<0.3"]
+langgraph = ["langgraph>=0.2,<0.4"]
+crewai    = ["crewai>=0.80,<1.0"]
+all       = [
+    "langchain>=0.3,<0.4",
+    "langchain-openai>=0.2,<0.3",
+    "langgraph>=0.2,<0.4",
+    "crewai>=0.80,<1.0",
+]
+runner    = ["rich>=13.0,<15.0"]
+
+[tool.uv]
+default-groups = []
+
+[tool.uv.sources]
+# Resolves to the sibling python-sdk checkout.
+# Local dev:  6 levels up from fixtures/agents/python/ = AI-agent-assembly/python-sdk/
+# CI:  use the pip-install step in integration-tests.yml (bypasses this path)
+agent-assembly = { path = "../../../../../../python-sdk", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
