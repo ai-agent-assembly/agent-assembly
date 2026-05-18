@@ -337,3 +337,32 @@ async fn ws_replay_buffer_capacity_is_1000() {
     let last = recv_event(&mut ws).await;
     assert_eq!(last.id, 1001, "last event should be id=1001");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_reconnect_with_last_event_id_resumes_correctly() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    env.replay_buffer.push(make_governance_event(1));
+    env.replay_buffer.push(make_governance_event(2));
+    env.replay_buffer.push(make_governance_event(3));
+
+    // First connection: replay from beginning, read all three.
+    let url0 = format!("ws://{}/api/v1/ws/events?since=0", env.addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url0).await.unwrap();
+    let _ev1 = recv_event(&mut ws).await;
+    let ev2 = recv_event(&mut ws).await;
+    assert_eq!(ev2.id, 2);
+    let ev3 = recv_event(&mut ws).await;
+    assert_eq!(ev3.id, 3);
+    drop(ws);
+
+    // Reconnect from the last received id (2) — should get only id=3.
+    let url2 = format!("ws://{}/api/v1/ws/events?since=2", env.addr);
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url2).await.unwrap();
+    let replayed = recv_event(&mut ws2).await;
+    assert_eq!(replayed.id, 3, "reconnect from since=2 should replay only id=3");
+
+    // No further replay messages.
+    let no_more = tokio::time::timeout(Duration::from_millis(200), ws2.next()).await;
+    assert!(no_more.is_err(), "no further replay after the buffer is exhausted");
+}
