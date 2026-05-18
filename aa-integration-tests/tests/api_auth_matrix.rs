@@ -726,3 +726,28 @@ async fn auth_policy_rbac_write_scope_denied_at_global_level() {
         resp.status()
     );
 }
+
+#[tokio::test]
+async fn auth_policy_rbac_read_scope_denied_at_all_policy_levels() {
+    // Read-scoped JWT maps to Viewer role → denied from any policy mutation.
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    let jwt = JwtSigner::new(AUTH_IT_JWT_SECRET)
+        .sign("viewer-user", &[Scope::Read])
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/policies", env.base_url()))
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "policy_yaml": RBAC_POLICY_YAML }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Read scope (Viewer role) must be denied from all policy mutations (got {})",
+        resp.status()
+    );
+}
