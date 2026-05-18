@@ -522,9 +522,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * `GET /api/v1/health` — liveness probe.
-         * @description Returns a simple JSON body indicating the service is alive.
-         *     Suitable for Kubernetes liveness probes.
+         * `GET /api/v1/health` — liveness and readiness probe.
+         * @description Returns `200` when all subsystems report healthy; `503` when any subsystem
+         *     is degraded. The `checks` map in the response body carries per-subsystem
+         *     status strings (`"ok"` or `"degraded"`).
          */
         get: operations["health"];
         put?: never;
@@ -1589,12 +1590,16 @@ export interface components {
             active_connections: number;
             /** @description API version prefix (e.g. `"v1"`). */
             api_version: string;
+            /** @description Per-subsystem health status. Each value is `"ok"` or `"degraded"`. */
+            checks: {
+                [key: string]: string;
+            };
             /**
              * Format: int64
              * @description Pipeline processing lag in milliseconds (placeholder, always 0 for now).
              */
             pipeline_lag_ms: number;
-            /** @description Liveness status string, always `"ok"` when the service is running. */
+            /** @description Liveness status string: `"ok"` when all subsystems healthy, `"degraded"` otherwise. */
             status: string;
             /**
              * Format: int64
@@ -3152,6 +3157,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description One or more subsystems are degraded */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
                 };
             };
         };

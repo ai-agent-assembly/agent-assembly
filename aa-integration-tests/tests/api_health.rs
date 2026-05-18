@@ -1,22 +1,24 @@
 //! AAASM-1486 / F122 ST-E — Live-gateway HTTP integration tests for `/api/v1/health`.
 //!
-//! ## Discovered response shape (aa-api/src/routes/health.rs)
+//! ## Response shape (aa-api/src/routes/health.rs)
 //!
 //! ```text
 //! GET /api/v1/health → 200 application/json
 //! {
-//!   "status":             "ok",    // always "ok" when alive
+//!   "status":             "ok",    // "ok" when all subsystems healthy; "degraded" otherwise
 //!   "version":            "0.0.1", // CARGO_PKG_VERSION
 //!   "api_version":        "v1",
 //!   "uptime_secs":        u64,     // seconds since server startup
 //!   "active_connections": i64,     // live WebSocket/SSE count
 //!   "pipeline_lag_ms":    u64,     // placeholder, always 0
+//!   "checks": {
+//!     "policy_engine": "ok",
+//!     "registry":      "ok",
+//!     "audit":         "ok",
+//!     "alerts":        "ok"
+//!   }
 //! }
 //! ```
-//!
-//! No `dependencies` / `checks` object is present in the current implementation.
-//! `health_reflects_policy_engine_state` is `#[ignore]`'d pending AAASM-TODO
-//! to add downstream subsystem health reporting.
 //!
 //! Health is always unauthenticated: the handler carries no `AuthenticatedCaller`
 //! extractor and therefore bypasses auth entirely regardless of the configured
@@ -110,12 +112,9 @@ async fn health_response_includes_uptime_or_started_at() {
     );
 }
 
-/// Dependency propagation test — `#[ignore]`'d because the current health
-/// handler is minimal: no `dependencies` or `checks` object is present.
-/// Filed as AAASM-1526 to add downstream subsystem health reporting
-/// (policy engine, registry, audit, alerts).
+/// Verifies that the health response includes a `checks` map with all four
+/// downstream subsystem keys (`policy_engine`, `registry`, `audit`, `alerts`).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "health handler is minimal; no dependencies/checks object present (AAASM-1526)"]
 async fn health_reflects_policy_engine_state() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
 
