@@ -126,3 +126,23 @@ async fn auth_jwt_malformed_token_returns_401() {
         body["detail"]
     );
 }
+
+#[tokio::test]
+async fn auth_jwt_missing_authorization_header_returns_401() {
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    // No Authorization header at all.
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["detail"].as_str().unwrap_or("").contains("Missing"),
+        "expected 'Missing' in detail, got: {:?}",
+        body["detail"]
+    );
+}
