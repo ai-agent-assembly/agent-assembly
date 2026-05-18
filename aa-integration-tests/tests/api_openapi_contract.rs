@@ -20,7 +20,24 @@
 
 mod common;
 
+use aa_api::alerts::AlertStore;
+use aa_core::AgentId;
+use aa_gateway::budget::types::BudgetAlert;
+use common::TopologyTestEnv;
+use reqwest::StatusCode;
 use serde_json::Value;
+
+fn seed_alert(env: &TopologyTestEnv, threshold_pct: u8, agent_id_bytes: [u8; 16]) -> u64 {
+    let limit_usd = 10.0_f64;
+    let spent_usd = limit_usd * f64::from(threshold_pct) / 100.0;
+    env.alert_store.record(&BudgetAlert {
+        agent_id: AgentId::from_bytes(agent_id_bytes),
+        team_id: None,
+        threshold_pct,
+        spent_usd,
+        limit_usd,
+    })
+}
 
 fn load_spec() -> Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../openapi/v1.yaml");
@@ -130,4 +147,53 @@ fn openapi_spec_paths_match_implemented_routes() {
         missing.is_empty(),
         "paths in openapi/v1.yaml not in expected list (add to test or remove from spec): {missing:?}"
     );
+}
+
+// ── TC-3: live responses validate against component schemas ──────────────────
+//
+// Tests three representative endpoints whose component schemas contain only
+// primitive properties (no nested $ref), making them directly validatable
+// via jsonschema::is_valid on the extracted schema component.
+//
+// Endpoints tested:
+//   GET /api/v1/health          → HealthResponse (no seed, always populated)
+//   GET /api/v1/policies/active → PolicyResponse (no seed, loaded at startup)
+//   GET /api/v1/alerts/{id}     → AlertResponse  (one seeded budget alert)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openapi_spec_response_schemas_validate_live_responses() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+    let spec = load_spec();
+
+    let alert_id = seed_alert(&env, 95, [0xBB; 16]);
+    let alert_path = format!("/api/v1/alerts/{alert_id}");
+
+    let cases: Vec<(&str, &str)> = vec![
+        ("/api/v1/health", "HealthResponse"),
+        ("/api/v1/policies/active", "PolicyResponse"),
+        (alert_path.as_str(), "AlertResponse"),
+    ];
+
+    for (path, schema_name) in cases {
+        let schema = spec
+            .pointer(&format!("/components/schemas/{schema_name}"))
+            .unwrap_or_else(|| panic!("{schema_name} not found in components/schemas"))
+            .clone();
+
+        let resp = client
+            .get(format!("{}{path}", env.base_url()))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {path} transport error: {e}"));
+
+        assert_eq!(resp.status(), StatusCode::OK, "GET {path} must return 200");
+
+        let body: Value = resp.json().await.expect("response must parse as JSON");
+
+        assert!(
+            jsonschema::is_valid(&schema, &body),
+            "GET {path} response does not match {schema_name} schema in openapi/v1.yaml.\nBody: {body}"
+        );
+    }
 }
