@@ -274,3 +274,21 @@ async fn auth_scope_read_cannot_elevate_to_write_via_token() {
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn auth_scope_admin_grants_full_token_issuance() {
+    let (plaintext, entry) = make_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({"scopes": ["read", "write", "admin"]}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["token"].is_string(), "response must have 'token' string field");
+}
