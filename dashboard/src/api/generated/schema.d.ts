@@ -439,7 +439,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * `GET /api/v1/capability/override` — list all active capability overrides
+         *     recorded since the server started, optionally filtered to a single agent.
+         * @description The response is an array of [`OverrideRecord`] objects. Each record
+         *     corresponds to one successful `POST /capability/override` call and carries
+         *     the agents, resource, verb, decision, and ISO 8601 timestamp of when the
+         *     override was applied.
+         */
+        get: operations["list_overrides"];
         put?: never;
         /**
          * `POST /api/v1/capability/override` — apply a capability override across
@@ -1658,6 +1666,33 @@ export interface components {
             action: string;
             /** @description Operation id from the URL path. */
             op_id: string;
+        };
+        /**
+         * @description A recorded capability override entry returned by
+         *     `GET /api/v1/capability/override`.
+         *
+         *     Each `POST /capability/override` call that successfully mutates at least
+         *     one cell appends one of these records. The log is in-memory and lives as
+         *     long as the server process; TTL-based expiry is not yet implemented.
+         */
+        OverrideRecord: {
+            /**
+             * @description Whether the override is still active. Always `true` in the current
+             *     implementation (no TTL or explicit delete support yet).
+             */
+            active: boolean;
+            /** @description Agent identifiers this override was applied to. */
+            agentIds: string[];
+            /** @description ISO 8601 UTC timestamp when the override was applied. */
+            createdAt: string;
+            /** @description New decision recorded for that (resource, verb) pair. */
+            decision: components["schemas"]["Decision"];
+            /** @description Unique identifier for this override entry (UUID v4). */
+            id: string;
+            /** @description Resource whose cell was overridden. */
+            resourceId: string;
+            /** @description Verb within the cell that was changed. */
+            verb: components["schemas"]["Verb"];
         };
         /** @description Per-scope contribution to an agent's effective permissions. */
         PermissionSourceResponse: {
@@ -2968,6 +3003,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CapabilityMatrix"];
+                };
+            };
+        };
+    };
+    list_overrides: {
+        parameters: {
+            query?: {
+                /** @description Filter results to overrides that affect this agent id */
+                agent_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active override records */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OverrideRecord"][];
                 };
             };
         };

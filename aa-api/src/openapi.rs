@@ -84,6 +84,7 @@ use crate::routes::{
         ops::resume_op,
         ops::terminate_op,
         capability::get_matrix,
+        capability::list_overrides,
         capability::apply_override,
         capability::revoke_override,
         iam::list_api_keys,
