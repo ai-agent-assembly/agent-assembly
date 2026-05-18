@@ -112,11 +112,7 @@ async fn capability_matrix_returns_seeded_data() {
     }
 }
 
-/// `?team_id=` filter is not yet implemented — `get_matrix` ignores all query
-/// parameters and always returns the full matrix. Once per-agent filtering
-/// lands, this test should be updated to assert only the requested agent row
-/// is returned.
-#[ignore = "matrix filter by team_id not implemented; full matrix returned regardless"]
+/// `?team_id=` filter returns only the agent row whose `id` matches.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_matrix_filter_by_team() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
@@ -131,10 +127,8 @@ async fn capability_matrix_filter_by_team() {
     assert_eq!(agents[0]["id"], "research-bot-04");
 }
 
-/// `?tool=` filter is not yet implemented — the handler ignores the param.
-/// Once per-resource column filtering lands, this test should assert only the
-/// matching column data is included.
-#[ignore = "matrix filter by tool not implemented; full matrix returned regardless"]
+/// `?tool=` filter returns only the matching resource column and filters
+/// each agent's caps map to that single key.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_matrix_filter_by_tool() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
@@ -149,9 +143,8 @@ async fn capability_matrix_filter_by_tool() {
     assert_eq!(resources[0]["id"], "gmail");
 }
 
-/// `?effective_only=true` should exclude inherited / non-effective grants once
-/// that filter lands. Currently the param is silently ignored.
-#[ignore = "effective_only filter not implemented; all grants (inherited and direct) returned"]
+/// `?effective_only=true` excludes cap cells where all four verb decisions
+/// are `na` (no effective permission).
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_matrix_effective_only_excludes_inherited() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
@@ -166,9 +159,7 @@ async fn capability_matrix_effective_only_excludes_inherited() {
     // Additional assertions about inherited vs effective decisions go here.
 }
 
-/// Unknown `team_id` should return 200 + empty agent list once filtering is
-/// implemented. Currently the param is ignored and the full matrix is returned.
-#[ignore = "matrix filter by team_id not implemented; full matrix returned instead of empty list"]
+/// Unknown `team_id` returns 200 with an empty agent list.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_matrix_unknown_team_returns_empty() {
     let env = TopologyTestEnv::start().await.expect("harness should start");

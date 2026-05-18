@@ -703,16 +703,48 @@ paths:
       tags:
       - capability
       summary: |-
-        `GET /api/v1/capability/matrix` — return the full agent × resource ×
-        verb × decision matrix that backs the dashboard Capability Matrix page.
+        `GET /api/v1/capability/matrix` — return the agent × resource × verb ×
+        decision matrix that backs the dashboard Capability Matrix page.
       description: |-
-        Returns the full snapshot — resources, agents (each with a `caps` map),
-        policies, and sample calls — in the exact shape the dashboard's
-        `CapabilityClient.getMatrix()` consumes.
+        Optional filters:
+        - `team_id` — return only the agent row whose `id` matches.
+        - `tool` — return only the resource column whose `id` matches and filter
+          each agent's `caps` map to that single key.
+        - `effective_only=true` — exclude cells where all four verb decisions are `na`.
       operationId: get_matrix
+      parameters:
+      - name: team_id
+        in: query
+        description: Return only the agent row whose `id` matches this value.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: research-bot-04
+      - name: tool
+        in: query
+        description: |-
+          Return only the resource column whose `id` matches this value, and
+          filter each agent's caps map to that single resource key.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: gmail
+      - name: effective_only
+        in: query
+        description: When `true`, exclude capability cells where all four verb decisions are `na`.
+        required: false
+        schema:
+          type:
+          - boolean
+          - 'null'
+        example: true
       responses:
         '200':
-          description: Full capability matrix snapshot
+          description: Capability matrix snapshot (filtered)
           content:
             application/json:
               schema:
