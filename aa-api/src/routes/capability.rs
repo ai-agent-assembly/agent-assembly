@@ -520,6 +520,7 @@ mod tests {
             resource_id: "pg".into(),
             verb: Verb::Write,
             decision: Decision::Deny,
+            ttl_seconds: None,
         };
         let updated = store.apply_override(&req).await.unwrap();
         assert_eq!(updated.len(), 1);
@@ -545,6 +546,7 @@ mod tests {
                 resource_id: "pg".into(),
                 verb: Verb::Read,
                 decision: Decision::Allow,
+                ttl_seconds: None,
             })
             .await
             .unwrap_err();
@@ -561,6 +563,7 @@ mod tests {
                 resource_id: "nonexistent-resource".into(),
                 verb: Verb::Read,
                 decision: Decision::Deny,
+                ttl_seconds: None,
             })
             .await
             .unwrap();

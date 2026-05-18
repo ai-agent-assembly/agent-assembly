@@ -198,6 +198,11 @@ pub struct CapabilityOverrideRequest {
     pub verb: Verb,
     /// New decision to record for that (resource, verb) pair.
     pub decision: Decision,
+    /// Optional TTL in seconds. When set, the override is automatically
+    /// reverted to the pre-override value after this duration elapses.
+    /// The endpoint returns 201 Created instead of 200 OK when TTL is provided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
 }
 
 /// Response envelope for `POST /api/v1/capability/override`: the subset of
@@ -433,5 +438,19 @@ mod tests {
         assert_eq!(req.resource_id, "pg");
         assert_eq!(req.verb, Verb::Write);
         assert_eq!(req.decision, Decision::Deny);
+        assert_eq!(req.ttl_seconds, None, "ttl_seconds defaults to None when absent");
+    }
+
+    #[test]
+    fn override_request_deserializes_ttl_seconds() {
+        let raw = r#"{
+            "agentIds": ["research-bot-04"],
+            "resourceId": "pg",
+            "verb": "write",
+            "decision": "deny",
+            "ttlSeconds": 30
+        }"#;
+        let req: CapabilityOverrideRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.ttl_seconds, Some(30));
     }
 }
