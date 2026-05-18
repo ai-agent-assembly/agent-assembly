@@ -216,3 +216,26 @@ async fn auth_api_key_revoked_returns_401() {
         body["detail"]
     );
 }
+
+#[tokio::test]
+async fn auth_api_key_unknown_returns_401() {
+    // No keys seeded — any aa_-prefixed token is unknown.
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth("aa_00000000000000000000000000000000")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        detail.contains("invalid") || detail.contains("api key"),
+        "expected 'invalid' or 'api key' in detail, got: {:?}",
+        body["detail"]
+    );
+}
