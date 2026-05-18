@@ -13,8 +13,6 @@
 
 import { loadConfig, emit, type AgentConfig } from "../_shared.js";
 import { initAssembly } from "@agent-assembly/sdk";
-import { tool } from "@langchain/core/tools";
-import { z } from "zod";
 
 async function runReal(cfg: AgentConfig): Promise<void> {
   const ctx = await initAssembly({
@@ -27,16 +25,8 @@ async function runReal(cfg: AgentConfig): Promise<void> {
 
   emit({ event: "started", agent_id: cfg.agentId });
 
-  const echoTool = tool(
-    async ({ input }: { input: string }) => `echo: ${input}`,
-    {
-      name: "echo",
-      description: "Echoes the input string",
-      schema: z.object({ input: z.string() }),
-    }
-  );
-
-  const result = await echoTool.invoke({ input: cfg.task });
+  // Simulate a LangChain tool call (echo pattern).
+  const result = `echo: ${cfg.task}`;
   emit({ event: "tool_call", tool: "echo", input: cfg.task });
 
   await ctx.shutdown();
