@@ -194,6 +194,27 @@ async fn edge_list_agent_outgoing_direction_is_default() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_list_agent_type_filter_returns_only_matching_type() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let base = env.base_url();
+    let src = agent_hex(0x23);
+    let tgt_a = agent_hex(0x24);
+    let tgt_b = agent_hex(0x25);
+
+    seed_edge(&base, &src, &tgt_a, "calls").await;
+    seed_edge(&base, &src, &tgt_b, "delegates_to").await;
+
+    let resp = reqwest::get(format!("{base}/api/v1/agents/{src}/edges?type=calls"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["count"], 1, "type=calls should return only the 'calls' edge");
+    assert_eq!(body["edges"][0]["edge_type"], "calls");
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/v1/agents/{id}/graph
 // ---------------------------------------------------------------------------
