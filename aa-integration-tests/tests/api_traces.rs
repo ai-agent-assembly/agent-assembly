@@ -405,3 +405,49 @@ async fn traces_large_session_returns_all_spans() {
         "all {span_count} spans should be returned (no server-side pagination limit)"
     );
 }
+
+// ── TC-9: pagination (adapted) — spans are ordered chronologically ─────────────
+//
+// Without pagination, the completeness guarantee is ordering stability.
+// The handler sorts by start_time ascending (InMemoryTraceStore::get_trace).
+// Seeding out-of-order and verifying the response is sorted proves the
+// contract that a consumer can rely on the order for sequential traversal.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_spans_ordered_chronologically() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-09";
+
+    // Seed deliberately out of chronological order.
+    for (id, hour) in [("late", 15u32), ("early", 9), ("mid", 12)] {
+        env.trace_store
+            .record_span(session_id, "agent-it-09", make_span(id, "tool_call", hour))
+            .unwrap();
+    }
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans array");
+    assert_eq!(spans.len(), 3);
+
+    assert_eq!(
+        spans[0]["span_id"].as_str(),
+        Some("early"),
+        "first span should be earliest"
+    );
+    assert_eq!(
+        spans[1]["span_id"].as_str(),
+        Some("mid"),
+        "second span should be middle"
+    );
+    assert_eq!(
+        spans[2]["span_id"].as_str(),
+        Some("late"),
+        "third span should be latest"
+    );
+}
