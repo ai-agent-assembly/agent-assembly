@@ -71,18 +71,6 @@ fn validate_op_id(raw: &str) -> Result<String, ProblemDetail> {
     Ok(trimmed.to_string())
 }
 
-fn ack(op_id: String, action: &'static str) -> impl IntoResponse {
-    tracing::info!(target: "aa_api::ops", op_id = %op_id, action, "op lifecycle action accepted");
-    (
-        StatusCode::ACCEPTED,
-        Json(OpActionAck {
-            op_id,
-            action: action.to_string(),
-            accepted_at: chrono::Utc::now().to_rfc3339(),
-        }),
-    )
-}
-
 /// `POST /api/v1/ops/{id}/pause` — transition a running operation to paused.
 ///
 /// * `200 OK` — op transitioned `running → paused`.
@@ -147,10 +135,13 @@ pub async fn resume_op(
         .map_err(ops_error_to_problem)
 }
 
-/// `POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.
+/// `POST /api/v1/ops/{id}/terminate` — terminate a running or paused operation.
 ///
-/// Stub today: returns 202 Accepted and logs the request without updating
-/// any state. Real enforcement awaits the in-flight-ops registry architecture.
+/// Idempotent: a second call on an already-terminated op also returns `200 OK`.
+///
+/// * `200 OK` — op transitioned to `terminated` (or was already terminated).
+/// * `400 Bad Request` — whitespace-only op id.
+/// * `404 Not Found` — no op with this id is registered.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/terminate",
@@ -159,12 +150,21 @@ pub async fn resume_op(
         ("id" = String, Path, description = "Operation id (string form of `GovernanceEvent.id`).")
     ),
     responses(
-        (status = 202, description = "Terminate request accepted", body = OpActionAck),
-        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail)
+        (status = 200, description = "Op terminated", body = OpActionAck),
+        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail),
+        (status = 404, description = "Op not found", body = ProblemDetail)
     )
 )]
-pub async fn terminate_op(Path(id): Path<String>) -> Result<impl IntoResponse, ProblemDetail> {
-    Ok(ack(validate_op_id(&id)?, "terminate"))
+pub async fn terminate_op(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    let op_id = validate_op_id(&id)?;
+    state
+        .ops_registry
+        .terminate(&op_id)
+        .map(|record| lifecycle_ok(record, "terminate"))
+        .map_err(ops_error_to_problem)
 }
 
 /// `GET /api/v1/ops` — list all registered in-flight operations.
