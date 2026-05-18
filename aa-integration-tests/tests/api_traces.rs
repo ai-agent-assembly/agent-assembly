@@ -359,3 +359,49 @@ async fn traces_spans_with_null_decision_included_in_response() {
         "span with no decision should have null decision field"
     );
 }
+
+// ── TC-8: pagination (adapted) — all 100 spans returned without truncation ────
+//
+// The handler has no pagination; it returns every span in the session.
+// The in-memory store caps at 1 000 spans/session (DEFAULT_MAX_SPANS_PER_SESSION),
+// so 100 spans must all be present in the response.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_large_session_returns_all_spans() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-08";
+    let span_count = 100usize;
+
+    for i in 0..span_count {
+        env.trace_store
+            .record_span(
+                session_id,
+                "agent-it-08",
+                TraceSpan {
+                    span_id: format!("span-{i:03}"),
+                    parent_span_id: None,
+                    operation: "tool_call".to_string(),
+                    decision: Some("allow".to_string()),
+                    start_time: Utc
+                        .with_ymd_and_hms(2026, 5, 18, (i / 60) as u32, (i % 60) as u32, 0)
+                        .unwrap(),
+                    end_time: None,
+                },
+            )
+            .unwrap();
+    }
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans array");
+    assert_eq!(
+        spans.len(),
+        span_count,
+        "all {span_count} spans should be returned (no server-side pagination limit)"
+    );
+}
