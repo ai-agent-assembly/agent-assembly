@@ -158,16 +158,19 @@ async function injectToken(page: Page) {
 }
 
 async function mockGatewayLiveData(page: Page) {
-  await page.route('**/api/v1/agents', route =>
-    route.fulfill({ json: LIVE_AGENTS }),
-  )
-  await page.route(`**/api/v1/agents/${AGENT_ID}`, route =>
-    route.fulfill({ json: LIVE_AGENTS[0] }),
-  )
-  await page.route(
-    `**/api/v1/agents/${AGENT_ID}/sessions/${SESSION_ID}/trace`,
-    route => route.fulfill({ json: LIVE_TRACE_EVENTS }),
-  )
+  // Single handler for all /api/v1/agents** so that query params like
+  // `?per_page=100` on the list endpoint are caught — pattern '**/api/v1/agents'
+  // only matches the bare path and misses the query string.
+  await page.route('/api/v1/agents**', route => {
+    const url = route.request().url()
+    if (url.includes('/sessions/') && url.endsWith('/trace')) {
+      return route.fulfill({ json: LIVE_TRACE_EVENTS })
+    }
+    if (url.match(/\/api\/v1\/agents\/[^/?]+(\?|$)/)) {
+      return route.fulfill({ json: LIVE_AGENTS[0] })
+    }
+    return route.fulfill({ json: LIVE_AGENTS })
+  })
   await page.route('**/api/v1/topology', route =>
     route.fulfill({ json: LIVE_TOPOLOGY }),
   )
