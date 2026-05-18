@@ -30,3 +30,17 @@ use common::TopologyTestEnv;
 use futures::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+
+/// Read the next WebSocket text frame and deserialise it as a `GovernanceEvent`.
+/// Panics if the 2-second timeout expires or the frame cannot be parsed.
+#[allow(dead_code)]
+async fn recv_event(
+    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+) -> GovernanceEvent {
+    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .expect("timeout waiting for WS message")
+        .expect("stream closed unexpectedly")
+        .expect("ws error");
+    serde_json::from_str(&msg.into_text().unwrap()).unwrap()
+}
