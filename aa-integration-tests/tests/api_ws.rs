@@ -226,3 +226,36 @@ async fn ws_event_types_unknown_value_delivers_nothing() {
         "unknown types filter should result in no events delivered"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_no_filter_delivers_all_event_types() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("all-types-agent"))
+        .unwrap();
+    env.events.approval_sender().send(make_approval_request()).unwrap();
+    env.events.budget_sender().send(make_budget_alert()).unwrap();
+
+    let mut received_types = Vec::new();
+    for _ in 0..3 {
+        let event = recv_event(&mut ws).await;
+        received_types.push(event.event_type);
+    }
+
+    received_types.sort_by_key(|t| match t {
+        EventType::Violation => 0,
+        EventType::Approval => 1,
+        EventType::Budget => 2,
+    });
+    assert_eq!(
+        received_types,
+        vec![EventType::Violation, EventType::Approval, EventType::Budget],
+        "all three event types should be delivered when no filter is set"
+    );
+}
