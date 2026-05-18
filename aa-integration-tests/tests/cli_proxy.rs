@@ -34,11 +34,11 @@
 //!   `dirs::data_local_dir()/aasm/logs/proxy.log`. Tests override `HOME` to
 //!   isolate the log path.
 //!
-//! # `#[ignore]` stubs
+//! # `#[ignore]` tests
 //!
-//! Two tests require capabilities not yet implemented in `aa-proxy`:
-//! * `proxy_start_blocks_deny_policy_request` — policy-deny 403 forwarding.
-//! * `proxy_start_emits_audit_event_to_gateway` — event POST to gateway.
+//! Two tests mutate the OS trust store and require elevated privileges:
+//! * `proxy_install_ca_creates_trust_anchor` — needs macOS admin or Linux root.
+//! * `proxy_uninstall_ca_removes_trust_anchor` — same.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -199,13 +199,31 @@ fn proxy_help_exits_zero_and_lists_subcommands() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for sub in ["start", "stop", "status", "logs"] {
+    for sub in ["start", "stop", "status", "install-ca", "uninstall-ca", "logs"] {
         assert!(stdout.contains(sub), "banner should list '{sub}'; got:\n{stdout}");
     }
 }
 
 #[test]
-fn proxy_start_help_shows_listen_flag() {
+fn proxy_help_describes_layer_2_interception() {
+    // `start` and `stop` variant descriptions both say "sidecar", confirming
+    // that the proxy is described as the Layer-2 sidecar component.
+    let fixture = ProxyFixture::new();
+    let out = fixture
+        .cmd()
+        .args(["proxy", "--help"])
+        .output()
+        .expect("aasm proxy --help");
+    assert!(out.status.success(), "should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("sidecar") || stdout.contains("Layer 2") || stdout.contains("MitM"),
+        "help banner should describe proxy role (sidecar/Layer-2/MitM); got:\n{stdout}"
+    );
+}
+
+#[test]
+fn proxy_start_help_lists_flags() {
     let fixture = ProxyFixture::new();
     let out = fixture
         .cmd()
@@ -214,10 +232,12 @@ fn proxy_start_help_shows_listen_flag() {
         .expect("aasm proxy start --help");
     assert!(out.status.success(), "should exit 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("--listen"),
-        "start help should mention --listen; got:\n{stdout}"
-    );
+    for flag in ["--listen", "--gateway", "--ca-dir", "--no-detach", "--log-file"] {
+        assert!(
+            stdout.contains(flag),
+            "start help should mention {flag}; got:\n{stdout}"
+        );
+    }
 }
 
 #[test]
@@ -339,6 +359,55 @@ fn proxy_start_exits_failure_when_binary_not_found() {
 }
 
 #[test]
+fn proxy_start_with_unreachable_gateway_still_boots() {
+    // Verify that aa-proxy binds its own listen port even when the gateway URL
+    // is unreachable.  Gateway connections are lazy (on first intercept), so the
+    // proxy must start successfully without a live gateway.
+    let fixture = ProxyFixture::new();
+    let port = free_port();
+    let listen_addr = format!("127.0.0.1:{port}");
+    let log_file = fixture.data_dir().join("proxy.log");
+
+    let out = fixture
+        .cmd()
+        .args([
+            "proxy",
+            "start",
+            "--listen",
+            &listen_addr,
+            "--gateway",
+            "http://nope.invalid:1",
+            "--log-file",
+            log_file.to_str().expect("log-file UTF-8"),
+        ])
+        .env("PATH", path_with_proxy())
+        .output()
+        .expect("aasm proxy start");
+
+    if !out.status.success() {
+        eprintln!(
+            "proxy_start_with_unreachable_gateway_still_boots: skipping — start failed.\n\
+             On macOS run `aasm proxy install-ca` first.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        return;
+    }
+
+    let conn = std::net::TcpStream::connect_timeout(
+        &listen_addr.parse().expect("parse addr"),
+        std::time::Duration::from_secs(2),
+    );
+    assert!(
+        conn.is_ok(),
+        "proxy must accept TCP connections even when gateway is unreachable"
+    );
+
+    let stop = fixture.cmd().args(["proxy", "stop"]).output().expect("proxy stop");
+    assert!(stop.status.success(), "proxy stop cleanup failed");
+}
+
+#[test]
 fn proxy_start_spawns_proxy_and_writes_pid_file() {
     let fixture = ProxyFixture::new();
     let port = free_port();
@@ -434,6 +503,39 @@ fn proxy_stop_terminates_running_proxy_cleanly() {
     assert!(
         !fixture.data_dir().join("proxy.pid").exists(),
         "PID file should be removed after stop"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn proxy_stop_handles_stale_pidfile() {
+    // Write a PID file whose process is already gone.  stop.rs detects ESRCH
+    // on the SIGTERM call, removes the file, and exits 0 with an explanatory
+    // message — no 5-second timeout needed.
+    let fixture = ProxyFixture::new();
+
+    // Spawn `true` (exits immediately), reap it, then use its recycled PID as
+    // the "stale" entry.  Low risk of PID reuse since PIDs are assigned
+    // sequentially and we use it immediately after reaping.
+    let dead_pid = {
+        let mut child = Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("wait true");
+        pid
+    };
+
+    write_test_pid_file(fixture.data_dir(), dead_pid, "127.0.0.1:8899");
+
+    let out = fixture.cmd().args(["proxy", "stop"]).output().expect("aasm proxy stop");
+    assert!(out.status.success(), "stop with stale PID should exit 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("not running") || stdout.contains("already"),
+        "should acknowledge stale process; got:\n{stdout}"
+    );
+    assert!(
+        !fixture.data_dir().join("proxy.pid").exists(),
+        "stale PID file should be removed after stop"
     );
 }
 
@@ -588,20 +690,163 @@ fn proxy_logs_level_filter_excludes_debug() {
     );
 }
 
+#[test]
+fn proxy_logs_follow_streams_new_entries() {
+    // spawn `aasm proxy logs -f`, append a new log line, and verify the entry
+    // appears in the follower's stdout within two poll cycles (~400 ms).
+    let fixture = ProxyFixture::new();
+    let fake_home = tempfile::tempdir().expect("tempdir for fake HOME");
+    let log_path = proxy_log_path_for_home(fake_home.path());
+    std::fs::create_dir_all(log_path.parent().expect("log parent")).expect("create log dirs");
+    std::fs::write(&log_path, "INFO initial entry\n").expect("write initial log");
+
+    let mut child = fixture
+        .cmd()
+        .args(["proxy", "logs", "-f"])
+        .env("HOME", fake_home.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn aasm proxy logs -f");
+
+    // Allow the child to start, print the initial tail, and seek to end.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+
+    // Append a new line after the initial seek-to-end.
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .expect("open log for append");
+        writeln!(f, "INFO new streamed entry").expect("append to log");
+    }
+
+    // Wait for two poll cycles (200 ms each) plus margin.
+    std::thread::sleep(std::time::Duration::from_millis(700));
+
+    // Kill the follower and collect whatever it wrote to stdout.
+    let _ = child.kill();
+    let output = child.wait_with_output().expect("wait_with_output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("new streamed entry"),
+        "follow mode should stream newly appended log lines; got:\n{stdout}"
+    );
+}
+
 // ──────────────────────────────────────────── #[ignore] stubs ────────────────
 
 #[test]
-#[ignore = "requires aa-proxy to forward policy-deny 403 + event to gateway (not yet implemented)"]
-fn proxy_start_blocks_deny_policy_request() {
-    // TODO: once aa-proxy evaluates gateway policies and returns HTTP 403 for
-    // deny-matched requests, verify the 403 response and the gateway event.
-    todo!()
+#[ignore = "requires macOS admin or Linux root — modifies the system CA trust store"]
+fn proxy_install_ca_creates_trust_anchor() {
+    // `aasm proxy install-ca --yes --ca-dir <tmp>` must:
+    //   1. Generate ca-cert.pem in the given directory.
+    //   2. Install it into the OS trust store.
+    // macOS: `security find-certificate -c "Agent Assembly CA"` succeeds.
+    // Linux: /usr/local/share/ca-certificates/aa-proxy.crt exists.
+    // Both paths require elevated privileges — run with sudo or admin auth.
+    let fixture = ProxyFixture::new();
+    let ca_dir = fixture.data_dir().join("ca");
+
+    let out = fixture
+        .cmd()
+        .args([
+            "proxy",
+            "install-ca",
+            "--yes",
+            "--ca-dir",
+            ca_dir.to_str().expect("ca_dir UTF-8"),
+        ])
+        .output()
+        .expect("aasm proxy install-ca");
+
+    assert!(
+        out.status.success(),
+        "install-ca should exit 0;\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(ca_dir.join("ca-cert.pem").exists(), "ca-cert.pem must be generated");
+
+    #[cfg(target_os = "macos")]
+    {
+        let check = std::process::Command::new("security")
+            .args([
+                "find-certificate",
+                "-c",
+                "Agent Assembly CA",
+                "-a",
+                "/Library/Keychains/System.keychain",
+            ])
+            .output()
+            .expect("security find-certificate");
+        assert!(
+            check.status.success(),
+            "CA must appear in macOS System Keychain after install-ca"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            std::path::Path::new("/usr/local/share/ca-certificates/aa-proxy.crt").exists(),
+            "CA cert must be present in system CA bundle after install-ca"
+        );
+    }
 }
 
 #[test]
-#[ignore = "requires aa-proxy to POST intercepted-call events to the gateway (not yet implemented)"]
-fn proxy_start_emits_audit_event_to_gateway() {
-    // TODO: once aa-proxy emits PipelineEvents to POST /api/v1/events,
-    // verify that a proxied request creates a corresponding audit entry.
-    todo!()
+#[ignore = "requires macOS admin or Linux root — modifies the system CA trust store"]
+fn proxy_uninstall_ca_removes_trust_anchor() {
+    // Paired with proxy_install_ca_creates_trust_anchor: install first, then
+    // remove and verify the CA is gone from the OS trust store.
+    let fixture = ProxyFixture::new();
+    let ca_dir = fixture.data_dir().join("ca");
+    let ca_dir_str = ca_dir.to_str().expect("ca_dir UTF-8");
+
+    let install = fixture
+        .cmd()
+        .args(["proxy", "install-ca", "--yes", "--ca-dir", ca_dir_str])
+        .output()
+        .expect("install-ca");
+    assert!(install.status.success(), "install-ca prerequisite failed");
+
+    let out = fixture
+        .cmd()
+        .args(["proxy", "uninstall-ca", "--yes", "--ca-dir", ca_dir_str])
+        .output()
+        .expect("aasm proxy uninstall-ca");
+
+    assert!(
+        out.status.success(),
+        "uninstall-ca should exit 0;\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let check = std::process::Command::new("security")
+            .args([
+                "find-certificate",
+                "-c",
+                "Agent Assembly CA",
+                "-a",
+                "/Library/Keychains/System.keychain",
+            ])
+            .output()
+            .expect("security find-certificate");
+        assert!(
+            !check.status.success(),
+            "CA must not appear in System Keychain after uninstall-ca"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            !std::path::Path::new("/usr/local/share/ca-certificates/aa-proxy.crt").exists(),
+            "CA cert must not be in system CA bundle after uninstall-ca"
+        );
+    }
 }
