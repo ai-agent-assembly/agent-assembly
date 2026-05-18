@@ -136,6 +136,26 @@ fn path_with_proxy() -> String {
     }
 }
 
+/// Build a `PATH` string identical to the current `PATH` but with the
+/// directory containing the compiled `aa-proxy` binary removed, so
+/// `resolve_binary()` in `start.rs` cannot find it via `which aa-proxy`.
+///
+/// Unlike setting `PATH=/usr/bin:/bin`, this preserves `cargo` and `rustc`
+/// so that `cargo run -p aa-cli` continues to compile and execute normally.
+fn path_without_proxy_dir() -> String {
+    let proxy_dir = aa_proxy_bin().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|segment| match &proxy_dir {
+            Some(dir) => Path::new(segment) != dir.as_path(),
+            None => true,
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// Best-effort teardown: kill then wait so no zombie remains.
 fn reap_child(mut child: Child) {
     let _ = child.kill();
@@ -302,8 +322,10 @@ fn proxy_start_exits_failure_when_binary_not_found() {
     let out = fixture
         .cmd()
         .args(["proxy", "start", "--listen", &format!("127.0.0.1:{port}")])
-        // Minimal PATH so `which aa-proxy` fails; override HOME so ~/.cargo/bin is absent.
-        .env("PATH", "/usr/bin:/bin")
+        // Strip only the aa-proxy dir so `which aa-proxy` fails; keep
+        // cargo/rustc accessible so `cargo run` can still compile aa-cli.
+        // Override HOME so ~/.cargo/bin/aa-proxy is also absent.
+        .env("PATH", path_without_proxy_dir())
         .env("HOME", fixture.data_dir())
         .output()
         .expect("aasm proxy start should run");
