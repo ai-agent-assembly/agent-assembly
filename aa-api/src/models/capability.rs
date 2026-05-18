@@ -208,6 +208,32 @@ pub struct CapabilityOverrideResponse {
     pub updated: Vec<CapabilityAgent>,
 }
 
+/// A recorded capability override entry returned by
+/// `GET /api/v1/capability/override`.
+///
+/// Each `POST /capability/override` call that successfully mutates at least
+/// one cell appends one of these records. The log is in-memory and lives as
+/// long as the server process; TTL-based expiry is not yet implemented.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideRecord {
+    /// Unique identifier for this override entry (UUID v4).
+    pub id: String,
+    /// Agent identifiers this override was applied to.
+    pub agent_ids: Vec<String>,
+    /// Resource whose cell was overridden.
+    pub resource_id: String,
+    /// Verb within the cell that was changed.
+    pub verb: Verb,
+    /// New decision recorded for that (resource, verb) pair.
+    pub decision: Decision,
+    /// ISO 8601 UTC timestamp when the override was applied.
+    pub created_at: String,
+    /// Whether the override is still active. Always `true` in the current
+    /// implementation (no TTL or explicit delete support yet).
+    pub active: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
