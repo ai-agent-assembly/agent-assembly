@@ -396,3 +396,34 @@ async fn ws_slow_client_does_not_block_other_clients() {
         recv_event(&mut ws_b).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_publish_to_disconnected_client_does_not_panic() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    // Connect then immediately drop (abrupt disconnect).
+    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Publishing after disconnect must not panic the server.
+    for _ in 0..10 {
+        let _ = env
+            .events
+            .pipeline_sender()
+            .send(make_pipeline_event("post-disconnect"));
+    }
+
+    // Server must still accept new connections.
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("after-cleanup"))
+        .unwrap();
+
+    let event = recv_event(&mut ws2).await;
+    assert_eq!(event.agent_id, "after-cleanup");
+}
