@@ -1,0 +1,11 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-allow-deny-mixed
+  version: "0.1.0"
+spec:
+  tools:
+    websearch:
+      allow: false
+    read_file:
+      allow: true
