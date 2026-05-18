@@ -79,10 +79,11 @@ jobs:
             version: "3.14-slim"
             dockerfile: docker/Dockerfile.python-3.14-slim
             smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          - lang: node
-            version: "24-slim"
-            dockerfile: docker/Dockerfile.node-24-slim
-            smoke_run: "node -e \"require('@agent-assembly/sdk')\""
+          # Node 24 is intentionally absent here. Re-enabled by AAASM-1503
+          # once AAASM-1203 publishes `@agent-assembly/sdk` to npm. The
+          # transitional git/tarball install paths can't produce a working
+          # image because the SDK's `dist/` and native `.node` files are
+          # gitignored — see AAASM-1501 for the full investigation.
           - lang: go
             version: "1.26-alpine"
             dockerfile: docker/Dockerfile.go-1.26-alpine
