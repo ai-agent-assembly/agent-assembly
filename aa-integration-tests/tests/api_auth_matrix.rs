@@ -19,6 +19,9 @@ use reqwest::StatusCode;
 use serde_json::Value;
 
 // ── Section 1 — JWT validation ───────────────────────────────────────────────
+//
+// S1 tests use POST /api/v1/auth/token because it requires AuthenticatedCaller
+// (enforces auth). GET /api/v1/agents is public and does not validate auth.
 
 /// Build an expired JWT using the same secret as the test harness.
 ///
@@ -50,9 +53,11 @@ async fn auth_jwt_valid_signed_token_grants_access() {
         .sign("test-sub", &[Scope::Read, Scope::Write])
         .unwrap();
 
+    // POST /api/v1/auth/token enforces AuthenticatedCaller; a valid JWT should succeed.
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agents", env.base_url()))
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
         .bearer_auth(&jwt)
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -66,8 +71,9 @@ async fn auth_jwt_expired_token_returns_401() {
     let jwt = build_expired_jwt();
 
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agents", env.base_url()))
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
         .bearer_auth(&jwt)
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -91,8 +97,9 @@ async fn auth_jwt_invalid_signature_returns_401() {
         .unwrap();
 
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agents", env.base_url()))
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
         .bearer_auth(&jwt)
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -111,8 +118,9 @@ async fn auth_jwt_malformed_token_returns_401() {
     let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
 
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agents", env.base_url()))
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
         .bearer_auth("not.a.jwt")
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
@@ -133,7 +141,8 @@ async fn auth_jwt_missing_authorization_header_returns_401() {
 
     // No Authorization header at all.
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/agents", env.base_url()))
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .unwrap();
