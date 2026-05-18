@@ -106,8 +106,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _guard = EnvGuard::set(tmp.path().to_str().unwrap());
 
-        // Write a PID for a process that certainly does not exist.
-        pid::write_pid(u32::MAX, "127.0.0.1:50051", "2026-05-18T00:00:00Z").unwrap();
+        // Spawn a process, wait for it to exit, then use its (now-dead) PID.
+        // Avoids u32::MAX which wraps to pid_t -1, causing kill(-1, …) to
+        // broadcast to all user processes and kill the test runner.
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn 'true'");
+        let dead_pid = child.id();
+        child.wait().expect("wait failed");
+
+        pid::write_pid(dead_pid, "127.0.0.1:50051", "2026-05-18T00:00:00Z").unwrap();
         assert_eq!(dispatch(), ExitCode::SUCCESS);
         // PID file should have been removed.
         assert!(pid::read_pid().is_none());

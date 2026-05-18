@@ -225,20 +225,60 @@ fn resolve_log_file(args: &StartArgs) -> PathBuf {
 }
 
 /// Poll `addr` (TCP connect) until it accepts a connection or `timeout` elapses.
+///
+/// Uses `connect_timeout` with `READINESS_POLL` as the per-attempt bound so
+/// filtered ports (no immediate ECONNREFUSED) cannot block longer than one
+/// poll interval — critical for test determinism on Linux CI.
 pub fn wait_for_tcp(addr: &str, timeout: Duration) -> bool {
+    let Ok(socket_addr) = addr.parse() else {
+        return false;
+    };
     let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(addr).is_ok() {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        if std::net::TcpStream::connect_timeout(&socket_addr, remaining.min(READINESS_POLL)).is_ok() {
             return true;
         }
-        std::thread::sleep(READINESS_POLL);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(READINESS_POLL));
     }
-    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serialises tests that mutate AA_POLICY to prevent race conditions when
+    // the test runner executes tests in the same binary in parallel.
+    static AA_POLICY_LOCK: Mutex<()> = Mutex::new(());
+
+    struct PolicyEnvGuard<'a> {
+        _lock: std::sync::MutexGuard<'a, ()>,
+        prior: Option<String>,
+    }
+    impl<'a> PolicyEnvGuard<'a> {
+        fn set(value: &str) -> Self {
+            let lock = AA_POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var("AA_POLICY").ok();
+            std::env::set_var("AA_POLICY", value);
+            Self { _lock: lock, prior }
+        }
+    }
+    impl Drop for PolicyEnvGuard<'_> {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(v) => std::env::set_var("AA_POLICY", v),
+                None => std::env::remove_var("AA_POLICY"),
+            }
+        }
+    }
 
     #[test]
     fn resolve_policy_uses_flag_when_provided() {
@@ -256,9 +296,7 @@ mod tests {
     fn resolve_policy_uses_env_when_no_flag_and_file_exists() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
-
-        let prior = std::env::var("AA_POLICY").ok();
-        std::env::set_var("AA_POLICY", &path);
+        let _guard = PolicyEnvGuard::set(path.to_str().unwrap());
 
         let args = StartArgs {
             policy: None,
@@ -268,19 +306,12 @@ mod tests {
             log_file: None,
         };
         let result = resolve_policy(&args);
-
-        match prior {
-            Some(v) => std::env::set_var("AA_POLICY", v),
-            None => std::env::remove_var("AA_POLICY"),
-        }
-
         assert_eq!(result, Some(path));
     }
 
     #[test]
     fn resolve_policy_skips_env_when_path_does_not_exist() {
-        let prior = std::env::var("AA_POLICY").ok();
-        std::env::set_var("AA_POLICY", "/nonexistent/path/policy.yaml");
+        let _guard = PolicyEnvGuard::set("/nonexistent/path/policy.yaml");
 
         let args = StartArgs {
             policy: None,
@@ -290,11 +321,6 @@ mod tests {
             log_file: None,
         };
         let result = resolve_policy(&args);
-
-        match prior {
-            Some(v) => std::env::set_var("AA_POLICY", v),
-            None => std::env::remove_var("AA_POLICY"),
-        }
 
         // Falls through to home/system paths; only None if those also don't exist.
         let has_default = dirs::home_dir().is_some_and(|h| h.join(".aasm").join("policy.yaml").exists())
