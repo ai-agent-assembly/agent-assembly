@@ -121,6 +121,22 @@ pub async fn terminate_op(Path(id): Path<String>) -> Result<impl IntoResponse, P
     Ok(ack(validate_op_id(&id)?, "terminate"))
 }
 
+/// `GET /api/v1/ops` — list all registered in-flight operations.
+///
+/// Returns a snapshot of every op currently tracked in the registry,
+/// regardless of lifecycle state (running, paused, or terminated).
+#[utoipa::path(
+    get,
+    path = "/api/v1/ops",
+    tag = "ops",
+    responses(
+        (status = 200, description = "List of all registered ops", body = Vec<OpRecord>)
+    )
+)]
+pub async fn list_ops(Extension(state): Extension<AppState>) -> impl IntoResponse {
+    Json(state.ops_registry.list())
+}
+
 /// Request body for `POST /api/v1/ops` — register a new in-flight operation.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterOpRequest {
