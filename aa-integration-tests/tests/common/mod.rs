@@ -229,6 +229,64 @@ impl TopologyTestEnv {
         Ok(env)
     }
 
+    /// Spin up the harness with auth enabled and an explicit rate-limit window.
+    ///
+    /// Like [`start_with_auth`] but the token-bucket window is `rate_limit_window_secs`
+    /// instead of the production default of 60 s.  Pass `1` to make the refill
+    /// cycle 1 second so `auth_rate_limit_resets_after_window` completes in CI
+    /// without the `#[ignore]` annotation (AAASM-1527).
+    #[allow(dead_code)]
+    pub async fn start_with_auth_and_window(
+        entries: &[ApiKeyEntry],
+        rate_limit_rpm: u32,
+        rate_limit_window_secs: u64,
+    ) -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store, key_store) =
+            build_test_state_with_auth_and_window(entries, rate_limit_rpm, rate_limit_window_secs)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
     /// Spin up the harness with a custom set of [`DevToolAdapter`]s injected
     /// into the [`DiscoveryService`].
     ///
@@ -597,6 +655,134 @@ spec:
     let jwt_signer = Arc::new(JwtSigner::new(AUTH_IT_JWT_SECRET));
     let jwt_verifier = Arc::new(JwtVerifier::new(AUTH_IT_JWT_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(rate_limit_rpm));
+    let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let alert_store_handle = Arc::clone(&alert_store);
+
+    let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let audit_dir = std::env::temp_dir().join(format!("aa-auth-it-audit-{}-{audit_id}", std::process::id()));
+    std::fs::create_dir_all(&audit_dir)?;
+    let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
+
+    Ok((
+        AppState {
+            agent_registry,
+            policy_engine,
+            budget_tracker,
+            approval_queue,
+            policy_history,
+            alert_store,
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+        },
+        audit_dir,
+        alert_store_handle,
+        key_store_handle,
+    ))
+}
+
+/// Build a minimal `AppState` with auth enabled and a short rate-limit window.
+///
+/// Identical to [`build_test_state_with_auth`] except the `RateLimiter` is
+/// created with an explicit `rate_limit_window_secs` instead of the
+/// production default of 60 s.  Used by
+/// [`TopologyTestEnv::start_with_auth_and_window`] (AAASM-1527).
+fn build_test_state_with_auth_and_window(
+    entries: &[ApiKeyEntry],
+    rate_limit_rpm: u32,
+    rate_limit_window_secs: u64,
+) -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
+    let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let policy_dir = std::env::temp_dir().join(format!("aa-auth-it-policy-{}-{policy_id}", std::process::id()));
+    std::fs::create_dir_all(&policy_dir)?;
+    let policy_path = policy_dir.join("test-policy.yaml");
+    std::fs::write(
+        &policy_path,
+        r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: auth-it-policy
+  version: "0.1.0"
+spec:
+  rules: []
+"#,
+    )?;
+
+    let events = Arc::new(EventBroadcast::default());
+    let budget_alert_tx = events.budget_sender();
+    let policy_engine = Arc::new(
+        PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+            .map_err(|e| anyhow::anyhow!("load policy: {e:?}"))?,
+    );
+    let budget_tracker = Arc::new(BudgetTracker::new(
+        PricingTable::default_table(),
+        None,
+        None,
+        chrono_tz::UTC,
+    ));
+    let approval_queue = ApprovalQueue::new();
+    let agent_registry = Arc::new(AgentRegistry::new());
+
+    let history_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let history_dir = std::env::temp_dir().join(format!("aa-auth-it-history-{}-{history_id}", std::process::id()));
+    let policy_history = Arc::new(FsHistoryStore::new(HistoryConfig {
+        history_dir,
+        max_versions: 50,
+    }));
+
+    let auth_config = Arc::new(AuthConfig {
+        mode: AuthMode::On,
+        jwt_secret: Some(AUTH_IT_JWT_SECRET.to_vec()),
+        api_keys_path: std::path::PathBuf::from("/dev/null"),
+        rate_limit_rpm,
+    });
+
+    let key_store = if entries.is_empty() {
+        Arc::new(
+            ApiKeyStore::load(Path::new("/dev/null"))
+                .unwrap_or_else(|_| ApiKeyStore::load(Path::new("/nonexistent")).expect("empty key store")),
+        )
+    } else {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!("aa-auth-it-keys-{}-{id}.json", std::process::id()));
+        let json = serde_json::to_string(entries).unwrap();
+        std::fs::write(&tmp, &json).unwrap();
+        Arc::new(ApiKeyStore::load(&tmp).unwrap())
+    };
+    let key_store_handle = Arc::clone(&key_store);
+
+    let jwt_signer = Arc::new(JwtSigner::new(AUTH_IT_JWT_SECRET));
+    let jwt_verifier = Arc::new(JwtVerifier::new(AUTH_IT_JWT_SECRET));
+    let rate_limiter = Arc::new(RateLimiter::new_with_window(rate_limit_rpm, rate_limit_window_secs));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
