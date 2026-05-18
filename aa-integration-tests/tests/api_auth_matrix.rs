@@ -564,3 +564,29 @@ async fn auth_bypass_header_injection_no_effect() {
         }
     }
 }
+
+#[tokio::test]
+async fn auth_bypass_path_traversal_no_effect() {
+    // path traversal must not expose unintended routes
+    let (plaintext, entry) = make_api_key("key-1", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+    let client = reqwest::Client::new();
+
+    // Attempt 1: standard path traversal — reqwest may normalize the path.
+    let url1 = format!("{}/api/v1/agents/../admin/secrets", env.base_url());
+    let resp1 = client.get(&url1).bearer_auth(&plaintext).send().await.unwrap();
+    let s1 = resp1.status();
+    assert!(
+        s1 == StatusCode::NOT_FOUND || s1 == StatusCode::BAD_REQUEST || s1 == StatusCode::UNAUTHORIZED,
+        "path traversal must not expose unintended routes (got {s1})"
+    );
+
+    // Attempt 2: percent-encoded traversal — `%2e%2e` = `..`
+    let url2 = format!("{}/api/v1/agents/%2e%2e/admin/secrets", env.base_url());
+    let resp2 = client.get(&url2).bearer_auth(&plaintext).send().await.unwrap();
+    let s2 = resp2.status();
+    assert!(
+        s2 == StatusCode::NOT_FOUND || s2 == StatusCode::BAD_REQUEST || s2 == StatusCode::UNAUTHORIZED,
+        "percent-encoded path traversal must not expose unintended routes (got {s2})"
+    );
+}
