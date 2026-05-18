@@ -627,6 +627,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/ops` — list all registered in-flight operations.
+         * @description Returns a snapshot of every op currently tracked in the registry,
+         *     regardless of lifecycle state (running, paused, or terminated).
+         */
+        get: operations["list_ops"];
+        put?: never;
+        /**
+         * `POST /api/v1/ops` — register a new in-flight operation in the `running` state.
+         * @description Returns `201 Created` with the initial [`OpRecord`]. Callers may then drive
+         *     lifecycle transitions via the `pause`, `resume`, and `terminate` endpoints.
+         */
+        post: operations["register_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/{id}/pause": {
         parameters: {
             query?: never;
@@ -637,9 +663,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * `POST /api/v1/ops/{id}/pause` — request that an in-flight operation be paused.
-         * @description Stub today: returns 202 Accepted and logs the request without updating
-         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         * `POST /api/v1/ops/{id}/pause` — transition a running operation to paused.
+         * @description * `200 OK` — op transitioned `running → paused`.
+         *     * `400 Bad Request` — whitespace-only op id.
+         *     * `404 Not Found` — no op with this id is registered.
+         *     * `409 Conflict` — op is already paused or terminated.
          */
         post: operations["pause_op"];
         delete?: never;
@@ -658,9 +686,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * `POST /api/v1/ops/{id}/resume` — request that a paused operation resume.
-         * @description Stub today: returns 202 Accepted and logs the request without updating
-         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         * `POST /api/v1/ops/{id}/resume` — transition a paused operation back to running.
+         * @description * `200 OK` — op transitioned `paused → running`.
+         *     * `400 Bad Request` — whitespace-only op id.
+         *     * `404 Not Found` — no op with this id is registered.
+         *     * `409 Conflict` — op is running or terminated.
          */
         post: operations["resume_op"];
         delete?: never;
@@ -679,9 +709,12 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * `POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.
-         * @description Stub today: returns 202 Accepted and logs the request without updating
-         *     any state. Real enforcement awaits the in-flight-ops registry architecture.
+         * `POST /api/v1/ops/{id}/terminate` — terminate a running or paused operation.
+         * @description Idempotent: a second call on an already-terminated op also returns `200 OK`.
+         *
+         *     * `200 OK` — op transitioned to `terminated` (or was already terminated).
+         *     * `400 Bad Request` — whitespace-only op id.
+         *     * `404 Not Found` — no op with this id is registered.
          */
         post: operations["terminate_op"];
         delete?: never;
@@ -1667,6 +1700,22 @@ export interface components {
             /** @description Operation id from the URL path. */
             op_id: string;
         };
+        /** @description Snapshot of a registered operation returned by the registry and API. */
+        OpRecord: {
+            /** @description Stable identifier supplied at registration time. */
+            op_id: string;
+            /** @description RFC 3339 timestamp when the op was first registered. */
+            registered_at: string;
+            /** @description Current lifecycle state. */
+            state: components["schemas"]["OpState"];
+            /** @description RFC 3339 timestamp of the most recent state change. */
+            updated_at: string;
+        };
+        /**
+         * @description Lifecycle state of a registered in-flight operation.
+         * @enum {string}
+         */
+        OpState: "running" | "paused" | "terminated";
         /**
          * @description A recorded capability override entry returned by
          *     `GET /api/v1/capability/override`.
@@ -1796,6 +1845,11 @@ export interface components {
             session_id: string;
             /** @description ISO 8601 timestamp when the trace session started. */
             timestamp: string;
+        };
+        /** @description Request body for `POST /api/v1/ops` — register a new in-flight operation. */
+        RegisterOpRequest: {
+            /** @description Stable identifier for the operation, typically a `GovernanceEvent.id`. */
+            op_id: string;
         };
         /** @description Request body for recording a new directed edge. */
         ReportEdgeRequest: {
@@ -3322,6 +3376,59 @@ export interface operations {
             };
         };
     };
+    list_ops: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of all registered ops */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpRecord"][];
+                };
+            };
+        };
+    };
+    register_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterOpRequest"];
+            };
+        };
+        responses: {
+            /** @description Op registered in running state */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpRecord"];
+                };
+            };
+            /** @description Empty or missing op_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     pause_op: {
         parameters: {
             query?: never;
@@ -3334,8 +3441,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Pause request accepted */
-            202: {
+            /** @description Op paused */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3345,6 +3452,24 @@ export interface operations {
             };
             /** @description Empty or malformed operation id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Invalid state transition */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3366,8 +3491,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Resume request accepted */
-            202: {
+            /** @description Op resumed */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3377,6 +3502,24 @@ export interface operations {
             };
             /** @description Empty or malformed operation id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Invalid state transition */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3398,8 +3541,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Terminate request accepted */
-            202: {
+            /** @description Op terminated */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3409,6 +3552,15 @@ export interface operations {
             };
             /** @description Empty or malformed operation id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
