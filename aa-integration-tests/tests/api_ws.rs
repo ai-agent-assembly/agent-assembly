@@ -107,3 +107,14 @@ async fn ws_connect_returns_101_upgrade() {
         .expect("WS connect should succeed");
     assert_eq!(resp.status(), 101, "expected 101 Switching Protocols");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_close_during_idle_returns_clean() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(ws);
+    // No panic means clean close.
+}
