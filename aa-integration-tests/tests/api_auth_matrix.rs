@@ -500,7 +500,6 @@ fn build_alg_none_jwt() -> String {
 /// An algorithm-confusion attack: the header is replaced to claim `"alg":"RS256"`
 /// while the signature remains HS256. Verifiers that trust the `alg` claim in
 /// the header (rather than enforcing a fixed algorithm) are vulnerable.
-#[allow(dead_code)]
 fn build_swapped_alg_jwt() -> String {
     use aa_api::auth::jwt::Claims;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -608,5 +607,26 @@ async fn auth_bypass_jwt_alg_none_rejected() {
         resp.status(),
         StatusCode::UNAUTHORIZED,
         "alg:none JWT must be rejected with 401"
+    );
+}
+
+#[tokio::test]
+async fn auth_bypass_jwt_swapped_alg_rejected() {
+    // Algorithm confusion attack — claiming RS256 while signed with HS256 must be rejected
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+    let token = build_swapped_alg_jwt();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "algorithm-confusion JWT must be rejected with 401"
     );
 }
