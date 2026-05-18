@@ -427,3 +427,29 @@ async fn ws_publish_to_disconnected_client_does_not_panic() {
     let event = recv_event(&mut ws2).await;
     assert_eq!(event.agent_id, "after-cleanup");
 }
+
+/// When `AuthMode::On` is active, WebSocket upgrade without credentials must
+/// be rejected (non-101 response).
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_connect_requires_auth_when_authmode_on() {
+    let env = TopologyTestEnv::start_with_auth(&[], 1000)
+        .await
+        .expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    // Attempt to connect without any credentials.
+    let result = tokio_tungstenite::connect_async(&url).await;
+
+    match result {
+        Err(_) => {
+            // Connection rejected outright — acceptable.
+        }
+        Ok((_ws, resp)) => {
+            assert_ne!(
+                resp.status(),
+                101,
+                "unauthenticated WS upgrade must not succeed when AuthMode::On"
+            );
+        }
+    }
+}
