@@ -451,3 +451,24 @@ async fn traces_spans_ordered_chronologically() {
         "third span should be latest"
     );
 }
+
+// ── TC-10: edge — empty session_id segment falls through to routing 404 ───────
+//
+// GET /api/v1/traces/ (trailing slash, no session_id segment) does not match
+// the /:session_id route pattern, so Axum's built-in router returns 404.
+// This test confirms the server does not panic on the unmatched path.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_empty_session_path_returns_404() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    let resp = reqwest::get(format!("{}/api/v1/traces/", env.base_url()))
+        .await
+        .expect("GET should not error at transport level");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "empty session_id path should return 404 from routing (no panic)"
+    );
+}
