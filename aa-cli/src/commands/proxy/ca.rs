@@ -147,7 +147,7 @@ pub fn uninstall(args: CaArgs) -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn install_linux(ca_dir: &PathBuf) -> ExitCode {
+fn install_linux(ca_dir: &std::path::Path) -> ExitCode {
     // Require root.
     if unsafe { libc::getuid() } != 0 {
         eprintln!("error: `aasm proxy install-ca` requires root on Linux.\nRe-run with sudo.");
@@ -188,7 +188,7 @@ fn install_linux(ca_dir: &PathBuf) -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn uninstall_linux(_ca_dir: &PathBuf) -> ExitCode {
+fn uninstall_linux(_ca_dir: &std::path::Path) -> ExitCode {
     if unsafe { libc::getuid() } != 0 {
         eprintln!("error: `aasm proxy uninstall-ca` requires root on Linux.\nRe-run with sudo.");
         return ExitCode::FAILURE;
