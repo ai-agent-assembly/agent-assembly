@@ -147,10 +147,10 @@ async fn ops_whitespace_only_id_returns_400() {
     );
 }
 
-// ── #[ignore] — lifecycle state machine not yet implemented ───────────────────
+// ── #[ignore] — lifecycle state machine not yet implemented (AAASM-1525) ──────
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ops registry not yet implemented; pause currently returns 202 for any id regardless of state"]
+#[ignore = "ops registry not yet implemented (AAASM-1525); pause currently returns 202 for any id regardless of state"]
 async fn ops_pause_running_updates_state() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     // When the ops registry lands: seed a running op, POST /pause, assert 200,
@@ -160,7 +160,7 @@ async fn ops_pause_running_updates_state() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ops registry not yet implemented; resume currently returns 202 for any id regardless of state"]
+#[ignore = "ops registry not yet implemented (AAASM-1525); resume currently returns 202 for any id regardless of state"]
 async fn ops_resume_paused_returns_running() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let _ = &env;
@@ -168,7 +168,7 @@ async fn ops_resume_paused_returns_running() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ops registry not yet implemented; terminate currently returns 202 for any id regardless of state"]
+#[ignore = "ops registry not yet implemented (AAASM-1525); terminate currently returns 202 for any id regardless of state"]
 async fn ops_terminate_already_terminated_is_idempotent() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     // Two consecutive terminate POSTs on the same op should both return 200
@@ -178,7 +178,7 @@ async fn ops_terminate_already_terminated_is_idempotent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ops registry not yet implemented; stub returns 202 not 409 when terminating then pausing"]
+#[ignore = "ops registry not yet implemented (AAASM-1525); stub returns 202 not 409 when terminating then pausing"]
 async fn ops_pause_terminated_returns_409() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let _ = &env;
@@ -186,7 +186,7 @@ async fn ops_pause_terminated_returns_409() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ops registry not yet implemented; stub returns 202 not 409 for invalid state transitions"]
+#[ignore = "ops registry not yet implemented (AAASM-1525); stub returns 202 not 409 for invalid state transitions"]
 async fn ops_resume_when_running_returns_409() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let _ = &env;
@@ -194,7 +194,7 @@ async fn ops_resume_when_running_returns_409() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "stub returns 202 for all string ids; 404 requires an ops registry lookup"]
+#[ignore = "stub returns 202 for all string ids; 404 requires an ops registry lookup (AAASM-1525)"]
 async fn ops_unknown_id_returns_404() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let _ = &env;
@@ -202,7 +202,7 @@ async fn ops_unknown_id_returns_404() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "GET /api/v1/ops route not registered; requires ops registry + list handler"]
+#[ignore = "GET /api/v1/ops route not registered; requires ops registry + list handler (AAASM-1525)"]
 async fn ops_list_returns_all_active() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let _ = &env;

@@ -112,10 +112,10 @@ async fn health_response_includes_uptime_or_started_at() {
 
 /// Dependency propagation test — `#[ignore]`'d because the current health
 /// handler is minimal: no `dependencies` or `checks` object is present.
-/// Filed as AAASM-TODO to add downstream subsystem health reporting
+/// Filed as AAASM-1526 to add downstream subsystem health reporting
 /// (policy engine, registry, audit, alerts).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "health handler is minimal; no dependencies/checks object present (AAASM-TODO)"]
+#[ignore = "health handler is minimal; no dependencies/checks object present (AAASM-1526)"]
 async fn health_reflects_policy_engine_state() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
 
