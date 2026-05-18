@@ -168,3 +168,23 @@ async fn traces_for_session_with_nested_spans_returns_tree() {
     let grandchild = find_span("grandchild").expect("grandchild should be present");
     assert_eq!(grandchild["parent_span_id"].as_str(), Some("child-a"));
 }
+
+// ── TC-3: negative — unknown session_id returns 404 ──────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_unknown_session_returns_404() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    let resp = reqwest::get(format!(
+        "{}/api/v1/traces/f122-traces-it-no-such-session",
+        env.base_url()
+    ))
+    .await
+    .expect("GET should not error at transport level");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "unknown session_id must return 404"
+    );
+}
