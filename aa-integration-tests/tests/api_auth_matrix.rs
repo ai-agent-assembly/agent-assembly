@@ -526,3 +526,41 @@ fn build_swapped_alg_jwt() -> String {
     let parts: Vec<&str> = valid_jwt.splitn(3, '.').collect();
     format!("{}.{}.{}", fake_header, parts[1], parts[2])
 }
+
+#[tokio::test]
+async fn auth_bypass_header_injection_no_effect() {
+    // reqwest/hyper sanitize headers; CRLF injection is rejected at the HTTP client layer.
+    // Attempting to inject a CRLF newline into the Authorization header value will
+    // either cause reqwest to reject the header (panic/error) or the server to reject it.
+    // In either case the injection must not result in a 200 OK.
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+    let url = format!("{}/api/v1/auth/token", env.base_url());
+
+    // Use a valid JWT as the base token to ensure we're testing injection, not missing auth.
+    let jwt = JwtSigner::new(AUTH_IT_JWT_SECRET)
+        .sign("test-sub", &[Scope::Read])
+        .unwrap();
+    let injected_value = format!("Bearer {jwt}\r\nX-Admin: true");
+
+    let result = reqwest::Client::new()
+        .post(&url)
+        .header("authorization", injected_value)
+        .json(&serde_json::json!({}))
+        .send()
+        .await;
+
+    match result {
+        Err(_) => {
+            // reqwest/hyper rejected the CRLF-containing header at the client level — injection had no effect.
+        }
+        Ok(resp) => {
+            // The server received the request but must not have treated it as a privileged request.
+            let status = resp.status();
+            assert_ne!(
+                status,
+                StatusCode::OK,
+                "CRLF-injected authorization header must not result in 200 OK"
+            );
+        }
+    }
+}
