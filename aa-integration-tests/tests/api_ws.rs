@@ -118,3 +118,17 @@ async fn ws_close_during_idle_returns_clean() {
     drop(ws);
     // No panic means clean close.
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_malformed_upgrade_returns_400_or_426() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("http://{}/api/v1/ws/events", env.addr);
+
+    // Plain HTTP GET without WebSocket upgrade headers.
+    let resp = reqwest::get(&url).await.expect("request should complete");
+    let status = resp.status().as_u16();
+    assert!(
+        status == 400 || status == 426,
+        "expected 400 or 426 for missing WS upgrade headers, got {status}"
+    );
+}
