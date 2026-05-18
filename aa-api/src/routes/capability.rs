@@ -20,8 +20,6 @@ use utoipa::IntoParams;
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
-use axum::extract::Query;
-
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::error::ProblemDetail;
 use crate::models::capability::{
