@@ -22,6 +22,7 @@ use crate::auth::jwt::{JwtSigner, JwtVerifier};
 use crate::auth::rate_limit::RateLimiter;
 use crate::events::EventBroadcast;
 use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
+use crate::ops::OpsRegistry;
 use crate::replay::ReplayBuffer;
 use crate::routes::capability::CapabilityStore;
 use crate::trace_store::TraceStore;
@@ -83,4 +84,6 @@ pub struct AppState {
     pub capability_store: Arc<CapabilityStore>,
     /// Dashboard Identity & Access — IAM API key management (AAASM-1397).
     pub iam_api_key_store: Arc<IamApiKeyStore>,
+    /// In-flight operation lifecycle registry (AAASM-1525).
+    pub ops_registry: Arc<OpsRegistry>,
 }

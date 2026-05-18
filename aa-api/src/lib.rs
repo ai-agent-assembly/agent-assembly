@@ -13,6 +13,7 @@ pub mod events;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
+pub mod ops;
 pub mod pagination;
 pub mod replay;
 pub mod routes;

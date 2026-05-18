@@ -1046,14 +1046,61 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/LogEntry'
+  /api/v1/ops:
+    get:
+      tags:
+      - ops
+      summary: '`GET /api/v1/ops` — list all registered in-flight operations.'
+      description: |-
+        Returns a snapshot of every op currently tracked in the registry,
+        regardless of lifecycle state (running, paused, or terminated).
+      operationId: list_ops
+      responses:
+        '200':
+          description: List of all registered ops
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OpRecord'
+    post:
+      tags:
+      - ops
+      summary: '`POST /api/v1/ops` — register a new in-flight operation in the `running` state.'
+      description: |-
+        Returns `201 Created` with the initial [`OpRecord`]. Callers may then drive
+        lifecycle transitions via the `pause`, `resume`, and `terminate` endpoints.
+      operationId: register_op
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterOpRequest'
+        required: true
+      responses:
+        '201':
+          description: Op registered in running state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpRecord'
+        '400':
+          description: Empty or missing op_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/ops/{id}/pause:
     post:
       tags:
       - ops
-      summary: '`POST /api/v1/ops/{id}/pause` — request that an in-flight operation be paused.'
+      summary: '`POST /api/v1/ops/{id}/pause` — transition a running operation to paused.'
       description: |-
-        Stub today: returns 202 Accepted and logs the request without updating
-        any state. Real enforcement awaits the in-flight-ops registry architecture.
+        * `200 OK` — op transitioned `running → paused`.
+        * `400 Bad Request` — whitespace-only op id.
+        * `404 Not Found` — no op with this id is registered.
+        * `409 Conflict` — op is already paused or terminated.
       operationId: pause_op
       parameters:
       - name: id
@@ -1063,8 +1110,8 @@ paths:
         schema:
           type: string
       responses:
-        '202':
-          description: Pause request accepted
+        '200':
+          description: Op paused
           content:
             application/json:
               schema:
@@ -1075,14 +1122,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+        '404':
+          description: Op not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '409':
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/ops/{id}/resume:
     post:
       tags:
       - ops
-      summary: '`POST /api/v1/ops/{id}/resume` — request that a paused operation resume.'
+      summary: '`POST /api/v1/ops/{id}/resume` — transition a paused operation back to running.'
       description: |-
-        Stub today: returns 202 Accepted and logs the request without updating
-        any state. Real enforcement awaits the in-flight-ops registry architecture.
+        * `200 OK` — op transitioned `paused → running`.
+        * `400 Bad Request` — whitespace-only op id.
+        * `404 Not Found` — no op with this id is registered.
+        * `409 Conflict` — op is running or terminated.
       operationId: resume_op
       parameters:
       - name: id
@@ -1092,8 +1153,8 @@ paths:
         schema:
           type: string
       responses:
-        '202':
-          description: Resume request accepted
+        '200':
+          description: Op resumed
           content:
             application/json:
               schema:
@@ -1104,14 +1165,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+        '404':
+          description: Op not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '409':
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/ops/{id}/terminate:
     post:
       tags:
       - ops
-      summary: '`POST /api/v1/ops/{id}/terminate` — request that an in-flight operation be terminated.'
+      summary: '`POST /api/v1/ops/{id}/terminate` — terminate a running or paused operation.'
       description: |-
-        Stub today: returns 202 Accepted and logs the request without updating
-        any state. Real enforcement awaits the in-flight-ops registry architecture.
+        Idempotent: a second call on an already-terminated op also returns `200 OK`.
+
+        * `200 OK` — op transitioned to `terminated` (or was already terminated).
+        * `400 Bad Request` — whitespace-only op id.
+        * `404 Not Found` — no op with this id is registered.
       operationId: terminate_op
       parameters:
       - name: id
@@ -1121,14 +1197,20 @@ paths:
         schema:
           type: string
       responses:
-        '202':
-          description: Terminate request accepted
+        '200':
+          description: Op terminated
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpActionAck'
         '400':
           description: Empty or malformed operation id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '404':
+          description: Op not found
           content:
             application/json:
               schema:
@@ -2785,6 +2867,34 @@ components:
         op_id:
           type: string
           description: Operation id from the URL path.
+    OpRecord:
+      type: object
+      description: Snapshot of a registered operation returned by the registry and API.
+      required:
+      - op_id
+      - state
+      - registered_at
+      - updated_at
+      properties:
+        op_id:
+          type: string
+          description: Stable identifier supplied at registration time.
+        registered_at:
+          type: string
+          description: RFC 3339 timestamp when the op was first registered.
+        state:
+          $ref: '#/components/schemas/OpState'
+          description: Current lifecycle state.
+        updated_at:
+          type: string
+          description: RFC 3339 timestamp of the most recent state change.
+    OpState:
+      type: string
+      description: Lifecycle state of a registered in-flight operation.
+      enum:
+      - running
+      - paused
+      - terminated
     OverrideRecord:
       type: object
       description: |-
@@ -3023,6 +3133,15 @@ components:
         timestamp:
           type: string
           description: ISO 8601 timestamp when the trace session started.
+    RegisterOpRequest:
+      type: object
+      description: Request body for `POST /api/v1/ops` — register a new in-flight operation.
+      required:
+      - op_id
+      properties:
+        op_id:
+          type: string
+          description: Stable identifier for the operation, typically a `GovernanceEvent.id`.
     ReportEdgeRequest:
       type: object
       description: Request body for recording a new directed edge.

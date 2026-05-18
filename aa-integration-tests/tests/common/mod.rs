@@ -36,6 +36,7 @@ use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
 use aa_api::auth::rate_limit::RateLimiter;
 use aa_api::events::EventBroadcast;
+use aa_api::ops::OpsRegistry;
 use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
@@ -115,6 +116,11 @@ pub struct TopologyTestEnv {
     /// Tests can read the current value or advance it to control replay ranges.
     #[allow(dead_code)]
     pub next_event_id: Arc<AtomicU64>,
+    /// In-flight ops registry — same Arc the running server holds.
+    /// Ops integration tests (AAASM-1525) seed ops directly via `register()`
+    /// so lifecycle endpoints can be exercised without a gRPC registration path.
+    #[allow(dead_code)]
+    pub ops_registry: Arc<OpsRegistry>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -137,6 +143,7 @@ impl TopologyTestEnv {
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -166,6 +173,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -192,6 +200,7 @@ impl TopologyTestEnv {
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -221,6 +230,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -305,6 +315,7 @@ impl TopologyTestEnv {
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -334,6 +345,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -358,6 +370,7 @@ impl TopologyTestEnv {
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -387,6 +400,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -575,6 +589,7 @@ spec:
                 .build(),
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -702,6 +717,7 @@ spec:
                 .build(),
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -940,6 +956,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
                 .build(),
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
         },
         audit_dir,
         alert_store_handle,
