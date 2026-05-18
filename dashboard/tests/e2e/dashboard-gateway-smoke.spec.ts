@@ -210,4 +210,20 @@ test.describe('Dashboard gateway smoke — live agent data renders correctly', (
     await expect(page.getByTestId('trace-agent-label')).toContainText('support-bot')
     await expect(page.getByTestId('trace-event')).toHaveCount(LIVE_TRACE_EVENTS.length)
   })
+
+  test('topology view: graph renders live nodes and correct meta counts from gateway', async ({ page }) => {
+    // Vite `base: './'` workaround — same SPA-navigate pattern as trace.
+    await page.goto('/')
+    await page.evaluate(() => window.history.pushState({}, '', '/topology'))
+    await page.evaluate(() => window.dispatchEvent(new PopStateEvent('popstate')))
+
+    await page.getByTestId('topology-graph').waitFor()
+
+    const nodeCount = LIVE_TOPOLOGY.nodes.length
+    const teamCount = new Set(LIVE_TOPOLOGY.nodes.map(n => n.team)).size
+
+    await expect(page.getByTestId('topology-meta')).toContainText(`${nodeCount} agent`)
+    await expect(page.getByTestId('topology-meta')).toContainText(`${teamCount} team`)
+    await expect(page.getByTestId('topology-node')).toHaveCount(nodeCount)
+  })
 })
