@@ -324,3 +324,23 @@ spec:
         "expected 401 or 403 for read-only caller, got: {status}"
     );
 }
+
+// ── Section 4 — Rate limiting ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn auth_rate_limit_within_budget_succeeds() {
+    let (plaintext, entry) = make_api_key("key-1", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 60).await.unwrap();
+    let client = reqwest::Client::new();
+
+    for _ in 0..5 {
+        let resp = client
+            .post(format!("{}/api/v1/auth/token", env.base_url()))
+            .bearer_auth(&plaintext)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "request within budget should succeed");
+    }
+}
