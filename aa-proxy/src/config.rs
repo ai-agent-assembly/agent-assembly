@@ -26,6 +26,11 @@ pub struct ProxyConfig {
     /// forwarded transparently.
     /// Env: `AA_PROXY_LLM_ONLY` — default: `true`
     pub llm_only: bool,
+
+    /// Hosts that the proxy will block at the CONNECT level (HTTP 403).
+    /// Comma-separated list from env var `AA_PROXY_DENIED_HOSTS`.
+    /// Empty means allow all hosts.
+    pub denied_hosts: Vec<String>,
 }
 
 impl ProxyConfig {
@@ -59,11 +64,21 @@ impl ProxyConfig {
             Err(_) => true,
         };
 
+        let denied_hosts = match std::env::var("AA_PROXY_DENIED_HOSTS") {
+            Ok(val) if !val.is_empty() => val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
             cert_cache_capacity,
             llm_only,
+            denied_hosts,
         })
     }
 }
@@ -82,6 +97,7 @@ mod tests {
         std::env::remove_var("AA_CA_DIR");
         std::env::remove_var("AA_PROXY_CERT_CACHE_CAPACITY");
         std::env::remove_var("AA_PROXY_LLM_ONLY");
+        std::env::remove_var("AA_PROXY_DENIED_HOSTS");
     }
 
     #[test]
@@ -94,6 +110,7 @@ mod tests {
         assert!(cfg.ca_dir.ends_with(".aa/ca"));
         assert_eq!(cfg.cert_cache_capacity, 1000);
         assert!(cfg.llm_only);
+        assert!(cfg.denied_hosts.is_empty());
     }
 
     #[test]
@@ -144,5 +161,25 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert!(!cfg.llm_only);
+    }
+
+    #[test]
+    fn from_env_reads_denied_hosts_csv() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_DENIED_HOSTS", "evil.com, bad.example.com");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.denied_hosts, vec!["evil.com", "bad.example.com"]);
+    }
+
+    #[test]
+    fn from_env_denied_hosts_empty_string_gives_empty_vec() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_DENIED_HOSTS", "");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.denied_hosts.is_empty());
     }
 }
