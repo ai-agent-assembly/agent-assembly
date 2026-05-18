@@ -80,3 +80,28 @@ async fn auth_jwt_expired_token_returns_401() {
         body["detail"]
     );
 }
+
+#[tokio::test]
+async fn auth_jwt_invalid_signature_returns_401() {
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    // Sign with the wrong secret — signature will be invalid.
+    let jwt = JwtSigner::new(b"wrong-secret-totally-different-32bytes!!")
+        .sign("test-sub", &[Scope::Read])
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["detail"].as_str().unwrap_or("").to_lowercase().contains("invalid"),
+        "expected 'invalid' in detail, got: {:?}",
+        body["detail"]
+    );
+}
