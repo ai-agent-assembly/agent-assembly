@@ -97,3 +97,74 @@ async fn traces_for_session_with_single_span_returns_span() {
         "start_time should be present"
     );
 }
+
+// ── TC-2: happy path — nested spans, parent_span_id links preserved ───────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_for_session_with_nested_spans_returns_tree() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-02";
+
+    // Root span (no parent).
+    env.trace_store
+        .record_span(session_id, "agent-it-02", make_span("root", "policy_eval", 10))
+        .unwrap();
+
+    // Two children pointing at root.
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-02",
+            TraceSpan {
+                parent_span_id: Some("root".to_string()),
+                ..make_span("child-a", "tool_call", 11)
+            },
+        )
+        .unwrap();
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-02",
+            TraceSpan {
+                parent_span_id: Some("root".to_string()),
+                ..make_span("child-b", "llm_completion", 12)
+            },
+        )
+        .unwrap();
+
+    // Grandchild pointing at child-a.
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-02",
+            TraceSpan {
+                parent_span_id: Some("child-a".to_string()),
+                ..make_span("grandchild", "tool_call", 13)
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("GET /api/v1/traces/{session_id}")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans should be array");
+    assert_eq!(spans.len(), 4, "expected 4 spans (root + 2 children + grandchild)");
+
+    let find_span = |id: &str| spans.iter().find(|s| s["span_id"].as_str() == Some(id)).cloned();
+
+    let root = find_span("root").expect("root span should be present");
+    assert!(root["parent_span_id"].is_null(), "root should have null parent_span_id");
+
+    let child_a = find_span("child-a").expect("child-a should be present");
+    assert_eq!(child_a["parent_span_id"].as_str(), Some("root"));
+
+    let child_b = find_span("child-b").expect("child-b should be present");
+    assert_eq!(child_b["parent_span_id"].as_str(), Some("root"));
+
+    let grandchild = find_span("grandchild").expect("grandchild should be present");
+    assert_eq!(grandchild["parent_span_id"].as_str(), Some("child-a"));
+}
