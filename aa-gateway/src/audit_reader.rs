@@ -70,6 +70,23 @@ impl AuditReader {
         Ok((page, total))
     }
 
+    /// Return all `PolicyViolation` entries newer than `since_ns`.
+    ///
+    /// When `root` is provided, only entries whose `root_agent_id` matches (or whose
+    /// `agent_id` equals the root, i.e. the root itself) are included, scoping the
+    /// result to that delegation subtree.
+    pub async fn list_violations(&self, since_ns: u64, root: Option<AgentId>) -> io::Result<Vec<AuditEntry>> {
+        let all = self.read_all_entries().await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                e.event_type() == AuditEventType::PolicyViolation
+                    && e.timestamp_ns() >= since_ns
+                    && root.map_or(true, |r| e.root_agent_id() == Some(r) || e.agent_id() == r)
+            })
+            .collect())
+    }
+
     /// Read and parse all JSONL files in the audit directory.
     async fn read_all_entries(&self) -> io::Result<Vec<AuditEntry>> {
         let mut entries = Vec::new();
@@ -162,7 +179,49 @@ fn parse_event_type(s: &str) -> Option<Vec<AuditEventType>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aa_core::audit::Lineage;
+    use aa_core::SessionId;
+    use std::io::Write;
+    use tempfile::TempDir;
     use AuditEventType::*;
+
+    const ROOT_BYTES: [u8; 16] = [0xAA; 16];
+    const PARENT_BYTES: [u8; 16] = [0xBB; 16];
+    const CHILD_BYTES: [u8; 16] = [0xCC; 16];
+    const OTHER_BYTES: [u8; 16] = [0xDD; 16];
+    const SESSION_BYTES: [u8; 16] = [0xEE; 16];
+
+    fn make_entry(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        root: Option<AgentId>,
+    ) -> AuditEntry {
+        let lineage = Lineage {
+            root_agent_id: root,
+            ..Lineage::default()
+        };
+        AuditEntry::new_with_lineage(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            SessionId::from_bytes(SESSION_BYTES),
+            "{}".to_string(),
+            [0u8; 32],
+            lineage,
+        )
+    }
+
+    fn write_entries(dir: &std::path::Path, entries: &[AuditEntry]) {
+        let path = dir.join("audit.jsonl");
+        let mut f = std::fs::File::create(path).expect("create jsonl");
+        for e in entries {
+            let line = serde_json::to_string(e).expect("serialize entry");
+            writeln!(f, "{line}").expect("write line");
+        }
+    }
 
     #[test]
     fn camel_case_variant_name_yields_singleton() {
@@ -204,5 +263,117 @@ mod tests {
     fn unknown_string_returns_none() {
         assert_eq!(parse_event_type("garbage"), None);
         assert_eq!(parse_event_type(""), None);
+    }
+
+    #[tokio::test]
+    async fn list_violations_returns_empty_when_dir_missing() {
+        let reader = AuditReader::new(PathBuf::from("/nonexistent/audit/dir"));
+        let result = reader
+            .list_violations(0, None)
+            .await
+            .expect("list_violations should not error on missing dir");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_violations_filters_by_event_type() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let entries = vec![
+            make_entry(0, 100, AuditEventType::PolicyViolation, child, None),
+            make_entry(1, 200, AuditEventType::ToolCallIntercepted, child, None),
+            make_entry(2, 300, AuditEventType::ApprovalGranted, child, None),
+            make_entry(3, 400, AuditEventType::PolicyViolation, child, None),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let violations = reader.list_violations(0, None).await.expect("list_violations");
+
+        assert_eq!(violations.len(), 2);
+        assert!(violations
+            .iter()
+            .all(|e| e.event_type() == AuditEventType::PolicyViolation));
+    }
+
+    #[tokio::test]
+    async fn list_violations_filters_by_since_ns() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let entries = vec![
+            make_entry(0, 100, AuditEventType::PolicyViolation, child, None),
+            make_entry(1, 200, AuditEventType::PolicyViolation, child, None),
+            make_entry(2, 300, AuditEventType::PolicyViolation, child, None),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let violations = reader.list_violations(200, None).await.expect("list_violations");
+
+        // Both 200 and 300 satisfy >= 200; 100 does not.
+        assert_eq!(violations.len(), 2);
+        assert!(violations.iter().all(|e| e.timestamp_ns() >= 200));
+    }
+
+    #[tokio::test]
+    async fn list_violations_scopes_by_root_agent_id() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = AgentId::from_bytes(ROOT_BYTES);
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let other = AgentId::from_bytes(OTHER_BYTES);
+
+        let entries = vec![
+            // child of root → included
+            make_entry(0, 100, AuditEventType::PolicyViolation, child, Some(root)),
+            // root itself violates → included
+            make_entry(1, 200, AuditEventType::PolicyViolation, root, None),
+            // unrelated subtree → excluded
+            make_entry(
+                2,
+                300,
+                AuditEventType::PolicyViolation,
+                other,
+                Some(AgentId::from_bytes(PARENT_BYTES)),
+            ),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let scoped = reader.list_violations(0, Some(root)).await.expect("list_violations");
+
+        assert_eq!(scoped.len(), 2);
+        for entry in &scoped {
+            let in_subtree = entry.root_agent_id() == Some(root) || entry.agent_id() == root;
+            assert!(in_subtree, "entry should be in root subtree");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_violations_skips_non_jsonl_files_and_malformed_lines() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        write_entries(
+            tmp.path(),
+            &[make_entry(0, 100, AuditEventType::PolicyViolation, child, None)],
+        );
+
+        // Non-jsonl file should be ignored.
+        std::fs::write(tmp.path().join("notes.txt"), "irrelevant").expect("write txt");
+
+        // Malformed JSON line in a jsonl file should be skipped silently.
+        let extra = tmp.path().join("partial.jsonl");
+        let mut f = std::fs::File::create(&extra).expect("create extra jsonl");
+        writeln!(f, "{{not valid json").expect("write garbage");
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&make_entry(1, 200, AuditEventType::PolicyViolation, child, None,)).unwrap()
+        )
+        .expect("write valid line");
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let violations = reader.list_violations(0, None).await.expect("list_violations");
+
+        assert_eq!(violations.len(), 2);
     }
 }

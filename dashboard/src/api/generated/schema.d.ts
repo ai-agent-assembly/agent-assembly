@@ -362,6 +362,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/violations-by-lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/audit/violations-by-lineage` — policy violation heatmap by lineage.
+         * @description Returns all agents that recorded at least one `PolicyViolation` event within
+         *     the requested time window, together with their violation count and the top 3
+         *     most-violated policy rules.  The optional `root` parameter scopes the result
+         *     to a single delegation subtree.
+         */
+        get: operations["get_violations_by_lineage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/token": {
         parameters: {
             query?: never;
@@ -2072,6 +2095,27 @@ export interface components {
          * @enum {string}
          */
         Verb: "read" | "write" | "delete" | "exec";
+        /** @description A single node in the policy-violations-by-lineage heatmap. */
+        ViolationNode: {
+            /** @description Hex-encoded agent ID. */
+            agent_id: string;
+            /**
+             * Format: int32
+             * @description Delegation depth (0 = root agent).
+             */
+            depth?: number | null;
+            /** @description Hex-encoded parent agent ID, if known. */
+            parent_agent_id?: string | null;
+            /** @description Team the agent belongs to, if registered. */
+            team_id?: string | null;
+            /** @description Top 3 most-frequently violated policy rules in the window. */
+            top_policies: string[];
+            /**
+             * Format: int64
+             * @description Number of `PolicyViolation` audit events in the requested window.
+             */
+            violation_count: number;
+        };
         /**
          * @description Payload for `event_type: "violation"` events.
          *
@@ -2137,6 +2181,18 @@ export interface components {
             reason: string;
             /** @description Remaining active layers after degradation. */
             remaining_layers: string[];
+        };
+        /** @description Response for `GET /api/v1/audit/violations-by-lineage`. */
+        ViolationsByLineageResponse: {
+            /** @description ISO 8601 UTC timestamp when this response was generated. */
+            generated_at: string;
+            /** @description Heatmap nodes — one entry per agent that recorded at least one violation. */
+            nodes: components["schemas"]["ViolationNode"][];
+            /**
+             * Format: int64
+             * @description Time window used for aggregation, in seconds.
+             */
+            window_secs: number;
         };
     };
     responses: never;
@@ -2759,6 +2815,38 @@ export interface operations {
             };
             /** @description Approval request not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_violations_by_lineage: {
+        parameters: {
+            query?: {
+                /** @description Hex-encoded root agent ID; scopes results to that delegation subtree. */
+                root?: string | null;
+                /** @description Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`. */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Violation heatmap nodes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViolationsByLineageResponse"];
+                };
+            };
+            /** @description Invalid query parameter */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
