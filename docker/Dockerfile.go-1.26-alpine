@@ -60,7 +60,7 @@ RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
 RUN aasm --version
-RUN go list github.com/agent-assembly/go-sdk
+RUN go list github.com/AI-agent-assembly/go-sdk
 
 LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.26 agent base image" \
