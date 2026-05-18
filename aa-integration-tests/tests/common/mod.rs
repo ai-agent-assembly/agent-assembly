@@ -229,6 +229,64 @@ impl TopologyTestEnv {
         Ok(env)
     }
 
+    /// Spin up the harness with auth enabled and an explicit rate-limit window.
+    ///
+    /// Like [`start_with_auth`] but the token-bucket window is `rate_limit_window_secs`
+    /// instead of the production default of 60 s.  Pass `1` to make the refill
+    /// cycle 1 second so `auth_rate_limit_resets_after_window` completes in CI
+    /// without the `#[ignore]` annotation (AAASM-1527).
+    #[allow(dead_code)]
+    pub async fn start_with_auth_and_window(
+        entries: &[ApiKeyEntry],
+        rate_limit_rpm: u32,
+        rate_limit_window_secs: u64,
+    ) -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store, key_store) =
+            build_test_state_with_auth_and_window(entries, rate_limit_rpm, rate_limit_window_secs)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
     /// Spin up the harness with a custom set of [`DevToolAdapter`]s injected
     /// into the [`DiscoveryService`].
     ///
