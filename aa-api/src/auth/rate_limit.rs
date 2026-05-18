@@ -20,11 +20,17 @@ struct TokenBucket {
 impl TokenBucket {
     /// Create a new full bucket with the given capacity (requests per minute).
     fn new(rpm: u32) -> Self {
+        Self::new_with_window(rpm, 60)
+    }
+
+    /// Create a new full bucket with an explicit refill window (seconds per full cycle).
+    fn new_with_window(rpm: u32, window_secs: u64) -> Self {
         let capacity = f64::from(rpm);
+        let window = window_secs.max(1) as f64;
         Self {
             tokens: capacity,
             capacity,
-            refill_rate: capacity / 60.0, // tokens per second
+            refill_rate: capacity / window,
             last_refill: Instant::now(),
         }
     }
