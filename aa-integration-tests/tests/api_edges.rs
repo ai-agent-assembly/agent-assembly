@@ -193,3 +193,76 @@ async fn edge_list_agent_outgoing_direction_is_default() {
         "default direction=outgoing: tgt has no outgoing edges"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/agents/{id}/graph
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_graph_root_only_when_no_edges() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let id = agent_hex(0x30);
+
+    let resp = reqwest::get(format!("{}/api/v1/agents/{id}/graph", env.base_url()))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["root_agent_id"], id);
+    assert_eq!(body["nodes"].as_array().unwrap().len(), 1, "only root node");
+    assert!(body["edges"].as_array().unwrap().is_empty(), "no edges");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_graph_bfs_two_hop_chain() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let base = env.base_url();
+    let a = agent_hex(0x31);
+    let b = agent_hex(0x32);
+    let c = agent_hex(0x33);
+
+    // a → b → c  (2-hop chain; depth defaults to 2)
+    seed_edge(&base, &a, &b, "calls").await;
+    seed_edge(&base, &b, &c, "calls").await;
+
+    let resp = reqwest::get(format!("{base}/api/v1/agents/{a}/graph?depth=2"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["root_agent_id"], a);
+    assert_eq!(
+        body["nodes"].as_array().unwrap().len(),
+        3,
+        "a, b, c all reachable within depth 2"
+    );
+    assert_eq!(body["edges"].as_array().unwrap().len(), 2, "two edges: a→b and b→c");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_graph_depth_cap_limits_reachability() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let base = env.base_url();
+    let a = agent_hex(0x41);
+    let b = agent_hex(0x42);
+    let c = agent_hex(0x43);
+
+    // a → b → c, depth=1 should reach b but not c
+    seed_edge(&base, &a, &b, "delegates_to").await;
+    seed_edge(&base, &b, &c, "delegates_to").await;
+
+    let resp = reqwest::get(format!("{base}/api/v1/agents/{a}/graph?depth=1"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let nodes = body["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2, "depth=1: only a and b, not c");
+
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
+    assert!(node_ids.contains(&a.as_str()), "root a must be in nodes");
+    assert!(node_ids.contains(&b.as_str()), "b must be in nodes at depth 1");
+}
