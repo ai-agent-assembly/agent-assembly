@@ -22,6 +22,7 @@ chrono      = { version = "0.4", default-features = false, features = ["clock"] 
 chrono-tz   = "0.10"
 jsonschema  = "0.46"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+base64       = "0.22"
 libc        = "0.2"
 moka        = { version = "0.12", features = ["future"] }
 portpicker  = "0.1"
