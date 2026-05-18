@@ -197,3 +197,53 @@ async fn openapi_spec_response_schemas_validate_live_responses() {
         );
     }
 }
+
+// ── TC-4: 404 responses match the ProblemDetail envelope ─────────────────────
+//
+// For three representative endpoints that return 404 on unknown IDs, assert
+// the response body is a valid ProblemDetail (RFC 7807) as declared in the
+// spec and that the numeric status field equals 404.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openapi_spec_error_envelope_matches_for_404() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+    let spec = load_spec();
+    let problem_schema = spec
+        .pointer("/components/schemas/ProblemDetail")
+        .expect("ProblemDetail must exist in spec")
+        .clone();
+
+    let urls = [
+        format!("{}/api/v1/agents/{}", env.base_url(), "00".repeat(16)),
+        format!("{}/api/v1/alerts/99999999", env.base_url()),
+        format!("{}/api/v1/traces/no-such-session-contract-q", env.base_url()),
+    ];
+
+    for url in &urls {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {url} transport error: {e}"));
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "GET {url} with unknown id must return 404"
+        );
+
+        let body: Value = resp.json().await.expect("404 response must have a JSON body");
+
+        assert!(
+            jsonschema::is_valid(&problem_schema, &body),
+            "GET {url} 404 body does not match ProblemDetail schema.\nBody: {body}"
+        );
+
+        assert_eq!(
+            body["status"].as_u64(),
+            Some(404),
+            "ProblemDetail.status must equal 404 for {url}"
+        );
+    }
+}
