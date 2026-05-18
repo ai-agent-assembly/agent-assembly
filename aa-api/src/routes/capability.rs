@@ -9,10 +9,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use serde::Deserialize;
 use tokio::sync::RwLock;
+use utoipa::IntoParams;
 
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
@@ -123,22 +126,64 @@ impl CapabilityStore {
     }
 }
 
-/// `GET /api/v1/capability/matrix` — return the full agent × resource ×
-/// verb × decision matrix that backs the dashboard Capability Matrix page.
+/// Query parameters for `GET /api/v1/capability/matrix`.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+pub struct MatrixQueryParams {
+    /// Return only the agent row whose `id` matches this value.
+    #[param(example = "research-bot-04")]
+    pub team_id: Option<String>,
+    /// Return only the resource column whose `id` matches this value, and
+    /// filter each agent's caps map to that single resource key.
+    #[param(example = "gmail")]
+    pub tool: Option<String>,
+    /// When `true`, exclude capability cells where all four verb decisions are `na`.
+    #[param(example = true)]
+    pub effective_only: Option<bool>,
+}
+
+/// `GET /api/v1/capability/matrix` — return the agent × resource × verb ×
+/// decision matrix that backs the dashboard Capability Matrix page.
 ///
-/// Returns the full snapshot — resources, agents (each with a `caps` map),
-/// policies, and sample calls — in the exact shape the dashboard's
-/// `CapabilityClient.getMatrix()` consumes.
+/// Optional filters:
+/// - `team_id` — return only the agent row whose `id` matches.
+/// - `tool` — return only the resource column whose `id` matches and filter
+///   each agent's `caps` map to that single key.
+/// - `effective_only=true` — exclude cells where all four verb decisions are `na`.
 #[utoipa::path(
     get,
     path = "/api/v1/capability/matrix",
+    params(MatrixQueryParams),
     responses(
-        (status = 200, description = "Full capability matrix snapshot", body = CapabilityMatrix)
+        (status = 200, description = "Capability matrix snapshot (filtered)", body = CapabilityMatrix)
     ),
     tag = "capability"
 )]
-pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, Json<CapabilityMatrix>) {
-    let matrix = state.capability_store.snapshot().await;
+pub async fn get_matrix(
+    Query(params): Query<MatrixQueryParams>,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<CapabilityMatrix>) {
+    let mut matrix = state.capability_store.snapshot().await;
+
+    if let Some(ref tid) = params.team_id {
+        matrix.agents.retain(|a| &a.id == tid);
+    }
+
+    if let Some(ref tool) = params.tool {
+        matrix.resources.retain(|r| &r.id == tool);
+        for agent in &mut matrix.agents {
+            agent.caps.retain(|k, _| k == tool);
+        }
+    }
+
+    if params.effective_only == Some(true) {
+        use Decision::Na;
+        for agent in &mut matrix.agents {
+            agent
+                .caps
+                .retain(|_, cell| !(cell.read == Na && cell.write == Na && cell.delete == Na && cell.exec == Na));
+        }
+    }
+
     (StatusCode::OK, Json(matrix))
 }
 
