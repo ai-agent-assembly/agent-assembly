@@ -362,10 +362,8 @@ async fn capability_override_with_ttl_expires() {
     );
 }
 
-/// `GET /api/v1/capability/override` (list active overrides) is not yet
-/// registered in `routes/mod.rs`. Once added, un-ignore and assert the
-/// response includes active override entries.
-#[ignore = "GET /capability/override route not registered; would return 404 today"]
+/// `GET /api/v1/capability/override` — list active overrides, assert both
+/// seeded override entries appear with `active: true`.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_override_list_returns_active() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
