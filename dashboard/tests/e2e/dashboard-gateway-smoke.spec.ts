@@ -196,4 +196,18 @@ test.describe('Dashboard gateway smoke — live agent data renders correctly', (
     await expect(page.getByTestId('agent-row')).toHaveCount(LIVE_AGENTS.length)
     await expect(page.getByTestId('fleet-row-name').first()).toContainText('support-bot')
   })
+
+  test('trace view: event timeline renders live trace events from gateway', async ({ page }) => {
+    // Vite `base: './'` workaround — land on `/` so assets resolve, then SPA-navigate.
+    await page.goto('/')
+    await page.evaluate(
+      ([id, sessionId]) => window.history.pushState({}, '', `/agents/${id}/trace/${sessionId}`),
+      [AGENT_ID, SESSION_ID],
+    )
+    await page.evaluate(() => window.dispatchEvent(new PopStateEvent('popstate')))
+
+    await expect(page.getByTestId('trace-view')).toBeVisible()
+    await expect(page.getByTestId('trace-agent-label')).toContainText('support-bot')
+    await expect(page.getByTestId('trace-event')).toHaveCount(LIVE_TRACE_EVENTS.length)
+  })
 })
