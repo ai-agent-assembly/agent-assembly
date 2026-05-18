@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aa_api::alerts::store::InMemoryAlertStore;
-use aa_api::auth::api_key::ApiKeyStore;
+use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
 use aa_api::auth::rate_limit::RateLimiter;
@@ -94,6 +94,11 @@ pub struct TopologyTestEnv {
     /// without trait downcasting. Populated by `cli_alerts.rs` (AAASM-1460).
     #[allow(dead_code)]
     pub alert_store: Arc<InMemoryAlertStore>,
+    /// Shared API key store — same Arc the running server holds.
+    /// Auth integration tests (AAASM-1485) call `key_store.revoke()` here
+    /// to exercise the revocation path without restarting the server.
+    #[allow(dead_code)]
+    pub key_store: Arc<ApiKeyStore>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -108,7 +113,7 @@ impl TopologyTestEnv {
     /// Spin up the harness: build the AppState, bind axum to a free port,
     /// spawn the server task, and poll `/api/v1/health` until ready.
     pub async fn start() -> anyhow::Result<Self> {
-        let (state, audit_dir, alert_store) = build_test_state()?;
+        let (state, audit_dir, alert_store, key_store) = build_test_state()?;
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
@@ -138,6 +143,56 @@ impl TopologyTestEnv {
             audit_dir,
             budget_tracker,
             alert_store,
+            key_store,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
+    /// Spin up the harness with authentication enabled.
+    ///
+    /// `entries` are pre-seeded into the `ApiKeyStore`; `rate_limit_rpm` caps
+    /// per-key request rate for this environment (use a small value for the
+    /// rate-limit smoke test only).
+    ///
+    /// **Coordination point (AAASM-1485)**: ST-R will reuse this builder.
+    /// Whichever ST opens first adds it here; the other rebases.
+    #[allow(dead_code)]
+    pub async fn start_with_auth(entries: &[ApiKeyEntry], rate_limit_rpm: u32) -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store, key_store) = build_test_state_with_auth(entries, rate_limit_rpm)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -221,13 +276,10 @@ fn uuid_string(key: &[u8; 16]) -> String {
 /// `aa-api/tests/common/mod.rs::test_state_with_auth` to avoid pulling that
 /// crate's `dev-dependencies` test helpers across crate boundaries.
 ///
-/// Returns the populated state, the on-disk audit dir the `AuditReader`
-/// scans (so per-leaf helpers like `seed_audit_events` can write entries
-/// the `aasm logs` snapshot path observes), and a concrete handle on
-/// the in-memory alert store so per-leaf seed helpers (e.g.
-/// `CliFixture::seed_alert`) can call `record()` directly without
-/// trait downcasting from `Arc<dyn AlertStore>`.
-fn build_test_state() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>)> {
+/// Returns the populated state, the on-disk audit dir, a concrete handle on
+/// the in-memory alert store, and the key store Arc so callers can mutate it
+/// (e.g. call `revoke()`) after construction.
+fn build_test_state() -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
     let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let policy_dir = std::env::temp_dir().join(format!("aa-topology-it-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir)?;
@@ -277,6 +329,7 @@ spec:
         ApiKeyStore::load(Path::new("/dev/null"))
             .unwrap_or_else(|_| ApiKeyStore::load(Path::new("/nonexistent")).expect("empty key store")),
     );
+    let key_store_handle = Arc::clone(&key_store);
     const TEST_SECRET: &[u8] = b"topology-it-test-secret-32-bytes-long-padding";
     let jwt_signer = Arc::new(JwtSigner::new(TEST_SECRET));
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
@@ -331,5 +384,149 @@ spec:
         },
         audit_dir,
         alert_store_handle,
+        key_store_handle,
     ))
+}
+
+/// JWT secret used by `start_with_auth` — exposed so tests can decode tokens.
+pub const AUTH_IT_JWT_SECRET: &[u8] = b"auth-it-test-secret-32-bytes-long!!";
+
+/// Build a minimal `AppState` with authentication enabled and pre-seeded API keys.
+///
+/// Used by `TopologyTestEnv::start_with_auth` (AAASM-1485 / F122 ST-D).
+fn build_test_state_with_auth(
+    entries: &[ApiKeyEntry],
+    rate_limit_rpm: u32,
+) -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
+    let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let policy_dir = std::env::temp_dir().join(format!("aa-auth-it-policy-{}-{policy_id}", std::process::id()));
+    std::fs::create_dir_all(&policy_dir)?;
+    let policy_path = policy_dir.join("test-policy.yaml");
+    std::fs::write(
+        &policy_path,
+        r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: auth-it-policy
+  version: "0.1.0"
+spec:
+  rules: []
+"#,
+    )?;
+
+    let events = Arc::new(EventBroadcast::default());
+    let budget_alert_tx = events.budget_sender();
+    let policy_engine = Arc::new(
+        PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+            .map_err(|e| anyhow::anyhow!("load policy: {e:?}"))?,
+    );
+    let budget_tracker = Arc::new(BudgetTracker::new(
+        PricingTable::default_table(),
+        None,
+        None,
+        chrono_tz::UTC,
+    ));
+    let approval_queue = ApprovalQueue::new();
+    let agent_registry = Arc::new(AgentRegistry::new());
+
+    let history_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let history_dir = std::env::temp_dir().join(format!("aa-auth-it-history-{}-{history_id}", std::process::id()));
+    let policy_history = Arc::new(FsHistoryStore::new(HistoryConfig {
+        history_dir,
+        max_versions: 50,
+    }));
+
+    let auth_config = Arc::new(AuthConfig {
+        mode: AuthMode::On,
+        jwt_secret: Some(AUTH_IT_JWT_SECRET.to_vec()),
+        api_keys_path: std::path::PathBuf::from("/dev/null"),
+        rate_limit_rpm,
+    });
+
+    let key_store = if entries.is_empty() {
+        Arc::new(
+            ApiKeyStore::load(Path::new("/dev/null"))
+                .unwrap_or_else(|_| ApiKeyStore::load(Path::new("/nonexistent")).expect("empty key store")),
+        )
+    } else {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!("aa-auth-it-keys-{}-{id}.json", std::process::id()));
+        let json = serde_json::to_string(entries).unwrap();
+        std::fs::write(&tmp, &json).unwrap();
+        Arc::new(ApiKeyStore::load(&tmp).unwrap())
+    };
+    let key_store_handle = Arc::clone(&key_store);
+
+    let jwt_signer = Arc::new(JwtSigner::new(AUTH_IT_JWT_SECRET));
+    let jwt_verifier = Arc::new(JwtVerifier::new(AUTH_IT_JWT_SECRET));
+    let rate_limiter = Arc::new(RateLimiter::new(rate_limit_rpm));
+    let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let alert_store_handle = Arc::clone(&alert_store);
+
+    let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let audit_dir = std::env::temp_dir().join(format!("aa-auth-it-audit-{}-{audit_id}", std::process::id()));
+    std::fs::create_dir_all(&audit_dir)?;
+    let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
+
+    Ok((
+        AppState {
+            agent_registry,
+            policy_engine,
+            budget_tracker,
+            approval_queue,
+            policy_history,
+            alert_store,
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+        },
+        audit_dir,
+        alert_store_handle,
+        key_store_handle,
+    ))
+}
+
+/// Generate a test API key, returning (plaintext, `ApiKeyEntry`).
+///
+/// The entry can be passed to `TopologyTestEnv::start_with_auth`.
+pub fn make_api_key(id: &str, scopes: Vec<aa_api::auth::scope::Scope>) -> (String, ApiKeyEntry) {
+    let key = ApiKey::generate();
+    let hash = key.hash().expect("hashing should succeed");
+    let entry = ApiKeyEntry {
+        id: id.to_string(),
+        key_hash: hash,
+        scopes,
+        created_at: 1_700_000_000,
+        label: Some(format!("test key {id}")),
+    };
+    (key.as_str().to_string(), entry)
 }
