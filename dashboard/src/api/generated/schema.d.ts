@@ -662,7 +662,8 @@ export interface paths {
         };
         /**
          * `GET /api/v1/policies` — list all policy versions.
-         * @description List all governance policy versions with pagination.
+         * @description List governance policy versions with optional archive inclusion.
+         *     By default only the active (most recent) version is returned.
          */
         get: operations["list_policies"];
         put?: never;
@@ -3272,6 +3273,11 @@ export interface operations {
                 page?: number | null;
                 /** @description Items per page (max 100). Defaults to 50. */
                 per_page?: number | null;
+                /**
+                 * @description When `true`, include older (inactive) policy versions in the response.
+                 *     Defaults to `false` — only the currently active policy version is returned.
+                 */
+                include_archived?: boolean;
             };
             header?: never;
             path?: never;

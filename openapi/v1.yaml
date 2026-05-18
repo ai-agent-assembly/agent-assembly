@@ -1033,7 +1033,9 @@ paths:
       tags:
       - policies
       summary: '`GET /api/v1/policies` — list all policy versions.'
-      description: List all governance policy versions with pagination.
+      description: |-
+        List governance policy versions with optional archive inclusion.
+        By default only the active (most recent) version is returned.
       operationId: list_policies
       parameters:
       - name: page
@@ -1057,6 +1059,14 @@ paths:
           format: int32
           maximum: 100
           minimum: 1
+      - name: include_archived
+        in: query
+        description: |-
+          When `true`, include older (inactive) policy versions in the response.
+          Defaults to `false` — only the currently active policy version is returned.
+        required: false
+        schema:
+          type: boolean
       responses:
         '200':
           description: Paginated list of policy versions
