@@ -157,7 +157,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Symlink node-sdk for TypeScript fixture file: dependency
+      - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
@@ -209,7 +209,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Symlink node-sdk for TypeScript fixture file: dependency
+      - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
