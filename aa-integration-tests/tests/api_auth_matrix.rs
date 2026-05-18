@@ -480,3 +480,49 @@ async fn auth_rate_limit_per_key_isolation() {
         "key-B should be independent of key-A's rate limit"
     );
 }
+
+// ── Section 5 — Bypass attempts ──────────────────────────────────────────────
+
+/// Craft a classic alg:none unsigned JWT.
+///
+/// This is the canonical CVE: a JWT with header `{"alg":"none"}` and an
+/// empty signature. A correctly implemented verifier must reject it.
+#[allow(dead_code)]
+fn build_alg_none_jwt() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"attacker","iat":0,"exp":9999999999,"scope":[]}"#);
+    format!("{header}.{payload}.") // empty signature
+}
+
+/// Craft a JWT that claims RS256 in its header but is actually signed with HS256.
+///
+/// An algorithm-confusion attack: the header is replaced to claim `"alg":"RS256"`
+/// while the signature remains HS256. Verifiers that trust the `alg` claim in
+/// the header (rather than enforcing a fixed algorithm) are vulnerable.
+#[allow(dead_code)]
+fn build_swapped_alg_jwt() -> String {
+    use aa_api::auth::jwt::Claims;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+
+    let claims = Claims {
+        sub: "attacker".to_string(),
+        iat: 0,
+        exp: 9_999_999_999,
+        scope: vec![],
+    };
+    let valid_jwt = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(AUTH_IT_JWT_SECRET),
+    )
+    .unwrap();
+
+    // Replace the header segment with one that claims RS256.
+    let fake_header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let parts: Vec<&str> = valid_jwt.splitn(3, '.').collect();
+    format!("{}.{}.{}", fake_header, parts[1], parts[2])
+}
