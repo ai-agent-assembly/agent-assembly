@@ -257,6 +257,7 @@ impl TopologyTestEnv {
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+        let ops_registry = Arc::clone(&state.ops_registry);
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
@@ -285,6 +286,7 @@ impl TopologyTestEnv {
             approval_queue,
             audit_dir,
             budget_tracker,
+            ops_registry,
             alert_store,
             key_store,
             events,
