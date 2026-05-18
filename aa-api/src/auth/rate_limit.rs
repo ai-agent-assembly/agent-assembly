@@ -19,6 +19,7 @@ struct TokenBucket {
 
 impl TokenBucket {
     /// Create a new full bucket with the given capacity (requests per minute).
+    #[cfg(test)]
     fn new(rpm: u32) -> Self {
         Self::new_with_window(rpm, 60)
     }
@@ -67,14 +68,33 @@ impl TokenBucket {
 pub struct RateLimiter {
     buckets: DashMap<String, TokenBucket>,
     rpm: u32,
+    /// Refill window in seconds.  Production default: 60 (1 rpm = 1 token per
+    /// 60 s).  Override via `AA_RATE_LIMIT_WINDOW_SECS` env-var or by
+    /// constructing with [`RateLimiter::new_with_window`].
+    window_secs: u64,
 }
 
 impl RateLimiter {
     /// Create a new rate limiter with the given per-key requests-per-minute limit.
+    ///
+    /// The refill window defaults to 60 seconds unless `AA_RATE_LIMIT_WINDOW_SECS`
+    /// is set in the environment.
     pub fn new(rpm: u32) -> Self {
+        let window_secs = std::env::var("AA_RATE_LIMIT_WINDOW_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+        Self::new_with_window(rpm, window_secs)
+    }
+
+    /// Create a new rate limiter with an explicit refill window.
+    ///
+    /// Intended for tests that need a short window without setting an env-var.
+    pub fn new_with_window(rpm: u32, window_secs: u64) -> Self {
         Self {
             buckets: DashMap::new(),
             rpm,
+            window_secs: window_secs.max(1),
         }
     }
 
@@ -86,7 +106,7 @@ impl RateLimiter {
         let mut bucket = self
             .buckets
             .entry(key_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.rpm));
+            .or_insert_with(|| TokenBucket::new_with_window(self.rpm, self.window_secs));
         bucket.try_consume()
     }
 }
