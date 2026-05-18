@@ -310,3 +310,52 @@ async fn traces_parent_span_id_links_preserved_in_response() {
         "depth 2"
     );
 }
+
+// ── TC-7: filter (adapted) — spans with null decision are included ─────────────
+//
+// The ticket spec described ?include_internal=false hiding "internal" spans.
+// The handler has no such flag. This test verifies the actual behaviour:
+// spans with decision=None are returned exactly like spans with a decision.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_spans_with_null_decision_included_in_response() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let session_id = "f122-traces-it-07";
+
+    // One span with a decision, one without.
+    env.trace_store
+        .record_span(session_id, "agent-it-07", make_span("with-decision", "tool_call", 10))
+        .unwrap();
+    env.trace_store
+        .record_span(
+            session_id,
+            "agent-it-07",
+            TraceSpan {
+                decision: None,
+                ..make_span("no-decision", "policy_eval", 11)
+            },
+        )
+        .unwrap();
+
+    let body: serde_json::Value = reqwest::get(format!("{}/api/v1/traces/{session_id}", env.base_url()))
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("body as JSON");
+
+    let spans = body["spans"].as_array().expect("spans array");
+    assert_eq!(
+        spans.len(),
+        2,
+        "both spans (with and without decision) should be present"
+    );
+
+    let find = |id: &str| spans.iter().find(|s| s["span_id"].as_str() == Some(id)).cloned();
+
+    assert_eq!(find("with-decision").unwrap()["decision"].as_str(), Some("allow"));
+    assert!(
+        find("no-decision").unwrap()["decision"].is_null(),
+        "span with no decision should have null decision field"
+    );
+}
