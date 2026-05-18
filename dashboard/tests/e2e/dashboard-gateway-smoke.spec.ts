@@ -187,4 +187,13 @@ test.describe('Dashboard gateway smoke — live agent data renders correctly', (
     await injectToken(page)
     await mockGatewayLiveData(page)
   })
+
+  test('fleet view: agent list renders live agent rows and count from gateway', async ({ page }) => {
+    await page.goto('/agents')
+
+    await expect(page.getByTestId('fleet-page-head')).toBeVisible()
+    await expect(page.getByTestId('fleet-page-count')).toContainText(String(LIVE_AGENTS.length))
+    await expect(page.getByTestId('agent-row')).toHaveCount(LIVE_AGENTS.length)
+    await expect(page.getByTestId('fleet-row-name').first()).toContainText('support-bot')
+  })
 })
