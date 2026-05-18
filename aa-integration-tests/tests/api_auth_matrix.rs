@@ -431,3 +431,52 @@ async fn auth_rate_limit_resets_after_window() {
         "request should succeed after rate-limit window resets"
     );
 }
+
+#[tokio::test]
+async fn auth_rate_limit_per_key_isolation() {
+    let (plaintext_a, entry_a) = make_api_key("key-a", vec![Scope::Read, Scope::Write]);
+    let (plaintext_b, entry_b) = make_api_key("key-b", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry_a, entry_b], 2).await.unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/auth/token", env.base_url());
+
+    // Exhaust key-A's budget (rpm=2 → 2 requests).
+    for _ in 0..2 {
+        let resp = client
+            .post(&url)
+            .bearer_auth(&plaintext_a)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "key-A within budget");
+    }
+
+    // key-A should now be rate-limited.
+    let resp_a = client
+        .post(&url)
+        .bearer_auth(&plaintext_a)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_a.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "key-A should be exhausted"
+    );
+
+    // key-B is unaffected — rate limiting is per-key.
+    let resp_b = client
+        .post(&url)
+        .bearer_auth(&plaintext_b)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_b.status(),
+        StatusCode::OK,
+        "key-B should be independent of key-A's rate limit"
+    );
+}
