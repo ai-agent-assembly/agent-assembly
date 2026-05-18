@@ -205,11 +205,14 @@ pub struct CapabilityOverrideRequest {
     pub ttl_seconds: Option<u64>,
 }
 
-/// Response envelope for `POST /api/v1/capability/override`: the subset of
-/// agent rows that actually changed (matches `OverrideResponse` in the
-/// dashboard's TypeScript mock).
+/// Response envelope for `POST /api/v1/capability/override`: the stable UUID
+/// assigned to this override (use it to `DELETE /capability/override/{id}`)
+/// plus the subset of agent rows that actually changed.
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CapabilityOverrideResponse {
+    /// Stable UUID for this override; pass to `DELETE /capability/override/{id}` to revert.
+    pub override_id: String,
     pub updated: Vec<CapabilityAgent>,
 }
 
@@ -419,8 +422,12 @@ mod tests {
 
     #[test]
     fn override_response_serializes_updated_array() {
-        let resp = CapabilityOverrideResponse { updated: vec![] };
+        let resp = CapabilityOverrideResponse {
+            override_id: "test-id".into(),
+            updated: vec![],
+        };
         let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["overrideId"], "test-id");
         assert!(json["updated"].is_array());
         assert_eq!(json["updated"].as_array().unwrap().len(), 0);
     }

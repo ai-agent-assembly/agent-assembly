@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::Path;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -17,6 +18,7 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use utoipa::IntoParams;
+use uuid::Uuid;
 
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
@@ -48,12 +50,34 @@ struct CellSnapshot {
     original: Decision,
 }
 
-/// Thread-safe holder for the dashboard Capability Matrix snapshot.
+/// Reasons a revoke request can fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevokeOverrideError {
+    /// No active override with the supplied id exists.
+    NotFound,
+}
+
+/// Per-agent revert record — tracks the pre-override cell value so
+/// `DELETE /capability/override/{id}` can restore each cell individually.
+#[derive(Debug, Clone)]
+struct RevertRecord {
+    override_id: String,
+    agent_id: String,
+    resource_id: String,
+    verb: Verb,
+    prev_decision: Decision,
+}
+
+/// Thread-safe holder for the dashboard Capability Matrix snapshot, the
+/// append-only override log (for `GET /capability/override`), and the
+/// per-agent revert records (for `DELETE /capability/override/{id}`).
 #[derive(Debug)]
 pub struct CapabilityStore {
     inner: RwLock<CapabilityMatrix>,
     /// Append-only log of all override operations applied since startup.
     overrides: RwLock<Vec<OverrideRecord>>,
+    /// Per-agent pre-override cell values used to revert on DELETE.
+    revert_records: RwLock<Vec<RevertRecord>>,
 }
 
 impl CapabilityStore {
@@ -62,6 +86,7 @@ impl CapabilityStore {
         Arc::new(Self {
             inner: RwLock::new(seeded_matrix()),
             overrides: RwLock::new(vec![]),
+            revert_records: RwLock::new(Vec::new()),
         })
     }
 
@@ -85,14 +110,16 @@ impl CapabilityStore {
     }
 
     /// Apply a single `(resource_id, verb, decision)` override across the
-    /// requested agents and return the rows that changed.
+    /// requested agents.  Returns a stable UUID for the override plus the
+    /// agent rows that actually changed.
     ///
     /// Rejects unknown `agent_id` values with `OverrideError::UnknownAgent`.
     /// An unknown `resource_id` is silently ignored for that agent (matches
     /// the dashboard mock at `capability.ts::applyOverrideToAgents`).
     ///
-    /// On success, appends one [`OverrideRecord`] to the override log so that
-    /// `GET /capability/override` can list applied overrides.
+    /// On success, appends one [`OverrideRecord`] to the override log so
+    /// `GET /capability/override` can list applied overrides, and records
+    /// per-agent revert data so `DELETE /capability/override/{id}` can undo.
     ///
     /// When `req.ttl_seconds` is `Some(n)`, a background Tokio task is spawned
     /// that sleeps for `n` seconds then reverts the affected cells to their
@@ -101,50 +128,62 @@ impl CapabilityStore {
     pub async fn apply_override(
         self: Arc<Self>,
         req: &CapabilityOverrideRequest,
-    ) -> Result<Vec<CapabilityAgent>, OverrideError> {
-        let mut matrix = self.inner.write().await;
-        // Validate every requested agent_id up front so a single unknown id
-        // rejects the whole request without partial mutation.
-        for id in &req.agent_ids {
-            if !matrix.agents.iter().any(|a| &a.id == id) {
-                return Err(OverrideError::UnknownAgent(id.clone()));
-            }
-        }
-
-        let mut snapshots: Vec<CellSnapshot> = Vec::new();
-        let mut updated = Vec::with_capacity(req.agent_ids.len());
-        for agent in matrix.agents.iter_mut() {
-            if !req.agent_ids.contains(&agent.id) {
-                continue;
-            }
-            if let Some(cell) = agent.caps.get_mut(&req.resource_id) {
-                let original = match req.verb {
-                    Verb::Read => cell.read,
-                    Verb::Write => cell.write,
-                    Verb::Delete => cell.delete,
-                    Verb::Exec => cell.exec,
-                };
-                snapshots.push(CellSnapshot {
-                    agent_id: agent.id.clone(),
-                    resource_id: req.resource_id.clone(),
-                    verb: req.verb,
-                    original,
-                });
-                match req.verb {
-                    Verb::Read => cell.read = req.decision,
-                    Verb::Write => cell.write = req.decision,
-                    Verb::Delete => cell.delete = req.decision,
-                    Verb::Exec => cell.exec = req.decision,
+    ) -> Result<(String, Vec<CapabilityAgent>), OverrideError> {
+        let override_id = Uuid::new_v4().to_string();
+        let (updated, revert_items, snapshots) = {
+            let mut matrix = self.inner.write().await;
+            // Validate every requested agent_id up front so a single unknown id
+            // rejects the whole request without partial mutation.
+            for id in &req.agent_ids {
+                if !matrix.agents.iter().any(|a| &a.id == id) {
+                    return Err(OverrideError::UnknownAgent(id.clone()));
                 }
-                updated.push(agent.clone());
             }
-        }
-        // Record the override in the append-only log regardless of whether
-        // any cells changed (req may target an unknown resource_id, which is
-        // silently skipped but still logged so callers can audit requests).
-        drop(matrix);
-        let record = OverrideRecord {
-            id: uuid::Uuid::new_v4().to_string(),
+
+            let mut updated = Vec::with_capacity(req.agent_ids.len());
+            let mut revert_items: Vec<RevertRecord> = Vec::new();
+            let mut snapshots: Vec<CellSnapshot> = Vec::new();
+            for agent in matrix.agents.iter_mut() {
+                if !req.agent_ids.contains(&agent.id) {
+                    continue;
+                }
+                if let Some(cell) = agent.caps.get_mut(&req.resource_id) {
+                    let prev_decision = match req.verb {
+                        Verb::Read => cell.read,
+                        Verb::Write => cell.write,
+                        Verb::Delete => cell.delete,
+                        Verb::Exec => cell.exec,
+                    };
+                    revert_items.push(RevertRecord {
+                        override_id: override_id.clone(),
+                        agent_id: agent.id.clone(),
+                        resource_id: req.resource_id.clone(),
+                        verb: req.verb,
+                        prev_decision,
+                    });
+                    snapshots.push(CellSnapshot {
+                        agent_id: agent.id.clone(),
+                        resource_id: req.resource_id.clone(),
+                        verb: req.verb,
+                        original: prev_decision,
+                    });
+                    match req.verb {
+                        Verb::Read => cell.read = req.decision,
+                        Verb::Write => cell.write = req.decision,
+                        Verb::Delete => cell.delete = req.decision,
+                        Verb::Exec => cell.exec = req.decision,
+                    }
+                    updated.push(agent.clone());
+                }
+            }
+            (updated, revert_items, snapshots)
+        };
+        // Persist revert records for DELETE support.
+        self.revert_records.write().await.extend(revert_items);
+        // Append to the override log regardless of whether any cells changed
+        // (unknown resource_id is silently skipped but still logged).
+        let log_entry = OverrideRecord {
+            id: override_id.clone(),
             agent_ids: req.agent_ids.clone(),
             resource_id: req.resource_id.clone(),
             verb: req.verb,
@@ -152,7 +191,7 @@ impl CapabilityStore {
             created_at: chrono::Utc::now().to_rfc3339(),
             active: true,
         };
-        self.overrides.write().await.push(record);
+        self.overrides.write().await.push(log_entry);
 
         if let Some(ttl_secs) = req.ttl_seconds {
             let store = Arc::clone(&self);
@@ -162,7 +201,49 @@ impl CapabilityStore {
             });
         }
 
-        Ok(updated)
+        Ok((override_id, updated))
+    }
+
+    /// Revert all cell changes made by the override identified by `id`,
+    /// remove its revert records, and mark the log entry as inactive.
+    ///
+    /// Returns `RevokeOverrideError::NotFound` when no active override with
+    /// that id exists.
+    pub async fn revoke_override(&self, id: &str) -> Result<(), RevokeOverrideError> {
+        let records: Vec<RevertRecord> = self
+            .revert_records
+            .read()
+            .await
+            .iter()
+            .filter(|r| r.override_id == id)
+            .cloned()
+            .collect();
+        if records.is_empty() {
+            return Err(RevokeOverrideError::NotFound);
+        }
+        {
+            let mut matrix = self.inner.write().await;
+            for record in &records {
+                if let Some(agent) = matrix.agents.iter_mut().find(|a| a.id == record.agent_id) {
+                    if let Some(cell) = agent.caps.get_mut(&record.resource_id) {
+                        match record.verb {
+                            Verb::Read => cell.read = record.prev_decision,
+                            Verb::Write => cell.write = record.prev_decision,
+                            Verb::Delete => cell.delete = record.prev_decision,
+                            Verb::Exec => cell.exec = record.prev_decision,
+                        }
+                    }
+                }
+            }
+        }
+        self.revert_records.write().await.retain(|r| r.override_id != id);
+        // Mark the log entry inactive so GET /capability/override reflects the revocation.
+        for entry in self.overrides.write().await.iter_mut() {
+            if entry.id == id {
+                entry.active = false;
+            }
+        }
+        Ok(())
     }
 
     /// Restore cell decisions to their pre-override values. Called by the
@@ -280,7 +361,7 @@ pub async fn apply_override(
         .map_err(OverrideHandlerError::Forbidden)?;
 
     let has_ttl = body.ttl_seconds.is_some();
-    let updated = Arc::clone(&state.capability_store)
+    let (override_id, updated) = Arc::clone(&state.capability_store)
         .apply_override(&body)
         .await
         .map_err(|e| match e {
@@ -290,7 +371,7 @@ pub async fn apply_override(
         })?;
 
     let status = if has_ttl { StatusCode::CREATED } else { StatusCode::OK };
-    Ok((status, Json(CapabilityOverrideResponse { updated })))
+    Ok((status, Json(CapabilityOverrideResponse { override_id, updated })))
 }
 
 /// Unified error type for the override handler so 400 and 403 paths render
@@ -339,6 +420,34 @@ pub async fn list_overrides(
 ) -> (StatusCode, Json<Vec<OverrideRecord>>) {
     let overrides = state.capability_store.list_overrides(params.agent_id.as_deref()).await;
     (StatusCode::OK, Json(overrides))
+}
+
+/// `DELETE /api/v1/capability/override/{id}` — revert a previously applied
+/// capability override, restoring each affected cell to its pre-override value.
+///
+/// Returns 204 No Content on success.  Returns 404 when no active override
+/// with the supplied `id` exists (either it was never created or has already
+/// been revoked).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/capability/override/{id}",
+    params(
+        ("id" = String, Path, description = "UUID of the override to revoke")
+    ),
+    responses(
+        (status = 204, description = "Override revoked; cells restored to base policy"),
+        (status = 404, description = "No active override with this id", body = ProblemDetail)
+    ),
+    tag = "capability"
+)]
+pub async fn revoke_override(Extension(state): Extension<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match state.capability_store.revoke_override(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(RevokeOverrideError::NotFound) => ProblemDetail::from_status(StatusCode::NOT_FOUND)
+            .with_detail(format!("No active override with id: {id}"))
+            .with_instance(format!("/api/v1/capability/override/{id}"))
+            .into_response(),
+    }
 }
 
 // ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
@@ -631,7 +740,7 @@ mod tests {
             decision: Decision::Deny,
             ttl_seconds: None,
         };
-        let updated = Arc::clone(&store).apply_override(&req).await.unwrap();
+        let (_override_id, updated) = Arc::clone(&store).apply_override(&req).await.unwrap();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].id, target_agent);
         assert_eq!(updated[0].caps.get("pg").unwrap().write, Decision::Deny);
@@ -666,7 +775,7 @@ mod tests {
     async fn apply_override_skips_unknown_resource_silently() {
         let store = CapabilityStore::new_seeded();
         let target = store.snapshot().await.agents[0].id.clone();
-        let updated = Arc::clone(&store)
+        let (_override_id, updated) = Arc::clone(&store)
             .apply_override(&CapabilityOverrideRequest {
                 agent_ids: vec![target],
                 resource_id: "nonexistent-resource".into(),

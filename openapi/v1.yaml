@@ -750,6 +750,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/CapabilityMatrix'
   /api/v1/capability/override:
+    get:
+      tags:
+      - capability
+      summary: |-
+        `GET /api/v1/capability/override` — list all active capability overrides
+        recorded since the server started, optionally filtered to a single agent.
+      description: |-
+        The response is an array of [`OverrideRecord`] objects. Each record
+        corresponds to one successful `POST /capability/override` call and carries
+        the agents, resource, verb, decision, and ISO 8601 timestamp of when the
+        override was applied.
+      operationId: list_overrides
+      parameters:
+      - name: agent_id
+        in: query
+        description: Filter results to overrides that affect this agent id
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Active override records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OverrideRecord'
     post:
       tags:
       - capability
@@ -791,6 +819,34 @@ paths:
           description: Unknown agent id
         '403':
           description: Caller lacks the role required to mutate capability state
+  /api/v1/capability/override/{id}:
+    delete:
+      tags:
+      - capability
+      summary: |-
+        `DELETE /api/v1/capability/override/{id}` — revert a previously applied
+        capability override, restoring each affected cell to its pre-override value.
+      description: |-
+        Returns 204 No Content on success.  Returns 404 when no active override
+        with the supplied `id` exists (either it was never created or has already
+        been revoked).
+      operationId: revoke_override
+      parameters:
+      - name: id
+        in: path
+        description: UUID of the override to revoke
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Override revoked; cells restored to base policy
+        '404':
+          description: No active override with this id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/costs:
     get:
       tags:
@@ -2254,12 +2310,16 @@ components:
     CapabilityOverrideResponse:
       type: object
       description: |-
-        Response envelope for `POST /api/v1/capability/override`: the subset of
-        agent rows that actually changed (matches `OverrideResponse` in the
-        dashboard's TypeScript mock).
+        Response envelope for `POST /api/v1/capability/override`: the stable UUID
+        assigned to this override (use it to `DELETE /capability/override/{id}`)
+        plus the subset of agent rows that actually changed.
       required:
+      - overrideId
       - updated
       properties:
+        overrideId:
+          type: string
+          description: Stable UUID for this override; pass to `DELETE /capability/override/{id}` to revert.
         updated:
           type: array
           items:
@@ -2710,6 +2770,49 @@ components:
         op_id:
           type: string
           description: Operation id from the URL path.
+    OverrideRecord:
+      type: object
+      description: |-
+        A recorded capability override entry returned by
+        `GET /api/v1/capability/override`.
+
+        Each `POST /capability/override` call that successfully mutates at least
+        one cell appends one of these records. The log is in-memory and lives as
+        long as the server process; TTL-based expiry is not yet implemented.
+      required:
+      - id
+      - agentIds
+      - resourceId
+      - verb
+      - decision
+      - createdAt
+      - active
+      properties:
+        active:
+          type: boolean
+          description: |-
+            Whether the override is still active. Always `true` in the current
+            implementation (no TTL or explicit delete support yet).
+        agentIds:
+          type: array
+          items:
+            type: string
+          description: Agent identifiers this override was applied to.
+        createdAt:
+          type: string
+          description: ISO 8601 UTC timestamp when the override was applied.
+        decision:
+          $ref: '#/components/schemas/Decision'
+          description: New decision recorded for that (resource, verb) pair.
+        id:
+          type: string
+          description: Unique identifier for this override entry (UUID v4).
+        resourceId:
+          type: string
+          description: Resource whose cell was overridden.
+        verb:
+          $ref: '#/components/schemas/Verb'
+          description: Verb within the cell that was changed.
     PermissionSourceResponse:
       type: object
       description: Per-scope contribution to an agent's effective permissions.
