@@ -247,3 +247,66 @@ async fn openapi_spec_error_envelope_matches_for_404() {
         );
     }
 }
+
+// ── TC-5: 400 responses match the ProblemDetail envelope ─────────────────────
+//
+// The approvals route handlers parse the `{id}` path segment as a UUID and
+// return ProblemDetail 400 before reading the body when parsing fails. This
+// exercises the 400 error envelope using inputs that are consistent across
+// all three operations (inspect, approve, reject).
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openapi_spec_error_envelope_matches_for_400() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+    let spec = load_spec();
+    let problem_schema = spec
+        .pointer("/components/schemas/ProblemDetail")
+        .expect("ProblemDetail must exist in spec")
+        .clone();
+
+    let bad_id = "not-a-valid-uuid";
+    let base = env.base_url();
+
+    let operations: Vec<(String, reqwest::Method)> = vec![
+        (format!("{base}/api/v1/approvals/{bad_id}"), reqwest::Method::GET),
+        (
+            format!("{base}/api/v1/approvals/{bad_id}/approve"),
+            reqwest::Method::POST,
+        ),
+        (
+            format!("{base}/api/v1/approvals/{bad_id}/reject"),
+            reqwest::Method::POST,
+        ),
+    ];
+
+    for (url, method) in &operations {
+        let req = client
+            .request(method.clone(), url.as_str())
+            .json(&serde_json::json!({}));
+
+        let resp = req
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("{method} {url} transport error: {e}"));
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{method} {url} with invalid UUID must return 400"
+        );
+
+        let body: Value = resp.json().await.expect("400 response must have a JSON body");
+
+        assert!(
+            jsonschema::is_valid(&problem_schema, &body),
+            "{method} {url} 400 body does not match ProblemDetail schema.\nBody: {body}"
+        );
+
+        assert_eq!(
+            body["status"].as_u64(),
+            Some(400),
+            "ProblemDetail.status must equal 400 for {method} {url}"
+        );
+    }
+}
