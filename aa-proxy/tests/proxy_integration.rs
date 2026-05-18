@@ -19,6 +19,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         cert_cache_capacity: 10,
         llm_only: false,
         denied_hosts: Vec::new(),
+        skip_upstream_tls_verify: false,
     }
 }
 

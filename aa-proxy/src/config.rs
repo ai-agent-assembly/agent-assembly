@@ -31,6 +31,12 @@ pub struct ProxyConfig {
     /// Comma-separated list from env var `AA_PROXY_DENIED_HOSTS`.
     /// Empty means allow all hosts.
     pub denied_hosts: Vec<String>,
+
+    /// When `true`, the proxy skips TLS certificate verification when
+    /// connecting to upstream servers. Intended for integration tests only —
+    /// never enable in production.
+    /// Env: `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` — default: `false`
+    pub skip_upstream_tls_verify: bool,
 }
 
 impl ProxyConfig {
@@ -73,12 +79,18 @@ impl ProxyConfig {
             _ => Vec::new(),
         };
 
+        let skip_upstream_tls_verify = match std::env::var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY") {
+            Ok(val) => val == "1" || val.to_lowercase() == "true",
+            Err(_) => false,
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
             cert_cache_capacity,
             llm_only,
             denied_hosts,
+            skip_upstream_tls_verify,
         })
     }
 }
@@ -98,6 +110,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_CERT_CACHE_CAPACITY");
         std::env::remove_var("AA_PROXY_LLM_ONLY");
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
+        std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
     }
 
     #[test]
@@ -111,6 +124,7 @@ mod tests {
         assert_eq!(cfg.cert_cache_capacity, 1000);
         assert!(cfg.llm_only);
         assert!(cfg.denied_hosts.is_empty());
+        assert!(!cfg.skip_upstream_tls_verify);
     }
 
     #[test]
@@ -181,5 +195,24 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert!(cfg.denied_hosts.is_empty());
+    }
+
+    #[test]
+    fn from_env_skip_upstream_tls_verify_true() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.skip_upstream_tls_verify);
+    }
+
+    #[test]
+    fn from_env_skip_upstream_tls_verify_false_by_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(!cfg.skip_upstream_tls_verify);
     }
 }
