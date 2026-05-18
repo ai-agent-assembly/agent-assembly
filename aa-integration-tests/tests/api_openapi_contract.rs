@@ -310,3 +310,38 @@ async fn openapi_spec_error_envelope_matches_for_400() {
         );
     }
 }
+
+// ── TC-6: spec-declared security schemes are enforced by the live server ──────
+//
+// openapi/v1.yaml declares `security: [{ bearer_auth: [] }]` on
+// POST /api/v1/auth/token. When the server starts with AuthMode::On
+// (via start_with_auth), calling the endpoint without the
+// `Authorization: Bearer` header must return 401 — proving the declared
+// security requirement is actually enforced.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openapi_spec_security_schemes_enforced() {
+    use aa_api::auth::scope::Scope;
+
+    let (_, entry) = common::make_api_key("q-key-1", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000)
+        .await
+        .expect("harness should start with auth");
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("POST /api/v1/auth/token should not fail at transport level");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "POST /api/v1/auth/token without credentials must return 401 when auth is enabled"
+    );
+
+    let body: Value = resp.json().await.expect("401 response must have a JSON body");
+    assert!(body.is_object(), "401 response body must be a JSON object; got: {body}");
+}
