@@ -100,6 +100,21 @@ pub struct TopologyTestEnv {
     /// to exercise the revocation path without restarting the server.
     #[allow(dead_code)]
     pub key_store: Arc<ApiKeyStore>,
+    /// Shared event broadcast channels — same Arc the running server holds.
+    /// WS integration tests (AAASM-1497 / F122 ST-P) publish events via
+    /// `pipeline_sender()`, `approval_sender()`, and `budget_sender()` to
+    /// drive the streaming endpoint without going through a gRPC path.
+    #[allow(dead_code)]
+    pub events: Arc<EventBroadcast>,
+    /// Replay buffer — same instance the server holds (clone shares the
+    /// internal `Arc<Mutex<VecDeque>>`). WS tests seed it directly via
+    /// `push()` to test the `?since=` replay path.
+    #[allow(dead_code)]
+    pub replay_buffer: ReplayBuffer,
+    /// Monotonically-increasing event ID counter — same Arc the server holds.
+    /// Tests can read the current value or advance it to control replay ranges.
+    #[allow(dead_code)]
+    pub next_event_id: Arc<AtomicU64>,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -119,6 +134,9 @@ impl TopologyTestEnv {
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -145,6 +163,9 @@ impl TopologyTestEnv {
             budget_tracker,
             alert_store,
             key_store,
+            events,
+            replay_buffer,
+            next_event_id,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -168,6 +189,9 @@ impl TopologyTestEnv {
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -194,6 +218,9 @@ impl TopologyTestEnv {
             budget_tracker,
             alert_store,
             key_store,
+            events,
+            replay_buffer,
+            next_event_id,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -217,6 +244,9 @@ impl TopologyTestEnv {
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -243,6 +273,9 @@ impl TopologyTestEnv {
             budget_tracker,
             alert_store,
             key_store,
+            events,
+            replay_buffer,
+            next_event_id,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -264,6 +297,9 @@ impl TopologyTestEnv {
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
         let key_store = Arc::clone(&state.key_store);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -290,6 +326,9 @@ impl TopologyTestEnv {
             budget_tracker,
             alert_store,
             key_store,
+            events,
+            replay_buffer,
+            next_event_id,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
