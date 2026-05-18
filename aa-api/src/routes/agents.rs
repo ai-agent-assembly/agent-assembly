@@ -8,7 +8,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use aa_gateway::registry::OrphanMode;
+use aa_gateway::registry::{AgentStatus, OrphanMode};
 
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
@@ -340,11 +340,17 @@ pub async fn resume_agent(
 ) -> Result<(StatusCode, Json<ResumeResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
 
-    let previous_status = state
+    let current_status = state
         .agent_registry
         .agent_status(&agent_id)
-        .map(|s| format!("{s:?}"))
         .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
+
+    if current_status == AgentStatus::Active {
+        return Err(ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail("Agent is already active; only suspended agents can be resumed"));
+    }
+
+    let previous_status = format!("{current_status:?}");
 
     state
         .agent_registry
