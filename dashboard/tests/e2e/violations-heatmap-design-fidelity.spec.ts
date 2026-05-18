@@ -86,9 +86,12 @@ test.describe('AAASM-1432 — ViolationHeatmap design fidelity', () => {
     await gotoViolations(page)
     const hot = VIOLATIONS.nodes[0]!
     await page.getByTestId(`heatmap-node-${hot.agent_id}`).hover()
-    // The tooltip is a positioned <div> sibling — find by content.
-    await expect(page.getByText(/Violations:/)).toBeVisible()
-    await expect(page.getByText(new RegExp(hot.violation_count.toString()))).toBeVisible()
+    // The tooltip is a positioned <div> sibling — anchor on its
+    // 'Violations:' label and assert the sibling <strong> matches the
+    // hot-spot count. Using the regex /30/ here would match the
+    // 30d <option>, the "30 violations" legend, and the SVG node label.
+    const violationsRow = page.getByText('Violations:').locator('..')
+    await expect(violationsRow.locator('strong')).toHaveText(hot.violation_count.toString())
     await expect(page.getByText('Top policies:')).toBeVisible()
     for (const policy of hot.top_policies) {
       await expect(page.getByText(policy, { exact: true })).toBeVisible()
