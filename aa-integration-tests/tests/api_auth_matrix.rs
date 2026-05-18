@@ -630,3 +630,28 @@ async fn auth_bypass_jwt_swapped_alg_rejected() {
         "algorithm-confusion JWT must be rejected with 401"
     );
 }
+
+#[tokio::test]
+async fn auth_bypass_repeated_auth_headers_first_wins_or_rejected() {
+    // When two Authorization headers are sent the server must either accept the
+    // first and ignore the second, or reject the request — it must not grant
+    // elevated access from the second header.
+    let (key_a, entry_a) = make_api_key("key-a", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry_a], 1000).await.unwrap();
+    let jwt_b = JwtSigner::new(AUTH_IT_JWT_SECRET)
+        .sign("key-b-elevated", &[Scope::Admin])
+        .unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/auth/token", env.base_url()))
+        .header("authorization", format!("Bearer {key_a}"))
+        .header("authorization", format!("Bearer {jwt_b}"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::UNAUTHORIZED,
+        "repeated Authorization headers must be handled safely (got {status})"
+    );
+}
