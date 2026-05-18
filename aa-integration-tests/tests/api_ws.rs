@@ -311,3 +311,29 @@ async fn ws_since_future_id_starts_live_only() {
     let event = recv_event(&mut ws).await;
     assert_eq!(event.agent_id, "live-only-agent");
 }
+
+/// Replay buffer capacity is 1000 events (circular). Pushing 1001 events
+/// causes the oldest (id=1) to be dropped; reconnecting with `?since=0`
+/// returns 1000 events starting from id=2.
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_replay_buffer_capacity_is_1000() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    for i in 1u64..=1001 {
+        env.replay_buffer.push(make_governance_event(i));
+    }
+
+    let url = format!("ws://{}/api/v1/ws/events?since=0", env.addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    let first = recv_event(&mut ws).await;
+    assert_eq!(first.id, 2, "oldest event (id=1) should have been dropped");
+
+    // Drain the rest.
+    for _ in 0..998 {
+        recv_event(&mut ws).await;
+    }
+
+    let last = recv_event(&mut ws).await;
+    assert_eq!(last.id, 1001, "last event should be id=1001");
+}
