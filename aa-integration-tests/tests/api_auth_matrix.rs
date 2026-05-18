@@ -292,3 +292,35 @@ async fn auth_scope_admin_grants_full_token_issuance() {
     let body: Value = resp.json().await.unwrap();
     assert!(body["token"].is_string(), "response must have 'token' string field");
 }
+
+#[tokio::test]
+async fn auth_scope_read_only_key_blocked_from_policy_mutation() {
+    // PolicyWriteAuth requires Write or Admin scope; read-only callers are rejected
+    let (plaintext, entry) = make_api_key("read-key", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    let policy_yaml = r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: rbac-test-policy
+  version: "1.0.0"
+spec:
+  rules: []
+"#;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/policies", env.base_url()))
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({"policy_yaml": policy_yaml}))
+        .send()
+        .await
+        .unwrap();
+
+    // PolicyWriteAuth maps read → Viewer → denied at all policy scope levels
+    let status = resp.status();
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "expected 401 or 403 for read-only caller, got: {status}"
+    );
+}
