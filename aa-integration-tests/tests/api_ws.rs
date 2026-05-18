@@ -259,3 +259,24 @@ async fn ws_no_filter_delivers_all_event_types() {
         "all three event types should be delivered when no filter is set"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_since_event_id_replays_buffered() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    // Seed three events directly into the replay buffer.
+    for i in 1u64..=3 {
+        env.replay_buffer.push(make_governance_event(i));
+    }
+
+    let url = format!("ws://{}/api/v1/ws/events?since=0", env.addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    let ev1 = recv_event(&mut ws).await;
+    let ev2 = recv_event(&mut ws).await;
+    let ev3 = recv_event(&mut ws).await;
+
+    assert_eq!(ev1.id, 1);
+    assert_eq!(ev2.id, 2);
+    assert_eq!(ev3.id, 3);
+}
