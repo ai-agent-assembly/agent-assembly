@@ -30,5 +30,7 @@ rust_decimal = "1"
 serde_json  = "1"
 serde_yaml  = "0.9"
 tempfile    = "3"
-tokio       = { version = "1", features = ["full"] }
-uuid        = { version = "1", features = ["v4"] }
+tokio             = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"
+uuid              = { version = "1", features = ["v4"] }
+futures           = "0.3"
