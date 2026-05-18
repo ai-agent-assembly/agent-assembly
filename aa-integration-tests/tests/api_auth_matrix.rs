@@ -387,7 +387,7 @@ async fn auth_rate_limit_burst_returns_429_with_retry_after() {
 }
 
 #[tokio::test]
-#[ignore = "rate-limit refill window is ~60s; not suitable for CI"]
+#[ignore = "rate-limit refill window is ~60s; not suitable for CI (AAASM-1527)"]
 async fn auth_rate_limit_resets_after_window() {
     let (plaintext, entry) = make_api_key("key-rl-reset", vec![Scope::Read]);
     let env = TopologyTestEnv::start_with_auth(&[entry], 1).await.unwrap();
