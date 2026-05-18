@@ -239,3 +239,21 @@ async fn auth_api_key_unknown_returns_401() {
         body["detail"]
     );
 }
+
+// ── Section 3 — Scope-based authorization ────────────────────────────────────
+
+#[tokio::test]
+async fn auth_scope_read_key_accesses_public_endpoint() {
+    // GET /agents has no scope guard — any valid auth is accepted
+    let (plaintext, entry) = make_api_key("read-key", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .bearer_auth(&plaintext)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
