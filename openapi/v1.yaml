@@ -867,10 +867,11 @@ paths:
     get:
       tags:
       - health
-      summary: '`GET /api/v1/health` — liveness probe.'
+      summary: '`GET /api/v1/health` — liveness and readiness probe.'
       description: |-
-        Returns a simple JSON body indicating the service is alive.
-        Suitable for Kubernetes liveness probes.
+        Returns `200` when all subsystems report healthy; `503` when any subsystem
+        is degraded. The `checks` map in the response body carries per-subsystem
+        status strings (`"ok"` or `"degraded"`).
       operationId: health
       responses:
         '200':
@@ -885,6 +886,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: One or more subsystems are degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
   /api/v1/iam/api-keys:
     get:
       tags:
@@ -2652,6 +2659,7 @@ components:
       - uptime_secs
       - active_connections
       - pipeline_lag_ms
+      - checks
       properties:
         active_connections:
           type: integer
@@ -2660,6 +2668,13 @@ components:
         api_version:
           type: string
           description: API version prefix (e.g. `"v1"`).
+        checks:
+          type: object
+          description: Per-subsystem health status. Each value is `"ok"` or `"degraded"`.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
         pipeline_lag_ms:
           type: integer
           format: int64
@@ -2667,7 +2682,7 @@ components:
           minimum: 0
         status:
           type: string
-          description: Liveness status string, always `"ok"` when the service is running.
+          description: 'Liveness status string: `"ok"` when all subsystems healthy, `"degraded"` otherwise.'
         uptime_secs:
           type: integer
           format: int64
