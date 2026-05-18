@@ -188,3 +188,25 @@ async fn traces_unknown_session_returns_404() {
         "unknown session_id must return 404"
     );
 }
+
+// ── TC-4: negative — unrecognised session ID format returns 404 ───────────────
+//
+// The handler performs no format validation on the session_id path segment;
+// it simply looks up the trace store. Any unknown ID — regardless of format
+// — results in a 404. (The ticket spec expected 400 + validation error; that
+// would require a uuid-format guard that is not yet implemented.)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn traces_invalid_session_id_format_returns_404() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    let resp = reqwest::get(format!("{}/api/v1/traces/not-a-valid-uuid-!!!!", env.base_url()))
+        .await
+        .expect("GET should not error at transport level");
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "malformed session_id with no matching session should return 404"
+    );
+}
