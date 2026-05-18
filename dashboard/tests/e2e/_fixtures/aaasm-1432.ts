@@ -33,27 +33,33 @@ export const AGENT = {
 }
 
 /**
- * EffectivePermissionsResponse — three-scope cascade with allow/deny in each
- * scope so the panel renders both chip variants and the deny-precedence row.
+ * EffectivePermissionsResponse — three-scope cascade spanning three capability
+ * families (Filesystem, MCP, Network) so the panel renders one .ipp__group
+ * per family plus both chip variants and the deny-precedence row.
+ *
+ * Category detection in InheritedPermissionsPanel.tsx::categoryFor() keys off
+ * specific prefixes (`file_`, `mcp_tool:`, `network_`, etc.) — keep the
+ * capability strings here aligned with those prefixes or they all collapse
+ * into the "Other" bucket and the cascade-groups assertion fails.
  */
 export const CAPABILITIES = {
-  allow: ['fs.read', 'mcp.call', 'net.fetch'],
-  deny: ['fs.write', 'net.outbound'],
+  allow: ['file_read', 'mcp_tool:search', 'network_outbound'],
+  deny: ['file_write', 'network_inbound'],
   sources: [
     {
       scope: 'global',
-      allow: ['fs.read', 'mcp.call'],
+      allow: ['file_read', 'mcp_tool:search'],
       deny: [],
     },
     {
       scope: 'team:eng-platform',
-      allow: ['net.fetch'],
-      deny: ['net.outbound'],
+      allow: ['network_outbound'],
+      deny: ['network_inbound'],
     },
     {
       scope: `agent:${AGENT_ID}`,
       allow: [],
-      deny: ['fs.write'],
+      deny: ['file_write'],
     },
   ],
 }
