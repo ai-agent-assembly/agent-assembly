@@ -763,6 +763,10 @@ paths:
         uses this to drive an optimistic-UI rollback when an override fails.
         An unknown `agentId` rejects the request with 400 and leaves the store
         untouched; an unknown `resourceId` on an agent is silently skipped.
+
+        When `ttlSeconds` is present the override is automatically reverted after
+        that many seconds and the response status is **201 Created**. Without a
+        TTL the response is **200 OK** (unchanged behaviour).
       operationId: apply_override
       requestBody:
         content:
@@ -772,7 +776,13 @@ paths:
         required: true
       responses:
         '200':
-          description: Updated agent rows
+          description: Updated agent rows (no TTL)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityOverrideResponse'
+        '201':
+          description: Updated agent rows with TTL scheduled
           content:
             application/json:
               schema:
@@ -2228,6 +2238,16 @@ components:
         resourceId:
           type: string
           description: Identifier of the resource whose cell is being overridden.
+        ttlSeconds:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            Optional TTL in seconds. When set, the override is automatically
+            reverted to the pre-override value after this duration elapses.
+            The endpoint returns 201 Created instead of 200 OK when TTL is provided.
+          minimum: 0
         verb:
           $ref: '#/components/schemas/Verb'
           description: Verb (read / write / delete / exec) within the cell.

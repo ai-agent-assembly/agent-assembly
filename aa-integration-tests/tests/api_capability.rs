@@ -308,11 +308,6 @@ async fn capability_override_revoke_then_blocked_in_matrix() {
     );
 }
 
-/// TTL-based override expiry is not implemented — `CapabilityOverrideRequest`
-/// has no `ttl_seconds` field and `CapabilityStore` performs no time-based
-/// eviction. Once TTL support lands (AAASM follow-up), un-ignore this test and
-/// use `tokio::time::pause()` / a mock clock to avoid wallclock flakiness.
-#[ignore = "TTL override expiry not implemented; CapabilityOverrideRequest has no ttl_seconds field"]
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_override_with_ttl_expires() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
