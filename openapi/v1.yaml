@@ -791,6 +791,34 @@ paths:
           description: Unknown agent id
         '403':
           description: Caller lacks the role required to mutate capability state
+  /api/v1/capability/override/{id}:
+    delete:
+      tags:
+      - capability
+      summary: |-
+        `DELETE /api/v1/capability/override/{id}` — revert a previously applied
+        capability override, restoring each affected cell to its pre-override value.
+      description: |-
+        Returns 204 No Content on success.  Returns 404 when no active override
+        with the supplied `id` exists (either it was never created or has already
+        been revoked).
+      operationId: revoke_override
+      parameters:
+      - name: id
+        in: path
+        description: UUID of the override to revoke
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Override revoked; cells restored to base policy
+        '404':
+          description: No active override with this id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/costs:
     get:
       tags:
@@ -2254,12 +2282,16 @@ components:
     CapabilityOverrideResponse:
       type: object
       description: |-
-        Response envelope for `POST /api/v1/capability/override`: the subset of
-        agent rows that actually changed (matches `OverrideResponse` in the
-        dashboard's TypeScript mock).
+        Response envelope for `POST /api/v1/capability/override`: the stable UUID
+        assigned to this override (use it to `DELETE /capability/override/{id}`)
+        plus the subset of agent rows that actually changed.
       required:
+      - overrideId
       - updated
       properties:
+        overrideId:
+          type: string
+          description: Stable UUID for this override; pass to `DELETE /capability/override/{id}` to revert.
         updated:
           type: array
           items:
