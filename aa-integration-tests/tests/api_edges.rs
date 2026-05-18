@@ -97,6 +97,26 @@ async fn edge_report_invalid_edge_type_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_report_duplicate_creates_second_entry() {
+    // InMemoryEdgeRepo has no uniqueness constraint: posting the same
+    // (source, target, edge_type) twice inserts two independent rows,
+    // each with a distinct auto-incremented id.
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let base = env.base_url();
+    let src = agent_hex(0x03);
+    let tgt = agent_hex(0x04);
+
+    let id1 = seed_edge(&base, &src, &tgt, "reads").await;
+    let id2 = seed_edge(&base, &src, &tgt, "reads").await;
+
+    assert_ne!(id1, id2, "each POST must return a distinct id");
+
+    let resp = reqwest::get(format!("{base}/api/v1/topology/edges")).await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["count"], 2, "both duplicate edges must be stored");
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/v1/topology/edges
 // ---------------------------------------------------------------------------
