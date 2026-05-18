@@ -151,3 +151,26 @@ async fn ws_receives_subsequent_events() {
     assert_eq!(event.event_type, EventType::Violation);
     assert_eq!(event.agent_id, "agent-ws-test");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_multiple_concurrent_clients_each_receive_events() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    let mut clients = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        clients.push(ws);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("fan-out-agent"))
+        .unwrap();
+
+    for ws in &mut clients {
+        let event = recv_event(ws).await;
+        assert_eq!(event.agent_id, "fan-out-agent");
+    }
+}
