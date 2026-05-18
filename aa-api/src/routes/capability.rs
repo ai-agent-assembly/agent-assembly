@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -34,6 +35,16 @@ use crate::state::AppState;
 pub enum OverrideError {
     /// The request named an agent id that the store does not know about.
     UnknownAgent(String),
+}
+
+/// Pre-mutation snapshot of a single (agent, resource, verb) cell, used to
+/// restore the original decision when a TTL expires.
+#[derive(Debug, Clone)]
+struct CellSnapshot {
+    agent_id: String,
+    resource_id: String,
+    verb: Verb,
+    original: Decision,
 }
 
 /// Thread-safe holder for the dashboard Capability Matrix snapshot.
@@ -81,7 +92,15 @@ impl CapabilityStore {
     ///
     /// On success, appends one [`OverrideRecord`] to the override log so that
     /// `GET /capability/override` can list applied overrides.
-    pub async fn apply_override(&self, req: &CapabilityOverrideRequest) -> Result<Vec<CapabilityAgent>, OverrideError> {
+    ///
+    /// When `req.ttl_seconds` is `Some(n)`, a background Tokio task is spawned
+    /// that sleeps for `n` seconds then reverts the affected cells to their
+    /// pre-override decisions. The `Arc<Self>` receiver is required so the
+    /// background task can hold a reference to the store beyond the call.
+    pub async fn apply_override(
+        self: Arc<Self>,
+        req: &CapabilityOverrideRequest,
+    ) -> Result<Vec<CapabilityAgent>, OverrideError> {
         let mut matrix = self.inner.write().await;
         // Validate every requested agent_id up front so a single unknown id
         // rejects the whole request without partial mutation.
@@ -90,12 +109,26 @@ impl CapabilityStore {
                 return Err(OverrideError::UnknownAgent(id.clone()));
             }
         }
+
+        let mut snapshots: Vec<CellSnapshot> = Vec::new();
         let mut updated = Vec::with_capacity(req.agent_ids.len());
         for agent in matrix.agents.iter_mut() {
             if !req.agent_ids.contains(&agent.id) {
                 continue;
             }
             if let Some(cell) = agent.caps.get_mut(&req.resource_id) {
+                let original = match req.verb {
+                    Verb::Read => cell.read,
+                    Verb::Write => cell.write,
+                    Verb::Delete => cell.delete,
+                    Verb::Exec => cell.exec,
+                };
+                snapshots.push(CellSnapshot {
+                    agent_id: agent.id.clone(),
+                    resource_id: req.resource_id.clone(),
+                    verb: req.verb,
+                    original,
+                });
                 match req.verb {
                     Verb::Read => cell.read = req.decision,
                     Verb::Write => cell.write = req.decision,
@@ -119,7 +152,34 @@ impl CapabilityStore {
             active: true,
         };
         self.overrides.write().await.push(record);
+
+        if let Some(ttl_secs) = req.ttl_seconds {
+            let store = Arc::clone(&self);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(ttl_secs)).await;
+                store.revert_override(snapshots).await;
+            });
+        }
+
         Ok(updated)
+    }
+
+    /// Restore cell decisions to their pre-override values. Called by the
+    /// background TTL expiry task spawned in `apply_override`.
+    async fn revert_override(&self, snapshots: Vec<CellSnapshot>) {
+        let mut matrix = self.inner.write().await;
+        for snap in snapshots {
+            if let Some(agent) = matrix.agents.iter_mut().find(|a| a.id == snap.agent_id) {
+                if let Some(cell) = agent.caps.get_mut(&snap.resource_id) {
+                    match snap.verb {
+                        Verb::Read => cell.read = snap.original,
+                        Verb::Write => cell.write = snap.original,
+                        Verb::Delete => cell.delete = snap.original,
+                        Verb::Exec => cell.exec = snap.original,
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -151,12 +211,17 @@ pub async fn get_matrix(Extension(state): Extension<AppState>) -> (StatusCode, J
 /// uses this to drive an optimistic-UI rollback when an override fails.
 /// An unknown `agentId` rejects the request with 400 and leaves the store
 /// untouched; an unknown `resourceId` on an agent is silently skipped.
+///
+/// When `ttlSeconds` is present the override is automatically reverted after
+/// that many seconds and the response status is **201 Created**. Without a
+/// TTL the response is **200 OK** (unchanged behaviour).
 #[utoipa::path(
     post,
     path = "/api/v1/capability/override",
     request_body = CapabilityOverrideRequest,
     responses(
-        (status = 200, description = "Updated agent rows", body = CapabilityOverrideResponse),
+        (status = 200, description = "Updated agent rows (no TTL)", body = CapabilityOverrideResponse),
+        (status = 201, description = "Updated agent rows with TTL scheduled", body = CapabilityOverrideResponse),
         (status = 400, description = "Unknown agent id"),
         (status = 403, description = "Caller lacks the role required to mutate capability state")
     ),
@@ -171,8 +236,8 @@ pub async fn apply_override(
         .check_mutation(&PolicyScope::Global, MutationKind::Update)
         .map_err(OverrideHandlerError::Forbidden)?;
 
-    let updated = state
-        .capability_store
+    let has_ttl = body.ttl_seconds.is_some();
+    let updated = Arc::clone(&state.capability_store)
         .apply_override(&body)
         .await
         .map_err(|e| match e {
@@ -181,7 +246,8 @@ pub async fn apply_override(
             ),
         })?;
 
-    Ok((StatusCode::OK, Json(CapabilityOverrideResponse { updated })))
+    let status = if has_ttl { StatusCode::CREATED } else { StatusCode::OK };
+    Ok((status, Json(CapabilityOverrideResponse { updated })))
 }
 
 /// Unified error type for the override handler so 400 and 403 paths render
@@ -522,7 +588,7 @@ mod tests {
             decision: Decision::Deny,
             ttl_seconds: None,
         };
-        let updated = store.apply_override(&req).await.unwrap();
+        let updated = Arc::clone(&store).apply_override(&req).await.unwrap();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].id, target_agent);
         assert_eq!(updated[0].caps.get("pg").unwrap().write, Decision::Deny);
@@ -540,7 +606,7 @@ mod tests {
     #[tokio::test]
     async fn apply_override_rejects_unknown_agent() {
         let store = CapabilityStore::new_seeded();
-        let err = store
+        let err = Arc::clone(&store)
             .apply_override(&CapabilityOverrideRequest {
                 agent_ids: vec!["does-not-exist".into()],
                 resource_id: "pg".into(),
@@ -557,7 +623,7 @@ mod tests {
     async fn apply_override_skips_unknown_resource_silently() {
         let store = CapabilityStore::new_seeded();
         let target = store.snapshot().await.agents[0].id.clone();
-        let updated = store
+        let updated = Arc::clone(&store)
             .apply_override(&CapabilityOverrideRequest {
                 agent_ids: vec![target],
                 resource_id: "nonexistent-resource".into(),
