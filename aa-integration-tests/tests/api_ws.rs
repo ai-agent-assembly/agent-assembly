@@ -201,3 +201,28 @@ async fn ws_event_types_filter_only_delivers_matching() {
         "only approval events should be delivered when types=approval"
     );
 }
+
+/// Documents live behaviour: unknown `types` values are silently dropped by
+/// `EventType::parse_filter`, so the filter list is empty → no events delivered.
+/// Connection still upgrades successfully (101); this is not a 400.
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_event_types_unknown_value_delivers_nothing() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events?types=garbage", env.addr);
+
+    let (mut ws, resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    assert_eq!(resp.status(), 101, "unknown types value should still upgrade");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("filter-agent"))
+        .unwrap();
+
+    // Nothing should be delivered within a short window.
+    let result = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
+    assert!(
+        result.is_err(),
+        "unknown types filter should result in no events delivered"
+    );
+}
