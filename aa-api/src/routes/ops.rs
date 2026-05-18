@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::error::ProblemDetail;
-use crate::ops::OpRecord;
+use crate::ops::{OpRecord, OpsError};
 use crate::state::AppState;
 
 /// Acknowledgement returned by the per-op lifecycle endpoints.
@@ -38,6 +38,28 @@ pub struct OpActionAck {
     pub action: String,
     /// Server-side timestamp when the request was accepted (RFC 3339).
     pub accepted_at: String,
+}
+
+fn lifecycle_ok(record: OpRecord, action: &'static str) -> impl IntoResponse {
+    tracing::info!(target: "aa_api::ops", op_id = %record.op_id, action, state = ?record.state, "op lifecycle transition");
+    (
+        StatusCode::OK,
+        Json(OpActionAck {
+            op_id: record.op_id,
+            action: action.to_string(),
+            accepted_at: record.updated_at,
+        }),
+    )
+}
+
+fn ops_error_to_problem(err: OpsError) -> ProblemDetail {
+    match err {
+        OpsError::NotFound => {
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail("Operation not found in registry".to_string())
+        }
+        OpsError::InvalidTransition => ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail("Operation state does not permit this transition".to_string()),
+    }
 }
 
 fn validate_op_id(raw: &str) -> Result<String, ProblemDetail> {
@@ -61,10 +83,12 @@ fn ack(op_id: String, action: &'static str) -> impl IntoResponse {
     )
 }
 
-/// `POST /api/v1/ops/{id}/pause` — request that an in-flight operation be paused.
+/// `POST /api/v1/ops/{id}/pause` — transition a running operation to paused.
 ///
-/// Stub today: returns 202 Accepted and logs the request without updating
-/// any state. Real enforcement awaits the in-flight-ops registry architecture.
+/// * `200 OK` — op transitioned `running → paused`.
+/// * `400 Bad Request` — whitespace-only op id.
+/// * `404 Not Found` — no op with this id is registered.
+/// * `409 Conflict` — op is already paused or terminated.
 #[utoipa::path(
     post,
     path = "/api/v1/ops/{id}/pause",
@@ -73,12 +97,22 @@ fn ack(op_id: String, action: &'static str) -> impl IntoResponse {
         ("id" = String, Path, description = "Operation id (string form of `GovernanceEvent.id`).")
     ),
     responses(
-        (status = 202, description = "Pause request accepted", body = OpActionAck),
-        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail)
+        (status = 200, description = "Op paused", body = OpActionAck),
+        (status = 400, description = "Empty or malformed operation id", body = ProblemDetail),
+        (status = 404, description = "Op not found", body = ProblemDetail),
+        (status = 409, description = "Invalid state transition", body = ProblemDetail)
     )
 )]
-pub async fn pause_op(Path(id): Path<String>) -> Result<impl IntoResponse, ProblemDetail> {
-    Ok(ack(validate_op_id(&id)?, "pause"))
+pub async fn pause_op(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    let op_id = validate_op_id(&id)?;
+    state
+        .ops_registry
+        .pause(&op_id)
+        .map(|record| lifecycle_ok(record, "pause"))
+        .map_err(ops_error_to_problem)
 }
 
 /// `POST /api/v1/ops/{id}/resume` — request that a paused operation resume.
