@@ -385,3 +385,49 @@ async fn auth_rate_limit_burst_returns_429_with_retry_after() {
         body["detail"]
     );
 }
+
+#[tokio::test]
+#[ignore = "rate-limit refill window is ~60s; not suitable for CI"]
+async fn auth_rate_limit_resets_after_window() {
+    let (plaintext, entry) = make_api_key("key-rl-reset", vec![Scope::Read]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1).await.unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/auth/token", env.base_url());
+
+    // First request succeeds.
+    let resp = client
+        .post(&url)
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Second request is rate-limited.
+    let resp2 = client
+        .post(&url)
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // Wait for bucket to refill (rpm=1 → 1 token per 60s).
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+
+    // Third request succeeds after refill.
+    let resp3 = client
+        .post(&url)
+        .bearer_auth(&plaintext)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp3.status(),
+        StatusCode::OK,
+        "request should succeed after rate-limit window resets"
+    );
+}
