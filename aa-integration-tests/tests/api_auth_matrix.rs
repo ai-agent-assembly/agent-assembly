@@ -105,3 +105,24 @@ async fn auth_jwt_invalid_signature_returns_401() {
         body["detail"]
     );
 }
+
+#[tokio::test]
+async fn auth_jwt_malformed_token_returns_401() {
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .bearer_auth("not.a.jwt")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        detail.contains("invalid") || detail.contains("token"),
+        "expected 'invalid' or 'token' in detail, got: {:?}",
+        body["detail"]
+    );
+}
