@@ -17,11 +17,13 @@
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
-use serde::Serialize;
+use axum::{Extension, Json};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::error::ProblemDetail;
+use crate::ops::OpRecord;
+use crate::state::AppState;
 
 /// Acknowledgement returned by the per-op lifecycle endpoints.
 ///
@@ -117,4 +119,40 @@ pub async fn resume_op(Path(id): Path<String>) -> Result<impl IntoResponse, Prob
 )]
 pub async fn terminate_op(Path(id): Path<String>) -> Result<impl IntoResponse, ProblemDetail> {
     Ok(ack(validate_op_id(&id)?, "terminate"))
+}
+
+/// Request body for `POST /api/v1/ops` — register a new in-flight operation.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RegisterOpRequest {
+    /// Stable identifier for the operation, typically a `GovernanceEvent.id`.
+    pub op_id: String,
+}
+
+/// `POST /api/v1/ops` — register a new in-flight operation in the `running` state.
+///
+/// Returns `201 Created` with the initial [`OpRecord`]. Callers may then drive
+/// lifecycle transitions via the `pause`, `resume`, and `terminate` endpoints.
+#[utoipa::path(
+    post,
+    path = "/api/v1/ops",
+    tag = "ops",
+    request_body = RegisterOpRequest,
+    responses(
+        (status = 201, description = "Op registered in running state", body = OpRecord),
+        (status = 400, description = "Empty or missing op_id", body = ProblemDetail)
+    )
+)]
+pub async fn register_op(
+    Extension(state): Extension<AppState>,
+    Json(req): Json<RegisterOpRequest>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    let op_id = req.op_id.trim().to_string();
+    if op_id.is_empty() {
+        return Err(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("op_id must not be empty".to_string())
+        );
+    }
+    let record = state.ops_registry.register(op_id);
+    tracing::info!(target: "aa_api::ops", op_id = %record.op_id, "op registered");
+    Ok((StatusCode::CREATED, Json(record)))
 }
