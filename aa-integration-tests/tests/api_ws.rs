@@ -132,3 +132,22 @@ async fn ws_malformed_upgrade_returns_400_or_426() {
         "expected 400 or 426 for missing WS upgrade headers, got {status}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ws_receives_subsequent_events() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // Give the handler time to subscribe to the broadcast channel.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    env.events
+        .pipeline_sender()
+        .send(make_pipeline_event("agent-ws-test"))
+        .unwrap();
+
+    let event = recv_event(&mut ws).await;
+    assert_eq!(event.event_type, EventType::Violation);
+    assert_eq!(event.agent_id, "agent-ws-test");
+}
