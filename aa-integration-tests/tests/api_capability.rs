@@ -5,20 +5,13 @@
 //! `CapabilityStore::new_seeded()` as the fixture baseline. Auth is `Off` so
 //! all RBAC checks pass without a token.
 //!
-//! ## Route surface discovered from `aa-api/src/routes/capability.rs`
-//!
-//! The module exposes exactly **2 handlers** (not 10 as the ticket description
-//! estimates — the description was written before the implementation settled):
+//! ## Route surface for `aa-api/src/routes/capability.rs`
 //!
 //! | Method | Path | Handler |
 //! |--------|------|---------|
-//! | GET    | `/api/v1/capability/matrix`   | `get_matrix`     |
-//! | POST   | `/api/v1/capability/override` | `apply_override` |
-//!
-//! Filter query params (`team_id`, `tool`, `effective_only`), GET list of
-//! overrides, and DELETE override-by-id are **not yet implemented**. Tests for
-//! those features are marked `#[ignore]` with a note pointing to the relevant
-//! gap; they should be un-ignored once the handlers land.
+//! | GET    | `/api/v1/capability/matrix`        | `get_matrix`      |
+//! | POST   | `/api/v1/capability/override`      | `apply_override`  |
+//! | DELETE | `/api/v1/capability/override/{id}` | `revoke_override` |
 
 mod common;
 
@@ -384,9 +377,7 @@ async fn capability_override_list_returns_active() {
     }
 }
 
-/// `DELETE /api/v1/capability/override/{id}` is not yet registered. Once
-/// added, un-ignore and verify the matrix reverts after deletion.
-#[ignore = "DELETE /capability/override/{id} route not registered; would return 404 today"]
+/// `DELETE /api/v1/capability/override/{id}` reverts the cell and returns 204.
 #[tokio::test(flavor = "multi_thread")]
 async fn capability_override_delete_removes_from_matrix() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
@@ -403,7 +394,7 @@ async fn capability_override_delete_removes_from_matrix() {
         }),
     )
     .await;
-    assert_eq!(create_resp.status(), StatusCode::CREATED);
+    assert_eq!(create_resp.status(), StatusCode::OK);
     let create_body: Value = create_resp.json().await.unwrap();
     let override_id = create_body["overrideId"]
         .as_str()
