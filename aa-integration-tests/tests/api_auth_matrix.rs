@@ -14,7 +14,7 @@ mod common;
 
 use aa_api::auth::jwt::JwtSigner;
 use aa_api::auth::scope::Scope;
-use common::{TopologyTestEnv, AUTH_IT_JWT_SECRET};
+use common::{make_api_key, TopologyTestEnv, AUTH_IT_JWT_SECRET};
 use reqwest::StatusCode;
 use serde_json::Value;
 
@@ -154,4 +154,22 @@ async fn auth_jwt_missing_authorization_header_returns_401() {
         "expected 'Missing' in detail, got: {:?}",
         body["detail"]
     );
+}
+
+// ── Section 2 — API key authentication ─────────────────────────────────────
+
+#[tokio::test]
+async fn auth_api_key_via_bearer_header_grants_access() {
+    // API key auth uses Authorization: Bearer aa_<hex> — not X-API-Key header
+    let (plaintext, entry) = make_api_key("key-1", vec![Scope::Read, Scope::Write]);
+    let env = TopologyTestEnv::start_with_auth(&[entry], 1000).await.unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .bearer_auth(&plaintext)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
 }
