@@ -17,12 +17,14 @@ use tokio::sync::RwLock;
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
+use axum::extract::Query;
+
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::error::ProblemDetail;
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
-    CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
-    SampleCall, Verb,
+    CapabilityOverrideResponse, ChangeType, Decision, OverrideRecord, Policy, PolicyRule, PolicyStatus, Resource,
+    ResourceGroup, SampleCall, Verb,
 };
 use crate::state::AppState;
 
@@ -38,6 +40,8 @@ pub enum OverrideError {
 #[derive(Debug)]
 pub struct CapabilityStore {
     inner: RwLock<CapabilityMatrix>,
+    /// Append-only log of all override operations applied since startup.
+    overrides: RwLock<Vec<OverrideRecord>>,
 }
 
 impl CapabilityStore {
@@ -45,6 +49,7 @@ impl CapabilityStore {
     pub fn new_seeded() -> Arc<Self> {
         Arc::new(Self {
             inner: RwLock::new(seeded_matrix()),
+            overrides: RwLock::new(vec![]),
         })
     }
 
@@ -53,12 +58,29 @@ impl CapabilityStore {
         self.inner.read().await.clone()
     }
 
+    /// Return all recorded overrides, optionally filtered to those affecting
+    /// a specific `agent_id`.
+    pub async fn list_overrides(&self, agent_id: Option<&str>) -> Vec<OverrideRecord> {
+        let log = self.overrides.read().await;
+        match agent_id {
+            None => log.clone(),
+            Some(id) => log
+                .iter()
+                .filter(|r| r.agent_ids.iter().any(|a| a == id))
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Apply a single `(resource_id, verb, decision)` override across the
     /// requested agents and return the rows that changed.
     ///
     /// Rejects unknown `agent_id` values with `OverrideError::UnknownAgent`.
     /// An unknown `resource_id` is silently ignored for that agent (matches
     /// the dashboard mock at `capability.ts::applyOverrideToAgents`).
+    ///
+    /// On success, appends one [`OverrideRecord`] to the override log so that
+    /// `GET /capability/override` can list applied overrides.
     pub async fn apply_override(&self, req: &CapabilityOverrideRequest) -> Result<Vec<CapabilityAgent>, OverrideError> {
         let mut matrix = self.inner.write().await;
         // Validate every requested agent_id up front so a single unknown id
@@ -83,6 +105,20 @@ impl CapabilityStore {
                 updated.push(agent.clone());
             }
         }
+        // Record the override in the append-only log regardless of whether
+        // any cells changed (req may target an unknown resource_id, which is
+        // silently skipped but still logged so callers can audit requests).
+        drop(matrix);
+        let record = OverrideRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent_ids: req.agent_ids.clone(),
+            resource_id: req.resource_id.clone(),
+            verb: req.verb,
+            decision: req.decision,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            active: true,
+        };
+        self.overrides.write().await.push(record);
         Ok(updated)
     }
 }
@@ -164,6 +200,36 @@ impl IntoResponse for OverrideHandlerError {
             Self::Forbidden(d) => d.into_response(),
         }
     }
+}
+
+/// Query parameters accepted by `GET /api/v1/capability/override`.
+#[derive(serde::Deserialize)]
+pub struct ListOverridesParams {
+    agent_id: Option<String>,
+}
+
+/// `GET /api/v1/capability/override` — list all active capability overrides
+/// recorded since the server started, optionally filtered to a single agent.
+///
+/// The response is an array of [`OverrideRecord`] objects. Each record
+/// corresponds to one successful `POST /capability/override` call and carries
+/// the agents, resource, verb, decision, and ISO 8601 timestamp of when the
+/// override was applied.
+#[utoipa::path(
+    get,
+    path = "/api/v1/capability/override",
+    params(("agent_id" = Option<String>, Query, description = "Filter results to overrides that affect this agent id")),
+    responses(
+        (status = 200, description = "Active override records", body = Vec<OverrideRecord>)
+    ),
+    tag = "capability"
+)]
+pub async fn list_overrides(
+    Query(params): Query<ListOverridesParams>,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<Vec<OverrideRecord>>) {
+    let overrides = state.capability_store.list_overrides(params.agent_id.as_deref()).await;
+    (StatusCode::OK, Json(overrides))
 }
 
 // ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
