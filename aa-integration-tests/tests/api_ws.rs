@@ -85,3 +85,14 @@ fn make_budget_alert() -> BudgetAlert {
         limit_usd: 10.0,
     }
 }
+
+#[allow(dead_code)]
+fn make_governance_event(id: u64) -> GovernanceEvent {
+    GovernanceEvent {
+        id,
+        event_type: EventType::Violation,
+        agent_id: "test-agent".to_string(),
+        payload: serde_json::json!({}),
+        timestamp: Utc::now(),
+    }
+}
