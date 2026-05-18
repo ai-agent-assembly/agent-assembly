@@ -169,9 +169,17 @@ mod tests {
     }
 
     #[test]
-    fn is_process_alive_returns_false_for_unlikely_pid() {
-        // PID 0 is the idle/swapper process; kill(0, 0) succeeds on some OS
-        // but PID u32::MAX is reliably non-existent everywhere.
-        assert!(!is_process_alive(u32::MAX));
+    fn is_process_alive_returns_false_for_dead_process() {
+        // Spawn a child that exits immediately, wait for it, then verify it is dead.
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn 'true'");
+        let pid = child.id();
+        child.wait().expect("wait failed");
+        // After wait, the OS has reaped the process — it must not be alive.
+        assert!(!is_process_alive(pid));
     }
 }
