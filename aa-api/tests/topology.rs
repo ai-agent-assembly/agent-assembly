@@ -444,7 +444,9 @@ async fn topology_tree_returns_422_for_non_root_agent() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn topology_team_returns_404_for_unknown_team() {
+async fn topology_team_with_no_members_returns_200_empty() {
+    // A team with no registered agents returns 200 + empty members list, not 404.
+    // This distinguishes "team has no agents yet" from "route not found".
     let app = common::test_app();
 
     let response = app
@@ -457,7 +459,11 @@ async fn topology_team_returns_404_for_unknown_team() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["agent_count"], 0);
+    assert!(json["members"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
