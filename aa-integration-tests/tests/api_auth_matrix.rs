@@ -19,6 +19,29 @@ use reqwest::StatusCode;
 
 // ── Section 1 — JWT validation ───────────────────────────────────────────────
 
+/// Build an expired JWT using the same secret as the test harness.
+///
+/// We construct Claims manually with `exp` in the past and encode directly
+/// with `jsonwebtoken` — `JwtSigner::sign_with_expiry` is `#[cfg(test)]`-private
+/// to aa-api and is not accessible from integration tests.
+#[allow(dead_code)]
+fn build_expired_jwt() -> String {
+    use aa_api::auth::jwt::Claims;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    let claims = Claims {
+        sub: "test-expired".to_string(),
+        iat: 0,
+        exp: 1, // epoch second 1 — always in the past
+        scope: vec![],
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(AUTH_IT_JWT_SECRET),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn auth_jwt_valid_signed_token_grants_access() {
     let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
