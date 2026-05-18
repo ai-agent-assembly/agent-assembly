@@ -260,6 +260,7 @@ impl TopologyTestEnv {
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -289,6 +290,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -846,6 +848,7 @@ spec:
                 .build(),
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
         },
         audit_dir,
         alert_store_handle,
