@@ -233,15 +233,12 @@ async fn proxy_per_host_ca_generates_valid_chain() {
     );
 
     // Parse the CA PEM into a DER and add it to a rustls root store.
-    let pem_bytes = ca_cert_pem.as_bytes().to_vec();
-    let mut pem_cursor = std::io::Cursor::new(pem_bytes);
-    let all_certs: Vec<_> = rustls_pemfile::certs(&mut pem_cursor)
-        .collect::<Result<_, _>>()
-        .expect("CA cert parse must succeed");
-    let ca_cert_der = all_certs
-        .into_iter()
-        .next()
-        .expect("CA PEM must contain at least one cert");
+    // Strip PEM headers/footers and base64-decode to get raw DER bytes.
+    let pem_body: String = ca_cert_pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let ca_cert_der_bytes = base64::engine::general_purpose::STANDARD
+        .decode(pem_body)
+        .expect("base64 decode of CA PEM must succeed");
+    let ca_cert_der = CertificateDer::from(ca_cert_der_bytes);
     let mut root_store = rustls::RootCertStore::empty();
     root_store
         .add(ca_cert_der)
