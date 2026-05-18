@@ -3,22 +3,31 @@
 #
 # Usage (selftest mode — no gateway required):
 #   bash run_agents_ts.sh
+#   bash run_agents_ts.sh --selftest
 #
 # Usage (real mode — gateway must be running):
 #   AA_GATEWAY_ADDR=127.0.0.1:50051 bash run_agents_ts.sh
 #
-# The SELFTEST env-var is automatically set when AA_GATEWAY_ADDR is absent so
-# each script emits synthetic events and exits 0 without contacting anything.
+# The SELFTEST env-var is automatically set when AA_GATEWAY_ADDR is absent or
+# --selftest is passed, so each script emits synthetic events and exits 0
+# without contacting anything.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$SCRIPT_DIR/typescript"
 
-if [[ -z "${AA_GATEWAY_ADDR:-}" ]]; then
+SELFTEST_FLAG=0
+for arg in "$@"; do
+  case "$arg" in
+    --selftest) SELFTEST_FLAG=1 ;;
+  esac
+done
+
+if [[ "$SELFTEST_FLAG" -eq 1 || -z "${AA_GATEWAY_ADDR:-}" ]]; then
   export AA_SELFTEST=1
   export AA_GATEWAY_ADDR=dummy
-  echo "[run_agents_ts] No AA_GATEWAY_ADDR set — running in selftest mode"
+  echo "[run_agents_ts] Running in selftest mode"
 fi
 
 export AA_AGENT_ID="${AA_AGENT_ID:-e2e-dev}"
