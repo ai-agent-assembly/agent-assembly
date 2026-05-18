@@ -149,3 +149,47 @@ async fn edge_list_topology_limit_caps_results() {
     assert_eq!(body["count"], 2, "limit=2 should cap at 2 edges");
     assert_eq!(body["edges"].as_array().unwrap().len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/agents/{id}/edges
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_list_agent_empty_returns_zero_count() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let id = agent_hex(0x20);
+
+    let resp = reqwest::get(format!("{}/api/v1/agents/{id}/edges", env.base_url()))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["count"], 0);
+    assert!(body["edges"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_list_agent_outgoing_direction_is_default() {
+    let env = common::TopologyTestEnv::start().await.expect("harness start");
+    let base = env.base_url();
+    let src = agent_hex(0x21);
+    let tgt = agent_hex(0x22);
+
+    seed_edge(&base, &src, &tgt, "writes").await;
+
+    // src has 1 outgoing edge
+    let resp = reqwest::get(format!("{base}/api/v1/agents/{src}/edges")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["edges"][0]["edge_type"], "writes");
+
+    // tgt has 0 outgoing (direction defaults to outgoing)
+    let resp2 = reqwest::get(format!("{base}/api/v1/agents/{tgt}/edges")).await.unwrap();
+    let body2: serde_json::Value = resp2.json().await.unwrap();
+    assert_eq!(
+        body2["count"], 0,
+        "default direction=outgoing: tgt has no outgoing edges"
+    );
+}
