@@ -16,6 +16,7 @@ use aa_api::auth::jwt::JwtSigner;
 use aa_api::auth::scope::Scope;
 use common::{TopologyTestEnv, AUTH_IT_JWT_SECRET};
 use reqwest::StatusCode;
+use serde_json::Value;
 
 // ── Section 1 — JWT validation ───────────────────────────────────────────────
 
@@ -24,7 +25,6 @@ use reqwest::StatusCode;
 /// We construct Claims manually with `exp` in the past and encode directly
 /// with `jsonwebtoken` — `JwtSigner::sign_with_expiry` is `#[cfg(test)]`-private
 /// to aa-api and is not accessible from integration tests.
-#[allow(dead_code)]
 fn build_expired_jwt() -> String {
     use aa_api::auth::jwt::Claims;
     use jsonwebtoken::{encode, EncodingKey, Header};
@@ -58,4 +58,25 @@ async fn auth_jwt_valid_signed_token_grants_access() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_jwt_expired_token_returns_401() {
+    let env = TopologyTestEnv::start_with_auth(&[], 1000).await.unwrap();
+    let jwt = build_expired_jwt();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/api/v1/agents", env.base_url()))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["detail"].as_str().unwrap_or("").contains("expired"),
+        "expected 'expired' in detail, got: {:?}",
+        body["detail"]
+    );
 }
