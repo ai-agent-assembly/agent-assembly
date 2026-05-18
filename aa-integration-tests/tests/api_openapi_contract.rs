@@ -54,3 +54,80 @@ fn openapi_spec_loads_without_errors() {
         );
     }
 }
+
+// ── TC-2: YAML paths match the hardcoded expected list (bidirectional gate) ──
+//
+// Axum does not expose a route-listing API, so the utoipa-generated spec file
+// is the authoritative source of truth. The hardcoded list fixes the known
+// contract at the time of this ST. Adding or removing a path from the spec
+// fails this test — intentional: forces an engineer to update both the spec
+// and the test together.
+
+#[test]
+fn openapi_spec_paths_match_implemented_routes() {
+    let spec = load_spec();
+    let mut yaml_paths: Vec<String> = spec["paths"]
+        .as_object()
+        .expect("spec must have a paths object")
+        .keys()
+        .cloned()
+        .collect();
+    yaml_paths.sort();
+
+    let mut expected: Vec<&str> = vec![
+        "/api/v1/agents",
+        "/api/v1/agents/{id}",
+        "/api/v1/agents/{id}/budget",
+        "/api/v1/agents/{id}/capabilities",
+        "/api/v1/agents/{id}/edges",
+        "/api/v1/agents/{id}/graph",
+        "/api/v1/agents/{id}/resume",
+        "/api/v1/agents/{id}/subtree-burn",
+        "/api/v1/agents/{id}/suspend",
+        "/api/v1/alerts",
+        "/api/v1/alerts/{id}",
+        "/api/v1/alerts/{id}/resolve",
+        "/api/v1/approvals",
+        "/api/v1/approvals/{id}",
+        "/api/v1/approvals/{id}/approve",
+        "/api/v1/approvals/{id}/reject",
+        "/api/v1/audit/violations-by-lineage",
+        "/api/v1/auth/token",
+        "/api/v1/capability/matrix",
+        "/api/v1/capability/override",
+        "/api/v1/costs",
+        "/api/v1/health",
+        "/api/v1/iam/api-keys",
+        "/api/v1/iam/api-keys/{id}/revoke",
+        "/api/v1/iam/api-keys/{id}/rotate",
+        "/api/v1/logs",
+        "/api/v1/ops/{id}/pause",
+        "/api/v1/ops/{id}/resume",
+        "/api/v1/ops/{id}/terminate",
+        "/api/v1/policies",
+        "/api/v1/policies/active",
+        "/api/v1/topology/edges",
+        "/api/v1/topology/lineage/{agent_id}",
+        "/api/v1/topology/overview",
+        "/api/v1/topology/stats",
+        "/api/v1/topology/team/{team_id}",
+        "/api/v1/topology/tree/{root_id}",
+        "/api/v1/traces/{session_id}",
+        "/api/v1/ws/events",
+    ];
+    expected.sort();
+
+    let yaml_refs: Vec<&str> = yaml_paths.iter().map(|s| s.as_str()).collect();
+
+    let extra: Vec<&&str> = expected.iter().filter(|p| !yaml_refs.contains(*p)).collect();
+    let missing: Vec<&String> = yaml_paths.iter().filter(|p| !expected.contains(&p.as_str())).collect();
+
+    assert!(
+        extra.is_empty(),
+        "paths in expected list but missing from openapi/v1.yaml (add to spec or remove from test): {extra:?}"
+    );
+    assert!(
+        missing.is_empty(),
+        "paths in openapi/v1.yaml not in expected list (add to test or remove from spec): {missing:?}"
+    );
+}
