@@ -16,6 +16,7 @@ pub mod completion;
 pub mod context;
 pub mod cost;
 pub mod dashboard;
+pub mod gateway;
 pub mod logs;
 pub mod permissions;
 pub mod policy;
@@ -55,6 +56,8 @@ pub enum Commands {
     Cost(cost::CostArgs),
     /// Open an interactive TUI dashboard for real-time governance monitoring.
     Dashboard(dashboard::DashboardArgs),
+    /// Manage the aa-gateway governance daemon — agent registry, policy engine, audit log.
+    Gateway(gateway::GatewayArgs),
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
     /// List and manage AI dev tools on this system.
@@ -79,6 +82,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Approvals(args) => approvals::dispatch(args, ctx, output),
         Commands::Cost(args) => cost::dispatch(args, ctx, output),
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
+        Commands::Gateway(args) => gateway::dispatch(args),
         Commands::Run(args) => run::dispatch(args, ctx, output),
         Commands::Tools(args) => tools::dispatch(args),
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
