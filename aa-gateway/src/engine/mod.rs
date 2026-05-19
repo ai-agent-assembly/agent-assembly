@@ -513,10 +513,6 @@ impl PolicyEngine {
         } else {
             // Sort by offset for deterministic redaction order.
             all_findings.sort_by_key(|f| f.offset);
-            let merged = aa_core::ScanResult {
-                findings: all_findings.clone(),
-            };
-            let redacted = merged.redact(text);
             // TODO(AAASM-31): wrap in EnrichedEvent::DataLeak(DataLeakEvent { ... }) and
             // send on the broadcast_tx once AAASM-31 adds the DataLeak variant to EnrichedEvent.
             // DataLeakEvent fields are available here:
@@ -530,7 +526,21 @@ impl PolicyEngine {
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
-            (Some(redacted), all_findings)
+            if credential_action == CredentialAction::AlertOnly {
+                // Forward the unmodified payload upstream; alert side-effect emission
+                // is wired by sibling subtask AAASM-1545.
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                );
+                (None, all_findings)
+            } else {
+                let merged = aa_core::ScanResult {
+                    findings: all_findings.clone(),
+                };
+                let redacted = merged.redact(text);
+                (Some(redacted), all_findings)
+            }
         };
 
         // Stage 7 — Budget check (monthly first, then daily).
