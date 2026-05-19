@@ -20,6 +20,8 @@ pub mod cli;
 #[allow(dead_code)]
 pub mod format;
 #[allow(dead_code)]
+pub mod mock_llm;
+#[allow(dead_code)]
 pub mod scenario;
 #[allow(dead_code)]
 pub mod sdk_driver;
