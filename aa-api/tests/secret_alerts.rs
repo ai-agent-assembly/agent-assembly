@@ -60,6 +60,7 @@ async fn list_alerts_returns_secret_alert_after_broadcast_capture() {
     assert_eq!(items[0]["severity"], "critical");
     assert_eq!(items[0]["detected_pattern_type"], "AwsAccessKey");
     assert_eq!(items[0]["redacted_value"], "[REDACTED:AwsAccessKey]");
+    assert_eq!(items[0]["team_id"], "team-pioneer");
     assert!(items[0]["id"].is_string());
     assert!(items[0]["timestamp"].is_string());
 }

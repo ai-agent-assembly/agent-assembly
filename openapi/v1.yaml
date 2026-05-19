@@ -1995,6 +1995,13 @@ components:
           description: |-
             Lifecycle status — `"unresolved"` on capture, `"resolved"` once
             the alert has been acknowledged via `POST /alerts/:id/resolve`.
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Team attribution propagated from the originating request
+            context. Omitted when no team was associated.
         timestamp:
           type: string
           description: ISO 8601 timestamp when the alert was raised.
