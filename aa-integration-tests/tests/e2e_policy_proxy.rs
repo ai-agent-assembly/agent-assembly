@@ -8,12 +8,10 @@
 //! with raw TCP or `reqwest` (proxy-configured) connections.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
 use aa_proxy::config::ProxyConfig;
@@ -112,31 +110,40 @@ async fn proxy_intercepts_and_enforces_allow() {
 
 /// Test 2: proxy blocks CONNECT to a denied host with 403 and zero upstream hits.
 ///
+/// Uses a real `TcpListener` as a stand-in for "upstream": if the proxy contacted
+/// it, `accept()` would succeed before the 100 ms deadline. A timeout proves the
+/// proxy returned 403 without ever dialling upstream.
+///
 /// No SDK init is performed — this is pure Layer 2 enforcement.
 #[tokio::test(flavor = "multi_thread")]
 async fn proxy_intercepts_and_enforces_deny() {
     let dir = tempfile::TempDir::new().unwrap();
     let ca = CaStore::load_or_create(dir.path()).await.unwrap();
-    let config = proxy_config(dir.path(), vec!["forbidden.example.com".into()]);
+
+    // Bind a real upstream listener so we can prove the proxy never dials it.
+    // 127.0.0.1 is used as both the listener address and the denied hostname so
+    // that the proxy *would* connect here if it ignored the deny list.
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    let denied_host = upstream_addr.ip().to_string(); // "127.0.0.1"
+
+    let config = proxy_config(dir.path(), vec![denied_host.clone()]);
     let (proxy_addr, mut event_rx, abort) = start_proxy(config, ca).await;
 
-    // Track how many times something would try to reach "upstream".
-    // With a deny, the proxy must return 403 before ever connecting to upstream.
-    let upstream_hits = Arc::new(AtomicUsize::new(0));
-
-    // CONNECT to the forbidden host.
-    let response_line = connect_to_proxy(proxy_addr, "forbidden.example.com:443").await;
+    // CONNECT to the denied host:port — proxy must return 403 before dialling.
+    let target = format!("{}:{}", denied_host, upstream_addr.port());
+    let response_line = connect_to_proxy(proxy_addr, &target).await;
 
     assert!(
         response_line.contains("403"),
         "expected 403 for denied host, got: {response_line}"
     );
 
-    // Upstream must receive zero connections.
-    assert_eq!(
-        upstream_hits.load(Ordering::SeqCst),
-        0,
-        "upstream must not be contacted"
+    // accept() must time out: the proxy must not have contacted upstream.
+    let not_contacted = tokio::time::timeout(Duration::from_millis(100), upstream.accept()).await;
+    assert!(
+        not_contacted.is_err(),
+        "upstream must not receive any connection from the proxy"
     );
 
     // A deny audit event must arrive within 1 s.
