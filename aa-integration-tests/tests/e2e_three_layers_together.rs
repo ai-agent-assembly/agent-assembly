@@ -473,3 +473,96 @@ async fn three_layers_attribution_does_not_cross_contaminate_agents() {
         );
     }
 }
+
+// =============================================================================
+// Test 3 — graceful degradation: proxy dies, SDK + eBPF continue
+// =============================================================================
+
+/// AAASM-1523 test 3 — `three_layers_if_proxy_dies_sdk_and_ebpf_still_work`.
+///
+/// Simulates aa-proxy crashing mid-session. The agent driver continues to
+/// emit traffic via the SDK (Layer 1) and the eBPF probes (Layer 3); only
+/// Layer 2 stops contributing entries. The assertion is that the audit
+/// stream still receives SDK and eBPF entries after the proxy failure
+/// point — proving the defence-in-depth claim that one layer's failure
+/// does not silence the other two.
+///
+/// **Divergence note**: in the in-process model "proxy dies" is modelled
+/// by ceasing to send proxy-sourced entries through the writer's channel
+/// after the failure timestamp. The SDK + eBPF entries arriving after
+/// that point are what the assertion verifies.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_layers_if_proxy_dies_sdk_and_ebpf_still_work() {
+    let audit_root = fresh_audit_dir();
+    let agent = agent_id(0x33);
+    let session = session_id(0x44);
+
+    let (path, tx, handle) = spawn_audit_writer(audit_root.path(), agent, session).await;
+
+    // Pre-failure: one entry from each source.
+    let pre = synthesise_chain(agent, session, 1_700_000_000_000_000_000, &[SDK, PROXY, EBPF]);
+    for entry in &pre {
+        tx.send(entry.clone()).await.expect("send pre-failure entry");
+    }
+
+    // Post-failure: SDK + eBPF only. Continue the chain from the last
+    // entry_hash so verify_chain still validates the merged file.
+    let mut prev_hash = *pre.last().unwrap().entry_hash();
+    let post_base_seq = pre.len() as u64;
+    let post_base_ts = 1_700_000_000_500_000_000;
+    let post_sources = [SDK, EBPF];
+    for (offset, source) in post_sources.iter().enumerate() {
+        let (tool, url, syscall) = match *source {
+            SDK => (Some("bash"), None, None),
+            EBPF => (None, Some("https://other.example.com/data"), Some("SSL_write")),
+            _ => unreachable!(),
+        };
+        let entry = AuditEntry::new(
+            post_base_seq + offset as u64,
+            post_base_ts + offset as u64 * 1_000_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            make_payload(source, tool, url, syscall, "allow"),
+            prev_hash,
+        );
+        prev_hash = *entry.entry_hash();
+        tx.send(entry).await.expect("send post-failure entry");
+    }
+    drain_writer(tx, handle).await;
+
+    let on_disk = read_audit_entries(&path);
+    let sources: Vec<String> = on_disk.iter().map(source_of).collect();
+
+    // SDK and eBPF entries are present in the post-failure half of the stream.
+    let proxy_failure_ts = post_base_ts;
+    let post_failure: Vec<&AuditEntry> = on_disk
+        .iter()
+        .filter(|e| e.timestamp_ns() >= proxy_failure_ts)
+        .collect();
+    assert!(
+        post_failure.iter().any(|e| source_of(e) == SDK),
+        "SDK entries must continue arriving after the proxy failure point; full source list: {sources:?}"
+    );
+    assert!(
+        post_failure.iter().any(|e| source_of(e) == EBPF),
+        "eBPF entries must continue arriving after the proxy failure point; full source list: {sources:?}"
+    );
+
+    // Only one proxy entry exists in the entire stream — the pre-failure one.
+    let proxy_count = sources.iter().filter(|s| *s == PROXY).count();
+    assert_eq!(
+        proxy_count, 1,
+        "exactly one proxy entry expected (the pre-failure one); got {proxy_count} in {sources:?}"
+    );
+
+    // Hash chain still validates across the failure boundary.
+    let result = AuditWriter::verify_chain(&path)
+        .await
+        .expect("verify_chain after proxy-failure simulation");
+    assert!(
+        result.is_valid,
+        "chain must remain valid when one layer goes silent; first_invalid={:?}",
+        result.first_invalid
+    );
+}
