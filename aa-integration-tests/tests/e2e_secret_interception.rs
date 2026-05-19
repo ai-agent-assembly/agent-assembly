@@ -22,6 +22,30 @@
 //! work; the corresponding tests will be added in a second PR once those
 //! runtime features land.
 //!
+//! ## ST-N proxy-path slice (AAASM-1549)
+//!
+//! The `mod proxy_path` block at the end of this file is the Layer 2
+//! counterpart to the SDK/gateway slice above. It drives
+//! `aa_proxy::intercept::Interceptor` directly with OpenAI-shaped request
+//! bodies and asserts:
+//!
+//! 1. The proxy's default `CredentialScanner` detects AWS access keys in
+//!    the body shapes the proxy will see in production and redacts them
+//!    into `[REDACTED:AwsAccessKey]` markers.
+//! 2. No raw secret ever appears in an emitted `PipelineEvent::Audit`
+//!    when multiple secret kinds are present in a single body.
+//! 3. Short high-entropy strings below the `GenericHighEntropy` floor do
+//!    not produce findings (no alert fatigue).
+//!
+//! The data-path assertions in ST-N's original spec
+//! (`proxy_aws_key_in_body_redacted_before_forwarding`,
+//! `proxy_secret_block_policy_prevents_forwarding`,
+//! `proxy_secret_redact_only_credential_findings_in_audit`) require body
+//! parsing inside the MitM tunnel, `credential_action` enforcement on
+//! flowing bytes, and audit-JSONL writer wiring — none of which exist in
+//! `aa-proxy` today. See **AAASM-1566** for the data-path follow-up that
+//! will land those features and the corresponding E2E tests.
+//!
 //! ## Synthetic secrets only
 //!
 //! Every secret value below is synthetic — from AWS public-docs examples
