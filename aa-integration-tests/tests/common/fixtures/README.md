@@ -11,8 +11,10 @@ Static fixture files consumed by the CLI integration tests under
 | File | Used by | Purpose |
 | --- | --- | --- |
 | `allow_all.yaml` | `cli_policy.rs` ST-3 happy-path tests | Minimal valid policy with empty rule set |
+| `allow_deny_mixed.yaml` | `e2e_policy_sdk.rs` F116 ST-D | `websearch` denied, `read_file` allowed |
 | `deny_websearch.yaml` | `cli_policy.rs` ST-3 deny-path tests | Single deny rule for the `WebSearch` tool |
 | `invalid.yaml` | `cli_policy.rs` ST-3 `policy validate` negative-path | Malformed YAML — missing required keys + wrong types |
+| `secret_detection_patterns.yaml` | `e2e_secret_interception.rs` F116 ST-I | Allows `test_tool`; adds a custom `MYCO-SECRET-*` regex to `data.sensitive_patterns` for the credential scanner |
 
 ## `audit/`
 
