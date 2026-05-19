@@ -1,8 +1,9 @@
 // F116 ST-B — two-agent LangChain team fixture (AAASM-1514).
 //
-// Registers a root agent plus one child agent (inheriting lineage from root),
-// each invoking a LangChain tool. Verifies multi-agent registration in sdk-only
-// mode. In selftest mode emits synthetic events for hermetic CI runs.
+// Registers a root agent plus one child agent (inheriting lineage from root).
+// The member agent invokes a LangChain DynamicTool. Verifies multi-agent
+// registration in sdk-only mode. In selftest mode emits synthetic events for
+// hermetic CI runs.
 //
 // Invocation:
 //   AA_GATEWAY_ADDR=127.0.0.1:PORT AA_AGENT_ID=e2e-lc-root \
@@ -11,6 +12,13 @@
 //   AA_SELFTEST=1 AA_GATEWAY_ADDR=dummy pnpm exec tsx agent_team/langchain_team.ts
 
 import { loadConfig, emit, type AgentConfig } from "../_shared.js";
+import { DynamicTool } from "@langchain/core/tools";
+
+const teamEchoTool = new DynamicTool({
+  name: "team-echo",
+  description: "Echoes a task within a team context.",
+  func: async (input: string) => `team-echo: ${input}`,
+});
 
 async function runReal(cfg: AgentConfig): Promise<void> {
   const { initAssembly } = await import("@agent-assembly/sdk");
@@ -35,9 +43,9 @@ async function runReal(cfg: AgentConfig): Promise<void> {
 
   emit({ event: "started", agent_id: `${cfg.agentId}-member`, role: "member" });
 
-  // Simulate a LangChain team tool call.
-  const result = `team-echo: ${cfg.task}`;
-  emit({ event: "tool_call", tool: "echo", input: cfg.task });
+  // Member agent invokes the LangChain tool.
+  const result = await teamEchoTool.invoke(cfg.task);
+  emit({ event: "tool_call", tool: "team-echo", input: cfg.task });
 
   await memberCtx.shutdown();
   await rootCtx.shutdown();
@@ -49,7 +57,7 @@ const cfg = loadConfig();
 if (process.env.AA_SELFTEST === "1") {
   emit({ event: "started", agent_id: cfg.agentId, role: "root" });
   emit({ event: "started", agent_id: `${cfg.agentId}-member`, role: "member" });
-  emit({ event: "tool_call", tool: "echo", input: cfg.task });
+  emit({ event: "tool_call", tool: "team-echo", input: cfg.task });
   emit({ event: "done", result: "selftest-ok" });
   process.exit(0);
 }
