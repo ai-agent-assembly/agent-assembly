@@ -311,6 +311,7 @@ dependencies = [
  "axum",
  "aya",
  "base64",
+ "bytes",
  "chrono",
  "chrono-tz",
  "futures",

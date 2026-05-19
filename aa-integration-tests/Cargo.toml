@@ -48,12 +48,17 @@ tokio-tungstenite = "0.29"
 uuid              = { version = "1", features = ["v4"] }
 futures           = "0.3"
 
-# Linux-only dev-deps for the AAASM-1520 / F116 ST-H eBPF E2E suite. Gated on
+# Linux-only dev-deps for the AAASM-1520 / F116 ST-H eBPF E2E suite (also
+# used by AAASM-1522 / F116 ST-J file-monitoring E2E suite). Gated on
 # target so macOS `cargo build` / `cargo nextest` skip them cleanly — the
-# `e2e_ebpf` test file itself is also `#[cfg(target_os = "linux", feature =
-# "integration-test")]`, but the per-target dep gate keeps Cargo from trying
-# to resolve `aa-ebpf` / `aya` on non-Linux hosts where `aya` won't compile.
+# `e2e_ebpf` / `e2e_file_monitoring` test files are themselves
+# `#[cfg(all(target_os = "linux", feature = "integration-test"))]`, but
+# the per-target dep gate keeps Cargo from trying to resolve `aa-ebpf` /
+# `aya` / `bytes` on non-Linux hosts where `aya` won't compile.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 aa-ebpf        = { path = "../aa-ebpf" }
 aa-ebpf-common = { path = "../aa-ebpf-common", features = ["std"] }
 aya            = { version = "0.13", features = ["async_tokio"] }
+# `bytes` is the buffer type aya's AsyncPerfEventArray::read_events fills.
+# Only needed by the file-IO perf-array reader in e2e_file_monitoring.rs.
+bytes          = "1"
