@@ -566,3 +566,85 @@ async fn three_layers_if_proxy_dies_sdk_and_ebpf_still_work() {
         result.first_invalid
     );
 }
+
+// =============================================================================
+// Test 4 — graceful degradation: eBPF unloads, SDK + proxy continue
+// =============================================================================
+
+/// AAASM-1523 test 4 — `three_layers_if_ebpf_unloads_sdk_and_proxy_still_work`.
+///
+/// Mirror of test 3 but with Layer 3 (eBPF) as the casualty: simulates an
+/// administrator unloading the BPF probes mid-session. The assertion is
+/// that SDK and proxy entries continue to land in the unified audit
+/// stream — the other two layers are independent of Layer 3.
+///
+/// **Divergence note**: same as test 3 — "eBPF unloads" is modelled by
+/// ceasing to send eBPF-sourced entries through the writer's channel.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_layers_if_ebpf_unloads_sdk_and_proxy_still_work() {
+    let audit_root = fresh_audit_dir();
+    let agent = agent_id(0x55);
+    let session = session_id(0x66);
+
+    let (path, tx, handle) = spawn_audit_writer(audit_root.path(), agent, session).await;
+
+    // Pre-unload: one entry per source.
+    let pre = synthesise_chain(agent, session, 1_700_000_000_000_000_000, &[SDK, PROXY, EBPF]);
+    for entry in &pre {
+        tx.send(entry.clone()).await.expect("send pre-unload entry");
+    }
+
+    // Post-unload: SDK + proxy only.
+    let mut prev_hash = *pre.last().unwrap().entry_hash();
+    let post_base_seq = pre.len() as u64;
+    let post_base_ts = 1_700_000_000_500_000_000;
+    let post_sources = [SDK, PROXY];
+    for (offset, source) in post_sources.iter().enumerate() {
+        let (tool, url, syscall) = match *source {
+            SDK => (Some("bash"), None, None),
+            PROXY => (None, Some("https://allowed.example.com/data"), None),
+            _ => unreachable!(),
+        };
+        let entry = AuditEntry::new(
+            post_base_seq + offset as u64,
+            post_base_ts + offset as u64 * 1_000_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            make_payload(source, tool, url, syscall, "allow"),
+            prev_hash,
+        );
+        prev_hash = *entry.entry_hash();
+        tx.send(entry).await.expect("send post-unload entry");
+    }
+    drain_writer(tx, handle).await;
+
+    let on_disk = read_audit_entries(&path);
+    let sources: Vec<String> = on_disk.iter().map(source_of).collect();
+    let unload_ts = post_base_ts;
+
+    let post_unload: Vec<&AuditEntry> = on_disk.iter().filter(|e| e.timestamp_ns() >= unload_ts).collect();
+    assert!(
+        post_unload.iter().any(|e| source_of(e) == SDK),
+        "SDK entries must continue after eBPF unload; sources: {sources:?}"
+    );
+    assert!(
+        post_unload.iter().any(|e| source_of(e) == PROXY),
+        "proxy entries must continue after eBPF unload; sources: {sources:?}"
+    );
+
+    let ebpf_count = sources.iter().filter(|s| *s == EBPF).count();
+    assert_eq!(
+        ebpf_count, 1,
+        "exactly one eBPF entry expected (the pre-unload one); got {ebpf_count} in {sources:?}"
+    );
+
+    let result = AuditWriter::verify_chain(&path)
+        .await
+        .expect("verify_chain after eBPF-unload simulation");
+    assert!(
+        result.is_valid,
+        "chain must remain valid after eBPF unload; first_invalid={:?}",
+        result.first_invalid
+    );
+}
