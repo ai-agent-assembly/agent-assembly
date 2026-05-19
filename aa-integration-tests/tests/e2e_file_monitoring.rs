@@ -360,3 +360,56 @@ async fn file_write_syscall_emits_event_for_target_pid() {
         "driver-reported byte count should agree with the kernel event"
     );
 }
+
+// =============================================================================
+// Test 3 — read syscall emits an event attributed to the driver pid
+// =============================================================================
+
+/// AAASM-1522 test 3 — `file_read_syscall_emits_event_for_target_pid`.
+///
+/// Pre-creates a file from the test process (no event — the test pid
+/// is not in `PID_FILTER`) then drives the read kprobe via the Python
+/// driver's `read` mode. Asserts the Read event has the right pid +
+/// path, and that `return_code` (bytes read on success) equals the
+/// payload length we wrote in the pre-create step. The Openat event
+/// from the driver's own `open()` is filtered out by the predicate so
+/// the assertion targets exactly the read.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_read_syscall_emits_event_for_target_pid() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("read");
+    let target = tmp.join("source.txt");
+    let target_str = target.to_string_lossy().to_string();
+    let payload = "hello world";
+    std::fs::write(&target, payload).expect("pre-create read source file");
+
+    let mut driver = spawn_driver_paused(&["--mode", "read", "--path", &target_str]);
+    let driver_pid = driver.id();
+    register_pid(&mut bpf, driver_pid);
+    release_driver(&mut driver);
+
+    let target_for_pred = target_str.clone();
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Read && ev.path == target_for_pred
+    })
+    .await;
+
+    let json = drain_driver_json(driver);
+
+    assert_eq!(ev.pid, driver_pid, "read event must be attributed to the driver pid");
+    assert_eq!(ev.syscall, SyscallKind::Read);
+    assert_eq!(ev.path, target_str);
+    assert_eq!(
+        ev.return_code as i64,
+        payload.len() as i64,
+        "read event return_code should equal the bytes read ({} bytes)",
+        payload.len()
+    );
+    assert_eq!(
+        json["bytes"].as_u64(),
+        Some(payload.len() as u64),
+        "driver-reported byte count should agree with the kernel event"
+    );
+}
