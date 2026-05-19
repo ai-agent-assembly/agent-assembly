@@ -683,7 +683,6 @@ async fn ebpf_pid_not_in_filter_map_produces_no_event() {
 /// pointers would require additional BPF helpers (`bpf_d_path` etc.)
 /// not currently used. Tracked under AAASM-1425.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_event_records_path_when_openat_is_absolute() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
