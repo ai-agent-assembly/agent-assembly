@@ -115,6 +115,13 @@ impl MockLlmServer {
         .await
     }
 
+    /// Start the mock with a caller-supplied canned response — useful when
+    /// the SUT needs a non-200 status (e.g. 429 for retry tests) or a body
+    /// shape that does not match the default OpenAI-compatible envelope.
+    pub async fn start_with_response(status: StatusCode, body: &str, content_type: &str) -> anyhow::Result<Self> {
+        Self::start_inner(status, Bytes::from(body.to_owned()), content_type.to_owned()).await
+    }
+
     async fn start_inner(
         response_status: StatusCode,
         response_body: Bytes,
