@@ -142,11 +142,32 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
 /// `latency_us` is the measured evaluation wall time in microseconds.
 /// `policy_rule` is the identifier of the rule that triggered (empty for Allow).
 ///
-/// When the engine detected credential/PII findings and produced a redacted payload,
-/// the response uses `Decision::Redact` with the redacted field paths.
+/// Mapping rules:
+/// * `decision == Deny` → `Decision::Deny` (covers `credential_action: block`,
+///   which short-circuits with findings *and* a Deny verdict).
+/// * findings non-empty *and* `redacted_payload.is_some()` →
+///   `Decision::Redact` (covers `credential_action: redact_only`).
+/// * findings non-empty *and* `redacted_payload.is_none()` →
+///   `Decision::Allow` (covers `credential_action: alert_only`, where the
+///   payload is forwarded unmodified; the alert side-effect is wired
+///   separately).
+/// * everything else falls through to the underlying `PolicyResult`.
 pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_rule: &str) -> CheckActionResponse {
-    // If the scanner produced redaction findings, return REDACT with instructions.
-    if !eval.credential_findings.is_empty() {
+    // Deny short-circuits everything, including the findings-driven Redact path,
+    // so `credential_action: block` returns a hard Deny even though findings exist.
+    if let PolicyResult::Deny { reason } = &eval.decision {
+        return CheckActionResponse {
+            decision: Decision::Deny as i32,
+            reason: reason.clone(),
+            policy_rule: policy_rule.to_string(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: latency_us,
+        };
+    }
+
+    // Findings + redacted payload → Redact instructions.
+    if !eval.credential_findings.is_empty() && eval.redacted_payload.is_some() {
         let rules: Vec<RedactRule> = eval
             .credential_findings
             .iter()
@@ -174,14 +195,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             redact: None,
             decision_latency_us: latency_us,
         },
-        PolicyResult::Deny { reason } => CheckActionResponse {
-            decision: Decision::Deny as i32,
-            reason: reason.clone(),
-            policy_rule: policy_rule.to_string(),
-            approval_id: String::new(),
-            redact: None,
-            decision_latency_us: latency_us,
-        },
+        PolicyResult::Deny { .. } => unreachable!("Deny is handled by the short-circuit above"),
         PolicyResult::RequiresApproval { .. } => {
             panic!(
                 "RequiresApproval must be handled before conversion — \
