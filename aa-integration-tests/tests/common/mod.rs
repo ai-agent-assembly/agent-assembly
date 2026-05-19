@@ -26,6 +26,13 @@ pub mod scenario;
 #[allow(dead_code)]
 pub mod sdk_driver;
 
+// Ergonomic re-exports — keep the public surface flat at `common::*`,
+// matching how `TopologyTestEnv` is reached today. AAASM-1547 AC explicitly
+// requires `common::MockLlmServer` (not `common::mock_llm::MockLlmServer`)
+// be available to all integration tests.
+#[allow(unused_imports)]
+pub use mock_llm::{MockLlmServer, RecordedRequest};
+
 use rust_decimal::Decimal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
