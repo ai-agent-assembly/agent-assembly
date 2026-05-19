@@ -7,6 +7,15 @@ repository.workspace = true
 publish = false
 description = "End-to-end integration tests for AAASM (topology HTTP roundtrip + CLI subcommand coverage). Test-only crate."
 
+[features]
+default = []
+# Opt-in feature for Linux-only end-to-end tests that load eBPF probes into a
+# live kernel (AAASM-1520 / F116 ST-H). Requires root (CAP_BPF + CAP_PERFMON)
+# and a kernel >= 5.10 with BTF enabled.
+#
+# Usage: sudo cargo nextest run -p aa-integration-tests --features integration-test --test e2e_ebpf
+integration-test = []
+
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
 aa-core     = { path = "../aa-core" }
@@ -36,3 +45,13 @@ tokio             = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.29"
 uuid              = { version = "1", features = ["v4"] }
 futures           = "0.3"
+
+# Linux-only dev-deps for the AAASM-1520 / F116 ST-H eBPF E2E suite. Gated on
+# target so macOS `cargo build` / `cargo nextest` skip them cleanly — the
+# `e2e_ebpf` test file itself is also `#[cfg(target_os = "linux", feature =
+# "integration-test")]`, but the per-target dep gate keeps Cargo from trying
+# to resolve `aa-ebpf` / `aya` on non-Linux hosts where `aya` won't compile.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aa-ebpf        = { path = "../aa-ebpf" }
+aa-ebpf-common = { path = "../aa-ebpf-common", features = ["std"] }
+aya            = { version = "0.13", features = ["async_tokio"] }
