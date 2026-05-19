@@ -240,7 +240,7 @@ jobs:
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --codecov --output-path codecov.xml
       - name: Upload to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           files: ./codecov.xml
           name: Rust unit tests
