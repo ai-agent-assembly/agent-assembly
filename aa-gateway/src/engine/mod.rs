@@ -709,19 +709,52 @@ impl PolicyEngine {
                 }
             }
         }
+
+        // Most-restrictive-wins across the cascade: Block > RedactOnly > AlertOnly.
+        // Docs without a `data` section don't vote — RedactOnly remains the default.
+        let credential_action = cascade
+            .iter()
+            .filter_map(|d| d.data.as_ref().map(|dp| dp.credential_action))
+            .max_by_key(|a| match a {
+                CredentialAction::Block => 2,
+                CredentialAction::RedactOnly => 1,
+                CredentialAction::AlertOnly => 0,
+            })
+            .unwrap_or_default();
+
+        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+            all_findings.sort_by_key(|f| f.offset);
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny {
+                    reason: "credential detected".into(),
+                },
+                redacted_payload: None,
+                credential_findings: all_findings,
+                deny_action: None,
+            };
+        }
+
         let (redacted_payload, credential_findings) = if all_findings.is_empty() {
             (None, vec![])
         } else {
             all_findings.sort_by_key(|f| f.offset);
-            let merged = aa_core::ScanResult {
-                findings: all_findings.clone(),
-            };
-            let redacted = merged.redact(text);
             tracing::warn!(
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
-            (Some(redacted), all_findings)
+            if credential_action == CredentialAction::AlertOnly {
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                );
+                (None, all_findings)
+            } else {
+                let merged = aa_core::ScanResult {
+                    findings: all_findings.clone(),
+                };
+                let redacted = merged.redact(text);
+                (Some(redacted), all_findings)
+            }
         };
 
         // Stage 7 — Budget: check against all cascade docs' budget configs.
