@@ -400,3 +400,23 @@ def _print_list_table(scripts: list[AgentScript]) -> None:
     for script in scripts:
         table.add_row(script.framework, script.scenario, script.path.name)
     console.print(table)
+
+
+def _results_as_json(results: list[RunResult]) -> str:
+    """Serialise results as a JSON array suitable for ``--json`` output."""
+    payload = [
+        {
+            "script": str(r.script.path),
+            "scenario": r.script.scenario,
+            "framework": r.script.framework,
+            "name": r.script.name,
+            "passed": r.passed,
+            "duration_ms": r.duration_ms,
+            "exit_code": r.exit_code,
+            "timed_out": r.timed_out,
+            "error": r.error,
+            "last_event": r.last_event,
+        }
+        for r in results
+    ]
+    return json.dumps(payload)
