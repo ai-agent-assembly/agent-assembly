@@ -82,6 +82,48 @@ fn kill_process(pid: u32, signal: libc::c_int) {
     }
 }
 
+/// Returns `true` when the `aa-gateway` binary can be located on disk.
+///
+/// Mirrors `aa_cli::commands::gateway::start::resolve_binary` so that tests
+/// requiring the binary can skip gracefully in environments where only the
+/// test suite (not the full workspace) has been built (e.g. the `Test` CI
+/// job which runs `cargo nextest run --workspace` without a prior
+/// `cargo build -p aa-gateway`).
+fn gateway_binary_available() -> bool {
+    #[cfg(unix)]
+    fn binary_runnable(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    fn binary_runnable(path: &std::path::Path) -> bool {
+        path.exists()
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            if binary_runnable(&std::path::Path::new(dir).join("aa-gateway")) {
+                return true;
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let p = std::path::PathBuf::from(home)
+            .join(".cargo")
+            .join("bin")
+            .join("aa-gateway");
+        if binary_runnable(&p) {
+            return true;
+        }
+    }
+    for rel in ["./target/release/aa-gateway", "./target/debug/aa-gateway"] {
+        if binary_runnable(std::path::Path::new(rel)) {
+            return true;
+        }
+    }
+    false
+}
+
 // ── help banner (3 tests) ─────────────────────────────────────────────────
 
 #[tokio::test]
@@ -127,6 +169,10 @@ async fn gateway_start_help_lists_flags() {
 
 #[tokio::test]
 async fn gateway_start_spawns_grpc_listener_and_writes_pidfile() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let policy = write_policy_file(&tmp);
@@ -193,6 +239,10 @@ async fn gateway_start_spawns_grpc_listener_and_writes_pidfile() {
 
 #[tokio::test]
 async fn gateway_start_default_policy_resolution_falls_through() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let port = free_port();
@@ -221,6 +271,10 @@ async fn gateway_start_default_policy_resolution_falls_through() {
 // due to policy parse failure.
 #[tokio::test]
 async fn gateway_start_with_invalid_policy_returns_clear_error() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let bad_policy = tmp.path().join("bad.yaml");
@@ -258,6 +312,10 @@ async fn gateway_start_with_invalid_policy_returns_clear_error() {
 // before declaring the gateway unreachable when aa-gateway fails to bind.
 #[tokio::test]
 async fn gateway_start_port_collision_returns_error() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let policy = write_policy_file(&tmp);
@@ -289,6 +347,10 @@ async fn gateway_start_port_collision_returns_error() {
 #[cfg(unix)]
 #[tokio::test]
 async fn gateway_start_unix_socket_mode_binds_socket() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let policy = write_policy_file(&tmp);
@@ -360,6 +422,10 @@ async fn gateway_status_when_not_running_returns_not_running() {
 
 #[tokio::test]
 async fn gateway_status_when_running_includes_grpc_metadata() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let policy = write_policy_file(&tmp);
@@ -454,6 +520,10 @@ async fn gateway_status_when_pidfile_exists_but_process_dead_reports_stale() {
 
 #[tokio::test]
 async fn gateway_stop_graceful_shutdown_flushes_audit() {
+    if !gateway_binary_available() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    }
     let ctx = CliFixture::start().await.expect("start fixture");
     let tmp = tempfile::tempdir().unwrap();
     let policy = write_policy_file(&tmp);
