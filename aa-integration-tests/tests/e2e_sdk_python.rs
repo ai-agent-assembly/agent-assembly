@@ -176,6 +176,54 @@ fn selftest_langgraph_agent_team_emits_two_started_events() {
 // ── test 8 ────────────────────────────────────────────────────────────────────
 
 #[test]
+fn selftest_pydantic_ai_single_agent() {
+    let out =
+        run_agent("single_agent/pydantic_ai_agent.py", &[("AA_SELFTEST", "1")]).expect("spawn pydantic_ai_agent.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    let events = parse_events(&stdout);
+    assert!(!events.is_empty(), "expected at least one JSON event");
+    assert_eq!(events[0]["event"], "started", "first event must be 'started'");
+    assert_eq!(events[0]["framework"], "pydantic_ai");
+    assert!(
+        events[0].get("agent_id").and_then(|v| v.as_str()).is_some(),
+        "started event must include agent_id"
+    );
+    assert_eq!(events.last().unwrap()["event"], "done", "last event must be 'done'");
+}
+
+// ── test 9 ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn selftest_openai_agents_single_agent() {
+    let out = run_agent("single_agent/openai_agents_agent.py", &[("AA_SELFTEST", "1")])
+        .expect("spawn openai_agents_agent.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    let events = parse_events(&stdout);
+    assert!(!events.is_empty(), "expected at least one JSON event");
+    assert_eq!(events[0]["event"], "started", "first event must be 'started'");
+    assert_eq!(events[0]["framework"], "openai_agents");
+    assert!(
+        events[0].get("agent_id").and_then(|v| v.as_str()).is_some(),
+        "started event must include agent_id"
+    );
+    assert_eq!(events.last().unwrap()["event"], "done", "last event must be 'done'");
+}
+
+// ── test 10 ───────────────────────────────────────────────────────────────────
+
+#[test]
 fn selftest_crewai_root_sub_agent_hierarchy() {
     let out =
         run_agent("root_sub_agents/crewai_hierarchy.py", &[("AA_SELFTEST", "1")]).expect("spawn crewai_hierarchy.py");
