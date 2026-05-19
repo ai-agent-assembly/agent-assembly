@@ -104,6 +104,12 @@ async fn proxy_intercepts_and_enforces_allow() {
         .expect("event within 1s")
         .expect("event received");
     assert!(matches!(event, PipelineEvent::Audit(_)), "expected Audit event");
+    // The allow event's NetworkCallDetail must record the target host.
+    let event_debug = format!("{event:?}");
+    assert!(
+        event_debug.contains("127.0.0.1"),
+        "allow audit event must contain the target host in NetworkCallDetail; got: {event_debug}"
+    );
 
     abort.abort();
 }
@@ -156,9 +162,16 @@ async fn proxy_intercepts_and_enforces_deny() {
     abort.abort();
 }
 
-/// Test 3: the audit event for a denied CONNECT contains the blocked hostname.
+/// Test 3: the deny audit event encodes the CONNECT method and the blocked hostname.
+///
+/// At CONNECT-level enforcement the proxy sees only the `host:port` from the CONNECT
+/// request line. Inner HTTP method (e.g. `GET`) and `url_path` are not yet visible —
+/// they live inside the encrypted tunnel that was never established because the proxy
+/// returned 403 before TLS termination. The proxy therefore records the CONNECT
+/// pseudo-method together with the blocked hostname in `PolicyViolation.blocked_action`,
+/// and the human-readable deny reason in `PolicyViolation.reason`.
 #[tokio::test(flavor = "multi_thread")]
-async fn proxy_emits_event_with_url_host() {
+async fn proxy_emits_event_with_connect_method_and_host() {
     let dir = tempfile::TempDir::new().unwrap();
     let ca = CaStore::load_or_create(dir.path()).await.unwrap();
     let config = proxy_config(dir.path(), vec!["forbidden.example.com".into()]);
@@ -172,11 +185,17 @@ async fn proxy_emits_event_with_url_host() {
         .expect("event within 1s")
         .expect("event received");
 
-    // The event debug string must contain the denied hostname.
+    // The event must carry the CONNECT pseudo-method + denied hostname.
+    // Inner HTTP method and url_path are not assertable: enforcement fires before
+    // TLS termination so the inner request has not yet been decoded.
     let event_debug = format!("{event:?}");
     assert!(
-        event_debug.contains("forbidden.example.com"),
-        "event must contain the denied hostname; got: {event_debug}"
+        event_debug.contains("CONNECT forbidden.example.com"),
+        "event must encode CONNECT method + denied hostname in blocked_action; got: {event_debug}"
+    );
+    assert!(
+        event_debug.contains("host is on the deny list"),
+        "event must encode the deny reason; got: {event_debug}"
     );
 
     abort.abort();
