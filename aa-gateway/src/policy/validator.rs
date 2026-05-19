@@ -573,6 +573,15 @@ mod tests {
         assert_eq!(dp.credential_action, CredentialAction::AlertOnly);
     }
 
+    #[test]
+    fn data_credential_action_invalid_value_is_an_error() {
+        let yaml = "data:\n  credential_action: not_a_real_mode\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err());
+        let errs = result.unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "data.credential_action"));
+    }
+
     // ── Budget validation ───────────────────────────────────────────────────
 
     #[test]
