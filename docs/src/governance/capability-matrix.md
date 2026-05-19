@@ -176,11 +176,12 @@ requiring a new adapter.
 
 ## References
 
-- `AAASM-199` — Agent Assembly SDK interception overview
+- `AAASM-199` — Agent Assembly SDK interception overview (`DevToolAdapter` trait + `GovernanceLevel` enum)
 - `AAASM-201` — Claude Code adapter (pending; will update Claude Code row above)
 - `AAASM-202` — Codex adapter
 - `AAASM-203` — GitHub Copilot adapter
 - `AAASM-204` — Windsurf Cascade adapter
+- `AAASM-206` — Governance level (L0–L3) classification in policy schema (`governance_level` field in `AgentRecord` and policy conditions)
 - `AAASM-918` — SaaS coding-agent adapter (pending; will finalize SaaS row above)
 - `docs/src/architecture.md` — Three-layer interception model
 - `docs/src/policy-rbac.md` — RBAC role matrix for policy mutations
