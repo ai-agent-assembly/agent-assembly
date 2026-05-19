@@ -356,3 +356,23 @@ class AutoGateway:
             except OSError:
                 pass
             self.policy_path = None
+
+
+def print_summary(results: list[RunResult]) -> int:
+    """Emit final pass/fail tally and return the process exit code."""
+    passed = sum(1 for r in results if r.passed)
+    failed = len(results) - passed
+    print()
+    print(f" Results: {passed} passed · {failed} failed")
+    if failed:
+        print()
+        print(" Failed scripts:")
+        for result in results:
+            if result.passed:
+                continue
+            if result.timed_out:
+                reason = f"timeout after {result.duration_ms} ms"
+            else:
+                reason = result.error or "exit non-zero"
+            print(f"   {result.script.scenario}/{result.script.name}.py  — {reason}")
+    return 0 if failed == 0 else 1
