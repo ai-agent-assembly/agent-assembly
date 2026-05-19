@@ -16,7 +16,7 @@ fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
     AlertResponse {
         id: a.id.to_string(),
         severity: a.severity.to_string(),
-        category: "budget".to_string(),
+        category: a.category.to_string(),
         message: a.message,
         timestamp: a.timestamp,
         agent_id: Some(a.agent_id),
