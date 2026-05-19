@@ -11,6 +11,7 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
 SCENARIOS: list[str] = [
@@ -99,3 +100,26 @@ def discover(root: Path) -> list[AgentScript]:
                 )
             )
     return scripts
+
+
+def filter_scripts(
+    scripts: Iterable[AgentScript],
+    frameworks: list[str] | None,
+    scenarios: list[str] | None,
+    file_glob: str | None,
+) -> list[AgentScript]:
+    """Apply filter flags with OR-within-group / AND-between-groups semantics.
+
+    Empty / ``None`` groups disable that filter axis. ``file_glob`` is
+    matched against the filename stem only (not the full path).
+    """
+    result: list[AgentScript] = []
+    for script in scripts:
+        if frameworks and script.framework not in frameworks:
+            continue
+        if scenarios and script.scenario not in scenarios:
+            continue
+        if file_glob and not fnmatch.fnmatch(script.name, file_glob):
+            continue
+        result.append(script)
+    return result
