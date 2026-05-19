@@ -9,6 +9,10 @@ scenario / glob, runs each subprocess with a timeout, and emits a summary.
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -123,3 +127,91 @@ def filter_scripts(
             continue
         result.append(script)
     return result
+
+
+def _strip_scheme(addr: str) -> str:
+    """Drop a leading ``http://`` / ``https://`` / ``grpc://`` so the fixture
+    helpers see a bare ``host:port`` for the ``AA_GATEWAY_ADDR`` env var."""
+    for prefix in ("http://", "https://", "grpc://"):
+        if addr.startswith(prefix):
+            return addr[len(prefix):]
+    return addr
+
+
+def _env_for(script: AgentScript, cfg: RunConfig) -> dict[str, str]:
+    """Build the environment for a fixture subprocess."""
+    env = os.environ.copy()
+    if cfg.selftest:
+        env["AA_SELFTEST"] = "1"
+        env.setdefault("AA_GATEWAY_ADDR", "dummy")
+    else:
+        env["AA_GATEWAY_ADDR"] = _strip_scheme(cfg.gateway_url)
+    env["AA_API_KEY"] = cfg.api_key
+    env["AA_AGENT_ID"] = f"e2e-{script.name}"
+    env["AA_TASK"] = "hello"
+    if cfg.proxy_addr:
+        env["AA_PROXY_ADDR"] = cfg.proxy_addr
+    return env
+
+
+def _last_json_line(stdout: str | bytes | None) -> dict | None:
+    """Return the last JSON-decodable line of stdout, or ``None``."""
+    if stdout is None:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    last: object | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            last = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+    return last if isinstance(last, dict) else None
+
+
+def run_script(script: AgentScript, cfg: RunConfig) -> RunResult:
+    """Spawn one fixture subprocess via ``uv run`` and capture the outcome.
+
+    Honours ``cfg.timeout`` — on expiry the subprocess is killed and a
+    :class:`RunResult` with ``timed_out=True`` is returned.
+    """
+    python_root = script.path.parents[1]  # .../agents/python
+    rel_path = script.path.relative_to(python_root)
+    start = time.monotonic()
+
+    try:
+        proc = subprocess.run(
+            ["uv", "run", "--extra", "runner", "--extra", "all", str(rel_path)],
+            cwd=python_root,
+            env=_env_for(script, cfg),
+            capture_output=True,
+            text=True,
+            timeout=cfg.timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return RunResult(
+            script=script,
+            passed=False,
+            duration_ms=duration_ms,
+            last_event=_last_json_line(exc.stdout),
+            error=f"timeout after {cfg.timeout}s",
+            timed_out=True,
+        )
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    error: str | None = None
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or "").strip().splitlines()
+        last_line = stderr_tail[-1] if stderr_tail else ""
+        error = f"exit {proc.returncode}: {last_line}".rstrip(": ").rstrip()
+    return RunResult(
+        script=script,
+        passed=proc.returncode == 0,
+        duration_ms=duration_ms,
+        last_event=_last_json_line(proc.stdout),
+        error=error,
+        exit_code=proc.returncode,
+    )
