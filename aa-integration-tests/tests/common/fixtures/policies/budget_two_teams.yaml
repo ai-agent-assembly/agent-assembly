@@ -1,0 +1,26 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: f116-st-f-budget-two-teams
+  version: "0.1.0"
+spec:
+  rules:
+    - id: allow-default
+      effect: allow
+      match: {}
+# Reference: both teams (f116-budget-it-a and f116-budget-it-b) share the
+# same per-team cap set via BudgetTracker::with_team_daily_limit(). The
+# isolation test asserts that exhausting one team does not block the other.
+#
+# Equivalent policy-plane stanza (not parsed by the test harness):
+#   budgets:
+#     - scope:
+#         team: "f116-budget-it-a"
+#       window: "1d"
+#       limit_usd: 2.00
+#       action_on_exhaust: deny
+#     - scope:
+#         team: "f116-budget-it-b"
+#       window: "1d"
+#       limit_usd: 2.00
+#       action_on_exhaust: deny

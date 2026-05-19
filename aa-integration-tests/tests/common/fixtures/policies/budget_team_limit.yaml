@@ -1,0 +1,22 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: f116-st-f-budget-team-limit
+  version: "0.1.0"
+spec:
+  rules:
+    - id: allow-default
+      effect: allow
+      match: {}
+# Reference: the team daily limit is injected at BudgetTracker construction
+# time via BudgetTracker::with_team_daily_limit(). The YAML budget stanza is
+# the policy-plane representation; integration tests use the tracker API
+# directly (same pattern as api_costs.rs).
+#
+# Equivalent policy-plane stanza (not parsed by the test harness):
+#   budgets:
+#     - scope:
+#         team: "f116-budget-it"
+#       window: "1d"
+#       limit_usd: 2.00
+#       action_on_exhaust: deny

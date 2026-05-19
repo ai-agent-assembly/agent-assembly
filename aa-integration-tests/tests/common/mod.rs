@@ -24,6 +24,7 @@ pub mod scenario;
 #[allow(dead_code)]
 pub mod sdk_driver;
 
+use rust_decimal::Decimal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -369,6 +370,60 @@ impl TopologyTestEnv {
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
         let key_store = Arc::clone(&state.key_store);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            ops_registry,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
+    /// Spin up the harness with a per-team daily spend cap.
+    ///
+    /// `team_limit_usd` is passed to `BudgetTracker::with_team_daily_limit`;
+    /// the cap applies equally to every team that records spend. Used by the
+    /// budget E2E suite (AAASM-1518 / F116 ST-F).
+    #[allow(dead_code)]
+    pub async fn start_with_team_budget(team_limit_usd: Decimal) -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store, key_store) = build_test_state_with_team_budget(team_limit_usd)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
@@ -806,6 +861,121 @@ spec:
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let audit_dir = std::env::temp_dir().join(format!("aa-auth-it-audit-{}-{audit_id}", std::process::id()));
+    std::fs::create_dir_all(&audit_dir)?;
+    let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
+
+    Ok((
+        AppState {
+            agent_registry,
+            policy_engine,
+            budget_tracker,
+            approval_queue,
+            policy_history,
+            alert_store,
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
+        },
+        audit_dir,
+        alert_store_handle,
+        key_store_handle,
+    ))
+}
+
+/// Build a minimal `AppState` with a per-team daily spend limit applied to the
+/// `BudgetTracker`. Identical to [`build_test_state`] except the tracker is
+/// constructed with `.with_team_daily_limit(team_limit_usd)`.
+///
+/// Used by [`TopologyTestEnv::start_with_team_budget`] (AAASM-1518 / F116 ST-F).
+fn build_test_state_with_team_budget(
+    team_limit_usd: Decimal,
+) -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
+    let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let policy_dir = std::env::temp_dir().join(format!("aa-budget-it-policy-{}-{policy_id}", std::process::id()));
+    std::fs::create_dir_all(&policy_dir)?;
+    let policy_path = policy_dir.join("test-policy.yaml");
+    std::fs::write(
+        &policy_path,
+        r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: budget-it-policy
+  version: "0.1.0"
+spec:
+  rules: []
+"#,
+    )?;
+
+    let events = Arc::new(EventBroadcast::default());
+    let budget_alert_tx = events.budget_sender();
+    let policy_engine = Arc::new(
+        PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+            .map_err(|e| anyhow::anyhow!("load policy: {e:?}"))?,
+    );
+    let budget_tracker = Arc::new(
+        BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_team_daily_limit(team_limit_usd),
+    );
+    let approval_queue = ApprovalQueue::new();
+    let agent_registry = Arc::new(AgentRegistry::new());
+
+    let history_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let history_dir = std::env::temp_dir().join(format!("aa-budget-it-history-{}-{history_id}", std::process::id()));
+    let policy_history = Arc::new(FsHistoryStore::new(HistoryConfig {
+        history_dir,
+        max_versions: 50,
+    }));
+
+    let auth_config = Arc::new(AuthConfig {
+        mode: AuthMode::Off,
+        jwt_secret: None,
+        api_keys_path: std::path::PathBuf::from("/dev/null"),
+        rate_limit_rpm: 1000,
+    });
+    let key_store = Arc::new(
+        ApiKeyStore::load(Path::new("/dev/null"))
+            .unwrap_or_else(|_| ApiKeyStore::load(Path::new("/nonexistent")).expect("empty key store")),
+    );
+    let key_store_handle = Arc::clone(&key_store);
+    const TEST_SECRET: &[u8] = b"budget-it-test-secret-32-bytes-long!!!!";
+    let jwt_signer = Arc::new(JwtSigner::new(TEST_SECRET));
+    let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
+    let rate_limiter = Arc::new(RateLimiter::new(1000));
+    let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let alert_store_handle = Arc::clone(&alert_store);
+
+    let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let audit_dir = std::env::temp_dir().join(format!("aa-budget-it-audit-{}-{audit_id}", std::process::id()));
     std::fs::create_dir_all(&audit_dir)?;
     let audit_reader = Arc::new(AuditReader::new(audit_dir.clone()));
 
