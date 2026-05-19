@@ -25,6 +25,10 @@ pub struct StoredAlert {
     pub message: String,
     /// Hex-encoded agent ID that triggered the alert.
     pub agent_id: String,
+    /// Team attribution propagated from the request context. `None` for
+    /// alerts where no team was associated (e.g. legacy budget alerts
+    /// emitted without a team).
+    pub team_id: Option<String>,
     /// ISO 8601 timestamp when the alert was captured.
     pub timestamp: String,
     /// Budget threshold percentage that was crossed.
@@ -146,6 +150,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: u64, timestamp: String)
         category: AlertCategory::SecretDetected,
         message: build_secret_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
+        team_id: alert.team_id.clone(),
         timestamp,
         threshold_pct: 0,
         spent_usd: 0.0,
@@ -165,6 +170,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
         category: AlertCategory::Budget,
         message: build_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
+        team_id: alert.team_id.clone(),
         timestamp,
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
