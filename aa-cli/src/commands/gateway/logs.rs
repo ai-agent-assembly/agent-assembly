@@ -9,7 +9,7 @@
 //!
 //! `--level` filtering matches the `"level"` field (case-insensitive).
 
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -139,6 +139,11 @@ fn follow_logs(mut file: std::fs::File, level_filter: Option<&str>) -> ExitCode 
                                 let line = buf.trim_end_matches('\n').trim_end_matches('\r');
                                 if matches_level(line, level_filter) {
                                     println!("{line}");
+                                    // Flush immediately: stdout is block-buffered
+                                    // when redirected to a file (non-TTY), so without
+                                    // an explicit flush each line would sit in the
+                                    // process buffer until it fills or the process exits.
+                                    let _ = std::io::stdout().flush();
                                 }
                             }
                             Err(_) => break,
