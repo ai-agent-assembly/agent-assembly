@@ -77,6 +77,24 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         return Ok(0);
     }
 
+    // Perform all fallible context reads BEFORE reserving the ring-buffer
+    // entry (AAASM-1548). The Linux 6.x BPF verifier rejects programs that
+    // hold a ring-buffer reservation across an early-return path
+    // ("Unreleased reference id=N alloc_insn=M"), so we resolve the inputs
+    // first and only reserve once we know the event can be filled in.
+    //
+    // sched_process_exec tracepoint format:
+    //   field:int __data_loc char[] filename;  offset:8;  size:4;
+    //   field:pid_t pid;                       offset:12; size:4;
+    //   field:pid_t old_pid;                   offset:16; size:4;
+    //
+    // We read the parent PID from the tracepoint pid field at offset 12;
+    // __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
+    let tp_pid: i32 = unsafe { ctx.read_at(12) }.map_err(|_| -1i64)?;
+    let data_loc: u32 = unsafe { ctx.read_at(8) }.map_err(|_| -1i64)?;
+    // ctx.command() returns [u8; 16] — already raw bytes, not a string.
+    let comm = ctx.command().map_err(|_| -1i64)?;
+
     // Reserve space in the ring buffer for the event (avoids stack overflow).
     let mut entry = EXEC_EVENTS.reserve::<ExecEvent>(0).ok_or(-1i64)?;
     let event_ptr = entry.as_mut_ptr();
@@ -86,20 +104,8 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event_ptr).pid = tgid;
         (*event_ptr).uid = uid;
         (*event_ptr)._pad = 0;
-
-        // Read ppid from the tracepoint context.
-        // sched_process_exec tracepoint format:
-        //   field:int __data_loc char[] filename;  offset:8;  size:4;
-        //   field:pid_t pid;                       offset:12; size:4;
-        //   field:pid_t old_pid;                   offset:16; size:4;
-        //
-        // We read the parent PID from the tracepoint pid field at offset 12.
-        let tp_pid: i32 = ctx.read_at(12).map_err(|_| -1i64)?;
         (*event_ptr).ppid = tp_pid as u32;
 
-        // Read the filename from the tracepoint __data_loc field.
-        // __data_loc is a u32: low 16 bits = offset, high 16 bits = length.
-        let data_loc: u32 = ctx.read_at(8).map_err(|_| -1i64)?;
         let filename_offset = (data_loc & 0xFFFF) as usize;
 
         // Zero the filename buffer first.
@@ -115,9 +121,6 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         // limited; we capture what the comm provides.
         (*event_ptr).args = [0u8; MAX_ARGS_LEN];
 
-        // Read the current task's comm into the args buffer as a fallback.
-        // ctx.command() returns [u8; 16] — already raw bytes, not a string.
-        let comm = ctx.command().map_err(|_| -1i64)?;
         // Copy comm bytes (up to 16) into the args buffer byte by byte.
         // Using a fixed-bound loop to satisfy the BPF verifier.
         let max_copy = if 16 > MAX_ARGS_LEN { MAX_ARGS_LEN } else { 16 };
