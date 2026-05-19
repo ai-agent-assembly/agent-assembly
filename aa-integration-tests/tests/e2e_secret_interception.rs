@@ -321,11 +321,6 @@ fn redacted_payload_never_contains_any_raw_secret() {
 // See the file-level scope note for what this slice does and does not assert.
 
 mod proxy_path {
-    // Helpers and per-test items land in separate commits. Until the tests are
-    // wired up the helpers are temporarily unreferenced — silence dead-code
-    // warnings here rather than per fn to keep the diffs minimal.
-    #![allow(dead_code)]
-
     use std::time::SystemTime;
 
     use bytes::Bytes;
@@ -356,5 +351,69 @@ mod proxy_path {
             response_body: None,
             timestamp: SystemTime::now(),
         }
+    }
+
+    // ── Test 1 — AWS access key in a proxy-path body ─────────────────────────
+
+    /// The proxy's `Interceptor` redacts any AWS access key embedded in an
+    /// intercepted body via its default `CredentialScanner`. Two assertions:
+    ///
+    /// 1. The same scanner the proxy uses (`CredentialScanner::new()`, see
+    ///    `aa-proxy/src/intercept/mod.rs:37`) produces an `AwsAccessKey`
+    ///    finding and a `[REDACTED:AwsAccessKey]`-bearing redaction when fed
+    ///    the OpenAI request body shape the proxy will see in production.
+    ///
+    /// 2. Driving `Interceptor::intercept()` end-to-end with that body emits
+    ///    a `PipelineEvent::Audit` whose `Debug` repr never contains the raw
+    ///    AWS key. This is the security invariant — any leak in the proxy's
+    ///    audit emission would expose the secret to downstream subscribers.
+    #[tokio::test]
+    async fn aws_key_in_proxy_intercepted_body_is_redacted() {
+        use aa_core::{CredentialKind, CredentialScanner};
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!("my access key is {key}", key = super::FAKE_AWS_ACCESS_KEY));
+        let body_str = std::str::from_utf8(&body).expect("body must be UTF-8 ASCII");
+
+        // (1) Scanner-level proof: the proxy's default scanner finds + redacts
+        //     the AWS key in this exact body shape.
+        let scan = CredentialScanner::new().scan(body_str);
+        assert!(
+            scan.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey),
+            "default scanner must find AwsAccessKey in proxy body shape, got {:?}",
+            scan.findings,
+        );
+        let redacted = scan.redact(body_str);
+        assert!(
+            redacted.contains("[REDACTED:AwsAccessKey]"),
+            "redacted proxy body must carry the [REDACTED:AwsAccessKey] marker, got: {redacted}",
+        );
+        assert!(
+            !redacted.contains(super::FAKE_AWS_ACCESS_KEY),
+            "redacted proxy body must not retain the raw AWS key",
+        );
+
+        // (2) Interceptor end-to-end: extraction succeeds on the redacted body
+        //     and the emitted PipelineEvent never carries the raw key.
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body.clone());
+
+        let fields = interceptor
+            .intercept(&event)
+            .await
+            .expect("intercept must succeed")
+            .expect("OpenAI body must yield extracted LlmFields");
+        assert_eq!(fields.model, "gpt-4");
+        assert_eq!(fields.messages_count, 1);
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+        assert!(
+            !format!("{pipeline_event:?}").contains(super::FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT: emitted PipelineEvent must not contain the raw AWS key",
+        );
     }
 }
