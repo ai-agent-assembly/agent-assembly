@@ -90,6 +90,26 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
+      - name: Smoke-test dashboard (Linux x86_64)
+        run: |
+          mkdir -p smoke-bin
+          tar -xzf artifacts/aasm-x86_64-unknown-linux-gnu.tar.gz -C smoke-bin
+          chmod +x smoke-bin/aasm
+          smoke-bin/aasm dashboard start &
+          AASM_PID=$!
+          echo "Started aasm dashboard (PID $AASM_PID), waiting for server bind..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3000/ -o /dev/null; then
+              echo "Dashboard smoke test passed (responded after ${i}s)"
+              kill "$AASM_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          kill "$AASM_PID" 2>/dev/null || true
+          echo "Dashboard smoke test FAILED: server did not respond within 30s"
+          exit 1
+
       - name: Generate SHA256SUMS
         run: |
           cd artifacts
