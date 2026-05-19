@@ -87,7 +87,15 @@ def _run_curl(target: str, env: dict[str, str]) -> tuple[int, str, int]:
     # actually need it but it forces curl to talk to the server even if the
     # target hangs up early. ``-s`` for quiet, ``-S`` for errors on stderr.
     proc = subprocess.Popen(
-        ["curl", "-sSf", "--max-time", "10", target],
+        # `--http1.1` forces a plaintext HTTP/1.1 request line + headers in
+        # the SSL_write payload. Without it, curl on ubuntu-latest negotiates
+        # HTTP/2 (via ALPN) and the first SSL_write is the binary HTTP/2
+        # connection preface ("PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n"
+        # followed by HPACK frames) — which is what the kernel uprobe
+        # captures first, breaking AAASM-1520 test 1's plaintext-content
+        # assertion. Forcing HTTP/1.1 makes the captured bytes deterministic
+        # and human-readable for the test.
+        ["curl", "-sSf", "--http1.1", "--max-time", "10", target],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
