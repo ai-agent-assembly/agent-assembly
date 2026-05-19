@@ -420,8 +420,10 @@ fn try_sys_rename(ctx: &ProbeContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
-    // renameat2(int olddirfd, const char *oldpath, ...) — arg1 = oldpath
-    let oldpath_ptr: *const u8 = ctx.arg(1).ok_or(1u32)?;
+    // renameat2(int olddirfd, const char *oldpath, ...) — pull
+    // oldpath (arg1 = rsi) via pt_regs deref. ctx.arg(1) is garbage
+    // on SYSCALL_WRAPPER kernels. AAASM-1552.
+    let oldpath_ptr: *const u8 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(1).ok_or(1u32)?;
 
     let mut buf = [0u8; MAX_PATH_LEN];
     unsafe {
