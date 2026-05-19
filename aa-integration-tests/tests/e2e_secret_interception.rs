@@ -53,7 +53,6 @@ const FAKE_CUSTOM_TOKEN: &str = "MYCO-SECRET-DEADBEEFCAFE0001";
 
 /// Below the `GenericHighEntropy` length floor (20 chars) — must not trip the
 /// scanner. 12 alphanumeric characters with no built-in prefix match.
-#[allow(dead_code)] // wired in by the no-false-positive test commit
 const SHORT_HIGH_ENTROPY: &str = "abc123def456";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -110,7 +109,6 @@ fn evaluate(action: &GovernanceAction, agent_seed: u8) -> EvaluationResult {
 
 /// Helper for the no-false-positive expectations: asserts `Allow` and clean
 /// scan output. Used by the negative-path test below.
-#[allow(dead_code)] // wired in by the no-false-positive test commit
 fn assert_clean(result: &EvaluationResult) {
     assert_eq!(result.decision, PolicyResult::Allow, "clean payload must yield Allow");
     assert!(
@@ -235,4 +233,18 @@ fn custom_sensitive_pattern_in_tool_args_is_detected_and_redacted() {
         !redacted.contains(FAKE_CUSTOM_TOKEN),
         "redacted payload must not retain the original custom token",
     );
+}
+
+// ── Test 5 — No false positive on short high-entropy string ──────────────────
+
+#[test]
+fn short_high_entropy_string_does_not_trigger_scanner() {
+    // 12 alphanumeric characters: no AC-literal prefix matches, and the value
+    // is below the 20-byte length floor enforced for `GenericHighEntropy`.
+    // This guards against alert fatigue (AAASM-1521 acceptance criterion).
+    let payload = format!(r#"{{"id":"{SHORT_HIGH_ENTROPY}"}}"#);
+    let action = tool_call_with_args(&payload);
+    let result = evaluate(&action, 0xA5);
+
+    assert_clean(&result);
 }
