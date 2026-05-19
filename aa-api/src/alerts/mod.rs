@@ -7,6 +7,7 @@
 pub mod capture;
 pub mod store;
 
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 
@@ -114,6 +115,46 @@ fn build_alert_message(alert: &BudgetAlert) -> String {
         alert.spent_usd,
         alert.limit_usd,
     )
+}
+
+/// Build a human-readable alert message for a [`SecretAlert`].
+fn build_secret_alert_message(alert: &SecretAlert) -> String {
+    let kind = alert.primary_kind().as_str();
+    if alert.finding_count <= 1 {
+        format!(
+            "Secret detected: agent {} attempted to send a {} value in outbound payload (redacted)",
+            format_agent_id(&alert.agent_id),
+            kind,
+        )
+    } else {
+        format!(
+            "Secret detected: agent {} attempted to send {} values ({} primary) in outbound payload (redacted)",
+            format_agent_id(&alert.agent_id),
+            alert.finding_count,
+            kind,
+        )
+    }
+}
+
+/// Convert a [`SecretAlert`] into a [`StoredAlert`] with the given ID
+/// and timestamp. Severity is always `Critical` per AAASM-1545.
+pub fn stored_secret_alert_from(alert: &SecretAlert, id: u64, timestamp: String) -> StoredAlert {
+    let kind = alert.primary_kind();
+    StoredAlert {
+        id,
+        severity: AlertSeverity::Critical,
+        category: AlertCategory::SecretDetected,
+        message: build_secret_alert_message(alert),
+        agent_id: format_agent_id(&alert.agent_id),
+        timestamp,
+        threshold_pct: 0,
+        spent_usd: 0.0,
+        limit_usd: 0.0,
+        status: "unresolved".to_string(),
+        updated_at: None,
+        detected_pattern_type: Some(kind.as_str().to_string()),
+        redacted_value: Some(alert.redacted_label()),
+    }
 }
 
 /// Convert a `BudgetAlert` into a `StoredAlert` with the given ID and timestamp.
