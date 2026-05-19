@@ -20,6 +20,7 @@ fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
         message: a.message,
         timestamp: a.timestamp,
         agent_id: Some(a.agent_id),
+        team_id: a.team_id,
         status: a.status,
         updated_at: a.updated_at,
         detected_pattern_type: a.detected_pattern_type,
@@ -52,6 +53,10 @@ pub struct AlertResponse {
     pub timestamp: String,
     /// Agent ID that triggered the alert (if applicable).
     pub agent_id: Option<String>,
+    /// Team attribution propagated from the originating request
+    /// context. Omitted when no team was associated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     /// Lifecycle status — `"unresolved"` on capture, `"resolved"` once
     /// the alert has been acknowledged via `POST /alerts/:id/resolve`.
     pub status: String,
