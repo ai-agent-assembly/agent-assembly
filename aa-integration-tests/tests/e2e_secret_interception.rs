@@ -416,4 +416,52 @@ mod proxy_path {
             "SECURITY INVARIANT: emitted PipelineEvent must not contain the raw AWS key",
         );
     }
+
+    // ── Test 2 — multi-secret security invariant on the proxy path ───────────
+
+    /// Mirrors ST-I's multi-secret test (Test 6 in this file) for the proxy
+    /// code path. Combines AWS, OpenAI, and GitHub secrets in one OpenAI
+    /// request body so a single `Interceptor::intercept()` exercises the
+    /// multi-finding redaction path.
+    ///
+    /// Asserts only the raw-secret-absence invariant — overlapping AC and
+    /// entropy findings can produce garbled `[REDACTED:Kind]` labels at the
+    /// boundaries (documented in `project_credential_scanner_overlap`), so
+    /// asserting on specific marker shapes would be brittle. The only
+    /// contract worth locking down is: no raw secret byte sequence ever
+    /// reaches a PipelineEvent subscriber.
+    #[tokio::test]
+    async fn secret_never_leaks_into_pipeline_event_from_proxy() {
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!(
+            "aws={aws} openai={openai} github={github}",
+            aws = super::FAKE_AWS_ACCESS_KEY,
+            openai = super::FAKE_OPENAI_KEY,
+            github = super::FAKE_GITHUB_PAT,
+        ));
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body);
+
+        let _ = interceptor.intercept(&event).await.expect("intercept must succeed");
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+
+        let event_str = format!("{pipeline_event:?}");
+        for (label, raw) in [
+            ("AWS access key", super::FAKE_AWS_ACCESS_KEY),
+            ("OpenAI key", super::FAKE_OPENAI_KEY),
+            ("GitHub PAT", super::FAKE_GITHUB_PAT),
+        ] {
+            assert!(
+                !event_str.contains(raw),
+                "SECURITY INVARIANT: emitted proxy PipelineEvent contains raw {label} — would leak to any audit subscriber",
+            );
+        }
+    }
 }
