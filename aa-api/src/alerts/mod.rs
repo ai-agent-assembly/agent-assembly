@@ -38,6 +38,13 @@ pub struct StoredAlert {
     /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
     /// while the alert is still in its initial captured state.
     pub updated_at: Option<String>,
+    /// Primary detected credential kind for `SecretDetected` alerts
+    /// (e.g. `"AwsAccessKey"`). `None` for `Budget` alerts.
+    pub detected_pattern_type: Option<String>,
+    /// `[REDACTED:<Kind>]` label for `SecretDetected` alerts. Never
+    /// contains any byte of the original secret. `None` for budget
+    /// alerts.
+    pub redacted_value: Option<String>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -123,6 +130,8 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
         limit_usd: alert.limit_usd,
         status: "unresolved".to_string(),
         updated_at: None,
+        detected_pattern_type: None,
+        redacted_value: None,
     }
 }
 
