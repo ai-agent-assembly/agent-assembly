@@ -512,7 +512,6 @@ async fn ebpf_file_rename_emits_event_with_old_path() {
 /// pid. Confirms the file is actually gone afterwards as a sanity check
 /// that the driver did the right syscall.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_unlink_emits_event_with_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
