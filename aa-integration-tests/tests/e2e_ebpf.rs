@@ -28,7 +28,7 @@
 //! | # | Name | Status |
 //! |---|------|--------|
 //! | 1 | `ebpf_ssl_write_uprobe_captures_plaintext` | enabled (root + libssl) |
-//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | `#[ignore]` — blocked on AAASM-1548 |
+//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | enabled (root) — re-enabled by AAASM-1548 |
 //! | 3 | `ebpf_catches_traffic_that_bypasses_proxy` | enabled (root + libssl) |
 //! | 4 | `ebpf_catches_traffic_without_sdk_init` | enabled (root + libssl) |
 //! | 5 | `ebpf_event_includes_pid_and_cgroup` | enabled (root) |
@@ -234,16 +234,7 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
 /// PID into the filter map and stand up the ring-buffer reader before
 /// the tracepoint fires. Asserts: filename contains `curl`,
 /// `pid == child_pid`, `ppid` is the test process id.
-///
-/// **Blocked on AAASM-1548**: `aa-ebpf-probes::try_sched_process_exec`
-/// reserves a ring-buffer entry then `?`-propagates the `ctx.read_at`
-/// errors without discarding the reservation. The Linux 6.x BPF
-/// verifier rejects the program (`Unreleased reference id=6 alloc_insn=17`)
-/// so `TracepointManager::attach` returns `ProbeAttach` before any test
-/// code runs. Remove `#[ignore]` once AAASM-1548 lands a `entry.discard(0)`
-/// on the error branches.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1548: aa-exec-probes verifier rejects program due to ringbuf reference leak"]
 async fn ebpf_exec_probe_captures_subprocess_spawn() {
     let mut bpf = Ebpf::load(AA_EXEC_BPF).expect("failed to load exec BPF object — run with sudo");
     let _mgr = TracepointManager::attach(&mut bpf).expect("failed to attach exec tracepoints");
