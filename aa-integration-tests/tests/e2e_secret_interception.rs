@@ -464,4 +464,55 @@ mod proxy_path {
             );
         }
     }
+
+    // ── Test 3 — negative control on the proxy path ──────────────────────────
+
+    /// Mirrors ST-I Test 5 (`short_high_entropy_string_does_not_trigger_scanner`)
+    /// for the proxy code path. Guards against alert fatigue: short
+    /// high-entropy strings that look secret-shaped but are below the
+    /// `GenericHighEntropy` 20-byte floor (and lack an AC literal prefix)
+    /// must produce zero findings.
+    ///
+    /// Two paired assertions:
+    ///
+    /// 1. The proxy's default scanner returns a clean `ScanResult` on the
+    ///    OpenAI body shape with a 12-char alphanumeric payload.
+    /// 2. `Interceptor::intercept()` still emits a `PipelineEvent::Audit`
+    ///    on the broadcast channel — proving the negative path is a no-op
+    ///    on redaction, not a no-op on observation.
+    #[tokio::test]
+    async fn short_high_entropy_string_does_not_trigger_proxy_scanner() {
+        use aa_core::CredentialScanner;
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!("id={id}", id = super::SHORT_HIGH_ENTROPY));
+        let body_str = std::str::from_utf8(&body).expect("body must be UTF-8 ASCII");
+
+        // (1) Scanner-level: no findings on this short non-prefixed payload.
+        let scan = CredentialScanner::new().scan(body_str);
+        assert!(
+            scan.is_clean(),
+            "default scanner must produce zero findings on short high-entropy payload, got {:?}",
+            scan.findings,
+        );
+
+        // (2) Interceptor sanity: extraction succeeds and an audit event is
+        //     still emitted (negative path must not silence observation).
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body);
+
+        let fields = interceptor
+            .intercept(&event)
+            .await
+            .expect("intercept must succeed")
+            .expect("OpenAI body must yield extracted LlmFields");
+        assert_eq!(fields.model, "gpt-4");
+        assert_eq!(fields.messages_count, 1);
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted on clean path");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+    }
 }
