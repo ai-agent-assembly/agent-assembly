@@ -405,4 +405,20 @@ mod tests {
         assert_eq!(resp.reason, "credential detected");
         assert!(resp.redact.is_none());
     }
+
+    #[test]
+    fn eval_with_allow_and_findings_but_no_redacted_payload_maps_to_allow() {
+        // credential_action: alert_only → engine returns Allow + findings but
+        // leaves redacted_payload = None. The wire response must be
+        // Decision::Allow so the payload is forwarded unmodified.
+        let eval = EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: None,
+            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            deny_action: None,
+        };
+        let resp = eval_result_to_response(&eval, 0, "");
+        assert_eq!(resp.decision, Decision::Allow as i32);
+        assert!(resp.redact.is_none());
+    }
 }
