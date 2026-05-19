@@ -11,7 +11,7 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext},
 };
 
-use crate::helpers::{emit_event, get_pid_tgid, should_monitor};
+use crate::helpers::{emit_event, get_pid_tgid, should_monitor, syscall_pt_regs};
 use crate::maps::{
     FD_PATH_MAP, OPENAT_ENTRY_TS, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST, READ_ENTRY_TS,
     READ_TMP, RENAME_ENTRY_TS, RENAME_TMP, UNLINK_ENTRY_TS, UNLINK_TMP, WRITE_ENTRY_TS, WRITE_TMP,
@@ -34,8 +34,10 @@ fn try_sys_openat(ctx: &ProbeContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
-    // arg1 = const char __user *filename
-    let filename_ptr: *const u8 = ctx.arg(1).ok_or(1u32)?;
+    // openat(int dirfd, const char *filename, int flags, mode_t mode)
+    // — pull filename (arg1 = rsi) via pt_regs deref; ctx.arg(1) is
+    // garbage on SYSCALL_WRAPPER kernels. AAASM-1552.
+    let filename_ptr: *const u8 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(1).ok_or(1u32)?;
 
     let mut buf = [0u8; MAX_PATH_LEN];
     unsafe {
