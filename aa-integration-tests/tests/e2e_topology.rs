@@ -49,8 +49,9 @@ const LEAF4: [u8; 16] = [0x24; 16]; // child of MID2
 const LEAF5: [u8; 16] = [0x25; 16]; // child of MID3
 const LEAF6: [u8; 16] = [0x26; 16]; // child of MID3
 
-// ── Policy evaluation IDs (tests 5–6) ────────────────────────────────────────
+// ── Policy evaluation IDs (tests 5–7) ────────────────────────────────────────
 const DEPTH0_AGENT: [u8; 16] = [0xB0; 16];
+const DEPTH1_AGENT: [u8; 16] = [0xB1; 16];
 const DEPTH2_AGENT: [u8; 16] = [0xB2; 16];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -299,6 +300,39 @@ async fn policy_allows_delete_tool_at_depth_zero() {
 
 // ── Test 6 ────────────────────────────────────────────────────────────────────
 
+/// A depth-1 (child) agent calling `delete` is allowed without approval: the
+/// `requires_approval_if: "agent.depth >= 2"` condition does not fire at depth 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_allows_delete_tool_at_depth_one() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    env.agent_registry
+        .register(make_record(
+            DEPTH1_AGENT,
+            1,
+            Some(DEPTH0_AGENT),
+            Some(DEPTH0_AGENT),
+            Some(hex(&DEPTH0_AGENT)),
+        ))
+        .expect("register depth-1 agent");
+
+    let engine = make_topology_engine(&env);
+    let ctx = make_agent_ctx(DEPTH1_AGENT);
+    let action = GovernanceAction::ToolCall {
+        name: "delete".into(),
+        args: "{}".into(),
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert_eq!(
+        result,
+        PolicyResult::Allow,
+        "depth-1 agent calling 'delete' should be allowed without approval (got {result:?})"
+    );
+}
+
+// ── Test 7 ────────────────────────────────────────────────────────────────────
+
 /// A depth-2 (grandchild) agent calling `delete` triggers the
 /// `requires_approval_if: "agent.depth >= 2"` condition and must return
 /// `RequiresApproval`.
@@ -311,9 +345,9 @@ async fn policy_requires_approval_for_delete_at_depth_two() {
         .register(make_record(
             DEPTH2_AGENT,
             2,
-            Some([0xB1; 16]),
+            Some(DEPTH1_AGENT),
             Some(DEPTH0_AGENT),
-            Some(hex(&[0xB1; 16])),
+            Some(hex(&DEPTH1_AGENT)),
         ))
         .expect("register depth-2 agent");
 
@@ -331,7 +365,41 @@ async fn policy_requires_approval_for_delete_at_depth_two() {
     );
 }
 
-// ── Test 7 ────────────────────────────────────────────────────────────────────
+// ── Test 8 ────────────────────────────────────────────────────────────────────
+
+/// A depth-2 (grandchild) agent calling `spawn_child` triggers the
+/// `requires_approval_if: "agent.depth >= 2"` condition in
+/// `topology_aware.yaml`. Root (depth 0) and child (depth 1) agents may
+/// spawn freely; only depth ≥ 2 requires approval.
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_requires_approval_for_spawn_child_at_depth_two() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    env.agent_registry
+        .register(make_record(
+            DEPTH2_AGENT,
+            2,
+            Some(DEPTH1_AGENT),
+            Some(DEPTH0_AGENT),
+            Some(hex(&DEPTH1_AGENT)),
+        ))
+        .expect("register depth-2 agent");
+
+    let engine = make_topology_engine(&env);
+    let ctx = make_agent_ctx(DEPTH2_AGENT);
+    let action = GovernanceAction::ToolCall {
+        name: "spawn_child".into(),
+        args: "{}".into(),
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::RequiresApproval { .. }),
+        "depth-2 agent calling 'spawn_child' should require approval (got {result:?})"
+    );
+}
+
+// ── Test 9 ────────────────────────────────────────────────────────────────────
 
 /// When an agent is re-parented its depth changes; a topology-aware policy
 /// should reflect the new depth immediately on the next `evaluate()` call.
