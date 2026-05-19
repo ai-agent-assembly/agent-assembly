@@ -360,9 +360,14 @@ async fn ebpf_event_includes_pid_and_cgroup() {
 
     assert!(ev.pid > 0, "captured event must include a non-zero pid; got {}", ev.pid);
     assert!(ev.tid > 0, "captured event must include a non-zero tid; got {}", ev.tid);
+    // On Linux `pid_tgid` is packed as `(tgid << 32) | task_pid`; the BPF probe
+    // emits `event.pid = tgid` and `event.tid = task_pid`. The kernel allocates
+    // task pids monotonically per-clone, so for the thread-group leader
+    // `tid == pid` and for any subsequent thread `tid > pid`. Thus
+    // `tid >= pid` is always true; the reverse is not.
     assert!(
-        ev.pid >= ev.tid,
-        "tid ({}) must not exceed pid ({}) — Linux thread-group leader invariant",
+        ev.tid >= ev.pid,
+        "tid ({}) must be >= pid ({}) — Linux pid_tgid invariant",
         ev.tid,
         ev.pid,
     );
