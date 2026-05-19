@@ -389,8 +389,9 @@ async fn auth_rate_limit_burst_returns_429_with_retry_after() {
 #[tokio::test]
 async fn auth_rate_limit_resets_after_window() {
     let (plaintext, entry) = make_api_key("key-rl-reset", vec![Scope::Read]);
-    // window_secs=1 → bucket refills in 1 s; test completes in < 5 s in CI.
-    let env = TopologyTestEnv::start_with_auth_and_window(&[entry], 1, 1)
+    // window_secs=5 → bucket refills in 5 s. Using 1 s was flaky on loaded CI
+    // runners because the window could expire between request 1 and request 2.
+    let env = TopologyTestEnv::start_with_auth_and_window(&[entry], 1, 5)
         .await
         .unwrap();
     let client = reqwest::Client::new();
@@ -416,8 +417,8 @@ async fn auth_rate_limit_resets_after_window() {
         .unwrap();
     assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    // Wait for bucket to refill (rpm=1, window=1s → 1 token per 1s).
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for bucket to refill (rpm=1, window=5s → 1 token per 5s).
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
     // Third request succeeds after refill.
     let resp3 = client

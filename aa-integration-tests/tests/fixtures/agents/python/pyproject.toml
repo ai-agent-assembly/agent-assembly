@@ -1,0 +1,50 @@
+[project]
+name = "aa-agent-fixtures"
+version = "0.0.0"
+description = "Sample AI agent scripts for aa-integration-tests F116 E2E acceptance tests"
+requires-python = ">=3.12"
+dependencies = ["agent-assembly"]
+
+[project.optional-dependencies]
+langchain     = ["langchain>=0.3,<0.4", "langchain-openai>=0.2,<0.3"]
+langgraph     = ["langgraph>=0.2,<0.4"]
+crewai        = ["crewai>=0.80,<1.0"]
+pydantic_ai   = ["pydantic-ai>=0.1.0,<1.0"]
+openai_agents = ["openai-agents>=1.0.0,<2.0"]
+all           = [
+    "langchain>=0.3,<0.4",
+    "langchain-openai>=0.2,<0.3",
+    "langgraph>=0.2,<0.4",
+    "crewai>=0.80,<1.0",
+    "pydantic-ai>=0.1.0,<1.0",
+    "openai-agents>=1.0.0,<2.0",
+]
+runner    = ["rich>=13.0,<15.0"]
+
+[tool.uv]
+default-groups = []
+
+[tool.uv.sources]
+# Mode 1: Local sibling checkout (PRIMARY — default for CI + local dev side-by-side)
+# Local dev:  6 levels up from fixtures/agents/python/ = AI-agent-assembly/python-sdk/
+# CI:  sibling-repo checkout via actions/checkout@v4 (path: python-sdk)
+agent-assembly = { path = "../../../../../../python-sdk", editable = true }
+
+# Mode 2: GitHub URL fallback (use when only agent-assembly is checked out)
+# Uncomment one of these and comment out Mode 1:
+#
+# Latest master:
+# agent-assembly = { git = "https://github.com/AI-agent-assembly/python-sdk.git", branch = "master" }
+#
+# Pinned commit (preferred for reproducibility):
+# agent-assembly = { git = "https://github.com/AI-agent-assembly/python-sdk.git", rev = "COMMIT_SHA" }
+
+# Mode 3: PyPI version pin (future — once SDK is published to PyPI)
+# agent-assembly = ">=0.0.1,<1.0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

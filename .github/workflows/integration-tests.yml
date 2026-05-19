@@ -87,6 +87,7 @@ jobs:
           GO_SDK_PATH: ${{ github.workspace }}/go-sdk
         run: cargo nextest run -p aa-integration-tests --test-threads=1
 
+
       - name: Upload gateway logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
