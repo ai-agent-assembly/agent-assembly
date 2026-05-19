@@ -616,6 +616,51 @@ impl PolicyServiceImpl {
     }
 }
 
+impl PolicyServiceImpl {
+    /// Publish a [`SecretAlert`] when the evaluation produced one or more
+    /// credential findings and a broadcast sender is attached. The alert
+    /// carries only kind tags and counts — never any byte of the original
+    /// secret. Failure to send (no receivers) is logged at trace level
+    /// and does not propagate (AAASM-1545).
+    fn maybe_emit_secret_alert(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
+        if eval.credential_findings.is_empty() {
+            return;
+        }
+        let Some(tx) = self.secret_alert_tx.as_ref() else {
+            return;
+        };
+        let Some(proto_agent) = req.agent_id.as_ref() else {
+            return;
+        };
+
+        let agent_id = AgentId::from_bytes(proto_agent_id_to_key(proto_agent));
+        let team_id = if proto_agent.team_id.is_empty() {
+            None
+        } else {
+            Some(proto_agent.team_id.clone())
+        };
+
+        // Distinct kinds (preserve first-seen order) for the alert payload.
+        let mut kinds = Vec::new();
+        for f in &eval.credential_findings {
+            if !kinds.iter().any(|k| k == &f.kind) {
+                kinds.push(f.kind.clone());
+            }
+        }
+
+        let alert = SecretAlert {
+            agent_id,
+            team_id,
+            kinds,
+            finding_count: eval.credential_findings.len(),
+        };
+
+        if let Err(err) = tx.send(alert) {
+            tracing::trace!(error = %err, "no subscribers for SecretAlert broadcast");
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl PolicyService for PolicyServiceImpl {
     async fn check_action(
@@ -632,6 +677,7 @@ impl PolicyService for PolicyServiceImpl {
         );
 
         let (eval, latency_us, policy_rule) = self.evaluate_one(&req)?;
+        self.maybe_emit_secret_alert(&req, &eval);
         let deny_action = eval.deny_action;
 
         // If RequiresApproval, submit to the queue and block until decided.
@@ -672,6 +718,7 @@ impl PolicyService for PolicyServiceImpl {
 
         for req in &batch.requests {
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
+            self.maybe_emit_secret_alert(req, &eval);
             let deny_action = eval.deny_action;
             let resp = if let Some(approval_response) =
                 self.maybe_submit_approval(req, &eval, latency_us, &policy_rule).await
