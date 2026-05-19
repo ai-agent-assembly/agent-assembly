@@ -10,13 +10,16 @@ pub mod store;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 
-/// Stored representation of a budget alert with metadata.
+/// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredAlert {
     /// Auto-incremented alert identifier.
     pub id: u64,
     /// Alert severity level derived from `threshold_pct`.
     pub severity: AlertSeverity,
+    /// Source classification — `Budget` today, `SecretDetected` once
+    /// secret-detection alerts are emitted (AAASM-1545).
+    pub category: AlertCategory,
     /// Human-readable alert message.
     pub message: String,
     /// Hex-encoded agent ID that triggered the alert.
@@ -111,6 +114,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
     StoredAlert {
         id,
         severity: severity_from_threshold(alert.threshold_pct),
+        category: AlertCategory::Budget,
         message: build_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
         timestamp,
