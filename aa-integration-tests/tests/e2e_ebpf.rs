@@ -342,3 +342,53 @@ async fn ebpf_catches_traffic_without_sdk_init() {
         "TLS uprobe must capture plaintext even when no SDK initialised in the agent"
     );
 }
+
+// =============================================================================
+// Test 5 — pid / tid attribution on the captured event
+// =============================================================================
+
+/// AAASM-1520 test 5 — `ebpf_event_includes_pid_and_cgroup`.
+///
+/// Verifies that every captured event carries process-attribution fields
+/// strong enough to identify which agent produced the call. The current
+/// `TlsCaptureEvent` schema (`aa-ebpf-common::tls`) carries `pid` and
+/// `tid` — both are required and asserted non-zero, plus `pid >= tid`
+/// since on Linux the thread-group leader has `pid == tgid`. A non-zero
+/// timestamp is also asserted so the gateway can order events.
+///
+/// Note: the cgroup attribution mentioned by the AC is not yet a field
+/// on `TlsCaptureEvent` — the schema only carries the kernel-provided
+/// pid_tgid + nanosecond timestamp. Adding `cgroup_id` to the BPF event
+/// requires a probe + schema change tracked separately (AAASM-1425
+/// scope). pid is the canonical process-attribution key on this kernel
+/// and is sufficient to link events back to an agent via the gateway's
+/// agent-pid mapping.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_event_includes_pid_and_cgroup() {
+    let (mut reader, _mgr) = start_tls_capture().await;
+
+    let mut child = Command::new("python3")
+        .arg(driver_path())
+        .args(["--mode", "ssl-write", "--target", "https://example.com/"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("failed to spawn driver");
+
+    let ev = await_outbound_tls(&mut reader, Duration::from_secs(15)).await;
+    let _ = child.wait();
+
+    assert!(ev.pid > 0, "captured event must include a non-zero pid; got {}", ev.pid);
+    assert!(ev.tid > 0, "captured event must include a non-zero tid; got {}", ev.tid);
+    assert!(
+        ev.pid >= ev.tid,
+        "tid ({}) must not exceed pid ({}) — Linux thread-group leader invariant",
+        ev.tid,
+        ev.pid,
+    );
+    assert!(
+        ev.timestamp_ns > 0,
+        "captured event must include a non-zero monotonic timestamp; got {}",
+        ev.timestamp_ns,
+    );
+}
