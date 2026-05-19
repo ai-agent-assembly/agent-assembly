@@ -71,6 +71,10 @@ pub enum CredentialAction {
 pub struct DataPolicy {
     /// Compiled regex patterns for PII / credential detection.
     pub sensitive_patterns: Vec<String>,
+    /// Action to take when the scanner produces a finding. Defaults to
+    /// [`CredentialAction::RedactOnly`] so policies that omit the field
+    /// keep the historical behaviour.
+    pub credential_action: CredentialAction,
 }
 
 /// Per-policy approval escalation overrides.

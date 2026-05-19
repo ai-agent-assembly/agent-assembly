@@ -1005,8 +1005,8 @@ impl aa_core::PolicyEvaluator for PolicyEngine {
 mod tests {
     use super::*;
     use crate::policy::document::{
-        ActionOnExceed, ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy,
-        ToolPolicy,
+        ActionOnExceed, ActiveHours, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy, PolicyDocument,
+        SchedulePolicy, ToolPolicy,
     };
     use aa_core::{
         identity::{AgentId, SessionId},
@@ -1301,6 +1301,7 @@ mod tests {
         let mut doc = empty_doc();
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1504,6 +1505,7 @@ mod tests {
         );
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![".*".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1618,6 +1620,7 @@ mod tests {
         let mut doc = empty_doc();
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"api_key=[A-Za-z0-9]+".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();

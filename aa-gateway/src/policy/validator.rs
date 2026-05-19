@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use crate::policy::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument,
-        SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy,
+        PolicyDocument, SchedulePolicy, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{GovernancePolicyEnvelope, RawPolicyDocument},
@@ -310,6 +310,7 @@ impl PolicyValidator {
 
         Some(DataPolicy {
             sensitive_patterns: patterns,
+            credential_action: CredentialAction::default(),
         })
     }
 
