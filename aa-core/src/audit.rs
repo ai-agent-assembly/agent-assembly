@@ -108,6 +108,46 @@ pub struct Lineage {
 }
 
 // ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+
+/// Optional credential-redaction artefacts attached to an [`AuditEntry`].
+///
+/// Populated when the gateway's policy engine ran the credential scanner
+/// (Stage 6 of `PolicyEngine::evaluate`) and produced at least one finding.
+/// Both fields default to empty / `None`, matching the legacy code path that
+/// constructs entries without scanner output. `Redaction::default()` passed
+/// to [`AuditEntry::new_with_lineage_and_redaction`] produces a hash
+/// identical to [`AuditEntry::new_with_lineage`] with the same base fields,
+/// preserving backward compatibility.
+///
+/// ## Security invariant
+///
+/// Neither field stores the raw secret value. `credential_findings` holds
+/// only the [`CredentialKind`](crate::scanner::CredentialKind), byte offset,
+/// and the `[REDACTED:<kind>]` label (`CredentialFinding`'s `end` field is
+/// `#[serde(skip)]`). `redacted_payload` holds the sanitised payload returned
+/// by `ScanResult::redact` where every match has been replaced with its
+/// `[REDACTED:<kind>]` label.
+///
+/// ## Feature gating
+///
+/// Gated on `std` because [`CredentialFinding`](crate::scanner::CredentialFinding)
+/// lives in the `std`-only `scanner` module. `no_std + alloc` builds compile
+/// `AuditEntry` without redaction support.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Redaction {
+    /// All credential / PII findings detected by the scanner. Empty when the
+    /// scanner found nothing.
+    pub credential_findings: alloc::vec::Vec<crate::scanner::CredentialFinding>,
+    /// The redacted version of the action payload (raw secret bytes replaced
+    /// with `[REDACTED:<kind>]` labels). `None` when no findings were produced.
+    pub redacted_payload: Option<alloc::string::String>,
+}
+
+// ---------------------------------------------------------------------------
 // AuditEntry
 // ---------------------------------------------------------------------------
 
