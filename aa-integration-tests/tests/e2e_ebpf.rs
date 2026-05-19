@@ -54,5 +54,115 @@
 
 #![cfg(all(target_os = "linux", feature = "integration-test"))]
 
-// Test bodies land in subsequent commits (one per logical unit) per the
-// AAASM-1520 commit shape documented on the Jira subtask.
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use aa_ebpf::loader::EbpfLoader;
+use aa_ebpf::ringbuf::{EbpfEvent, RingBufReader};
+use aa_ebpf::uprobe::UprobeManager;
+use aa_ebpf_common::tls::TlsCaptureEvent;
+use tokio::time::timeout;
+
+// =============================================================================
+// Helpers — shared across the six tests
+// =============================================================================
+
+/// Path to the Python driver script. Resolved relative to the workspace root
+/// so the same path works for `cargo nextest run` and a direct `cargo test`.
+fn driver_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/e2e/ebpf_agent_driver.py")
+}
+
+/// Attach system-wide TLS uprobes and return the reader + manager. The manager
+/// guard must outlive the reader — dropping it detaches the probes.
+async fn start_tls_capture() -> (RingBufReader, UprobeManager) {
+    let mut bpf = EbpfLoader::load().expect("failed to load TLS BPF object — run with sudo");
+    let mgr = UprobeManager::attach(&mut bpf, None).expect("failed to attach TLS uprobes (need CAP_BPF + CAP_PERFMON)");
+    let reader = RingBufReader::new(bpf).expect("failed to create ring-buffer reader");
+    (reader, mgr)
+}
+
+/// Poll `reader` until a [`EbpfEvent::Tls`] event with `direction == 0`
+/// (outbound write) arrives or `deadline` elapses. Panics on timeout so the
+/// caller's assertion line points at the missing event.
+async fn await_outbound_tls(reader: &mut RingBufReader, deadline: Duration) -> TlsCaptureEvent {
+    let start = Instant::now();
+    loop {
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            panic!("timed out after {:?} waiting for an outbound TLS event", deadline);
+        }
+        match timeout(remaining, reader.next()).await {
+            Ok(Ok(Some(EbpfEvent::Tls(ev)))) if ev.direction == 0 => return *ev,
+            Ok(Ok(Some(_))) => continue, // skip non-write events
+            Ok(Ok(None)) => panic!("ring buffer closed unexpectedly"),
+            Ok(Err(e)) => panic!("ring buffer error: {e}"),
+            Err(_) => panic!("timed out after {:?} waiting for an outbound TLS event", deadline),
+        }
+    }
+}
+
+/// Run the Python driver synchronously with the given args and return its
+/// stdout (parsed as JSON). Asserts the driver exited 0 so the test fails
+/// loudly on driver-side problems instead of silently waiting for events.
+fn run_driver(args: &[&str]) -> serde_json::Value {
+    let out = Command::new("python3")
+        .arg(driver_path())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
+        .expect("failed to spawn ebpf_agent_driver.py — is python3 installed?");
+    assert!(
+        out.status.success(),
+        "driver exited {}; stdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout)
+    );
+    serde_json::from_slice(&out.stdout).expect("driver stdout was not valid JSON")
+}
+
+// =============================================================================
+// Test 1 — ssl_write uprobe plaintext capture
+// =============================================================================
+
+/// AAASM-1520 test 1 — `ebpf_ssl_write_uprobe_captures_plaintext`.
+///
+/// Attach system-wide TLS uprobes, drive a `curl https://...` via the driver
+/// script, and assert that at least one outbound TLS plaintext event arrives
+/// with non-zero `data_len`. The captured bytes are the HTTP request before
+/// TLS encryption, so they contain ASCII `HTTP/1` and a `Host:` header — we
+/// assert on both to guard against the probe firing but capturing junk.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_ssl_write_uprobe_captures_plaintext() {
+    let (mut reader, _mgr) = start_tls_capture().await;
+
+    // Drive curl in the background so it does not block the reader. The
+    // driver script prints its result to stdout, but we don't need to read
+    // it for this test — the only ground truth is the kernel event.
+    let mut child = Command::new("python3")
+        .arg(driver_path())
+        .args(["--mode", "ssl-write", "--target", "https://example.com/"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("failed to spawn driver");
+
+    let ev = await_outbound_tls(&mut reader, Duration::from_secs(15)).await;
+    let _ = child.wait();
+
+    assert!(ev.data_len > 0, "ssl_write event must have non-zero data_len");
+    let payload_len = ev.data_len as usize;
+    let captured = String::from_utf8_lossy(&ev.payload[..payload_len.min(ev.payload.len())]);
+    assert!(
+        captured.contains("HTTP/1"),
+        "captured plaintext should contain the HTTP request line; got: {:?}",
+        &captured[..captured.len().min(80)]
+    );
+    assert!(
+        captured.contains("Host:") || captured.contains("host:"),
+        "captured plaintext should contain a Host header; got: {:?}",
+        &captured[..captured.len().min(120)]
+    );
+}
