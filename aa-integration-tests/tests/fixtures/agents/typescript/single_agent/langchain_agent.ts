@@ -1,8 +1,8 @@
 // F116 ST-B — single-agent LangChain fixture (AAASM-1514).
 //
-// Registers one agent via @agent-assembly/sdk, invokes a LangChain tool, then
-// shuts down. In selftest mode (AA_SELFTEST=1) skips SDK/gateway entirely and
-// emits synthetic events so the Rust harness can exercise the fixture toolchain
+// Registers one agent via @agent-assembly/sdk, invokes a LangChain DynamicTool
+// (echo pattern), then shuts down. In selftest mode (AA_SELFTEST=1) skips SDK
+// and tool execution, emitting synthetic events so the Rust harness can run
 // hermetically (no native bindings, no running gateway required).
 //
 // Invocation:
@@ -12,6 +12,13 @@
 //   AA_SELFTEST=1 AA_GATEWAY_ADDR=dummy pnpm exec tsx single_agent/langchain_agent.ts
 
 import { loadConfig, emit, type AgentConfig } from "../_shared.js";
+import { DynamicTool } from "@langchain/core/tools";
+
+const echoTool = new DynamicTool({
+  name: "echo",
+  description: "Echoes the input back.",
+  func: async (input: string) => `echo: ${input}`,
+});
 
 async function runReal(cfg: AgentConfig): Promise<void> {
   const { initAssembly } = await import("@agent-assembly/sdk");
@@ -25,8 +32,8 @@ async function runReal(cfg: AgentConfig): Promise<void> {
 
   emit({ event: "started", agent_id: cfg.agentId });
 
-  // Simulate a LangChain tool call (echo pattern).
-  const result = `echo: ${cfg.task}`;
+  // Invoke the LangChain tool.
+  const result = await echoTool.invoke(cfg.task);
   emit({ event: "tool_call", tool: "echo", input: cfg.task });
 
   await ctx.shutdown();
