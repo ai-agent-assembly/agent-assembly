@@ -12,7 +12,11 @@ import asyncio
 import fnmatch
 import json
 import os
+import signal
+import socket
 import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -269,3 +273,86 @@ async def run_all_parallel(
     order = {script.path: idx for idx, script in enumerate(scripts)}
     results.sort(key=lambda r: order[r.script.path])
     return results
+
+
+def _find_gateway_binary(repo_root: Path) -> Path | None:
+    """Return the first existing aa-gateway binary under target/."""
+    for candidate in (
+        repo_root / "target" / "debug" / "aa-gateway",
+        repo_root / "target" / "release" / "aa-gateway",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _free_port() -> int:
+    """Pick a free localhost TCP port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+class AutoGateway:
+    """Context manager that spawns aa-gateway and tears it down on exit.
+
+    Writes a temporary allow-all policy file, picks a free port, and
+    starts the gateway as a subprocess. SIGTERM on exit; SIGKILL if the
+    process refuses to leave within 5 seconds.
+    """
+
+    def __init__(self, repo_root: Path):
+        self.repo_root = repo_root
+        self.proc: subprocess.Popen[bytes] | None = None
+        self.policy_path: Path | None = None
+        self.addr: str = ""
+
+    def __enter__(self) -> "AutoGateway":
+        binary = _find_gateway_binary(self.repo_root)
+        if binary is None:
+            raise RuntimeError(
+                "aa-gateway binary not found under target/{debug,release}. "
+                "Run `cargo build -p aa-gateway` from the repo root first."
+            )
+        port = _free_port()
+        self.addr = f"127.0.0.1:{port}"
+
+        fd, policy_str = tempfile.mkstemp(prefix="aa-allow-all-", suffix=".yaml")
+        with os.fdopen(fd, "w") as policy_file:
+            policy_file.write('version: "1"\nglobal:\n  default_action: allow\n')
+        self.policy_path = Path(policy_str)
+
+        self.proc = subprocess.Popen(
+            [
+                str(binary),
+                "--policy",
+                str(self.policy_path),
+                "--listen",
+                self.addr,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Brief sleep so the gateway has time to bind before fixtures connect.
+        time.sleep(1.0)
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.proc is not None:
+            try:
+                self.proc.send_signal(signal.SIGTERM)
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            except ProcessLookupError:
+                pass
+            self.proc = None
+        if self.policy_path is not None:
+            try:
+                self.policy_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.policy_path = None
