@@ -183,3 +183,66 @@ pub enum AuditError {
     #[error("JSON deserialization error at line {line}: {source}")]
     Deserialize { line: u64, source: serde_json::Error },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::{AgentId, AuditEventType, CredentialScanner, Lineage, Redaction, SessionId};
+
+    /// Synthetic AWS access key from AWS public documentation. Not a real credential.
+    const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    #[tokio::test]
+    async fn audit_writer_jsonl_never_contains_raw_secret() {
+        let scanner = CredentialScanner::new();
+        let scan = scanner.scan(FAKE_AWS_ACCESS_KEY);
+        assert!(
+            !scan.findings.is_empty(),
+            "scanner fixture invariant — must detect AWS key"
+        );
+        let redacted_payload = scan.redact(FAKE_AWS_ACCESS_KEY);
+        let redaction = Redaction {
+            credential_findings: scan.findings,
+            redacted_payload: Some(redacted_payload),
+        };
+
+        let entry = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::CredentialLeakBlocked,
+            AgentId::from_bytes([5u8; 16]),
+            SessionId::from_bytes([6u8; 16]),
+            r#"{"action_type":"tool_call","decision":"redact"}"#.to_string(),
+            [0u8; 32],
+            Lineage::default(),
+            redaction,
+        );
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let (tx, rx) = mpsc::channel(4);
+        let writer = AuditWriter::new(tmp.path().to_path_buf(), "agent-test", "session-test", rx)
+            .await
+            .expect("construct AuditWriter");
+        let path = writer.path.clone();
+        let handle = tokio::spawn(writer.run());
+
+        tx.send(entry).await.expect("send entry to writer");
+        drop(tx);
+        handle.await.expect("writer task joins cleanly");
+
+        let on_disk = tokio::fs::read_to_string(&path).await.expect("read JSONL");
+
+        assert!(
+            !on_disk.contains(FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT VIOLATED: raw secret present in audit JSONL on disk: {on_disk}",
+        );
+        assert!(
+            on_disk.contains("[REDACTED:AwsAccessKey]"),
+            "audit JSONL must carry the [REDACTED:AwsAccessKey] label, got: {on_disk}",
+        );
+
+        let verify = AuditWriter::verify_chain(&path).await.expect("verify_chain runs");
+        assert!(verify.is_valid, "single redacted entry must verify cleanly");
+        assert_eq!(verify.entries_checked, 1);
+    }
+}
