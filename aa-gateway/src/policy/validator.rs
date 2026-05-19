@@ -565,6 +565,14 @@ mod tests {
         assert_eq!(dp.credential_action, CredentialAction::Block);
     }
 
+    #[test]
+    fn data_credential_action_alert_only_parses() {
+        let yaml = "data:\n  credential_action: alert_only\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let dp = out.document.data.unwrap();
+        assert_eq!(dp.credential_action, CredentialAction::AlertOnly);
+    }
+
     // ── Budget validation ───────────────────────────────────────────────────
 
     #[test]
