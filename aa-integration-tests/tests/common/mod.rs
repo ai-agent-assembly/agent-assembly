@@ -14,6 +14,11 @@
 //! than spawning the `aa-gateway` binary as the ticket text suggests
 //! (`aa-gateway` is gRPC-only and there is currently no `aa-api` HTTP
 //! binary in the workspace).
+//!
+//! Also re-exports [`MockLlmServer`] (see [`mock_llm`]) — the hermetic mock
+//! LLM upstream that the deferred secret-detection E2E tests
+//! (AAASM-1521 / AAASM-1549) use to assert what the SUT forwarded after
+//! policy enforcement. Module-level docs in [`mock_llm`] cover usage.
 
 #[allow(dead_code)]
 pub mod cli;
