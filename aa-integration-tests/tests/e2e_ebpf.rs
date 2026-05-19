@@ -92,20 +92,51 @@ async fn start_tls_capture() -> (RingBufReader, UprobeManager) {
 /// (outbound write) arrives or `deadline` elapses. Panics on timeout so the
 /// caller's assertion line points at the missing event.
 async fn await_outbound_tls(reader: &mut RingBufReader, deadline: Duration) -> TlsCaptureEvent {
+    await_outbound_tls_matching(reader, deadline, |_| true).await
+}
+
+/// Like [`await_outbound_tls`] but also requires the captured plaintext to
+/// satisfy `predicate`. Used by test 1 to filter past unrelated system-wide
+/// SSL_write events until curl's HTTP/1.1 request arrives — the
+/// `UprobeManager` we install is global, so any process on the host that
+/// calls `SSL_write` during the test produces an event in the ring buffer.
+async fn await_outbound_tls_matching(
+    reader: &mut RingBufReader,
+    deadline: Duration,
+    predicate: impl Fn(&[u8]) -> bool,
+) -> TlsCaptureEvent {
     let start = Instant::now();
     loop {
         let remaining = deadline.saturating_sub(start.elapsed());
         if remaining.is_zero() {
-            panic!("timed out after {:?} waiting for an outbound TLS event", deadline);
+            panic!(
+                "timed out after {:?} waiting for a matching outbound TLS event",
+                deadline
+            );
         }
         match timeout(remaining, reader.next()).await {
-            Ok(Ok(Some(EbpfEvent::Tls(ev)))) if ev.direction == 0 => return *ev,
+            Ok(Ok(Some(EbpfEvent::Tls(ev)))) if ev.direction == 0 => {
+                let payload_len = (ev.data_len as usize).min(ev.payload.len());
+                if predicate(&ev.payload[..payload_len]) {
+                    return *ev;
+                }
+                continue;
+            }
             Ok(Ok(Some(_))) => continue, // skip non-write events
             Ok(Ok(None)) => panic!("ring buffer closed unexpectedly"),
             Ok(Err(e)) => panic!("ring buffer error: {e}"),
-            Err(_) => panic!("timed out after {:?} waiting for an outbound TLS event", deadline),
+            Err(_) => panic!(
+                "timed out after {:?} waiting for a matching outbound TLS event",
+                deadline
+            ),
         }
     }
+}
+
+/// Char-safe truncation for assertion messages over `from_utf8_lossy`
+/// strings (which may contain multi-byte U+FFFD replacement chars).
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 /// Decode a null-terminated byte buffer (e.g. `ExecEvent::filename`) into a
@@ -141,11 +172,15 @@ async fn await_exec_event(reader: &mut RingBufReader, deadline: Duration, want_p
 
 /// AAASM-1520 test 1 — `ebpf_ssl_write_uprobe_captures_plaintext`.
 ///
-/// Attach system-wide TLS uprobes, drive a `curl https://...` via the driver
-/// script, and assert that at least one outbound TLS plaintext event arrives
-/// with non-zero `data_len`. The captured bytes are the HTTP request before
-/// TLS encryption, so they contain ASCII `HTTP/1` and a `Host:` header — we
-/// assert on both to guard against the probe firing but capturing junk.
+/// Attach system-wide TLS uprobes, drive a `curl --http1.1 https://...`
+/// via the driver script, and assert that the outbound TLS plaintext for
+/// our request arrives in the ring buffer. The uprobe is installed
+/// system-wide, so the helper loops past any unrelated `SSL_write` events
+/// (other processes' TLS calls) by filtering for a payload that begins
+/// with an HTTP/1.x request method. The captured bytes are the HTTP
+/// request before TLS encryption, so the test then asserts the payload
+/// contains an `HTTP/1` request line and a `Host:` header — guarding
+/// against the probe firing but capturing junk.
 #[tokio::test(flavor = "multi_thread")]
 async fn ebpf_ssl_write_uprobe_captures_plaintext() {
     let (mut reader, _mgr) = start_tls_capture().await;
@@ -161,21 +196,27 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
         .spawn()
         .expect("failed to spawn driver");
 
-    let ev = await_outbound_tls(&mut reader, Duration::from_secs(15)).await;
+    // Filter for our event by payload prefix: a curl HTTP/1.1 GET starts
+    // with the ASCII bytes "GET ". Any unrelated SSL_write event (a
+    // background daemon, a sibling test) is dropped on the floor.
+    let ev = await_outbound_tls_matching(&mut reader, Duration::from_secs(20), |payload| {
+        payload.starts_with(b"GET ") || payload.starts_with(b"POST ") || payload.starts_with(b"HEAD ")
+    })
+    .await;
     let _ = child.wait();
 
     assert!(ev.data_len > 0, "ssl_write event must have non-zero data_len");
-    let payload_len = ev.data_len as usize;
-    let captured = String::from_utf8_lossy(&ev.payload[..payload_len.min(ev.payload.len())]);
+    let payload_len = (ev.data_len as usize).min(ev.payload.len());
+    let captured = String::from_utf8_lossy(&ev.payload[..payload_len]);
     assert!(
         captured.contains("HTTP/1"),
         "captured plaintext should contain the HTTP request line; got: {:?}",
-        &captured[..captured.len().min(80)]
+        truncate_chars(&captured, 80)
     );
     assert!(
         captured.contains("Host:") || captured.contains("host:"),
         "captured plaintext should contain a Host header; got: {:?}",
-        &captured[..captured.len().min(120)]
+        truncate_chars(&captured, 120)
     );
 }
 
