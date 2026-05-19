@@ -108,26 +108,6 @@ async fn await_outbound_tls(reader: &mut RingBufReader, deadline: Duration) -> T
     }
 }
 
-/// Run the Python driver synchronously with the given args and return its
-/// stdout (parsed as JSON). Asserts the driver exited 0 so the test fails
-/// loudly on driver-side problems instead of silently waiting for events.
-fn run_driver(args: &[&str]) -> serde_json::Value {
-    let out = Command::new("python3")
-        .arg(driver_path())
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .output()
-        .expect("failed to spawn ebpf_agent_driver.py — is python3 installed?");
-    assert!(
-        out.status.success(),
-        "driver exited {}; stdout: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stdout)
-    );
-    serde_json::from_slice(&out.stdout).expect("driver stdout was not valid JSON")
-}
-
 /// Decode a null-terminated byte buffer (e.g. `ExecEvent::filename`) into a
 /// lossy UTF-8 string for assertions.
 fn nul_terminated_str(buf: &[u8]) -> String {
@@ -282,7 +262,7 @@ async fn ebpf_exec_probe_captures_subprocess_spawn() {
 async fn ebpf_catches_traffic_that_bypasses_proxy() {
     let (mut reader, _mgr) = start_tls_capture().await;
 
-    let mut child = Command::new("python3")
+    let child = Command::new("python3")
         .arg(driver_path())
         .args(["--mode", "bypass-proxy", "--target", "https://example.com/"])
         .stdout(Stdio::piped())
@@ -320,7 +300,7 @@ async fn ebpf_catches_traffic_that_bypasses_proxy() {
 async fn ebpf_catches_traffic_without_sdk_init() {
     let (mut reader, _mgr) = start_tls_capture().await;
 
-    let mut child = Command::new("python3")
+    let child = Command::new("python3")
         .arg(driver_path())
         .args(["--mode", "no-sdk", "--target", "https://example.com/"])
         .stdout(Stdio::piped())
