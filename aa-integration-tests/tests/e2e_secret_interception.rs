@@ -49,7 +49,6 @@ const FAKE_GITHUB_PAT: &str = "ghp_0000000000000000000000000000000000";
 const FAKE_OPENAI_KEY: &str = "sk-test-AbCdEf1234567890ABCDEF1234567890ABCDEF1234567890";
 
 /// Custom-pattern token shaped to match `MYCO-SECRET-[A-Za-z0-9]+`.
-#[allow(dead_code)] // wired in by the custom-regex detection test commit
 const FAKE_CUSTOM_TOKEN: &str = "MYCO-SECRET-DEADBEEFCAFE0001";
 
 /// Below the `GenericHighEntropy` length floor (20 chars) — must not trip the
@@ -212,5 +211,28 @@ fn openai_key_in_tool_args_is_detected_and_redacted() {
     assert!(
         !redacted.contains(FAKE_OPENAI_KEY),
         "redacted payload must not retain the original OpenAI key",
+    );
+}
+
+// ── Test 4 — Policy-defined custom regex in tool args ────────────────────────
+
+#[test]
+fn custom_sensitive_pattern_in_tool_args_is_detected_and_redacted() {
+    let payload = format!(r#"{{"data":"internal token = {FAKE_CUSTOM_TOKEN}"}}"#);
+    let action = tool_call_with_args(&payload);
+    let result = evaluate(&action, 0xA4);
+
+    assert_detected(&result, CredentialKind::Custom);
+
+    let redacted = result
+        .redacted_payload
+        .expect("custom-regex match must produce a redacted payload");
+    assert!(
+        redacted.contains("[REDACTED:Custom]"),
+        "redacted payload must carry the [REDACTED:Custom] label, got: {redacted}",
+    );
+    assert!(
+        !redacted.contains(FAKE_CUSTOM_TOKEN),
+        "redacted payload must not retain the original custom token",
     );
 }
