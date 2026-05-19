@@ -183,6 +183,11 @@ pub trait AlertStore: Send + Sync {
     /// Record a new budget alert, returning the assigned ID.
     fn record(&self, alert: &BudgetAlert) -> u64;
 
+    /// Record a new secret-detection alert, returning the assigned ID
+    /// (AAASM-1545). The stored alert has `severity=critical` and
+    /// `category=secret_detected`.
+    fn record_secret(&self, alert: &SecretAlert) -> u64;
+
     /// List stored alerts with pagination.
     ///
     /// Returns `(alerts, total_count)`. Results are ordered newest-first.

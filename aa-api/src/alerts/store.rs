@@ -4,9 +4,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 
-use super::{stored_alert_from, AlertStore, StoredAlert};
+use super::{stored_alert_from, stored_secret_alert_from, AlertStore, StoredAlert};
 
 /// Default maximum number of alerts retained in the ring buffer.
 const DEFAULT_CAPACITY: usize = 10_000;
@@ -48,6 +49,19 @@ impl AlertStore for InMemoryAlertStore {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let timestamp = chrono::Utc::now().to_rfc3339();
         let stored = stored_alert_from(alert, id, timestamp);
+
+        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        if buf.len() >= self.capacity {
+            buf.pop_front();
+        }
+        buf.push_back(stored);
+        id
+    }
+
+    fn record_secret(&self, alert: &SecretAlert) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = stored_secret_alert_from(alert, id, timestamp);
 
         let mut buf = self.alerts.write().expect("alert store lock poisoned");
         if buf.len() >= self.capacity {
