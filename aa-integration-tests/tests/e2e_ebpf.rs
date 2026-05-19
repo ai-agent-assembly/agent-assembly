@@ -265,3 +265,42 @@ async fn ebpf_exec_probe_captures_subprocess_spawn() {
         parent_pid
     );
 }
+
+// =============================================================================
+// Test 3 — defence-in-depth via proxy bypass
+// =============================================================================
+
+/// AAASM-1520 test 3 — `ebpf_catches_traffic_that_bypasses_proxy`.
+///
+/// Drives the TLS uprobe with proxy env vars stripped. The driver's
+/// `bypass-proxy` mode unsets `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`
+/// before its `curl` call, so the request never traverses Layer 2 (the
+/// sidecar `aa-proxy`). The kernel uprobe must still observe the
+/// outbound plaintext — that is the "defence in depth" claim the parent
+/// Story makes about Layer 3.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_catches_traffic_that_bypasses_proxy() {
+    let (mut reader, _mgr) = start_tls_capture().await;
+
+    let mut child = Command::new("python3")
+        .arg(driver_path())
+        .args(["--mode", "bypass-proxy", "--target", "https://example.com/"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("failed to spawn driver");
+
+    let ev = await_outbound_tls(&mut reader, Duration::from_secs(15)).await;
+    let out = child.wait_with_output().expect("driver should exit cleanly");
+    assert!(out.status.success(), "driver returned non-zero");
+    let driver_json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("driver stdout was not valid JSON");
+
+    assert_eq!(
+        driver_json["proxy_env_present"], false,
+        "driver was supposed to strip proxy env vars; got: {driver_json}"
+    );
+    assert!(
+        ev.data_len > 0,
+        "TLS uprobe must capture plaintext even when no proxy is in the path"
+    );
+}
