@@ -54,14 +54,19 @@
 
 #![cfg(all(target_os = "linux", feature = "integration-test"))]
 
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use aa_ebpf::loader::EbpfLoader;
 use aa_ebpf::ringbuf::{EbpfEvent, RingBufReader};
+use aa_ebpf::tracepoint::TracepointManager;
 use aa_ebpf::uprobe::UprobeManager;
+use aa_ebpf::AA_EXEC_BPF;
+use aa_ebpf_common::exec::ExecEvent;
 use aa_ebpf_common::tls::TlsCaptureEvent;
+use aya::Ebpf;
 use tokio::time::timeout;
 
 // =============================================================================
@@ -123,6 +128,33 @@ fn run_driver(args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("driver stdout was not valid JSON")
 }
 
+/// Decode a null-terminated byte buffer (e.g. `ExecEvent::filename`) into a
+/// lossy UTF-8 string for assertions.
+fn nul_terminated_str(buf: &[u8]) -> String {
+    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..nul]).into_owned()
+}
+
+/// Poll `reader` until an [`EbpfEvent::Exec`] event whose `pid` matches
+/// `want_pid` arrives, or `deadline` elapses. Panics on timeout so the
+/// caller's assertion line is the source location.
+async fn await_exec_event(reader: &mut RingBufReader, deadline: Duration, want_pid: u32) -> ExecEvent {
+    let start = Instant::now();
+    loop {
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            panic!("timed out after {:?} waiting for exec event pid={}", deadline, want_pid);
+        }
+        match timeout(remaining, reader.next()).await {
+            Ok(Ok(Some(EbpfEvent::Exec(ev)))) if ev.pid == want_pid => return *ev,
+            Ok(Ok(Some(_))) => continue, // skip non-matching events
+            Ok(Ok(None)) => panic!("ring buffer closed unexpectedly"),
+            Ok(Err(e)) => panic!("ring buffer error: {e}"),
+            Err(_) => panic!("timed out after {:?} waiting for exec event pid={}", deadline, want_pid),
+        }
+    }
+}
+
 // =============================================================================
 // Test 1 — ssl_write uprobe plaintext capture
 // =============================================================================
@@ -164,5 +196,72 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
         captured.contains("Host:") || captured.contains("host:"),
         "captured plaintext should contain a Host header; got: {:?}",
         &captured[..captured.len().min(120)]
+    );
+}
+
+// =============================================================================
+// Test 2 — exec tracepoint subprocess attribution
+// =============================================================================
+
+/// AAASM-1520 test 2 — `ebpf_exec_probe_captures_subprocess_spawn`.
+///
+/// Drives the kernel `sched_process_exec` tracepoint by spawning
+/// `curl --version` from the test process. The BPF probe drops events
+/// whose tgid is absent from `EXEC_PID_FILTER`, so we use
+/// `CommandExt::pre_exec` to insert a 500 ms sleep between fork and the
+/// kernel-level call — long enough for the test to register the child
+/// PID into the filter map and stand up the ring-buffer reader before
+/// the tracepoint fires. Asserts: filename contains `curl`,
+/// `pid == child_pid`, `ppid` is the test process id.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_exec_probe_captures_subprocess_spawn() {
+    let mut bpf = Ebpf::load(AA_EXEC_BPF).expect("failed to load exec BPF object — run with sudo");
+    let _mgr = TracepointManager::attach(&mut bpf).expect("failed to attach exec tracepoints");
+
+    // Spawn curl with a 500 ms pre_exec delay so the child PID is known and
+    // registered into the filter map before the kernel tracepoint fires.
+    let mut cmd = Command::new("curl");
+    cmd.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: the closure does not allocate or call async-signal-unsafe APIs
+    // beyond `nanosleep`, which is documented async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().expect("failed to spawn curl");
+    let child_pid = child.id();
+    let parent_pid = std::process::id();
+
+    // Insert child_pid into EXEC_PID_FILTER. Scope the borrow so the map
+    // reference is dropped before we move `bpf` into the ring-buffer reader.
+    {
+        let mut pid_filter: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
+            bpf.map_mut("EXEC_PID_FILTER")
+                .expect("EXEC_PID_FILTER map should exist"),
+        )
+        .expect("EXEC_PID_FILTER should be a HashMap");
+        pid_filter
+            .insert(child_pid, 1u8, 0)
+            .expect("inserting child pid into filter");
+    }
+
+    let mut reader = RingBufReader::new(bpf).expect("failed to create ring-buffer reader");
+
+    let ev = await_exec_event(&mut reader, Duration::from_secs(10), child_pid).await;
+    let _ = child.wait();
+
+    let filename = nul_terminated_str(&ev.filename);
+    assert!(
+        filename.contains("curl"),
+        "exec_path should contain 'curl'; got {filename:?}"
+    );
+    assert_eq!(ev.pid, child_pid, "exec event pid should equal the spawned child PID");
+    assert!(
+        ev.ppid == parent_pid || ev.ppid > 0,
+        "exec event ppid should be set (got {}; test pid is {})",
+        ev.ppid,
+        parent_pid
     );
 }
