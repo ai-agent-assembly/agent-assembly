@@ -12,6 +12,7 @@ aa-api      = { path = "../aa-api" }
 aa-core     = { path = "../aa-core" }
 aa-devtool  = { path = "../aa-devtool" }
 aa-gateway  = { path = "../aa-gateway" }
+aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }
 
 anyhow      = "1"
@@ -27,6 +28,7 @@ libc        = "0.2"
 moka        = { version = "0.12", features = ["future"] }
 portpicker  = "0.1"
 reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rustls      = { version = "0.23", features = ["ring"] }
 rstest      = "0.23"
 rust_decimal = "1"
 serde_json  = "1"
