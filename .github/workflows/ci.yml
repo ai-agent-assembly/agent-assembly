@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: AI-agent-assembly/node-sdk
           path: node-sdk
@@ -182,7 +182,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: AI-agent-assembly/node-sdk
           path: node-sdk
