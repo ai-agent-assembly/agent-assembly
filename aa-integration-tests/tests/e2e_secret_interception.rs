@@ -43,7 +43,6 @@ use aa_gateway::{EvaluationResult, PolicyEngine};
 const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
 
 /// GitHub personal access token prefix + zero-padding. Synthetic.
-#[allow(dead_code)] // wired in by the GitHub PAT detection test commit
 const FAKE_GITHUB_PAT: &str = "ghp_0000000000000000000000000000000000";
 
 /// OpenAI key with the documented `sk-test-` test prefix. Synthetic.
@@ -168,5 +167,28 @@ fn aws_access_key_in_tool_args_is_detected_and_redacted() {
     assert!(
         !redacted.contains(FAKE_AWS_ACCESS_KEY),
         "redacted payload must not retain the original AWS access key",
+    );
+}
+
+// ── Test 2 — GitHub personal access token in tool args ───────────────────────
+
+#[test]
+fn github_pat_in_tool_args_is_detected_and_redacted() {
+    let payload = format!(r#"{{"headers":{{"X-Auth":"Bearer {FAKE_GITHUB_PAT}"}}}}"#);
+    let action = tool_call_with_args(&payload);
+    let result = evaluate(&action, 0xA2);
+
+    assert_detected(&result, CredentialKind::GitHubPat);
+
+    let redacted = result
+        .redacted_payload
+        .expect("GitHub PAT must produce a redacted payload");
+    assert!(
+        redacted.contains("[REDACTED:GitHubPat]"),
+        "redacted payload must carry the [REDACTED:GitHubPat] label, got: {redacted}",
+    );
+    assert!(
+        !redacted.contains(FAKE_GITHUB_PAT),
+        "redacted payload must not retain the original GitHub PAT",
     );
 }
