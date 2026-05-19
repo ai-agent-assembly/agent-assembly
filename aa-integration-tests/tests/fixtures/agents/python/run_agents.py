@@ -538,7 +538,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.auto_gateway:
             auto = AutoGateway(repo_root)
-            auto.__enter__()
+            try:
+                auto.__enter__()
+            except RuntimeError as exc:
+                print(f"[run_agents] {exc}", file=sys.stderr)
+                return 1
             cfg.gateway_url = f"http://{auto.addr}"
             print(f"[run_agents] Gateway started on {auto.addr}", file=info_stream)
 
