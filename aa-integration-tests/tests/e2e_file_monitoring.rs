@@ -503,3 +503,74 @@ async fn file_unlink_emits_event_with_path() {
     assert_eq!(ev.path, target_str);
     assert!(!target.exists(), "the file should be gone after the driver's unlink");
 }
+
+// =============================================================================
+// Test 6 — only registered PID's events surface; the other agent stays silent
+// =============================================================================
+
+/// AAASM-1522 test 6 — `file_events_attributed_to_filtered_pid_only`.
+///
+/// Spawns two drivers (A and B) both blocked on the stdin barrier,
+/// registers **only A's pid** into `PID_FILTER`, then releases both.
+/// Asserts:
+///
+/// 1. A's create event surfaces with `pid == A_pid` and A's path.
+/// 2. After a 1s settle window, the channel contains **no event with
+///    `pid == B_pid`** — proving the BPF `should_monitor` gate actually
+///    filters by registered tgid, not silently captures everything.
+///
+/// This is the strongest "which agent touched this file?" assertion the
+/// probe can support today: `agent_id` resolution lives in the gateway
+/// (AAASM-237), so the test asserts at the PID level — which IS the
+/// per-process attribution key the gateway's pid-to-agent map will
+/// consume. Once that map is wired up, this test trivially extends to
+/// a `agent_id_A != agent_id_B` claim by adding the gateway lookup.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_events_attributed_to_filtered_pid_only() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("attribution");
+    let path_a = tmp.join("agent-a.txt");
+    let path_b = tmp.join("agent-b.txt");
+    let path_a_str = path_a.to_string_lossy().to_string();
+    let path_b_str = path_b.to_string_lossy().to_string();
+
+    let mut driver_a = spawn_driver_paused(&["--mode", "create", "--path", &path_a_str]);
+    let mut driver_b = spawn_driver_paused(&["--mode", "create", "--path", &path_b_str]);
+    let pid_a = driver_a.id();
+    let pid_b = driver_b.id();
+    register_pid(&mut bpf, pid_a);
+    release_driver(&mut driver_a);
+    release_driver(&mut driver_b);
+
+    let path_a_pred = path_a_str.clone();
+    let ev_a = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == pid_a && ev.syscall == SyscallKind::Openat && ev.path == path_a_pred
+    })
+    .await;
+
+    let _ = drain_driver_json(driver_a);
+    let _ = drain_driver_json(driver_b);
+
+    // Settle window: give the BPF probe time to NOT fire for B. 1s is the
+    // same order of magnitude as the test 7 wait — long enough that a
+    // missing filter would have already produced an event, short enough
+    // that the test stays fast in the green-path case.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut saw_pid_b = false;
+    while let Ok(ev) = rx.try_recv() {
+        if ev.pid == pid_b {
+            saw_pid_b = true;
+            eprintln!("unexpected event from pid_b: {ev:?}");
+        }
+    }
+
+    assert_eq!(ev_a.pid, pid_a);
+    assert_eq!(ev_a.path, path_a_str);
+    assert!(
+        !saw_pid_b,
+        "driver B (pid {pid_b}) was NOT registered in PID_FILTER but produced a file event — the probe's should_monitor() gate is leaking",
+    );
+}
