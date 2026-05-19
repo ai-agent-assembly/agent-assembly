@@ -79,11 +79,16 @@ jobs:
         # (`--all-features` activates them but `--exclude aa-ebpf` means the
         # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
         # The dedicated `e2e-ebpf-linux` job in ci.yml is authoritative.
+        #
+        # The `selftest_*` tests in aa-integration-tests/tests/e2e_sdk_node.rs
+        # spawn `pnpm exec tsx` and require a live Node SDK dev environment.
+        # pnpm/Node.js are not installed before this step (AAASM-1551).
         run: |
           cargo llvm-cov --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
             -- --skip sustained_load_p99_under_5ms --skip all_layers_run_independently \
-               --skip auth_rate_limit_resets_after_window --skip ebpf_
+               --skip auth_rate_limit_resets_after_window --skip ebpf_ \
+               --skip selftest_
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --lcov --output-path lcov.info
 
