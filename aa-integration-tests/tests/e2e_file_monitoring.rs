@@ -627,3 +627,59 @@ async fn pid_not_in_filter_map_produces_no_event() {
         "pid {driver_pid} was never inserted into PID_FILTER but the probe still emitted a file event — should_monitor() is leaking",
     );
 }
+
+// =============================================================================
+// Test 8 — absolute path passed to openat is recorded verbatim
+// =============================================================================
+
+/// AAASM-1522 test 8 — `file_event_records_path_when_openat_is_absolute`.
+///
+/// Creates the file under a nested directory tree and asserts the
+/// probe's captured `path` field matches the absolute path string the
+/// driver passed to `openat` exactly — no truncation past `MAX_PATH_LEN`
+/// surprises, no resolution side-effects. This is the conservative
+/// half of the ticket's path-resolution AC: when userspace passes an
+/// absolute path, the recorded event path equals it.
+///
+/// The complementary "relative path is resolved to absolute" claim is
+/// deferred — see the module-level "Schema gaps" docstring: the kprobe
+/// captures what userspace passed; resolving via the task's `cwd`/`fs`
+/// pointers would require additional BPF helpers (`bpf_d_path` etc.)
+/// not currently used. Tracked under AAASM-1425.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_event_records_path_when_openat_is_absolute() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("abspath");
+    let nested = tmp.join("a").join("b").join("c");
+    std::fs::create_dir_all(&nested).expect("create nested dir");
+    let target = nested.join("deep.txt");
+    let target_str = target.to_string_lossy().to_string();
+
+    let mut driver = spawn_driver_paused(&["--mode", "create", "--path", &target_str]);
+    let driver_pid = driver.id();
+    register_pid(&mut bpf, driver_pid);
+    release_driver(&mut driver);
+
+    let target_for_pred = target_str.clone();
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Openat && ev.path == target_for_pred
+    })
+    .await;
+
+    let _ = drain_driver_json(driver);
+
+    assert_eq!(
+        ev.path, target_str,
+        "absolute path passed to openat should be recorded verbatim in the event"
+    );
+    assert!(
+        target_str.starts_with('/'),
+        "test sanity: the path under test must be absolute (got {target_str})",
+    );
+    assert!(
+        target.exists(),
+        "the file should actually exist after the driver's create",
+    );
+}
