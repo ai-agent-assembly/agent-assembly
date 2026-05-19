@@ -308,9 +308,22 @@ impl PolicyValidator {
             }
         }
 
+        let credential_action = match raw.credential_action.as_deref() {
+            None | Some("redact_only") => CredentialAction::RedactOnly,
+            Some("block") => CredentialAction::Block,
+            Some("alert_only") => CredentialAction::AlertOnly,
+            Some(other) => {
+                errors.push(ValidationError::new(
+                    "data.credential_action",
+                    format!("must be 'block', 'redact_only', or 'alert_only', got '{}'", other),
+                ));
+                CredentialAction::RedactOnly
+            }
+        };
+
         Some(DataPolicy {
             sensitive_patterns: patterns,
-            credential_action: CredentialAction::default(),
+            credential_action,
         })
     }
 
