@@ -4,6 +4,7 @@
 //! runtime, gateway, and proxy crates into a single struct that the API
 //! layer (and downstream WebSocket streaming) can subscribe to.
 
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use aa_runtime::approval::ApprovalRequest;
 use aa_runtime::pipeline::event::PipelineEvent;
@@ -24,6 +25,9 @@ pub struct EventBroadcast {
     /// Fires when a pending request auto-expires (AAASM-1453).
     approval_expiry_tx: broadcast::Sender<ApprovalRequest>,
     budget_tx: broadcast::Sender<BudgetAlert>,
+    /// Secret-detection alerts emitted when the gateway's credential
+    /// scanner produces a non-empty findings list (AAASM-1545).
+    secret_tx: broadcast::Sender<SecretAlert>,
 }
 
 impl EventBroadcast {
@@ -33,11 +37,13 @@ impl EventBroadcast {
         let (approval_tx, _) = broadcast::channel(capacity);
         let (approval_expiry_tx, _) = broadcast::channel(capacity);
         let (budget_tx, _) = broadcast::channel(capacity);
+        let (secret_tx, _) = broadcast::channel(capacity);
         Self {
             pipeline_tx,
             approval_tx,
             approval_expiry_tx,
             budget_tx,
+            secret_tx,
         }
     }
 
@@ -83,6 +89,16 @@ impl EventBroadcast {
     /// Get a clone of the budget alert sender.
     pub fn budget_sender(&self) -> broadcast::Sender<BudgetAlert> {
         self.budget_tx.clone()
+    }
+
+    /// Subscribe to secret-detection alerts (AAASM-1545).
+    pub fn subscribe_secret(&self) -> broadcast::Receiver<SecretAlert> {
+        self.secret_tx.subscribe()
+    }
+
+    /// Get a clone of the secret-detection alert sender (AAASM-1545).
+    pub fn secret_sender(&self) -> broadcast::Sender<SecretAlert> {
+        self.secret_tx.clone()
     }
 }
 
