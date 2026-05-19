@@ -238,9 +238,10 @@ fn try_sys_write(ctx: &ProbeContext) -> Result<u32, u32> {
     }
 
     // write(unsigned int fd, const char *buf, size_t count) — pull fd
-    // (arg0 = rdi) via pt_regs deref. ctx.arg(0) on __x64_sys_*
-    // returns the pt_regs pointer itself, not the fd. AAASM-1552.
-    let fd: u64 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(0).ok_or(1u32)?;
+    // (arg0 = rdi) via syscall_arg_u64. PtRegs::arg::<u64>(0) emits a
+    // direct load the verifier rejects on a scalar pt_regs pointer;
+    // syscall_arg_u64 routes through bpf_probe_read. AAASM-1552.
+    let fd: u64 = syscall_arg_u64(ctx, 0).ok_or(1u32)?;
     let key = FdPathKey { pid: tgid, fd };
 
     let path = unsafe { FD_PATH_MAP.get(&key).ok_or(1u32)? };
