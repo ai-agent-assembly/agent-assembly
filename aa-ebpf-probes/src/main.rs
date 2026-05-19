@@ -11,7 +11,7 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext},
 };
 
-use crate::helpers::{emit_event, get_pid_tgid, should_monitor, syscall_pt_regs};
+use crate::helpers::{emit_event, get_pid_tgid, should_monitor, syscall_arg_u64, syscall_pt_regs};
 use crate::maps::{
     FD_PATH_MAP, OPENAT_ENTRY_TS, OPENAT_TMP, PATH_ALLOWLIST, PATH_BLOCKLIST, READ_ENTRY_TS,
     READ_TMP, RENAME_ENTRY_TS, RENAME_TMP, UNLINK_ENTRY_TS, UNLINK_TMP, WRITE_ENTRY_TS, WRITE_TMP,
@@ -144,9 +144,10 @@ fn try_sys_read(ctx: &ProbeContext) -> Result<u32, u32> {
     }
 
     // read(unsigned int fd, char *buf, size_t count) — pull fd
-    // (arg0 = rdi) via pt_regs deref. ctx.arg(0) on __x64_sys_*
-    // returns the pt_regs pointer itself, not the fd. AAASM-1552.
-    let fd: u64 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(0).ok_or(1u32)?;
+    // (arg0 = rdi) via syscall_arg_u64. PtRegs::arg::<u64>(0) emits a
+    // direct load the verifier rejects on a scalar pt_regs pointer;
+    // syscall_arg_u64 routes through bpf_probe_read. AAASM-1552.
+    let fd: u64 = syscall_arg_u64(ctx, 0).ok_or(1u32)?;
     let key = FdPathKey { pid: tgid, fd };
 
     // Resolve the path now (fd is only available at entry). If the fd
