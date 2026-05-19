@@ -1,7 +1,7 @@
 //! Helper functions for BPF kprobe programs.
 
 use aa_ebpf_common::file::FileIoEventRaw;
-use aya_ebpf::{helpers::bpf_ktime_get_ns, EbpfContext};
+use aya_ebpf::{helpers::bpf_ktime_get_ns, programs::ProbeContext, EbpfContext, PtRegs};
 
 use crate::maps::EVENTS;
 
@@ -40,4 +40,24 @@ pub fn get_pid_tgid() -> (u32, u32) {
 #[inline(always)]
 pub fn should_monitor(tgid: u32) -> bool {
     unsafe { crate::maps::PID_FILTER.get(&tgid).is_some() }
+}
+
+/// Wrap the inner `pt_regs *` of a `__x64_sys_*` kprobe context.
+///
+/// On any Linux kernel with `CONFIG_SYSCALL_WRAPPER=y` (default since
+/// 4.17, every modern x86_64 distro including `ubuntu-latest`), the
+/// syscall entry has signature `__x64_sys_<name>(const struct pt_regs
+/// *regs)` — the real userspace syscall args live inside `*regs`.
+/// Calling `ctx.arg(n)` for `n > 0` therefore returns the wrapper's
+/// own register state (garbage from whatever was last in rsi/rdx/...),
+/// not the user's syscall args.
+///
+/// This helper reads the inner `pt_regs *` from `ctx.arg(0)` (rdi) and
+/// wraps it as [`PtRegs`]. Callers then read the `n`th userspace
+/// syscall arg with `.arg::<T>(n)` (e.g. `*const u8` for a pathname
+/// pointer or `u64` for a fd). Tracked as **AAASM-1552**.
+#[inline(always)]
+pub fn syscall_pt_regs(ctx: &ProbeContext) -> Option<PtRegs> {
+    let inner = ctx.arg::<*const u8>(0)? as *mut _;
+    Some(PtRegs::new(inner))
 }
