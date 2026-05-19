@@ -59,6 +59,9 @@ pub struct RawBudgetPolicy {
 pub struct RawDataPolicy {
     /// Regex patterns for PII / credential detection.
     pub sensitive_patterns: Option<Vec<String>>,
+    /// Action taken on a finding: `"block"`, `"redact_only"` (default),
+    /// or `"alert_only"`. Validated into a [`crate::policy::document::CredentialAction`].
+    pub credential_action: Option<String>,
     /// Unknown keys captured for warning emission.
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
@@ -303,6 +306,13 @@ mod tests {
         let yaml = "{}\n";
         let raw: RawDataPolicy = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(raw.sensitive_patterns, None);
+    }
+
+    #[test]
+    fn raw_data_deserializes_credential_action() {
+        let yaml = "credential_action: block\n";
+        let raw: RawDataPolicy = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(raw.credential_action.as_deref(), Some("block"));
     }
 
     // ── RawToolPolicy ───────────────────────────────────────────────────────
