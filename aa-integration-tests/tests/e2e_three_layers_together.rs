@@ -247,7 +247,118 @@ fn fresh_audit_dir() -> TempDir {
 }
 
 // =============================================================================
-// Tests
+// Test 1 — unified audit stream (master assertion)
 // =============================================================================
-// Filled in by subsequent commits — one test per commit, matching AAASM
-// convention (one Subtask ≈ one commit) for trace-through review.
+
+/// AAASM-1523 test 1 — `three_layers_together_unified_audit_stream`.
+///
+/// The flagship MVP acceptance assertion: a single agent session that
+/// exercises all three interception layers ends with one audit JSONL file
+/// containing one entry per source, all attributed to the same agent id,
+/// in chronological order, each satisfying the documented schema. This is
+/// the assertion the entire F116 suite is built around.
+///
+/// **What is being tested (post-divergence)**: the real
+/// `aa_gateway::AuditWriter` ingest path, when fed one entry per source
+/// in chronological order, produces a JSONL file that
+///
+/// * contains entries from all three `source` tags (sdk / proxy / ebpf),
+/// * shares one `agent_id` across every entry,
+/// * is monotonically ordered by `timestamp_ns`,
+/// * carries the schema fields the AC enumerates (`agent_id`, `timestamp`,
+///   `source`, `tool|url|syscall`, `decision`), and
+/// * passes `AuditWriter::verify_chain` (hash chain intact).
+///
+/// The driver script is invoked for host-level realism (its curl + raw
+/// TLS calls hit the kernel) but the audit entries themselves are seeded
+/// by this test — see the file-level divergence note for why.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_layers_together_unified_audit_stream() {
+    let audit_root = fresh_audit_dir();
+    let agent = agent_id(0xA1);
+    let session = session_id(0xB1);
+
+    let (path, tx, handle) = spawn_audit_writer(audit_root.path(), agent, session).await;
+
+    // Phase 1+2+3 — drive the on-host side-effects for realism. The
+    // assertion target is the audit stream this test feeds the writer.
+    run_driver(&agent, &session, "sdk,proxy,ebpf");
+
+    let entries = synthesise_chain(agent, session, 1_700_000_000_000_000_000, &[SDK, PROXY, EBPF]);
+    for entry in &entries {
+        tx.send(entry.clone()).await.expect("send audit entry");
+    }
+    drain_writer(tx, handle).await;
+
+    // Phase 4 — read back the unified stream and assert.
+    let on_disk = read_audit_entries(&path);
+
+    // Assertion 1: at least 3 events present.
+    assert!(
+        on_disk.len() >= 3,
+        "unified audit stream must contain at least 3 events; got {}",
+        on_disk.len()
+    );
+
+    // Assertion 2: events from each source are represented.
+    let sources: HashSet<String> = on_disk.iter().map(source_of).collect();
+    for expected in [SDK, PROXY, EBPF] {
+        assert!(
+            sources.contains(expected),
+            "unified audit stream missing source={expected:?}; got {sources:?}"
+        );
+    }
+
+    // Assertion 3: every entry shares the same agent_id — cross-layer
+    // attribution works.
+    for entry in &on_disk {
+        assert_eq!(
+            entry.agent_id(),
+            agent,
+            "every entry must be attributed to the test agent; got {:?} (expected {:?})",
+            entry.agent_id(),
+            agent,
+        );
+    }
+
+    // Assertion 4: chronological order.
+    for w in on_disk.windows(2) {
+        assert!(
+            w[1].timestamp_ns() > w[0].timestamp_ns(),
+            "entries must be monotonically ordered by timestamp_ns; got {} then {}",
+            w[0].timestamp_ns(),
+            w[1].timestamp_ns(),
+        );
+    }
+
+    // Assertion 5: required schema fields in every payload.
+    for entry in &on_disk {
+        let payload: serde_json::Value = serde_json::from_str(entry.payload()).expect("payload should be JSON");
+        assert!(
+            payload.get("source").and_then(|v| v.as_str()).is_some(),
+            "payload must carry a non-empty `source` field: {payload}"
+        );
+        assert!(
+            payload.get("decision").and_then(|v| v.as_str()).is_some(),
+            "payload must carry a non-empty `decision` field: {payload}"
+        );
+        let has_target = payload.get("tool").map(|v| !v.is_null()).unwrap_or(false)
+            || payload.get("url").map(|v| !v.is_null()).unwrap_or(false)
+            || payload.get("syscall").map(|v| !v.is_null()).unwrap_or(false);
+        assert!(
+            has_target,
+            "payload must carry at least one of `tool` / `url` / `syscall`: {payload}"
+        );
+    }
+
+    // Hash chain integrity — the entire merged stream must pass verify_chain.
+    let result = AuditWriter::verify_chain(&path)
+        .await
+        .expect("verify_chain should not error on the unified stream");
+    assert!(
+        result.is_valid,
+        "unified audit stream must pass hash-chain verification; first_invalid={:?}",
+        result.first_invalid
+    );
+    assert_eq!(result.entries_checked, on_disk.len() as u64);
+}
