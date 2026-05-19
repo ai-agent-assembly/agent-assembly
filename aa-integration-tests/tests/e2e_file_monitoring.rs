@@ -413,3 +413,54 @@ async fn file_read_syscall_emits_event_for_target_pid() {
         "driver-reported byte count should agree with the kernel event"
     );
 }
+
+// =============================================================================
+// Test 4 — rename emits an event tagged with the source (old) path
+// =============================================================================
+
+/// AAASM-1522 test 4 — `file_rename_emits_event_with_old_path`.
+///
+/// Pre-creates the source file (no event — test pid not in
+/// `PID_FILTER`) then has the driver `os.rename(old, new)`. Asserts the
+/// `Rename` event records the **source** path (`event.path == old`) and
+/// the driver pid. The ticket asked for both `path_old` and `path_new`
+/// on a single event; the probe only extracts arg(1) (oldpath) of
+/// renameat2 today, so only the source path is asserted — see
+/// AAASM-1425 for the dual-path schema extension.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_rename_emits_event_with_old_path() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("rename");
+    let old = tmp.join("before.txt");
+    let new = tmp.join("after.txt");
+    let old_str = old.to_string_lossy().to_string();
+    let new_str = new.to_string_lossy().to_string();
+    std::fs::write(&old, b"some bytes").expect("pre-create rename source file");
+
+    let mut driver = spawn_driver_paused(&["--mode", "rename", "--path", &old_str, "--new-path", &new_str]);
+    let driver_pid = driver.id();
+    register_pid(&mut bpf, driver_pid);
+    release_driver(&mut driver);
+
+    let old_for_pred = old_str.clone();
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Rename && ev.path == old_for_pred
+    })
+    .await;
+
+    let json = drain_driver_json(driver);
+
+    assert_eq!(ev.pid, driver_pid, "rename event must be attributed to the driver pid");
+    assert_eq!(ev.syscall, SyscallKind::Rename);
+    assert_eq!(
+        ev.path, old_str,
+        "rename event currently records the SOURCE path only (renameat2 arg1)"
+    );
+    assert_eq!(json["new_path"].as_str(), Some(new_str.as_str()));
+    assert!(
+        new.exists() && !old.exists(),
+        "the rename should have actually happened on disk",
+    );
+}
