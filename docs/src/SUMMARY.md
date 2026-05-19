@@ -14,6 +14,10 @@
 - [Overview](architecture.md)
 - [API Reference](api-reference.md)
 
+# Governance
+
+- [L0–L3 Capability Matrix](governance/capability-matrix.md)
+
 # Protocol
 
 - [Changelog](protocol/CHANGELOG.md)
