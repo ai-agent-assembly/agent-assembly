@@ -376,3 +376,27 @@ def print_summary(results: list[RunResult]) -> int:
                 reason = result.error or "exit non-zero"
             print(f"   {result.script.scenario}/{result.script.name}.py  — {reason}")
     return 0 if failed == 0 else 1
+
+
+def _print_list_table(scripts: list[AgentScript]) -> None:
+    """Render the --list dry-run table (Rich if available, plain otherwise)."""
+    try:
+        from rich.console import Console
+        from rich.table import Table
+    except ImportError:
+        print(f"  {'FRAMEWORK':<14}  {'SCENARIO':<20}  PATH")
+        print(f"  {'---------':<14}  {'--------':<20}  ----")
+        for script in scripts:
+            print(
+                f"  {script.framework:<14}  {script.scenario:<20}  {script.path.name}"
+            )
+        return
+
+    console = Console()
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("framework")
+    table.add_column("scenario")
+    table.add_column("script")
+    for script in scripts:
+        table.add_row(script.framework, script.scenario, script.path.name)
+    console.print(table)
