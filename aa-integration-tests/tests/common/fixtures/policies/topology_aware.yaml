@@ -1,0 +1,8 @@
+scope: global
+tools:
+  delete:
+    allow: true
+    requires_approval_if: "agent.depth >= 2"
+  spawn_child:
+    allow: true
+    requires_approval_if: "agent.depth >= 1"
