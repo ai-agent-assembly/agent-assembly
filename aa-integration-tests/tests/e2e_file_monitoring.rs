@@ -43,21 +43,21 @@
 //! `PID_FILTER`", which is the strongest claim the probe can support
 //! today and is sufficient evidence that operators *will* be able to
 //! answer "which agent touched this file?" once the gateway wiring lands.
-//! See the test-level docstrings on `file_events_attributed_to_filtered_pid_only`
-//! and `pid_not_in_filter_map_produces_no_event` for full reasoning.
+//! See the test-level docstrings on `ebpf_file_events_attributed_to_filtered_pid_only`
+//! and `ebpf_pid_not_in_filter_map_produces_no_event` for full reasoning.
 //!
 //! ## Test status
 //!
 //! | # | Name | Status |
 //! |---|------|--------|
-//! | 1 | `file_create_emits_event_with_path_and_pid` | `#[ignore]` — AAASM-1552 |
-//! | 2 | `file_write_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
-//! | 3 | `file_read_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
-//! | 4 | `file_rename_emits_event_with_old_path` | `#[ignore]` — AAASM-1552 |
-//! | 5 | `file_unlink_emits_event_with_path` | `#[ignore]` — AAASM-1552 |
-//! | 6 | `file_events_attributed_to_filtered_pid_only` | `#[ignore]` — AAASM-1552 |
-//! | 7 | `pid_not_in_filter_map_produces_no_event` | enabled (root) |
-//! | 8 | `file_event_records_path_when_openat_is_absolute` | `#[ignore]` — AAASM-1552 |
+//! | 1 | `ebpf_file_create_emits_event_with_path_and_pid` | `#[ignore]` — AAASM-1552 |
+//! | 2 | `ebpf_file_write_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
+//! | 3 | `ebpf_file_read_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
+//! | 4 | `ebpf_file_rename_emits_event_with_old_path` | `#[ignore]` — AAASM-1552 |
+//! | 5 | `ebpf_file_unlink_emits_event_with_path` | `#[ignore]` — AAASM-1552 |
+//! | 6 | `ebpf_file_events_attributed_to_filtered_pid_only` | `#[ignore]` — AAASM-1552 |
+//! | 7 | `ebpf_pid_not_in_filter_map_produces_no_event` | enabled (root) |
+//! | 8 | `ebpf_file_event_records_path_when_openat_is_absolute` | `#[ignore]` — AAASM-1552 |
 //!
 //! ## Blocking probe bug — AAASM-1552
 //!
@@ -75,7 +75,7 @@
 //!
 //! Until that probe-side fix lands (tracked under AAASM-1552), the 7
 //! affected tests are `#[ignore]`'d with a referenced blocker. Test 7
-//! (`pid_not_in_filter_map_produces_no_event`) stays enabled because it
+//! (`ebpf_pid_not_in_filter_map_produces_no_event`) stays enabled because it
 //! asserts the *absence* of events and is unaffected by the path bug.
 //!
 //! ## Schema gaps deliberately not asserted
@@ -301,7 +301,7 @@ async fn await_event(
 // Test 1 — create (openat with O_CREAT) emits event with path + pid
 // =============================================================================
 
-/// AAASM-1522 test 1 — `file_create_emits_event_with_path_and_pid`.
+/// AAASM-1522 test 1 — `ebpf_file_create_emits_event_with_path_and_pid`.
 ///
 /// Drives the openat kprobe by having the Python driver call
 /// `os.open(path, O_WRONLY | O_CREAT)`. Asserts the captured event has
@@ -312,7 +312,7 @@ async fn await_event(
 /// `PID_FILTER` is mis-keyed.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_create_emits_event_with_path_and_pid() {
+async fn ebpf_file_create_emits_event_with_path_and_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -347,7 +347,7 @@ async fn file_create_emits_event_with_path_and_pid() {
 // Test 2 — write syscall emits an event attributed to the driver pid
 // =============================================================================
 
-/// AAASM-1522 test 2 — `file_write_syscall_emits_event_for_target_pid`.
+/// AAASM-1522 test 2 — `ebpf_file_write_syscall_emits_event_for_target_pid`.
 ///
 /// Drives the write kprobe by having the Python driver
 /// `os.write(fd, b"hello world")` (11 bytes) into a file it just
@@ -361,7 +361,7 @@ async fn file_create_emits_event_with_path_and_pid() {
 /// assertion can switch over without changing the byte-count claim.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_write_syscall_emits_event_for_target_pid() {
+async fn ebpf_file_write_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -403,7 +403,7 @@ async fn file_write_syscall_emits_event_for_target_pid() {
 // Test 3 — read syscall emits an event attributed to the driver pid
 // =============================================================================
 
-/// AAASM-1522 test 3 — `file_read_syscall_emits_event_for_target_pid`.
+/// AAASM-1522 test 3 — `ebpf_file_read_syscall_emits_event_for_target_pid`.
 ///
 /// Pre-creates a file from the test process (no event — the test pid
 /// is not in `PID_FILTER`) then drives the read kprobe via the Python
@@ -414,7 +414,7 @@ async fn file_write_syscall_emits_event_for_target_pid() {
 /// the assertion targets exactly the read.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_read_syscall_emits_event_for_target_pid() {
+async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -457,7 +457,7 @@ async fn file_read_syscall_emits_event_for_target_pid() {
 // Test 4 — rename emits an event tagged with the source (old) path
 // =============================================================================
 
-/// AAASM-1522 test 4 — `file_rename_emits_event_with_old_path`.
+/// AAASM-1522 test 4 — `ebpf_file_rename_emits_event_with_old_path`.
 ///
 /// Pre-creates the source file (no event — test pid not in
 /// `PID_FILTER`) then has the driver `os.rename(old, new)`. Asserts the
@@ -468,7 +468,7 @@ async fn file_read_syscall_emits_event_for_target_pid() {
 /// AAASM-1425 for the dual-path schema extension.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_rename_emits_event_with_old_path() {
+async fn ebpf_file_rename_emits_event_with_old_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -509,7 +509,7 @@ async fn file_rename_emits_event_with_old_path() {
 // Test 5 — unlink emits an event with the path
 // =============================================================================
 
-/// AAASM-1522 test 5 — `file_unlink_emits_event_with_path`.
+/// AAASM-1522 test 5 — `ebpf_file_unlink_emits_event_with_path`.
 ///
 /// Pre-creates the file then has the driver `os.unlink(path)`. Asserts
 /// the `Unlink` event records the path and is attributed to the driver
@@ -517,7 +517,7 @@ async fn file_rename_emits_event_with_old_path() {
 /// that the driver did the right syscall.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_unlink_emits_event_with_path() {
+async fn ebpf_file_unlink_emits_event_with_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -549,7 +549,7 @@ async fn file_unlink_emits_event_with_path() {
 // Test 6 — only registered PID's events surface; the other agent stays silent
 // =============================================================================
 
-/// AAASM-1522 test 6 — `file_events_attributed_to_filtered_pid_only`.
+/// AAASM-1522 test 6 — `ebpf_file_events_attributed_to_filtered_pid_only`.
 ///
 /// Spawns two drivers (A and B) both blocked on the stdin barrier,
 /// registers **only A's pid** into `PID_FILTER`, then releases both.
@@ -568,7 +568,7 @@ async fn file_unlink_emits_event_with_path() {
 /// a `agent_id_A != agent_id_B` claim by adding the gateway lookup.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_events_attributed_to_filtered_pid_only() {
+async fn ebpf_file_events_attributed_to_filtered_pid_only() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -621,7 +621,7 @@ async fn file_events_attributed_to_filtered_pid_only() {
 // Test 7 — unregistered PID produces no event (kernel-thread noise filter)
 // =============================================================================
 
-/// AAASM-1522 test 7 — `pid_not_in_filter_map_produces_no_event`.
+/// AAASM-1522 test 7 — `ebpf_pid_not_in_filter_map_produces_no_event`.
 ///
 /// Spawns a driver and **intentionally skips the `register_pid` call**.
 /// Releases the driver, waits 2 seconds for events to potentially
@@ -635,7 +635,7 @@ async fn file_events_attributed_to_filtered_pid_only() {
 /// either CONFIG_DEBUG_INFO or a separate test fixture. The driver
 /// pid stand-in is sufficient evidence that the filter actually filters.
 #[tokio::test(flavor = "multi_thread")]
-async fn pid_not_in_filter_map_produces_no_event() {
+async fn ebpf_pid_not_in_filter_map_produces_no_event() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
@@ -674,7 +674,7 @@ async fn pid_not_in_filter_map_produces_no_event() {
 // Test 8 — absolute path passed to openat is recorded verbatim
 // =============================================================================
 
-/// AAASM-1522 test 8 — `file_event_records_path_when_openat_is_absolute`.
+/// AAASM-1522 test 8 — `ebpf_file_event_records_path_when_openat_is_absolute`.
 ///
 /// Creates the file under a nested directory tree and asserts the
 /// probe's captured `path` field matches the absolute path string the
@@ -690,7 +690,7 @@ async fn pid_not_in_filter_map_produces_no_event() {
 /// not currently used. Tracked under AAASM-1425.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
-async fn file_event_records_path_when_openat_is_absolute() {
+async fn ebpf_file_event_records_path_when_openat_is_absolute() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
