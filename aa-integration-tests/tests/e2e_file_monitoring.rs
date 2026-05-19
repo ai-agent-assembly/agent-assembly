@@ -562,7 +562,6 @@ async fn ebpf_file_unlink_emits_event_with_path() {
 /// consume. Once that map is wired up, this test trivially extends to
 /// a `agent_id_A != agent_id_B` claim by adding the gateway lookup.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_events_attributed_to_filtered_pid_only() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
