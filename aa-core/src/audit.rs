@@ -1577,3 +1577,102 @@ mod lineage_tests {
         assert_eq!(log.len(), 2);
     }
 }
+
+#[cfg(all(test, feature = "std", feature = "serde"))]
+mod redaction_tests {
+    use super::*;
+    use crate::scanner::CredentialScanner;
+
+    const AGENT: AgentId = AgentId::from_bytes([3u8; 16]);
+    const SESSION: SessionId = SessionId::from_bytes([4u8; 16]);
+
+    /// Synthetic AWS access key from AWS public documentation. Not a real credential.
+    const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    fn build_redaction_for_fake_secret() -> Redaction {
+        let scanner = CredentialScanner::new();
+        let scan = scanner.scan(FAKE_AWS_ACCESS_KEY);
+        assert!(
+            !scan.findings.is_empty(),
+            "scanner must detect the synthetic AWS access key — fixture invariant",
+        );
+        let redacted = scan.redact(FAKE_AWS_ACCESS_KEY);
+        Redaction {
+            credential_findings: scan.findings,
+            redacted_payload: Some(redacted),
+        }
+    }
+
+    #[test]
+    fn audit_entry_with_redaction_never_serializes_the_raw_secret() {
+        let redaction = build_redaction_for_fake_secret();
+        // Decision metadata only — no raw secret bytes in the audit payload itself.
+        let payload = String::from(r#"{"action_type":"tool_call","decision":"redact"}"#);
+        let entry = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::CredentialLeakBlocked,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            redaction,
+        );
+
+        let serialized = serde_json::to_string(&entry).expect("AuditEntry must serialize");
+
+        // Primary security invariant: the raw secret bytes never appear in the
+        // serialized AuditEntry — neither in `payload`, nor in `credential_findings`,
+        // nor in `redacted_payload`.
+        assert!(
+            !serialized.contains(FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT VIOLATED: raw secret appears in serialized AuditEntry: {serialized}",
+        );
+
+        // Secondary sanity check: the redaction label IS present, proving findings were attached.
+        assert!(
+            serialized.contains("[REDACTED:AwsAccessKey]"),
+            "serialized AuditEntry must carry the [REDACTED:AwsAccessKey] label, got: {serialized}",
+        );
+
+        // Tamper-evidence holds: the entry validates against its recorded hash.
+        assert!(
+            entry.verify_integrity(),
+            "verify_integrity must pass on a freshly constructed redacted entry",
+        );
+    }
+
+    #[test]
+    fn redaction_default_preserves_legacy_hash() {
+        // new() and new_with_lineage_and_redaction(_, _, ..., Redaction::default())
+        // must produce identical entry_hash for the same base fields. This guarantees
+        // the existing audit chain on disk continues to verify after this PR lands.
+        let payload = String::from(r#"{"tool":"bash"}"#);
+        let legacy = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload.clone(),
+            [0u8; 32],
+        );
+        let with_default_redaction = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+        );
+        assert_eq!(
+            legacy.entry_hash(),
+            with_default_redaction.entry_hash(),
+            "Redaction::default() must contribute 0 bytes to the hash so legacy chains keep verifying",
+        );
+    }
+}
