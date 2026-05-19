@@ -108,6 +108,46 @@ pub struct Lineage {
 }
 
 // ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+
+/// Optional credential-redaction artefacts attached to an [`AuditEntry`].
+///
+/// Populated when the gateway's policy engine ran the credential scanner
+/// (Stage 6 of `PolicyEngine::evaluate`) and produced at least one finding.
+/// Both fields default to empty / `None`, matching the legacy code path that
+/// constructs entries without scanner output. `Redaction::default()` passed
+/// to [`AuditEntry::new_with_lineage_and_redaction`] produces a hash
+/// identical to [`AuditEntry::new_with_lineage`] with the same base fields,
+/// preserving backward compatibility.
+///
+/// ## Security invariant
+///
+/// Neither field stores the raw secret value. `credential_findings` holds
+/// only the [`CredentialKind`](crate::scanner::CredentialKind), byte offset,
+/// and the `[REDACTED:<kind>]` label (`CredentialFinding`'s `end` field is
+/// `#[serde(skip)]`). `redacted_payload` holds the sanitised payload returned
+/// by `ScanResult::redact` where every match has been replaced with its
+/// `[REDACTED:<kind>]` label.
+///
+/// ## Feature gating
+///
+/// Gated on `std` because [`CredentialFinding`](crate::scanner::CredentialFinding)
+/// lives in the `std`-only `scanner` module. `no_std + alloc` builds compile
+/// `AuditEntry` without redaction support.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Redaction {
+    /// All credential / PII findings detected by the scanner. Empty when the
+    /// scanner found nothing.
+    pub credential_findings: alloc::vec::Vec<crate::scanner::CredentialFinding>,
+    /// The redacted version of the action payload (raw secret bytes replaced
+    /// with `[REDACTED:<kind>]` labels). `None` when no findings were produced.
+    pub redacted_payload: Option<alloc::string::String>,
+}
+
+// ---------------------------------------------------------------------------
 // AuditEntry
 // ---------------------------------------------------------------------------
 
@@ -153,6 +193,12 @@ pub struct AuditEntry {
     spawned_by_tool: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     depth: Option<u32>,
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    credential_findings: alloc::vec::Vec<crate::scanner::CredentialFinding>,
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    redacted_payload: Option<String>,
 }
 
 impl AuditEntry {
@@ -205,6 +251,8 @@ impl AuditEntry {
             &previous_hash,
             &payload,
             &Lineage::default(),
+            #[cfg(feature = "std")]
+            &Redaction::default(),
         );
         Self {
             seq,
@@ -221,6 +269,10 @@ impl AuditEntry {
             delegation_reason: None,
             spawned_by_tool: None,
             depth: None,
+            #[cfg(feature = "std")]
+            credential_findings: alloc::vec::Vec::new(),
+            #[cfg(feature = "std")]
+            redacted_payload: None,
         }
     }
 
@@ -250,6 +302,8 @@ impl AuditEntry {
             &previous_hash,
             &payload,
             &lineage,
+            #[cfg(feature = "std")]
+            &Redaction::default(),
         );
         Self {
             seq,
@@ -266,6 +320,65 @@ impl AuditEntry {
             delegation_reason: lineage.delegation_reason,
             spawned_by_tool: lineage.spawned_by_tool,
             depth: lineage.depth,
+            #[cfg(feature = "std")]
+            credential_findings: alloc::vec::Vec::new(),
+            #[cfg(feature = "std")]
+            redacted_payload: None,
+        }
+    }
+
+    /// Create a new [`AuditEntry`] carrying both lineage data and credential
+    /// scanner output, computing `entry_hash` over all tamper-meaningful fields.
+    ///
+    /// When `redaction == Redaction::default()` (empty findings + `None` payload),
+    /// the resulting `entry_hash` is identical to [`AuditEntry::new_with_lineage`]
+    /// with the same base fields — so callers that don't have scanner data can
+    /// continue using the legacy constructors without any chain divergence.
+    ///
+    /// Gated on `std` because [`Redaction`] holds
+    /// [`CredentialFinding`](crate::scanner::CredentialFinding) values, which
+    /// live in the `std`-only `scanner` module.
+    #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lineage_and_redaction(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        session_id: SessionId,
+        payload: String,
+        previous_hash: [u8; 32],
+        lineage: Lineage,
+        redaction: Redaction,
+    ) -> Self {
+        let entry_hash = Self::compute_hash(
+            seq,
+            timestamp_ns,
+            &event_type,
+            &agent_id,
+            &session_id,
+            &previous_hash,
+            &payload,
+            &lineage,
+            &redaction,
+        );
+        Self {
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+            entry_hash,
+            root_agent_id: lineage.root_agent_id,
+            parent_agent_id: lineage.parent_agent_id,
+            team_id: lineage.team_id,
+            delegation_reason: lineage.delegation_reason,
+            spawned_by_tool: lineage.spawned_by_tool,
+            depth: lineage.depth,
+            credential_findings: redaction.credential_findings,
+            redacted_payload: redaction.redacted_payload,
         }
     }
 
@@ -357,6 +470,29 @@ impl AuditEntry {
         self.depth
     }
 
+    /// Credential / PII findings detected by the policy engine's scanner pass.
+    ///
+    /// Empty when the scan was clean (or when the entry was constructed via a
+    /// pre-redaction-aware code path). Each [`CredentialFinding`](crate::scanner::CredentialFinding)
+    /// stores only the kind, byte offset, and `[REDACTED:<kind>]` label —
+    /// never the raw secret bytes.
+    #[cfg(feature = "std")]
+    #[inline]
+    pub fn credential_findings(&self) -> &[crate::scanner::CredentialFinding] {
+        &self.credential_findings
+    }
+
+    /// Redacted version of the action payload, if the scanner produced findings.
+    ///
+    /// `None` when the scan was clean. When `Some`, every detected secret has
+    /// been replaced with its `[REDACTED:<kind>]` label so the audit trail
+    /// itself never leaks the raw secret.
+    #[cfg(feature = "std")]
+    #[inline]
+    pub fn redacted_payload(&self) -> Option<&str> {
+        self.redacted_payload.as_deref()
+    }
+
     // -----------------------------------------------------------------------
     // Integrity
     // -----------------------------------------------------------------------
@@ -375,6 +511,11 @@ impl AuditEntry {
             spawned_by_tool: self.spawned_by_tool.clone(),
             depth: self.depth,
         };
+        #[cfg(feature = "std")]
+        let redaction = Redaction {
+            credential_findings: self.credential_findings.clone(),
+            redacted_payload: self.redacted_payload.clone(),
+        };
         let expected = Self::compute_hash(
             self.seq,
             self.timestamp_ns,
@@ -384,6 +525,8 @@ impl AuditEntry {
             &self.previous_hash,
             &self.payload,
             &lineage,
+            #[cfg(feature = "std")]
+            &redaction,
         );
         expected == self.entry_hash
     }
@@ -397,6 +540,9 @@ impl AuditEntry {
     /// Field order and encoding are fixed — see [`AuditEntry::new`] for the
     /// documented byte sequence. Lineage fields append only when `Some`;
     /// when all lineage fields are `None`, output equals the pre-AAASM-934 hash exactly.
+    /// Redaction bytes append only when `redaction != Redaction::default()`;
+    /// the default value (empty findings + `None` payload) contributes 0 bytes,
+    /// so existing chains verify unchanged.
     #[allow(clippy::too_many_arguments)]
     fn compute_hash(
         seq: u64,
@@ -407,6 +553,7 @@ impl AuditEntry {
         previous_hash: &[u8; 32],
         payload: &str,
         lineage: &Lineage,
+        #[cfg(feature = "std")] redaction: &Redaction,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seq.to_be_bytes());
@@ -438,6 +585,26 @@ impl AuditEntry {
         }
         if let Some(d) = lineage.depth {
             hasher.update(d.to_be_bytes());
+        }
+        // Redaction — append only when non-default; empty Vec + None contributes 0 bytes
+        // so entries constructed via new() / new_with_lineage() hash exactly as before.
+        #[cfg(feature = "std")]
+        {
+            if !redaction.credential_findings.is_empty() || redaction.redacted_payload.is_some() {
+                hasher.update((redaction.credential_findings.len() as u32).to_be_bytes());
+                for finding in &redaction.credential_findings {
+                    hasher.update((finding.offset as u64).to_be_bytes());
+                    hasher.update((finding.matched.len() as u32).to_be_bytes());
+                    hasher.update(finding.matched.as_bytes());
+                }
+                if let Some(s) = &redaction.redacted_payload {
+                    hasher.update([1u8]);
+                    hasher.update((s.len() as u32).to_be_bytes());
+                    hasher.update(s.as_bytes());
+                } else {
+                    hasher.update([0u8]);
+                }
+            }
         }
         hasher.finalize().into()
     }
@@ -1408,5 +1575,104 @@ mod lineage_tests {
         log.next_entry_with_lineage(AuditEventType::PolicyViolation, 2_000, "{}".into(), lineage);
         assert!(log.verify_chain());
         assert_eq!(log.len(), 2);
+    }
+}
+
+#[cfg(all(test, feature = "std", feature = "serde"))]
+mod redaction_tests {
+    use super::*;
+    use crate::scanner::CredentialScanner;
+
+    const AGENT: AgentId = AgentId::from_bytes([3u8; 16]);
+    const SESSION: SessionId = SessionId::from_bytes([4u8; 16]);
+
+    /// Synthetic AWS access key from AWS public documentation. Not a real credential.
+    const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    fn build_redaction_for_fake_secret() -> Redaction {
+        let scanner = CredentialScanner::new();
+        let scan = scanner.scan(FAKE_AWS_ACCESS_KEY);
+        assert!(
+            !scan.findings.is_empty(),
+            "scanner must detect the synthetic AWS access key — fixture invariant",
+        );
+        let redacted = scan.redact(FAKE_AWS_ACCESS_KEY);
+        Redaction {
+            credential_findings: scan.findings,
+            redacted_payload: Some(redacted),
+        }
+    }
+
+    #[test]
+    fn audit_entry_with_redaction_never_serializes_the_raw_secret() {
+        let redaction = build_redaction_for_fake_secret();
+        // Decision metadata only — no raw secret bytes in the audit payload itself.
+        let payload = String::from(r#"{"action_type":"tool_call","decision":"redact"}"#);
+        let entry = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::CredentialLeakBlocked,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            redaction,
+        );
+
+        let serialized = serde_json::to_string(&entry).expect("AuditEntry must serialize");
+
+        // Primary security invariant: the raw secret bytes never appear in the
+        // serialized AuditEntry — neither in `payload`, nor in `credential_findings`,
+        // nor in `redacted_payload`.
+        assert!(
+            !serialized.contains(FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT VIOLATED: raw secret appears in serialized AuditEntry: {serialized}",
+        );
+
+        // Secondary sanity check: the redaction label IS present, proving findings were attached.
+        assert!(
+            serialized.contains("[REDACTED:AwsAccessKey]"),
+            "serialized AuditEntry must carry the [REDACTED:AwsAccessKey] label, got: {serialized}",
+        );
+
+        // Tamper-evidence holds: the entry validates against its recorded hash.
+        assert!(
+            entry.verify_integrity(),
+            "verify_integrity must pass on a freshly constructed redacted entry",
+        );
+    }
+
+    #[test]
+    fn redaction_default_preserves_legacy_hash() {
+        // new() and new_with_lineage_and_redaction(_, _, ..., Redaction::default())
+        // must produce identical entry_hash for the same base fields. This guarantees
+        // the existing audit chain on disk continues to verify after this PR lands.
+        let payload = String::from(r#"{"tool":"bash"}"#);
+        let legacy = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload.clone(),
+            [0u8; 32],
+        );
+        let with_default_redaction = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+        );
+        assert_eq!(
+            legacy.entry_hash(),
+            with_default_redaction.entry_hash(),
+            "Redaction::default() must contribute 0 bytes to the hash so legacy chains keep verifying",
+        );
     }
 }
