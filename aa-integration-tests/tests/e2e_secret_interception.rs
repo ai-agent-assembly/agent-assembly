@@ -313,3 +313,48 @@ fn redacted_payload_never_contains_any_raw_secret() {
         "redacted payload must contain at least one [REDACTED:Kind] marker, got: {redacted}",
     );
 }
+
+// ── Proxy-path slice (AAASM-1549 / ST-N) ─────────────────────────────────────
+//
+// The tests above drive the gateway's `PolicyEngine` (Layer 1). ST-N covers the
+// equivalent **Layer 2** scanner integration carried by `aa_proxy::Interceptor`.
+// See the file-level scope note for what this slice does and does not assert.
+
+mod proxy_path {
+    // Helpers and per-test items land in separate commits. Until the tests are
+    // wired up the helpers are temporarily unreferenced — silence dead-code
+    // warnings here rather than per fn to keep the diffs minimal.
+    #![allow(dead_code)]
+
+    use std::time::SystemTime;
+
+    use bytes::Bytes;
+
+    use aa_proxy::intercept::detect::LlmApiPattern;
+    use aa_proxy::intercept::event::ProxyEvent;
+
+    /// Build an OpenAI-shaped POST body whose `messages[0].content` embeds the
+    /// supplied `payload` substring. Mirrors what an agent's `requests` /
+    /// `httpx` POST to `https://api.openai.com/v1/chat/completions` looks like
+    /// when no SDK is installed (Layer 2 is the only catch).
+    pub(super) fn openai_chat_body(payload: &str) -> Bytes {
+        Bytes::from(format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"{payload}"}}]}}"#
+        ))
+    }
+
+    /// Construct a `ProxyEvent` carrying an OpenAI-pattern request body. No
+    /// response body — this mirrors the moment after the proxy has parsed the
+    /// inbound request and is about to forward it upstream.
+    pub(super) fn proxy_event_with_request_body(body: Bytes) -> ProxyEvent {
+        ProxyEvent {
+            agent_id: Some("proxy-path-test".into()),
+            pattern: LlmApiPattern::OpenAi,
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            request_body: Some(body),
+            response_body: None,
+            timestamp: SystemTime::now(),
+        }
+    }
+}
