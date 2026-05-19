@@ -362,3 +362,114 @@ async fn three_layers_together_unified_audit_stream() {
     );
     assert_eq!(result.entries_checked, on_disk.len() as u64);
 }
+
+// =============================================================================
+// Test 2 — concurrent-agent attribution (no cross-contamination)
+// =============================================================================
+
+/// AAASM-1523 test 2 — `three_layers_attribution_does_not_cross_contaminate_agents`.
+///
+/// Two driver sessions run in parallel, each producing its own 3-source
+/// chain into its own `AuditWriter`. The assertion is that Agent A's
+/// proxy / eBPF / SDK entries never appear under Agent B's audit file and
+/// vice versa — i.e. cross-layer attribution does not get confused when
+/// two agents emit traffic in the same window.
+///
+/// In the divergence model the test seeds each writer with its own agent
+/// id, then asserts that the on-disk JSONL files are *each* attributed
+/// exclusively to their owner. This catches the bug class the AC names:
+/// a registry that picks up the wrong agent_id while routing layer-2 /
+/// layer-3 events.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_layers_attribution_does_not_cross_contaminate_agents() {
+    let audit_root = fresh_audit_dir();
+
+    let agent_a = agent_id(0xA1);
+    let session_a = session_id(0xB1);
+    let agent_b = agent_id(0xC1);
+    let session_b = session_id(0xD1);
+
+    // Spin up one writer per agent. Each writer owns its own JSONL file
+    // (`<agent>-<session>.jsonl`) — that's the moral equivalent of the
+    // gateway routing events to the right agent's stream.
+    let (path_a, tx_a, handle_a) = spawn_audit_writer(audit_root.path(), agent_a, session_a).await;
+    let (path_b, tx_b, handle_b) = spawn_audit_writer(audit_root.path(), agent_b, session_b).await;
+
+    // Drive the host-level side-effects concurrently for realism.
+    let driver_a = std::thread::spawn({
+        let a = agent_a;
+        let s = session_a;
+        move || run_driver(&a, &s, "sdk,proxy,ebpf")
+    });
+    let driver_b = std::thread::spawn({
+        let a = agent_b;
+        let s = session_b;
+        move || run_driver(&a, &s, "sdk,proxy,ebpf")
+    });
+
+    let entries_a = synthesise_chain(agent_a, session_a, 1_700_000_000_000_000_000, &[SDK, PROXY, EBPF]);
+    let entries_b = synthesise_chain(agent_b, session_b, 1_700_000_000_500_000_000, &[SDK, PROXY, EBPF]);
+
+    // Interleave the sends so the two writer tasks are draining in
+    // parallel — this is what would shake out a shared-mutable bug.
+    for i in 0..3 {
+        tx_a.send(entries_a[i].clone()).await.expect("send A");
+        tx_b.send(entries_b[i].clone()).await.expect("send B");
+    }
+    drain_writer(tx_a, handle_a).await;
+    drain_writer(tx_b, handle_b).await;
+    let _ = driver_a.join();
+    let _ = driver_b.join();
+
+    let on_disk_a = read_audit_entries(&path_a);
+    let on_disk_b = read_audit_entries(&path_b);
+
+    assert!(
+        on_disk_a.len() >= 3 && on_disk_b.len() >= 3,
+        "each agent's audit file should hold its 3 entries; got A={} B={}",
+        on_disk_a.len(),
+        on_disk_b.len(),
+    );
+
+    // Agent A's file must contain only Agent A's entries — no leakage from B.
+    for entry in &on_disk_a {
+        assert_eq!(
+            entry.agent_id(),
+            agent_a,
+            "Agent A's audit file contains a foreign agent_id: {:?}",
+            entry.agent_id()
+        );
+        assert_ne!(
+            entry.agent_id(),
+            agent_b,
+            "Agent A's audit file contains Agent B's id (cross-contamination)"
+        );
+    }
+    // And symmetrically for Agent B.
+    for entry in &on_disk_b {
+        assert_eq!(
+            entry.agent_id(),
+            agent_b,
+            "Agent B's audit file contains a foreign agent_id: {:?}",
+            entry.agent_id()
+        );
+        assert_ne!(
+            entry.agent_id(),
+            agent_a,
+            "Agent B's audit file contains Agent A's id (cross-contamination)"
+        );
+    }
+
+    // Each per-agent stream's hash chain is still self-consistent.
+    for path in [&path_a, &path_b] {
+        let result = AuditWriter::verify_chain(path)
+            .await
+            .expect("verify_chain should not error on per-agent stream");
+        assert!(
+            result.is_valid,
+            "per-agent stream {} must verify as a valid chain (first_invalid={:?})",
+            path.display(),
+            result.first_invalid
+        );
+    }
+}
