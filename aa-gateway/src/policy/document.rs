@@ -50,6 +50,22 @@ pub struct BudgetPolicy {
     pub action_on_exceed: ActionOnExceed,
 }
 
+/// Action to take when the credential / sensitive-data scanner produces
+/// a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialAction {
+    /// Refuse the action: engine returns `Deny` with reason
+    /// `"credential detected"`; upstream never receives the payload.
+    Block,
+    /// Forward a redacted form of the payload upstream (default; preserves
+    /// the historical behaviour from before this enum existed).
+    #[default]
+    RedactOnly,
+    /// Forward the unmodified payload and raise an alert side-effect.
+    /// Documented as a deliberate downgrade for low-risk audit-only modes.
+    AlertOnly,
+}
+
 /// Validated data / PII policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataPolicy {
@@ -150,5 +166,10 @@ mod tests {
         };
         assert!(tp.allow);
         assert!(tp.limit_per_hour.is_none());
+    }
+
+    #[test]
+    fn credential_action_default_is_redact_only() {
+        assert_eq!(CredentialAction::default(), CredentialAction::RedactOnly);
     }
 }
