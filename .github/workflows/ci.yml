@@ -523,6 +523,20 @@ jobs:
               --features integration-test \
               --test e2e_ebpf \
               -- --nocapture --test-threads=1
+      - name: Run AAASM-1523 e2e three-layer suite
+        # AAASM-1523 / F116 ST-K — three-layer unified audit-stream tests.
+        # Drives the in-process `aa_gateway::AuditWriter` mpsc pipeline
+        # plus the `three_layers_driver.py` fixture for on-host realism.
+        # No BPF load, no root needed — see the file-level divergence note
+        # in `aa-integration-tests/tests/e2e_three_layers_together.rs` for
+        # why. Runs in the same Linux CI lane as ST-H per the AC ("shared
+        # with ST-H + ST-J") so the protoc + nightly toolchain are reused.
+        run: |
+          cargo +nightly test \
+            -p aa-integration-tests \
+            --features integration-test \
+            --test e2e_three_layers_together \
+            -- --nocapture --test-threads=1
 
   benchmark:
     name: Benchmark
