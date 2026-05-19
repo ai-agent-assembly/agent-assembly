@@ -215,3 +215,28 @@ def run_script(script: AgentScript, cfg: RunConfig) -> RunResult:
         error=error,
         exit_code=proc.returncode,
     )
+
+
+def _format_result_line(result: RunResult) -> str:
+    """One-line PASS/FAIL summary suitable for sequential streaming."""
+    mark = "✓" if result.passed else "✗"
+    label = f"{result.script.scenario:<15} / {result.script.name:<26}"
+    if result.timed_out:
+        detail = f"TIMEOUT ({result.script.path.name} after {result.duration_ms} ms)"
+    elif result.error:
+        detail = result.error
+    else:
+        detail = f"{result.duration_ms} ms"
+    return f" {mark}  {label}  {detail}"
+
+
+def run_all_sequential(
+    scripts: list[AgentScript], cfg: RunConfig
+) -> list[RunResult]:
+    """Run scripts one at a time, printing PASS/FAIL after each."""
+    results: list[RunResult] = []
+    for script in scripts:
+        result = run_script(script, cfg)
+        print(_format_result_line(result), flush=True)
+        results.append(result)
+    return results
