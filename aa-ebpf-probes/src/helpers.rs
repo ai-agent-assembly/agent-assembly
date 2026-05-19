@@ -53,11 +53,34 @@ pub fn should_monitor(tgid: u32) -> bool {
 /// not the user's syscall args.
 ///
 /// This helper reads the inner `pt_regs *` from `ctx.arg(0)` (rdi) and
-/// wraps it as [`PtRegs`]. Callers then read the `n`th userspace
-/// syscall arg with `.arg::<T>(n)` (e.g. `*const u8` for a pathname
-/// pointer or `u64` for a fd). Tracked as **AAASM-1552**.
+/// wraps it as [`PtRegs`]. Callers reading a **userspace pointer** arg
+/// should chain `.arg::<*const T>(n)` — that impl uses
+/// `bpf_probe_read` internally and passes the BPF verifier when the
+/// underlying `PtRegs` was obtained via this helper. For integer args
+/// (e.g. a fd) use [`syscall_arg_u64`] instead — the primitive impl
+/// of `PtRegs::arg<u64>` emits a direct memory load that the verifier
+/// rejects on a scalar `pt_regs *`. Tracked as **AAASM-1552**.
 #[inline(always)]
 pub fn syscall_pt_regs(ctx: &ProbeContext) -> Option<PtRegs> {
     let inner = ctx.arg::<*const u8>(0)? as *mut _;
     Some(PtRegs::new(inner))
+}
+
+/// Read the `n`th userspace syscall argument as a `u64` from a
+/// `__x64_sys_*` kprobe context.
+///
+/// `PtRegs::arg::<u64>(n)` emits a direct memory load (`ctx.rdi as
+/// *const u64 as _`) which the BPF verifier rejects with
+/// `R1 invalid mem access 'scalar'` when the underlying pt_regs is a
+/// scalar pointer (i.e. the inner pt_regs we got from another
+/// `bpf_probe_read`). The `*const T` impl, by contrast, routes the
+/// load through `bpf_probe_read`, which the verifier accepts.
+///
+/// So we read as `*const u64` (verifier-safe) and reinterpret the
+/// pointer bits as the u64 syscall arg they actually hold. Tracked
+/// as **AAASM-1552**.
+#[inline(always)]
+pub fn syscall_arg_u64(ctx: &ProbeContext, n: usize) -> Option<u64> {
+    let ptr: *const u64 = syscall_pt_regs(ctx)?.arg(n)?;
+    Some(ptr as u64)
 }
