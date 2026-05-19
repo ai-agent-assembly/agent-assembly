@@ -22,6 +22,8 @@ fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
         agent_id: Some(a.agent_id),
         status: a.status,
         updated_at: a.updated_at,
+        detected_pattern_type: a.detected_pattern_type,
+        redacted_value: a.redacted_value,
     }
 }
 
@@ -42,7 +44,7 @@ pub struct AlertResponse {
     pub id: String,
     /// Alert severity level (e.g. "warning", "critical").
     pub severity: String,
-    /// Alert category (e.g. "budget", "policy_violation", "anomaly").
+    /// Alert category (e.g. "budget", "secret_detected").
     pub category: String,
     /// Human-readable alert message.
     pub message: String,
@@ -56,6 +58,14 @@ pub struct AlertResponse {
     /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
     /// while the alert is still in its initial captured state.
     pub updated_at: Option<String>,
+    /// Primary detected credential kind for `secret_detected` alerts
+    /// (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_pattern_type: Option<String>,
+    /// `[REDACTED:<Kind>]` label for `secret_detected` alerts — never
+    /// contains the raw secret. Omitted for budget alerts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted_value: Option<String>,
 }
 
 /// `GET /api/v1/alerts` — list recent governance alerts.
