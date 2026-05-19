@@ -359,7 +359,6 @@ async fn ebpf_file_create_emits_event_with_path_and_pid() {
 /// When `FileIoEvent` gains a typed `bytes` accessor (AAASM-1425), this
 /// assertion can switch over without changing the byte-count claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_write_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
