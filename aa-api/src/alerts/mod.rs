@@ -59,6 +59,26 @@ impl std::fmt::Display for AlertSeverity {
     }
 }
 
+/// Classification of an alert by its source signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertCategory {
+    /// Budget threshold crossed.
+    Budget,
+    /// One or more credential / sensitive-value patterns detected in an
+    /// outbound payload by the gateway's credential scanner.
+    SecretDetected,
+}
+
+impl std::fmt::Display for AlertCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlertCategory::Budget => write!(f, "budget"),
+            AlertCategory::SecretDetected => write!(f, "secret_detected"),
+        }
+    }
+}
+
 /// Derive severity from a budget threshold percentage.
 pub fn severity_from_threshold(threshold_pct: u8) -> AlertSeverity {
     if threshold_pct >= 90 {
