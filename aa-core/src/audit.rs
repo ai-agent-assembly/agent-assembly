@@ -193,6 +193,12 @@ pub struct AuditEntry {
     spawned_by_tool: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     depth: Option<u32>,
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
+    credential_findings: alloc::vec::Vec<crate::scanner::CredentialFinding>,
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    redacted_payload: Option<String>,
 }
 
 impl AuditEntry {
@@ -261,6 +267,10 @@ impl AuditEntry {
             delegation_reason: None,
             spawned_by_tool: None,
             depth: None,
+            #[cfg(feature = "std")]
+            credential_findings: alloc::vec::Vec::new(),
+            #[cfg(feature = "std")]
+            redacted_payload: None,
         }
     }
 
@@ -306,6 +316,10 @@ impl AuditEntry {
             delegation_reason: lineage.delegation_reason,
             spawned_by_tool: lineage.spawned_by_tool,
             depth: lineage.depth,
+            #[cfg(feature = "std")]
+            credential_findings: alloc::vec::Vec::new(),
+            #[cfg(feature = "std")]
+            redacted_payload: None,
         }
     }
 
@@ -395,6 +409,29 @@ impl AuditEntry {
     #[inline]
     pub fn depth(&self) -> Option<u32> {
         self.depth
+    }
+
+    /// Credential / PII findings detected by the policy engine's scanner pass.
+    ///
+    /// Empty when the scan was clean (or when the entry was constructed via a
+    /// pre-redaction-aware code path). Each [`CredentialFinding`](crate::scanner::CredentialFinding)
+    /// stores only the kind, byte offset, and `[REDACTED:<kind>]` label —
+    /// never the raw secret bytes.
+    #[cfg(feature = "std")]
+    #[inline]
+    pub fn credential_findings(&self) -> &[crate::scanner::CredentialFinding] {
+        &self.credential_findings
+    }
+
+    /// Redacted version of the action payload, if the scanner produced findings.
+    ///
+    /// `None` when the scan was clean. When `Some`, every detected secret has
+    /// been replaced with its `[REDACTED:<kind>]` label so the audit trail
+    /// itself never leaks the raw secret.
+    #[cfg(feature = "std")]
+    #[inline]
+    pub fn redacted_payload(&self) -> Option<&str> {
+        self.redacted_payload.as_deref()
     }
 
     // -----------------------------------------------------------------------
