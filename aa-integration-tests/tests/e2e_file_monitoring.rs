@@ -311,7 +311,6 @@ async fn await_event(
 /// shape, so failures here usually mean the probe is mis-attached or
 /// `PID_FILTER` is mis-keyed.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_create_emits_event_with_path_and_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
