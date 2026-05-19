@@ -670,19 +670,33 @@ async fn gateway_logs_follow_streams_new_entries() {
         .spawn()
         .expect("spawn gateway logs -f");
 
-    // Give the follow process time to open the log file and seek to EOF.
-    // 500ms is generous for CI machines where cargo may still be starting.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Append one new tracing-style log line.
-    let new_line = "2026-05-18T11:00:00Z  INFO aa_gateway: streamed";
-    {
-        let mut f = std::fs::OpenOptions::new().append(true).open(&log_file).unwrap();
-        writeln!(f, "{new_line}").unwrap();
+    // Continuously append new lines and poll the output file until a line
+    // appears (success) or the deadline expires. This eliminates the startup
+    // timing assumption: cargo-llvm-cov instrumentation can slow aasm startup
+    // to 3-5s, far exceeding a fixed sleep. Each iteration writes a fresh line
+    // so once the process has seeked to EOF and is polling, the next append is
+    // immediately visible.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut found = false;
+    let mut count = 0u32;
+    while tokio::time::Instant::now() < deadline && !found {
+        count += 1;
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&log_file).unwrap();
+            writeln!(
+                f,
+                "2026-05-18T11:00:{:02}Z  INFO aa_gateway: streamed-{}",
+                count % 60,
+                count
+            )
+            .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let out = std::fs::read_to_string(&follow_out).unwrap_or_default();
+        if out.contains("streamed") {
+            found = true;
+        }
     }
-
-    // Follow polls every 100ms; allow 2s for the line to appear in the file.
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let child_pid = child.id();
     kill_process(child_pid, libc::SIGTERM);
@@ -691,6 +705,6 @@ async fn gateway_logs_follow_streams_new_entries() {
     let output = std::fs::read_to_string(&follow_out).expect("read follow output file");
     assert!(
         output.contains("streamed"),
-        "follow output must contain the appended line 'streamed';\ngot:\n{output}"
+        "follow output must contain the appended line 'streamed' within 20s;\ngot:\n{output}"
     );
 }
