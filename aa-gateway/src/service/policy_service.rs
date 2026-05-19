@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
@@ -15,6 +15,7 @@ use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, Chec
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::alerts::SecretAlert;
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
@@ -37,6 +38,11 @@ pub struct PolicyServiceImpl {
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
     last_hash: Mutex<[u8; 32]>,
+    /// Optional broadcast sender for secret-detection alerts. When set,
+    /// the service publishes a [`SecretAlert`] each time a CheckAction
+    /// produces non-empty `credential_findings` (AAASM-1545). `None`
+    /// disables emission — used by unit tests that don't need alerts.
+    secret_alert_tx: Option<broadcast::Sender<SecretAlert>>,
 }
 
 impl PolicyServiceImpl {
@@ -63,6 +69,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -89,6 +96,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -117,6 +125,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -150,6 +159,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -169,6 +179,17 @@ impl PolicyServiceImpl {
     /// `routing_status` on the in-flight approval queue entry (AC2 / AC3).
     pub fn with_router(mut self, router: Arc<ApprovalRouter>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    /// Attach a broadcast sender for secret-detection alerts (AAASM-1545).
+    ///
+    /// When present, the service publishes a [`SecretAlert`] each time a
+    /// `CheckAction` produces non-empty `credential_findings`. Callers
+    /// (e.g. `aa-api`) typically pair this with
+    /// `spawn_secret_alert_capture` to persist the alerts into the store.
+    pub fn with_secret_alert_tx(mut self, tx: broadcast::Sender<SecretAlert>) -> Self {
+        self.secret_alert_tx = Some(tx);
         self
     }
 
@@ -617,6 +638,51 @@ impl PolicyServiceImpl {
     }
 }
 
+impl PolicyServiceImpl {
+    /// Publish a [`SecretAlert`] when the evaluation produced one or more
+    /// credential findings and a broadcast sender is attached. The alert
+    /// carries only kind tags and counts — never any byte of the original
+    /// secret. Failure to send (no receivers) is logged at trace level
+    /// and does not propagate (AAASM-1545).
+    fn maybe_emit_secret_alert(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
+        if eval.credential_findings.is_empty() {
+            return;
+        }
+        let Some(tx) = self.secret_alert_tx.as_ref() else {
+            return;
+        };
+        let Some(proto_agent) = req.agent_id.as_ref() else {
+            return;
+        };
+
+        let agent_id = AgentId::from_bytes(proto_agent_id_to_key(proto_agent));
+        let team_id = if proto_agent.team_id.is_empty() {
+            None
+        } else {
+            Some(proto_agent.team_id.clone())
+        };
+
+        // Distinct kinds (preserve first-seen order) for the alert payload.
+        let mut kinds = Vec::new();
+        for f in &eval.credential_findings {
+            if !kinds.iter().any(|k| k == &f.kind) {
+                kinds.push(f.kind.clone());
+            }
+        }
+
+        let alert = SecretAlert {
+            agent_id,
+            team_id,
+            kinds,
+            finding_count: eval.credential_findings.len(),
+        };
+
+        if let Err(err) = tx.send(alert) {
+            tracing::trace!(error = %err, "no subscribers for SecretAlert broadcast");
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl PolicyService for PolicyServiceImpl {
     async fn check_action(
@@ -633,6 +699,7 @@ impl PolicyService for PolicyServiceImpl {
         );
 
         let (eval, latency_us, policy_rule) = self.evaluate_one(&req)?;
+        self.maybe_emit_secret_alert(&req, &eval);
         let deny_action = eval.deny_action;
 
         // If RequiresApproval, submit to the queue and block until decided.
@@ -673,6 +740,7 @@ impl PolicyService for PolicyServiceImpl {
 
         for req in &batch.requests {
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
+            self.maybe_emit_secret_alert(req, &eval);
             let deny_action = eval.deny_action;
             let resp = if let Some(approval_response) =
                 self.maybe_submit_approval(req, &eval, latency_us, &policy_rule).await

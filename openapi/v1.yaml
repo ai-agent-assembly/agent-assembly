@@ -1966,13 +1966,27 @@ components:
           description: Agent ID that triggered the alert (if applicable).
         category:
           type: string
-          description: Alert category (e.g. "budget", "policy_violation", "anomaly").
+          description: Alert category (e.g. "budget", "secret_detected").
+        detected_pattern_type:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Primary detected credential kind for `secret_detected` alerts
+            (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
         id:
           type: string
           description: Unique alert identifier.
         message:
           type: string
           description: Human-readable alert message.
+        redacted_value:
+          type:
+          - string
+          - 'null'
+          description: |-
+            `[REDACTED:<Kind>]` label for `secret_detected` alerts — never
+            contains the raw secret. Omitted for budget alerts.
         severity:
           type: string
           description: Alert severity level (e.g. "warning", "critical").
@@ -1981,6 +1995,13 @@ components:
           description: |-
             Lifecycle status — `"unresolved"` on capture, `"resolved"` once
             the alert has been acknowledged via `POST /alerts/:id/resolve`.
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Team attribution propagated from the originating request
+            context. Omitted when no team was associated.
         timestamp:
           type: string
           description: ISO 8601 timestamp when the alert was raised.

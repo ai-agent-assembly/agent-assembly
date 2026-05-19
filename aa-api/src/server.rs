@@ -45,6 +45,11 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
     let budget_rx = state.events.subscribe_budget();
     let _alert_capture_handle = crate::alerts::capture::spawn_alert_capture(budget_rx, state.alert_store.clone());
 
+    // Spawn background task to capture secret-detection alerts (AAASM-1545).
+    let secret_rx = state.events.subscribe_secret();
+    let _secret_alert_capture_handle =
+        crate::alerts::capture::spawn_secret_alert_capture(secret_rx, state.alert_store.clone());
+
     let app = build_app(state);
 
     let listener = TcpListener::bind(config.bind_addr).await?;

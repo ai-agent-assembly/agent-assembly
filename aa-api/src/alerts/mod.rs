@@ -7,20 +7,28 @@
 pub mod capture;
 pub mod store;
 
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 
-/// Stored representation of a budget alert with metadata.
+/// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredAlert {
     /// Auto-incremented alert identifier.
     pub id: u64,
     /// Alert severity level derived from `threshold_pct`.
     pub severity: AlertSeverity,
+    /// Source classification — `Budget` today, `SecretDetected` once
+    /// secret-detection alerts are emitted (AAASM-1545).
+    pub category: AlertCategory,
     /// Human-readable alert message.
     pub message: String,
     /// Hex-encoded agent ID that triggered the alert.
     pub agent_id: String,
+    /// Team attribution propagated from the request context. `None` for
+    /// alerts where no team was associated (e.g. legacy budget alerts
+    /// emitted without a team).
+    pub team_id: Option<String>,
     /// ISO 8601 timestamp when the alert was captured.
     pub timestamp: String,
     /// Budget threshold percentage that was crossed.
@@ -35,6 +43,13 @@ pub struct StoredAlert {
     /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
     /// while the alert is still in its initial captured state.
     pub updated_at: Option<String>,
+    /// Primary detected credential kind for `SecretDetected` alerts
+    /// (e.g. `"AwsAccessKey"`). `None` for `Budget` alerts.
+    pub detected_pattern_type: Option<String>,
+    /// `[REDACTED:<Kind>]` label for `SecretDetected` alerts. Never
+    /// contains any byte of the original secret. `None` for budget
+    /// alerts.
+    pub redacted_value: Option<String>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -55,6 +70,26 @@ impl std::fmt::Display for AlertSeverity {
             AlertSeverity::Info => write!(f, "info"),
             AlertSeverity::Warning => write!(f, "warning"),
             AlertSeverity::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+/// Classification of an alert by its source signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertCategory {
+    /// Budget threshold crossed.
+    Budget,
+    /// One or more credential / sensitive-value patterns detected in an
+    /// outbound payload by the gateway's credential scanner.
+    SecretDetected,
+}
+
+impl std::fmt::Display for AlertCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlertCategory::Budget => write!(f, "budget"),
+            AlertCategory::SecretDetected => write!(f, "secret_detected"),
         }
     }
 }
@@ -86,19 +121,64 @@ fn build_alert_message(alert: &BudgetAlert) -> String {
     )
 }
 
+/// Build a human-readable alert message for a [`SecretAlert`].
+fn build_secret_alert_message(alert: &SecretAlert) -> String {
+    let kind = alert.primary_kind().as_str();
+    if alert.finding_count <= 1 {
+        format!(
+            "Secret detected: agent {} attempted to send a {} value in outbound payload (redacted)",
+            format_agent_id(&alert.agent_id),
+            kind,
+        )
+    } else {
+        format!(
+            "Secret detected: agent {} attempted to send {} values ({} primary) in outbound payload (redacted)",
+            format_agent_id(&alert.agent_id),
+            alert.finding_count,
+            kind,
+        )
+    }
+}
+
+/// Convert a [`SecretAlert`] into a [`StoredAlert`] with the given ID
+/// and timestamp. Severity is always `Critical` per AAASM-1545.
+pub fn stored_secret_alert_from(alert: &SecretAlert, id: u64, timestamp: String) -> StoredAlert {
+    let kind = alert.primary_kind();
+    StoredAlert {
+        id,
+        severity: AlertSeverity::Critical,
+        category: AlertCategory::SecretDetected,
+        message: build_secret_alert_message(alert),
+        agent_id: format_agent_id(&alert.agent_id),
+        team_id: alert.team_id.clone(),
+        timestamp,
+        threshold_pct: 0,
+        spent_usd: 0.0,
+        limit_usd: 0.0,
+        status: "unresolved".to_string(),
+        updated_at: None,
+        detected_pattern_type: Some(kind.as_str().to_string()),
+        redacted_value: Some(alert.redacted_label()),
+    }
+}
+
 /// Convert a `BudgetAlert` into a `StoredAlert` with the given ID and timestamp.
 pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> StoredAlert {
     StoredAlert {
         id,
         severity: severity_from_threshold(alert.threshold_pct),
+        category: AlertCategory::Budget,
         message: build_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
+        team_id: alert.team_id.clone(),
         timestamp,
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
         status: "unresolved".to_string(),
         updated_at: None,
+        detected_pattern_type: None,
+        redacted_value: None,
     }
 }
 
@@ -108,6 +188,11 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
 pub trait AlertStore: Send + Sync {
     /// Record a new budget alert, returning the assigned ID.
     fn record(&self, alert: &BudgetAlert) -> u64;
+
+    /// Record a new secret-detection alert, returning the assigned ID
+    /// (AAASM-1545). The stored alert has `severity=critical` and
+    /// `category=secret_detected`.
+    fn record_secret(&self, alert: &SecretAlert) -> u64;
 
     /// List stored alerts with pagination.
     ///

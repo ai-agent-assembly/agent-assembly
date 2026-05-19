@@ -4,6 +4,7 @@
 //! registry, evaluates governance policies, routes enforcement decisions
 //! back to proxies and SDK shims, and writes the audit trail.
 
+pub mod alerts;
 pub mod anomaly;
 pub mod approval;
 pub mod audit;

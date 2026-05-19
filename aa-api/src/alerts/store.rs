@@ -4,9 +4,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 
-use super::{stored_alert_from, AlertStore, StoredAlert};
+use super::{stored_alert_from, stored_secret_alert_from, AlertStore, StoredAlert};
 
 /// Default maximum number of alerts retained in the ring buffer.
 const DEFAULT_CAPACITY: usize = 10_000;
@@ -57,6 +58,19 @@ impl AlertStore for InMemoryAlertStore {
         id
     }
 
+    fn record_secret(&self, alert: &SecretAlert) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = stored_secret_alert_from(alert, id, timestamp);
+
+        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        if buf.len() >= self.capacity {
+            buf.pop_front();
+        }
+        buf.push_back(stored);
+        id
+    }
+
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64) {
         let buf = self.alerts.read().expect("alert store lock poisoned");
         let total = buf.len() as u64;
@@ -88,6 +102,7 @@ impl AlertStore for InMemoryAlertStore {
 mod tests {
     use super::*;
     use aa_core::AgentId;
+    use aa_core::CredentialKind;
 
     fn test_alert(threshold_pct: u8) -> BudgetAlert {
         BudgetAlert {
@@ -96,6 +111,15 @@ mod tests {
             threshold_pct,
             spent_usd: 8.0,
             limit_usd: 10.0,
+        }
+    }
+
+    fn test_secret_alert(kind: CredentialKind) -> SecretAlert {
+        SecretAlert {
+            agent_id: AgentId::from_bytes([0xAB; 16]),
+            team_id: Some("team-pioneer".to_string()),
+            kinds: vec![kind],
+            finding_count: 1,
         }
     }
 
@@ -258,5 +282,28 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
+    }
+
+    #[test]
+    fn record_secret_round_trips_critical_secret_detected() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
+
+        let found = store.get(id).expect("recorded secret alert must be retrievable");
+        assert_eq!(found.severity, super::super::AlertSeverity::Critical);
+        assert_eq!(found.category, super::super::AlertCategory::SecretDetected);
+        assert_eq!(found.detected_pattern_type.as_deref(), Some("AwsAccessKey"));
+        assert_eq!(found.redacted_value.as_deref(), Some("[REDACTED:AwsAccessKey]"));
+        assert_eq!(found.status, "unresolved");
+    }
+
+    #[test]
+    fn record_secret_shares_id_sequence_with_record() {
+        let store = InMemoryAlertStore::new();
+        let budget_id = store.record(&test_alert(80));
+        let secret_id = store.record_secret(&test_secret_alert(CredentialKind::OpenAiKey));
+        // Both calls allocate from the same monotonic counter.
+        assert_eq!(budget_id, 1);
+        assert_eq!(secret_id, 2);
     }
 }

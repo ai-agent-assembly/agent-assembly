@@ -1183,12 +1183,22 @@ export interface components {
         AlertResponse: {
             /** @description Agent ID that triggered the alert (if applicable). */
             agent_id?: string | null;
-            /** @description Alert category (e.g. "budget", "policy_violation", "anomaly"). */
+            /** @description Alert category (e.g. "budget", "secret_detected"). */
             category: string;
+            /**
+             * @description Primary detected credential kind for `secret_detected` alerts
+             *     (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
+             */
+            detected_pattern_type?: string | null;
             /** @description Unique alert identifier. */
             id: string;
             /** @description Human-readable alert message. */
             message: string;
+            /**
+             * @description `[REDACTED:<Kind>]` label for `secret_detected` alerts — never
+             *     contains the raw secret. Omitted for budget alerts.
+             */
+            redacted_value?: string | null;
             /** @description Alert severity level (e.g. "warning", "critical"). */
             severity: string;
             /**
@@ -1196,6 +1206,11 @@ export interface components {
              *     the alert has been acknowledged via `POST /alerts/:id/resolve`.
              */
             status: string;
+            /**
+             * @description Team attribution propagated from the originating request
+             *     context. Omitted when no team was associated.
+             */
+            team_id?: string | null;
             /** @description ISO 8601 timestamp when the alert was raised. */
             timestamp: string;
             /**
