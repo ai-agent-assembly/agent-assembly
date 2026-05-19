@@ -464,3 +464,42 @@ async fn file_rename_emits_event_with_old_path() {
         "the rename should have actually happened on disk",
     );
 }
+
+// =============================================================================
+// Test 5 — unlink emits an event with the path
+// =============================================================================
+
+/// AAASM-1522 test 5 — `file_unlink_emits_event_with_path`.
+///
+/// Pre-creates the file then has the driver `os.unlink(path)`. Asserts
+/// the `Unlink` event records the path and is attributed to the driver
+/// pid. Confirms the file is actually gone afterwards as a sanity check
+/// that the driver did the right syscall.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_unlink_emits_event_with_path() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("unlink");
+    let target = tmp.join("doomed.txt");
+    let target_str = target.to_string_lossy().to_string();
+    std::fs::write(&target, b"about to be deleted").expect("pre-create unlink target");
+
+    let mut driver = spawn_driver_paused(&["--mode", "unlink", "--path", &target_str]);
+    let driver_pid = driver.id();
+    register_pid(&mut bpf, driver_pid);
+    release_driver(&mut driver);
+
+    let target_for_pred = target_str.clone();
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Unlink && ev.path == target_for_pred
+    })
+    .await;
+
+    let _ = drain_driver_json(driver);
+
+    assert_eq!(ev.pid, driver_pid, "unlink event must be attributed to the driver pid");
+    assert_eq!(ev.syscall, SyscallKind::Unlink);
+    assert_eq!(ev.path, target_str);
+    assert!(!target.exists(), "the file should be gone after the driver's unlink");
+}
