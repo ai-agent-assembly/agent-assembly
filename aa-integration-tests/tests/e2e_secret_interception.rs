@@ -22,6 +22,30 @@
 //! work; the corresponding tests will be added in a second PR once those
 //! runtime features land.
 //!
+//! ## ST-N proxy-path slice (AAASM-1549)
+//!
+//! The `mod proxy_path` block at the end of this file is the Layer 2
+//! counterpart to the SDK/gateway slice above. It drives
+//! `aa_proxy::intercept::Interceptor` directly with OpenAI-shaped request
+//! bodies and asserts:
+//!
+//! 1. The proxy's default `CredentialScanner` detects AWS access keys in
+//!    the body shapes the proxy will see in production and redacts them
+//!    into `[REDACTED:AwsAccessKey]` markers.
+//! 2. No raw secret ever appears in an emitted `PipelineEvent::Audit`
+//!    when multiple secret kinds are present in a single body.
+//! 3. Short high-entropy strings below the `GenericHighEntropy` floor do
+//!    not produce findings (no alert fatigue).
+//!
+//! The data-path assertions in ST-N's original spec
+//! (`proxy_aws_key_in_body_redacted_before_forwarding`,
+//! `proxy_secret_block_policy_prevents_forwarding`,
+//! `proxy_secret_redact_only_credential_findings_in_audit`) require body
+//! parsing inside the MitM tunnel, `credential_action` enforcement on
+//! flowing bytes, and audit-JSONL writer wiring — none of which exist in
+//! `aa-proxy` today. See **AAASM-1566** for the data-path follow-up that
+//! will land those features and the corresponding E2E tests.
+//!
 //! ## Synthetic secrets only
 //!
 //! Every secret value below is synthetic — from AWS public-docs examples
@@ -312,4 +336,207 @@ fn redacted_payload_never_contains_any_raw_secret() {
         redacted.contains("[REDACTED:"),
         "redacted payload must contain at least one [REDACTED:Kind] marker, got: {redacted}",
     );
+}
+
+// ── Proxy-path slice (AAASM-1549 / ST-N) ─────────────────────────────────────
+//
+// The tests above drive the gateway's `PolicyEngine` (Layer 1). ST-N covers the
+// equivalent **Layer 2** scanner integration carried by `aa_proxy::Interceptor`.
+// See the file-level scope note for what this slice does and does not assert.
+
+mod proxy_path {
+    use std::time::SystemTime;
+
+    use bytes::Bytes;
+
+    use aa_proxy::intercept::detect::LlmApiPattern;
+    use aa_proxy::intercept::event::ProxyEvent;
+
+    /// Build an OpenAI-shaped POST body whose `messages[0].content` embeds the
+    /// supplied `payload` substring. Mirrors what an agent's `requests` /
+    /// `httpx` POST to `https://api.openai.com/v1/chat/completions` looks like
+    /// when no SDK is installed (Layer 2 is the only catch).
+    pub(super) fn openai_chat_body(payload: &str) -> Bytes {
+        Bytes::from(format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"{payload}"}}]}}"#
+        ))
+    }
+
+    /// Construct a `ProxyEvent` carrying an OpenAI-pattern request body. No
+    /// response body — this mirrors the moment after the proxy has parsed the
+    /// inbound request and is about to forward it upstream.
+    pub(super) fn proxy_event_with_request_body(body: Bytes) -> ProxyEvent {
+        ProxyEvent {
+            agent_id: Some("proxy-path-test".into()),
+            pattern: LlmApiPattern::OpenAi,
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            request_body: Some(body),
+            response_body: None,
+            timestamp: SystemTime::now(),
+        }
+    }
+
+    // ── Test 1 — AWS access key in a proxy-path body ─────────────────────────
+
+    /// The proxy's `Interceptor` redacts any AWS access key embedded in an
+    /// intercepted body via its default `CredentialScanner`. Two assertions:
+    ///
+    /// 1. The same scanner the proxy uses (`CredentialScanner::new()`, see
+    ///    `aa-proxy/src/intercept/mod.rs:37`) produces an `AwsAccessKey`
+    ///    finding and a `[REDACTED:AwsAccessKey]`-bearing redaction when fed
+    ///    the OpenAI request body shape the proxy will see in production.
+    ///
+    /// 2. Driving `Interceptor::intercept()` end-to-end with that body emits
+    ///    a `PipelineEvent::Audit` whose `Debug` repr never contains the raw
+    ///    AWS key. This is the security invariant — any leak in the proxy's
+    ///    audit emission would expose the secret to downstream subscribers.
+    #[tokio::test]
+    async fn aws_key_in_proxy_intercepted_body_is_redacted() {
+        use aa_core::{CredentialKind, CredentialScanner};
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!("my access key is {key}", key = super::FAKE_AWS_ACCESS_KEY));
+        let body_str = std::str::from_utf8(&body).expect("body must be UTF-8 ASCII");
+
+        // (1) Scanner-level proof: the proxy's default scanner finds + redacts
+        //     the AWS key in this exact body shape.
+        let scan = CredentialScanner::new().scan(body_str);
+        assert!(
+            scan.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey),
+            "default scanner must find AwsAccessKey in proxy body shape, got {:?}",
+            scan.findings,
+        );
+        let redacted = scan.redact(body_str);
+        assert!(
+            redacted.contains("[REDACTED:AwsAccessKey]"),
+            "redacted proxy body must carry the [REDACTED:AwsAccessKey] marker, got: {redacted}",
+        );
+        assert!(
+            !redacted.contains(super::FAKE_AWS_ACCESS_KEY),
+            "redacted proxy body must not retain the raw AWS key",
+        );
+
+        // (2) Interceptor end-to-end: extraction succeeds on the redacted body
+        //     and the emitted PipelineEvent never carries the raw key.
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body.clone());
+
+        let fields = interceptor
+            .intercept(&event)
+            .await
+            .expect("intercept must succeed")
+            .expect("OpenAI body must yield extracted LlmFields");
+        assert_eq!(fields.model, "gpt-4");
+        assert_eq!(fields.messages_count, 1);
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+        assert!(
+            !format!("{pipeline_event:?}").contains(super::FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT: emitted PipelineEvent must not contain the raw AWS key",
+        );
+    }
+
+    // ── Test 2 — multi-secret security invariant on the proxy path ───────────
+
+    /// Mirrors ST-I's multi-secret test (Test 6 in this file) for the proxy
+    /// code path. Combines AWS, OpenAI, and GitHub secrets in one OpenAI
+    /// request body so a single `Interceptor::intercept()` exercises the
+    /// multi-finding redaction path.
+    ///
+    /// Asserts only the raw-secret-absence invariant — overlapping AC and
+    /// entropy findings can produce garbled `[REDACTED:Kind]` labels at the
+    /// boundaries (documented in `project_credential_scanner_overlap`), so
+    /// asserting on specific marker shapes would be brittle. The only
+    /// contract worth locking down is: no raw secret byte sequence ever
+    /// reaches a PipelineEvent subscriber.
+    #[tokio::test]
+    async fn secret_never_leaks_into_pipeline_event_from_proxy() {
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!(
+            "aws={aws} openai={openai} github={github}",
+            aws = super::FAKE_AWS_ACCESS_KEY,
+            openai = super::FAKE_OPENAI_KEY,
+            github = super::FAKE_GITHUB_PAT,
+        ));
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body);
+
+        let _ = interceptor.intercept(&event).await.expect("intercept must succeed");
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+
+        let event_str = format!("{pipeline_event:?}");
+        for (label, raw) in [
+            ("AWS access key", super::FAKE_AWS_ACCESS_KEY),
+            ("OpenAI key", super::FAKE_OPENAI_KEY),
+            ("GitHub PAT", super::FAKE_GITHUB_PAT),
+        ] {
+            assert!(
+                !event_str.contains(raw),
+                "SECURITY INVARIANT: emitted proxy PipelineEvent contains raw {label} — would leak to any audit subscriber",
+            );
+        }
+    }
+
+    // ── Test 3 — negative control on the proxy path ──────────────────────────
+
+    /// Mirrors ST-I Test 5 (`short_high_entropy_string_does_not_trigger_scanner`)
+    /// for the proxy code path. Guards against alert fatigue: short
+    /// high-entropy strings that look secret-shaped but are below the
+    /// `GenericHighEntropy` 20-byte floor (and lack an AC literal prefix)
+    /// must produce zero findings.
+    ///
+    /// Two paired assertions:
+    ///
+    /// 1. The proxy's default scanner returns a clean `ScanResult` on the
+    ///    OpenAI body shape with a 12-char alphanumeric payload.
+    /// 2. `Interceptor::intercept()` still emits a `PipelineEvent::Audit`
+    ///    on the broadcast channel — proving the negative path is a no-op
+    ///    on redaction, not a no-op on observation.
+    #[tokio::test]
+    async fn short_high_entropy_string_does_not_trigger_proxy_scanner() {
+        use aa_core::CredentialScanner;
+        use aa_proxy::intercept::Interceptor;
+        use aa_runtime::pipeline::PipelineEvent;
+        use tokio::sync::broadcast;
+
+        let body = openai_chat_body(&format!("id={id}", id = super::SHORT_HIGH_ENTROPY));
+        let body_str = std::str::from_utf8(&body).expect("body must be UTF-8 ASCII");
+
+        // (1) Scanner-level: no findings on this short non-prefixed payload.
+        let scan = CredentialScanner::new().scan(body_str);
+        assert!(
+            scan.is_clean(),
+            "default scanner must produce zero findings on short high-entropy payload, got {:?}",
+            scan.findings,
+        );
+
+        // (2) Interceptor sanity: extraction succeeds and an audit event is
+        //     still emitted (negative path must not silence observation).
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let event = proxy_event_with_request_body(body);
+
+        let fields = interceptor
+            .intercept(&event)
+            .await
+            .expect("intercept must succeed")
+            .expect("OpenAI body must yield extracted LlmFields");
+        assert_eq!(fields.model, "gpt-4");
+        assert_eq!(fields.messages_count, 1);
+
+        let pipeline_event = rx.try_recv().expect("audit event must be emitted on clean path");
+        assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
+    }
 }
