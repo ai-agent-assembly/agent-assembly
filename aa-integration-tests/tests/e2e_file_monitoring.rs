@@ -93,6 +93,7 @@ use aa_ebpf::syscall::SyscallKind;
 use aa_ebpf::AA_FILE_IO_BPF;
 use aa_ebpf_common::file::FileIoEventRaw;
 use aya::maps::perf::AsyncPerfEventArray;
+use aya::maps::MapData;
 use aya::programs::KProbe;
 use aya::util::online_cpus;
 use aya::Ebpf;
@@ -172,9 +173,19 @@ fn register_pid(bpf: &mut Ebpf, pid: u32) {
 /// CPU to read it, and forward every successfully-decoded
 /// [`FileIoEvent`] onto an mpsc channel. The returned receiver yields
 /// events as they arrive across CPUs.
+///
+/// The map is **taken by ownership** (`take_map`) rather than borrowed
+/// (`map_mut`). Borrowing would chain `bpf`'s non-static lifetime into
+/// the per-CPU `AsyncPerfEventArrayBuffer`s, which `tokio::spawn`
+/// rejects (its futures must be `'static`). Transferring ownership of
+/// the userspace `MapData` is safe because the kernel-side BPF program
+/// holds its own map references via the relocation table set up at
+/// `Ebpf::load` time — closing the userspace handle later does not
+/// detach the program from its map.
 fn start_perf_reader(bpf: &mut Ebpf) -> mpsc::Receiver<FileIoEvent> {
-    let mut perf_array = AsyncPerfEventArray::try_from(bpf.map_mut("EVENTS").expect("EVENTS map should exist"))
-        .expect("EVENTS should be an AsyncPerfEventArray");
+    let events_map = bpf.take_map("EVENTS").expect("EVENTS map should exist");
+    let mut perf_array: AsyncPerfEventArray<MapData> =
+        AsyncPerfEventArray::try_from(events_map).expect("EVENTS should be an AsyncPerfEventArray");
     let cpus = online_cpus().expect("online_cpus()");
     let (tx, rx) = mpsc::channel::<FileIoEvent>(256);
     for cpu_id in cpus {
