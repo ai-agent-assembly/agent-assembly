@@ -304,3 +304,41 @@ async fn ebpf_catches_traffic_that_bypasses_proxy() {
         "TLS uprobe must capture plaintext even when no proxy is in the path"
     );
 }
+
+// =============================================================================
+// Test 4 — defence-in-depth without SDK initialisation
+// =============================================================================
+
+/// AAASM-1520 test 4 — `ebpf_catches_traffic_without_sdk_init`.
+///
+/// Drives the TLS uprobe from a Python process that never imports or
+/// initialises the `agent_assembly` SDK. The kernel uprobe must still
+/// fire — this is the other half of the defence-in-depth claim: even
+/// when Layer 1 is fully absent (no SDK loaded in the agent's process),
+/// the eBPF layer observes the traffic.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_catches_traffic_without_sdk_init() {
+    let (mut reader, _mgr) = start_tls_capture().await;
+
+    let mut child = Command::new("python3")
+        .arg(driver_path())
+        .args(["--mode", "no-sdk", "--target", "https://example.com/"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("failed to spawn driver");
+
+    let ev = await_outbound_tls(&mut reader, Duration::from_secs(15)).await;
+    let out = child.wait_with_output().expect("driver should exit cleanly");
+    assert!(out.status.success(), "driver returned non-zero");
+    let driver_json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("driver stdout was not valid JSON");
+
+    assert_eq!(
+        driver_json["sdk_imported"], false,
+        "driver was supposed to skip the SDK import; got: {driver_json}"
+    );
+    assert!(
+        ev.data_len > 0,
+        "TLS uprobe must capture plaintext even when no SDK initialised in the agent"
+    );
+}
