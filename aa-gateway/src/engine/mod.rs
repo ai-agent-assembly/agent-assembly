@@ -1365,6 +1365,23 @@ mod tests {
     }
 
     #[test]
+    fn data_pattern_forwards_when_credential_action_is_alert_only() {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::AlertOnly,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(!result.credential_findings.is_empty());
+        // Alert-only mode forwards the payload unmodified — no redacted form is set.
+        assert!(result.redacted_payload.is_none());
+    }
+
+    #[test]
     fn budget_denies_when_exceeded() {
         let mut doc = empty_doc();
         doc.budget = Some(BudgetPolicy {
