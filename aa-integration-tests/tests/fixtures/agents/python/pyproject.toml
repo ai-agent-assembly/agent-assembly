@@ -6,14 +6,18 @@ requires-python = ">=3.12"
 dependencies = ["agent-assembly"]
 
 [project.optional-dependencies]
-langchain = ["langchain>=0.3,<0.4", "langchain-openai>=0.2,<0.3"]
-langgraph = ["langgraph>=0.2,<0.4"]
-crewai    = ["crewai>=0.80,<1.0"]
-all       = [
+langchain     = ["langchain>=0.3,<0.4", "langchain-openai>=0.2,<0.3"]
+langgraph     = ["langgraph>=0.2,<0.4"]
+crewai        = ["crewai>=0.80,<1.0"]
+pydantic_ai   = ["pydantic-ai>=0.1.0,<1.0"]
+openai_agents = ["openai-agents>=1.0.0,<2.0"]
+all           = [
     "langchain>=0.3,<0.4",
     "langchain-openai>=0.2,<0.3",
     "langgraph>=0.2,<0.4",
     "crewai>=0.80,<1.0",
+    "pydantic-ai>=0.1.0,<1.0",
+    "openai-agents>=1.0.0,<2.0",
 ]
 runner    = ["rich>=13.0,<15.0"]
 
