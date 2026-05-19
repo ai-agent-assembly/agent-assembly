@@ -327,8 +327,10 @@ fn try_sys_unlink(ctx: &ProbeContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
-    // unlinkat(int dirfd, const char *pathname, int flags) — arg1 = pathname
-    let filename_ptr: *const u8 = ctx.arg(1).ok_or(1u32)?;
+    // unlinkat(int dirfd, const char *pathname, int flags) — pull
+    // pathname (arg1 = rsi) via pt_regs deref. ctx.arg(1) is garbage
+    // on SYSCALL_WRAPPER kernels. AAASM-1552.
+    let filename_ptr: *const u8 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(1).ok_or(1u32)?;
 
     let mut buf = [0u8; MAX_PATH_LEN];
     unsafe {
