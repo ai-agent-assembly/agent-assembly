@@ -71,3 +71,32 @@ async fn captures_request_body_path_and_headers_verbatim() {
         recorded.headers,
     );
 }
+
+/// AAASM-1547 supports rate-limit / retry tests by letting the caller pick
+/// the upstream's response — verify the status, body, and content-type land
+/// on the wire as configured.
+#[tokio::test]
+async fn returns_caller_supplied_canned_response() {
+    let mock = MockLlmServer::start_with_response(
+        axum::http::StatusCode::IM_A_TEAPOT,
+        r#"{"error":"i am a teapot"}"#,
+        "application/json",
+    )
+    .await
+    .expect("mock starts");
+
+    let resp = Client::new()
+        .post(&mock.url)
+        .body("ping")
+        .send()
+        .await
+        .expect("POST succeeds against mock");
+
+    assert_eq!(resp.status().as_u16(), 418);
+    assert_eq!(
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+    );
+    assert_eq!(resp.text().await.expect("body"), r#"{"error":"i am a teapot"}"#);
+    assert_eq!(mock.request_count(), 1, "capture still runs on non-200 canned response");
+}
