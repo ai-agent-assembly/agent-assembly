@@ -392,3 +392,51 @@ async fn ebpf_event_includes_pid_and_cgroup() {
         ev.timestamp_ns,
     );
 }
+
+// =============================================================================
+// Test 6 — clean probe load and unload
+// =============================================================================
+
+/// AAASM-1520 test 6 — `ebpf_load_and_unload_clean`.
+///
+/// Verifies the load → attach → drop → re-load cycle leaves no residual
+/// kernel state. If the first cycle leaked an attached uprobe or held a
+/// BPF object reference open, the second `UprobeManager::attach` would
+/// fail (the kernel rejects duplicate attachments of the same probe at
+/// the same uprobe target). A successful second cycle is therefore a
+/// load-bearing assertion that aya's link-guard `Drop` impl actually
+/// detaches the probes — the core "no kernel-resource leak" AC.
+///
+/// `bpftool prog list -j` is invoked as a secondary check when
+/// available: we capture the post-drop snapshot so the developer can
+/// inspect it on test failure, but absence of `bpftool` (e.g. on a
+/// stripped CI runner) is not fatal — the load-twice invariant is.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_load_and_unload_clean() {
+    // Cycle 1: load, attach, build reader, drop everything at end of scope.
+    {
+        let mut bpf = EbpfLoader::load().expect("cycle 1: load BPF (run with sudo)");
+        let _mgr = UprobeManager::attach(&mut bpf, None).expect("cycle 1: attach uprobes");
+        let _reader = RingBufReader::new(bpf).expect("cycle 1: ring-buffer reader");
+        // _mgr and _reader (which owns _bpf) drop here, detaching all probes.
+    }
+
+    // Best-effort observability: capture `bpftool prog list` output after the
+    // first drop. We do not assert on its content because the system may host
+    // unrelated BPF programs (systemd, cilium, etc.); a successful invocation
+    // of `bpftool` plus the load-twice check below is the real signal.
+    if let Ok(out) = Command::new("bpftool").args(["prog", "list", "-j"]).output() {
+        assert!(
+            !out.stdout.is_empty() || !out.stderr.is_empty(),
+            "bpftool returned empty output on both stdout and stderr"
+        );
+    }
+
+    // Cycle 2: re-load + re-attach. Fails if cycle 1 leaked a uprobe link.
+    {
+        let mut bpf = EbpfLoader::load().expect("cycle 2: re-load BPF after first cycle dropped");
+        let _mgr =
+            UprobeManager::attach(&mut bpf, None).expect("cycle 2: re-attach after first cycle dropped — clean unload");
+        let _reader = RingBufReader::new(bpf).expect("cycle 2: ring-buffer reader after re-load");
+    }
+}
