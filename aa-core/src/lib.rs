@@ -64,6 +64,9 @@ pub use evaluators::{DenyAllEvaluator, PermitAllEvaluator};
 #[cfg(feature = "alloc")]
 pub use audit::{AuditEntry, AuditEventType, AuditLog, AuditLogError, Lineage};
 
+#[cfg(feature = "std")]
+pub use audit::Redaction;
+
 #[cfg(feature = "alloc")]
 pub use capability::{
     action_to_capability, merge_capabilities, Capability, CapabilitySet, EffectivePermissions, PermissionSource,

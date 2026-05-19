@@ -9,7 +9,7 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel};
+use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage, Redaction};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse};
 
@@ -539,7 +539,7 @@ impl PolicyServiceImpl {
     /// Build an `AuditEntry` from a request and evaluation result, then fire-and-forget
     /// via `try_send`. Maintains the hash chain by reading and updating `last_hash`.
     /// Never blocks the caller beyond the brief mutex acquisition.
-    async fn record_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
+    async fn record_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse, eval: &EvaluationResult) {
         let proto_agent = match req.agent_id.as_ref() {
             Some(a) => a,
             None => return, // No agent identity — cannot construct entry.
@@ -561,7 +561,29 @@ impl PolicyServiceImpl {
 
         let mut last_hash = self.last_hash.lock().await;
 
-        let entry = AuditEntry::new(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash);
+        // When the credential scanner produced findings, attach them (and the
+        // redacted payload) to the audit entry via the redaction-aware constructor.
+        // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
+        // never reach the audit pipeline.
+        let entry = if eval.credential_findings.is_empty() {
+            AuditEntry::new(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash)
+        } else {
+            let redaction = Redaction {
+                credential_findings: eval.credential_findings.clone(),
+                redacted_payload: eval.redacted_payload.clone(),
+            };
+            AuditEntry::new_with_lineage_and_redaction(
+                seq,
+                timestamp_ns,
+                event_type,
+                agent_id,
+                session_id,
+                payload,
+                *last_hash,
+                Lineage::default(),
+                redaction,
+            )
+        };
 
         // Update the chain head before sending — even if try_send fails (the entry
         // is dropped), we advance the chain so subsequent entries don't duplicate
@@ -640,7 +662,7 @@ impl PolicyService for PolicyServiceImpl {
         self.maybe_suspend_agent(&req, deny_action).await;
 
         // Fire-and-forget audit entry — never blocks the response.
-        self.record_audit(&req, &response).await;
+        self.record_audit(&req, &response, &eval).await;
 
         Ok(Response::new(response))
     }
@@ -660,7 +682,7 @@ impl PolicyService for PolicyServiceImpl {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
             self.maybe_suspend_agent(req, deny_action).await;
-            self.record_audit(req, &resp).await;
+            self.record_audit(req, &resp, &eval).await;
             responses.push(resp);
         }
 
