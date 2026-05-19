@@ -327,6 +327,61 @@ impl AuditEntry {
         }
     }
 
+    /// Create a new [`AuditEntry`] carrying both lineage data and credential
+    /// scanner output, computing `entry_hash` over all tamper-meaningful fields.
+    ///
+    /// When `redaction == Redaction::default()` (empty findings + `None` payload),
+    /// the resulting `entry_hash` is identical to [`AuditEntry::new_with_lineage`]
+    /// with the same base fields — so callers that don't have scanner data can
+    /// continue using the legacy constructors without any chain divergence.
+    ///
+    /// Gated on `std` because [`Redaction`] holds
+    /// [`CredentialFinding`](crate::scanner::CredentialFinding) values, which
+    /// live in the `std`-only `scanner` module.
+    #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lineage_and_redaction(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        session_id: SessionId,
+        payload: String,
+        previous_hash: [u8; 32],
+        lineage: Lineage,
+        redaction: Redaction,
+    ) -> Self {
+        let entry_hash = Self::compute_hash(
+            seq,
+            timestamp_ns,
+            &event_type,
+            &agent_id,
+            &session_id,
+            &previous_hash,
+            &payload,
+            &lineage,
+            &redaction,
+        );
+        Self {
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+            entry_hash,
+            root_agent_id: lineage.root_agent_id,
+            parent_agent_id: lineage.parent_agent_id,
+            team_id: lineage.team_id,
+            delegation_reason: lineage.delegation_reason,
+            spawned_by_tool: lineage.spawned_by_tool,
+            depth: lineage.depth,
+            credential_findings: redaction.credential_findings,
+            redacted_payload: redaction.redacted_payload,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Getters
     // -----------------------------------------------------------------------
