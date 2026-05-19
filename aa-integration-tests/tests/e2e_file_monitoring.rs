@@ -305,54 +305,13 @@ async fn file_create_emits_event_with_path_and_pid() {
     register_pid(&mut bpf, driver_pid);
     release_driver(&mut driver);
 
-    // DIAGNOSTIC (CI-only): collect every event the perf reader sees in
-    // the 10s window and report a full inventory if no match arrives.
-    // The first two CI runs of this suite saw 7/8 tests time out with
-    // identical "no matching event" panics — the negative test passes
-    // either way, so we cannot tell whether (a) zero events ever reach
-    // userspace (probe / perf reader broken) or (b) events flow but
-    // never for the driver's pid (PID_FILTER mis-keyed, wrong syscall
-    // path, etc). This dump narrows it down on the next CI run. Will
-    // be reverted to `await_event(...)` once the runtime path is
-    // confirmed working.
     let target_for_pred = target_str.clone();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut seen: Vec<FileIoEvent> = Vec::new();
-    let mut found: Option<FileIoEvent> = None;
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match timeout(remaining, rx.recv()).await {
-            Ok(Some(ev)) => {
-                let is_match = ev.pid == driver_pid && ev.syscall == SyscallKind::Openat && ev.path == target_for_pred;
-                seen.push(ev.clone());
-                if is_match {
-                    found = Some(ev);
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Err(_) => break,
-        }
-    }
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Openat && ev.path == target_for_pred
+    })
+    .await;
 
     let _ = drain_driver_json(driver);
-
-    let ev = found.unwrap_or_else(|| {
-        eprintln!(
-            "DIAGNOSTIC AAASM-1522 — no matching event in 10s. driver_pid={driver_pid}, target_path={target_str:?}, total_events_seen={}",
-            seen.len()
-        );
-        for (i, ev) in seen.iter().enumerate() {
-            eprintln!(
-                "  [{i}] pid={} tid={} syscall={:?} path={:?} rc={} flags={}",
-                ev.pid, ev.tid, ev.syscall, ev.path, ev.return_code, ev.flags
-            );
-        }
-        panic!(
-            "no matching FileIoEvent within 10s (seen {} events total — see diagnostic above)",
-            seen.len()
-        );
-    });
 
     assert_eq!(ev.pid, driver_pid, "openat event must be attributed to the driver pid");
     assert_eq!(ev.syscall, SyscallKind::Openat);
