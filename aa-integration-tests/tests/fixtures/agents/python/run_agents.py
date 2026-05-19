@@ -177,53 +177,138 @@ def _last_json_line(stdout: str | bytes | None) -> dict | None:
     return last if isinstance(last, dict) else None
 
 
+def _tee_run(
+    cmd: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    tag: str,
+) -> tuple[int, str, str, bool]:
+    """Spawn ``cmd``, stream stdout live, accumulate stdout+stderr, honour timeout.
+
+    Returns ``(returncode, stdout, stderr, timed_out)``. Each stdout line is
+    tagged with ``[tag]`` before being echoed to ``sys.stdout`` so concurrent
+    or interleaved scripts remain attributable. Spawns the child in a new
+    POSIX session so ``killpg`` can take down ``uv`` *and* the python it
+    spawned on timeout — without this, the orphaned grandchild would keep
+    the stdout pipe open and stall the cleanup until its own ``time.sleep``
+    naturally returned.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    captured_stdout: list[str] = []
+    timed_out = False
+
+    def _drain_stdout() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            captured_stdout.append(line)
+            sys.stdout.write(f"  [{tag}] {line}")
+            sys.stdout.flush()
+
+    import threading
+
+    drain_thread = threading.Thread(target=_drain_stdout, daemon=True)
+    drain_thread.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    drain_thread.join(timeout=2)
+    stderr = ""
+    if proc.stderr is not None:
+        try:
+            stderr = proc.stderr.read()
+        except (ValueError, OSError):
+            pass
+    return proc.returncode or 0, "".join(captured_stdout), stderr, timed_out
+
+
 def run_script(script: AgentScript, cfg: RunConfig) -> RunResult:
     """Spawn one fixture subprocess via ``uv run`` and capture the outcome.
 
     Honours ``cfg.timeout`` — on expiry the subprocess is killed and a
-    :class:`RunResult` with ``timed_out=True`` is returned.
+    :class:`RunResult` with ``timed_out=True`` is returned. When
+    ``cfg.verbose`` is set, stdout is teed to the parent terminal live
+    (prefixed with ``[scenario/name]``) while still being accumulated so
+    ``last_event`` can be extracted.
     """
     python_root = script.path.parents[1]  # .../agents/python
     rel_path = script.path.relative_to(python_root)
+    cmd = [
+        "uv", "run", "--frozen",
+        "--extra", "runner", "--extra", "all",
+        str(rel_path),
+    ]
+    env = _env_for(script, cfg)
     start = time.monotonic()
 
-    try:
-        proc = subprocess.run(
-            [
-                "uv", "run", "--frozen",
-                "--extra", "runner", "--extra", "all",
-                str(rel_path),
-            ],
-            cwd=python_root,
-            env=_env_for(script, cfg),
-            capture_output=True,
-            text=True,
-            timeout=cfg.timeout,
+    if cfg.verbose:
+        returncode, stdout, stderr, timed_out = _tee_run(
+            cmd, python_root, env, cfg.timeout,
+            f"{script.scenario}/{script.name}",
         )
-    except subprocess.TimeoutExpired as exc:
         duration_ms = int((time.monotonic() - start) * 1000)
-        return RunResult(
-            script=script,
-            passed=False,
-            duration_ms=duration_ms,
-            last_event=_last_json_line(exc.stdout),
-            error=f"timeout after {cfg.timeout}s",
-            timed_out=True,
-        )
+        if timed_out:
+            return RunResult(
+                script=script,
+                passed=False,
+                duration_ms=duration_ms,
+                last_event=_last_json_line(stdout),
+                error=f"timeout after {cfg.timeout}s",
+                timed_out=True,
+            )
+    else:
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=python_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=cfg.timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            return RunResult(
+                script=script,
+                passed=False,
+                duration_ms=duration_ms,
+                last_event=_last_json_line(exc.stdout),
+                error=f"timeout after {cfg.timeout}s",
+                timed_out=True,
+            )
+        duration_ms = int((time.monotonic() - start) * 1000)
+        returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
 
-    duration_ms = int((time.monotonic() - start) * 1000)
     error: str | None = None
-    if proc.returncode != 0:
-        stderr_tail = (proc.stderr or "").strip().splitlines()
+    if returncode != 0:
+        stderr_tail = (stderr or "").strip().splitlines()
         last_line = stderr_tail[-1] if stderr_tail else ""
-        error = f"exit {proc.returncode}: {last_line}".rstrip(": ").rstrip()
+        error = f"exit {returncode}: {last_line}".rstrip(": ").rstrip()
     return RunResult(
         script=script,
-        passed=proc.returncode == 0,
+        passed=returncode == 0,
         duration_ms=duration_ms,
-        last_event=_last_json_line(proc.stdout),
+        last_event=_last_json_line(stdout),
         error=error,
-        exit_code=proc.returncode,
+        exit_code=returncode,
     )
 
 
