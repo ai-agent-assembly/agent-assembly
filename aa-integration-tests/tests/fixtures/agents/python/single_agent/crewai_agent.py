@@ -15,6 +15,9 @@ from _shared import emit, load_config
 def run_real(cfg: dict) -> None:
     import asyncio
 
+    from crewai import Agent, Task
+    from crewai.tools import BaseTool
+
     from agent_assembly import init_assembly
 
     ctx = init_assembly(
@@ -24,15 +27,25 @@ def run_real(cfg: dict) -> None:
         team_id="f116-e2e",
         mode="sdk-only",
     )
+    asyncio.run(ctx.client.register_agent())
     emit({"event": "started", "agent_id": cfg["agent_id"], "framework": "crewai"})
 
-    try:
-        asyncio.run(ctx.client.register_agent())
-        emit({"event": "tool_call", "tool": "crewai_mock_tool", "input": cfg["task"]})
-    finally:
-        ctx.shutdown()
+    # Minimal CrewAI setup — init_assembly() patches BaseTool.run globally via
+    # CrewAIPatch so governance hooks fire on every tool invocation.
+    class EchoTool(BaseTool):
+        name: str = "echo_tool"
+        description: str = "Echo the input."
 
-    emit({"event": "done", "result": f"crewai single_agent {cfg['agent_id']}"})
+        def _run(self, **kwargs: object) -> str:
+            return f"echo: {cfg['task']}"
+
+    tool = EchoTool()
+    agent = Agent(role="e2e-agent", goal="echo user input", backstory="E2E fixture agent")
+    Task(description=cfg["task"], expected_output="echo result", agent=agent, tools=[tool])
+    result = tool.run()  # exercises governance-patched BaseTool.run
+    emit({"event": "tool_call", "tool": tool.name, "input": cfg["task"]})
+    ctx.shutdown()
+    emit({"event": "done", "result": str(result)})
 
 
 if __name__ == "__main__":
