@@ -241,13 +241,20 @@ def _format_result_line(result: RunResult) -> str:
 
 
 def run_all_sequential(
-    scripts: list[AgentScript], cfg: RunConfig
+    scripts: list[AgentScript],
+    cfg: RunConfig,
+    stream: "object | None" = None,
 ) -> list[RunResult]:
-    """Run scripts one at a time, printing PASS/FAIL after each."""
+    """Run scripts one at a time, printing PASS/FAIL after each.
+
+    ``stream`` defaults to ``sys.stdout``. Callers (e.g. ``--json`` mode)
+    pass ``sys.stderr`` so stdout stays reserved for the JSON payload.
+    """
+    out = stream if stream is not None else sys.stdout
     results: list[RunResult] = []
     for script in scripts:
         result = run_script(script, cfg)
-        print(_format_result_line(result), flush=True)
+        print(_format_result_line(result), file=out, flush=True)
         results.append(result)
     return results
 
@@ -258,9 +265,12 @@ async def _run_script_async(script: AgentScript, cfg: RunConfig) -> RunResult:
 
 
 async def run_all_parallel(
-    scripts: list[AgentScript], cfg: RunConfig
+    scripts: list[AgentScript],
+    cfg: RunConfig,
+    stream: "object | None" = None,
 ) -> list[RunResult]:
     """Run all scripts concurrently and stream PASS/FAIL as each finishes."""
+    out = stream if stream is not None else sys.stdout
     pending: dict[asyncio.Task[RunResult], AgentScript] = {
         asyncio.create_task(_run_script_async(s, cfg)): s for s in scripts
     }
@@ -272,7 +282,7 @@ async def run_all_parallel(
         for task in done:
             del pending[task]
             result = task.result()
-            print(_format_result_line(result), flush=True)
+            print(_format_result_line(result), file=out, flush=True)
             results.append(result)
     # Preserve input order for the final summary.
     order = {script.path: idx for idx, script in enumerate(scripts)}
@@ -541,9 +551,9 @@ def main(argv: list[str] | None = None) -> int:
         print(file=info_stream)
 
         if args.parallel:
-            results = asyncio.run(run_all_parallel(selected, cfg))
+            results = asyncio.run(run_all_parallel(selected, cfg, info_stream))
         else:
-            results = run_all_sequential(selected, cfg)
+            results = run_all_sequential(selected, cfg, info_stream)
     finally:
         if auto is not None:
             auto.__exit__(None, None, None)
