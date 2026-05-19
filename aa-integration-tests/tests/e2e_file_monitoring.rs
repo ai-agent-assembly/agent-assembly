@@ -411,7 +411,6 @@ async fn ebpf_file_write_syscall_emits_event_for_target_pid() {
 /// from the driver's own `open()` is filtered out by the predicate so
 /// the assertion targets exactly the read.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
