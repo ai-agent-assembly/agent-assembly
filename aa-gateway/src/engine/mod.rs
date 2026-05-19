@@ -1343,6 +1343,28 @@ mod tests {
     }
 
     #[test]
+    fn data_pattern_blocks_when_credential_action_is_block() {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::Block,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(
+            result.decision,
+            PolicyResult::Deny {
+                reason: "credential detected".into(),
+            }
+        );
+        assert!(!result.credential_findings.is_empty());
+        // Block must never produce a redacted form — the payload is rejected outright.
+        assert!(result.redacted_payload.is_none());
+    }
+
+    #[test]
     fn budget_denies_when_exceeded() {
         let mut doc = empty_doc();
         doc.budget = Some(BudgetPolicy {
