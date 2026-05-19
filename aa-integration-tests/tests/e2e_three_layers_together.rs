@@ -648,3 +648,118 @@ async fn three_layers_if_ebpf_unloads_sdk_and_proxy_still_work() {
         result.first_invalid
     );
 }
+
+// =============================================================================
+// Test 5 — cross-restart resilience: gateway SIGTERM + restart
+// =============================================================================
+
+/// AAASM-1523 test 5 — `three_layers_if_gateway_restarts_events_resume`.
+///
+/// Drives the audit pipeline through a real `AuditWriter` lifecycle that
+/// mirrors a gateway SIGTERM + restart:
+///
+/// 1. Open writer instance A; send pre-restart entries from all three
+///    sources; drop the sender; await graceful drain.
+/// 2. Re-read the file's last hash via `AuditWriter::read_last_hash` (the
+///    same API the real gateway uses to resume the chain after restart).
+/// 3. Open writer instance B against the same JSONL file; send
+///    post-restart entries linked off the recovered hash; drop and drain.
+/// 4. Assert that `verify_chain` on the final file is valid across the
+///    restart boundary, every source is still represented, and the
+///    timestamps are monotonic.
+///
+/// This is the AC's "cross-restart event resilience" claim. It uses the
+/// real append-mode file handling in `AuditWriter::new` rather than any
+/// test shortcut — the same code path the gateway runs in production.
+#[tokio::test(flavor = "multi_thread")]
+async fn three_layers_if_gateway_restarts_events_resume() {
+    let audit_root = fresh_audit_dir();
+    let agent = agent_id(0x77);
+    let session = session_id(0x88);
+
+    // Phase 1 — pre-restart writer.
+    let (path, tx, handle) = spawn_audit_writer(audit_root.path(), agent, session).await;
+    let pre = synthesise_chain(agent, session, 1_700_000_000_000_000_000, &[SDK, PROXY, EBPF]);
+    for entry in &pre {
+        tx.send(entry.clone()).await.expect("send pre-restart entry");
+    }
+    drain_writer(tx, handle).await;
+
+    // Phase 2 — recover the chain head the way the production gateway does.
+    let resumed_prev = AuditWriter::read_last_hash(&path)
+        .await
+        .expect("read_last_hash should succeed")
+        .expect("file must have at least one entry pre-restart");
+    assert_eq!(
+        resumed_prev,
+        *pre.last().unwrap().entry_hash(),
+        "read_last_hash must return the last pre-restart entry's hash"
+    );
+
+    // Phase 3 — post-restart writer over the same JSONL file.
+    let (path2, tx2, handle2) = spawn_audit_writer(audit_root.path(), agent, session).await;
+    assert_eq!(path2, path, "AuditWriter must reuse the same per-agent path");
+
+    let post_base_seq = pre.len() as u64;
+    let post_base_ts = 1_700_000_001_000_000_000;
+    let mut prev_hash = resumed_prev;
+    for (offset, source) in [SDK, PROXY, EBPF].iter().enumerate() {
+        let (tool, url, syscall) = match *source {
+            SDK => (Some("bash"), None, None),
+            PROXY => (None, Some("https://allowed.example.com/data"), None),
+            EBPF => (None, Some("https://other.example.com/data"), Some("SSL_write")),
+            _ => unreachable!(),
+        };
+        let entry = AuditEntry::new(
+            post_base_seq + offset as u64,
+            post_base_ts + offset as u64 * 1_000_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            make_payload(source, tool, url, syscall, "allow"),
+            prev_hash,
+        );
+        prev_hash = *entry.entry_hash();
+        tx2.send(entry).await.expect("send post-restart entry");
+    }
+    drain_writer(tx2, handle2).await;
+
+    // Phase 4 — assertions across the restart boundary.
+    let on_disk = read_audit_entries(&path);
+    assert_eq!(
+        on_disk.len(),
+        pre.len() + 3,
+        "post-restart file must contain pre-restart + post-restart entries"
+    );
+
+    let sources: HashSet<String> = on_disk.iter().map(source_of).collect();
+    for expected in [SDK, PROXY, EBPF] {
+        assert!(
+            sources.contains(expected),
+            "post-restart unified stream missing source={expected:?}; got {sources:?}"
+        );
+    }
+
+    for w in on_disk.windows(2) {
+        assert!(
+            w[1].timestamp_ns() > w[0].timestamp_ns(),
+            "monotonic timestamps must hold across the restart boundary; got {} then {}",
+            w[0].timestamp_ns(),
+            w[1].timestamp_ns(),
+        );
+    }
+
+    let result = AuditWriter::verify_chain(&path)
+        .await
+        .expect("verify_chain across the restart boundary should not error");
+    assert!(
+        result.is_valid,
+        "audit chain must remain valid across gateway restart; first_invalid={:?}",
+        result.first_invalid
+    );
+    assert_eq!(
+        result.entries_checked as usize,
+        on_disk.len(),
+        "verify_chain should walk every entry in the merged file"
+    );
+}
