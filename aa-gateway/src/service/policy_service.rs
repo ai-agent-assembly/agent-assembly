@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
@@ -15,6 +15,7 @@ use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, Chec
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
+use crate::alerts::SecretAlert;
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
@@ -37,6 +38,11 @@ pub struct PolicyServiceImpl {
     audit_drops: Arc<AtomicU64>,
     seq: AtomicU64,
     last_hash: Mutex<[u8; 32]>,
+    /// Optional broadcast sender for secret-detection alerts. When set,
+    /// the service publishes a [`SecretAlert`] each time a CheckAction
+    /// produces non-empty `credential_findings` (AAASM-1545). `None`
+    /// disables emission — used by unit tests that don't need alerts.
+    secret_alert_tx: Option<broadcast::Sender<SecretAlert>>,
 }
 
 impl PolicyServiceImpl {
@@ -63,6 +69,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -89,6 +96,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -117,6 +125,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -150,6 +159,7 @@ impl PolicyServiceImpl {
             audit_drops,
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
+            secret_alert_tx: None,
         }
     }
 
@@ -169,6 +179,17 @@ impl PolicyServiceImpl {
     /// `routing_status` on the in-flight approval queue entry (AC2 / AC3).
     pub fn with_router(mut self, router: Arc<ApprovalRouter>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    /// Attach a broadcast sender for secret-detection alerts (AAASM-1545).
+    ///
+    /// When present, the service publishes a [`SecretAlert`] each time a
+    /// `CheckAction` produces non-empty `credential_findings`. Callers
+    /// (e.g. `aa-api`) typically pair this with
+    /// `spawn_secret_alert_capture` to persist the alerts into the store.
+    pub fn with_secret_alert_tx(mut self, tx: broadcast::Sender<SecretAlert>) -> Self {
+        self.secret_alert_tx = Some(tx);
         self
     }
 
