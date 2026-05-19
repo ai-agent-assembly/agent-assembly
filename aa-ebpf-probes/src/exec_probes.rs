@@ -1,6 +1,6 @@
 //! BPF tracepoint programs for process exec monitoring (AAASM-39).
 //!
-//! Two tracepoints share a single ring buffer (`EXEC_EVENTS`) and a PID
+//! Two tracepoints share a single ring buffer (`EVENTS`) and a PID
 //! filter map (`EXEC_PID_FILTER`):
 //!
 //! - `handle_sched_process_exec` — fires on every `execve`/`execveat` and
@@ -32,7 +32,7 @@ use aya_ebpf::{
 
 /// Ring buffer for exec/exit events (256 KiB).
 #[map]
-static EXEC_EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
 
 /// PID filter: only emit events for processes whose tgid is in this map.
 /// Value 0 = monitor this PID and its descendants.
@@ -96,7 +96,7 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     let comm = ctx.command().map_err(|_| -1i64)?;
 
     // Reserve space in the ring buffer for the event (avoids stack overflow).
-    let mut entry = EXEC_EVENTS.reserve::<ExecEvent>(0).ok_or(-1i64)?;
+    let mut entry = EVENTS.reserve::<ExecEvent>(0).ok_or(-1i64)?;
     let event_ptr = entry.as_mut_ptr();
 
     unsafe {
@@ -159,7 +159,7 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
         return Ok(0);
     }
 
-    let mut entry = EXEC_EVENTS.reserve::<ProcessExitEvent>(0).ok_or(-1i64)?;
+    let mut entry = EVENTS.reserve::<ProcessExitEvent>(0).ok_or(-1i64)?;
     let event_ptr = entry.as_mut_ptr();
 
     unsafe {
