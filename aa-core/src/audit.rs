@@ -251,6 +251,8 @@ impl AuditEntry {
             &previous_hash,
             &payload,
             &Lineage::default(),
+            #[cfg(feature = "std")]
+            &Redaction::default(),
         );
         Self {
             seq,
@@ -300,6 +302,8 @@ impl AuditEntry {
             &previous_hash,
             &payload,
             &lineage,
+            #[cfg(feature = "std")]
+            &Redaction::default(),
         );
         Self {
             seq,
@@ -452,6 +456,11 @@ impl AuditEntry {
             spawned_by_tool: self.spawned_by_tool.clone(),
             depth: self.depth,
         };
+        #[cfg(feature = "std")]
+        let redaction = Redaction {
+            credential_findings: self.credential_findings.clone(),
+            redacted_payload: self.redacted_payload.clone(),
+        };
         let expected = Self::compute_hash(
             self.seq,
             self.timestamp_ns,
@@ -461,6 +470,8 @@ impl AuditEntry {
             &self.previous_hash,
             &self.payload,
             &lineage,
+            #[cfg(feature = "std")]
+            &redaction,
         );
         expected == self.entry_hash
     }
@@ -474,6 +485,9 @@ impl AuditEntry {
     /// Field order and encoding are fixed — see [`AuditEntry::new`] for the
     /// documented byte sequence. Lineage fields append only when `Some`;
     /// when all lineage fields are `None`, output equals the pre-AAASM-934 hash exactly.
+    /// Redaction bytes append only when `redaction != Redaction::default()`;
+    /// the default value (empty findings + `None` payload) contributes 0 bytes,
+    /// so existing chains verify unchanged.
     #[allow(clippy::too_many_arguments)]
     fn compute_hash(
         seq: u64,
@@ -484,6 +498,7 @@ impl AuditEntry {
         previous_hash: &[u8; 32],
         payload: &str,
         lineage: &Lineage,
+        #[cfg(feature = "std")] redaction: &Redaction,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seq.to_be_bytes());
@@ -515,6 +530,26 @@ impl AuditEntry {
         }
         if let Some(d) = lineage.depth {
             hasher.update(d.to_be_bytes());
+        }
+        // Redaction — append only when non-default; empty Vec + None contributes 0 bytes
+        // so entries constructed via new() / new_with_lineage() hash exactly as before.
+        #[cfg(feature = "std")]
+        {
+            if !redaction.credential_findings.is_empty() || redaction.redacted_payload.is_some() {
+                hasher.update((redaction.credential_findings.len() as u32).to_be_bytes());
+                for finding in &redaction.credential_findings {
+                    hasher.update((finding.offset as u64).to_be_bytes());
+                    hasher.update((finding.matched.len() as u32).to_be_bytes());
+                    hasher.update(finding.matched.as_bytes());
+                }
+                if let Some(s) = &redaction.redacted_payload {
+                    hasher.update([1u8]);
+                    hasher.update((s.len() as u32).to_be_bytes());
+                    hasher.update(s.as_bytes());
+                } else {
+                    hasher.update([0u8]);
+                }
+            }
         }
         hasher.finalize().into()
     }
