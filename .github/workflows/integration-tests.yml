@@ -4,6 +4,10 @@ name: Integration tests
 # on Linux + macOS so the topology HTTP roundtrip (AAASM-1066) and the CLI
 # subcommand coverage (AAASM-1258, AAASM-1441 follow-up) are exercised on
 # both platforms before anything depending on them ships.
+#
+# Node.js SDK E2E fixtures (AAASM-1514 / F116 ST-B): TypeScript fixture scripts
+# are installed via pnpm and run in AA_SELFTEST=1 mode inside the Rust harness;
+# no running gateway or native bindings are required for the hermetic tests.
 
 on:
   push:
@@ -55,6 +59,12 @@ jobs:
           repository: AI-agent-assembly/go-sdk
           path: go-sdk
 
+      - name: Checkout sibling node-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: AI-agent-assembly/node-sdk
+          path: node-sdk
+
       - name: Install protobuf compiler (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -80,6 +90,29 @@ jobs:
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          cache-dependency-path: aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
+
+      - name: "Symlink node-sdk for file: dependency resolution"
+        # The TypeScript fixture package.json uses file:../../../../../../node-sdk
+        # which resolves six levels up from the typescript/ dir to the parent of
+        # GITHUB_WORKSPACE. The checkout action places node-sdk one level below
+        # GITHUB_WORKSPACE so we create a sibling symlink to bridge the gap.
+        run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+
+      - name: Install TypeScript fixture dependencies
+        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        run: pnpm install --frozen-lockfile
 
       - name: Run integration tests
         env:

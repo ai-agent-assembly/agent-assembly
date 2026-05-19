@@ -1,0 +1,21 @@
+{
+  "name": "aa-agent-fixtures-typescript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript agent fixture scripts for aa-integration-tests F116 E2E tests",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agent-assembly/sdk": "file:../../../../../../node-sdk",
+    "langchain": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "@types/node": "^24.0.0"
+  }
+}

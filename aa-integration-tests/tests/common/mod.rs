@@ -257,10 +257,10 @@ impl TopologyTestEnv {
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
+        let ops_registry = Arc::clone(&state.ops_registry);
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
-        let ops_registry = Arc::clone(&state.ops_registry);
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -285,12 +285,12 @@ impl TopologyTestEnv {
             approval_queue,
             audit_dir,
             budget_tracker,
+            ops_registry,
             alert_store,
             key_store,
             events,
             replay_buffer,
             next_event_id,
-            ops_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,

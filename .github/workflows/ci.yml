@@ -131,6 +131,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: AI-agent-assembly/node-sdk
+          path: node-sdk
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -144,12 +149,19 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: dashboard/pnpm-lock.yaml
+          cache-dependency-path: |
+            dashboard/pnpm-lock.yaml
+            aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Build dashboard assets (required by aa-cli)
         working-directory: dashboard
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: "Symlink node-sdk for TypeScript fixture file: dependency"
+        run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
+        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        run: pnpm install --frozen-lockfile
       - name: Run tests
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
         # unit tests. Validated by the dedicated ebpf-build job.
@@ -169,6 +181,11 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: AI-agent-assembly/node-sdk
+          path: node-sdk
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -184,12 +201,19 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: dashboard/pnpm-lock.yaml
+          cache-dependency-path: |
+            dashboard/pnpm-lock.yaml
+            aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Build dashboard assets (required by aa-cli)
         working-directory: dashboard
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: "Symlink node-sdk for TypeScript fixture file: dependency"
+        run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
+        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        run: pnpm install --frozen-lockfile
       - name: Generate coverage report
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python dev headers for linking — excluded.
