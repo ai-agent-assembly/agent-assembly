@@ -574,3 +574,56 @@ async fn file_events_attributed_to_filtered_pid_only() {
         "driver B (pid {pid_b}) was NOT registered in PID_FILTER but produced a file event — the probe's should_monitor() gate is leaking",
     );
 }
+
+// =============================================================================
+// Test 7 — unregistered PID produces no event (kernel-thread noise filter)
+// =============================================================================
+
+/// AAASM-1522 test 7 — `pid_not_in_filter_map_produces_no_event`.
+///
+/// Spawns a driver and **intentionally skips the `register_pid` call**.
+/// Releases the driver, waits 2 seconds for events to potentially
+/// arrive, then asserts the channel contains zero events with the
+/// driver's pid. This is the AC's "kernel-thread noise filtered out"
+/// claim, generalised: the probe's `should_monitor()` gate drops any
+/// PID not in `PID_FILTER`, which includes kernel threads (tgid 0
+/// would never be inserted) and any unmonitored userspace process.
+///
+/// We don't try to drive an actual kernel thread — that would require
+/// either CONFIG_DEBUG_INFO or a separate test fixture. The driver
+/// pid stand-in is sufficient evidence that the filter actually filters.
+#[tokio::test(flavor = "multi_thread")]
+async fn pid_not_in_filter_map_produces_no_event() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("unregistered");
+    let target = tmp.join("ghost.txt");
+    let target_str = target.to_string_lossy().to_string();
+
+    let mut driver = spawn_driver_paused(&["--mode", "create", "--path", &target_str]);
+    let driver_pid = driver.id();
+    // NOTE: deliberately NOT calling register_pid(&mut bpf, driver_pid).
+    release_driver(&mut driver);
+
+    let _ = drain_driver_json(driver);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut saw_driver_event = false;
+    while let Ok(ev) = rx.try_recv() {
+        if ev.pid == driver_pid {
+            saw_driver_event = true;
+            eprintln!("unexpected event from unregistered pid {driver_pid}: {ev:?}");
+        }
+    }
+
+    assert!(
+        target.exists(),
+        "driver should have actually created the file (the operation runs regardless of monitoring)",
+    );
+    assert!(
+        !saw_driver_event,
+        "pid {driver_pid} was never inserted into PID_FILTER but the probe still emitted a file event — should_monitor() is leaking",
+    );
+}
