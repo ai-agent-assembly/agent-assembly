@@ -387,4 +387,22 @@ mod tests {
         assert_eq!(proto.team_id, "");
         assert_eq!(proto.routing_status, "no_team_id");
     }
+
+    #[test]
+    fn eval_with_deny_and_findings_maps_to_decision_deny() {
+        // credential_action: block → engine returns Deny *and* findings populated.
+        // The wire response must still be Decision::Deny — no Redact instructions.
+        let eval = EvaluationResult {
+            decision: PolicyResult::Deny {
+                reason: "credential detected".into(),
+            },
+            redacted_payload: None,
+            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            deny_action: None,
+        };
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+        assert_eq!(resp.decision, Decision::Deny as i32);
+        assert_eq!(resp.reason, "credential detected");
+        assert!(resp.redact.is_none());
+    }
 }
