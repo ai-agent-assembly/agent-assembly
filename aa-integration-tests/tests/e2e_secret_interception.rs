@@ -248,3 +248,68 @@ fn short_high_entropy_string_does_not_trigger_scanner() {
 
     assert_clean(&result);
 }
+
+// ── Test 6 — Critical security assertion: raw secrets never in redacted output
+
+#[test]
+fn redacted_payload_never_contains_any_raw_secret() {
+    // Combine four independent secrets in one payload so a single evaluation
+    // exercises the multi-finding redaction path. The flagship security
+    // invariant for this ST: even one byte of an original secret leaking
+    // through is a hard failure.
+    //
+    // The scanner runs four passes (AC literal, digit sequences, emails,
+    // high-entropy). Overlapping findings between passes can produce
+    // garbled [REDACTED:Kind] labels in the output — see the engine's
+    // `ScanResult::redact()` for reverse-offset replacement semantics.
+    // That is acceptable: the redaction primitive's only contract is that
+    // raw secret bytes are removed. Asserting on specific label shapes
+    // under overlap would be brittle, so this test asserts only the
+    // security invariant.
+    let payload = format!(
+        r#"{{
+            "aws": "{FAKE_AWS_ACCESS_KEY}",
+            "openai": "{FAKE_OPENAI_KEY}",
+            "github": "{FAKE_GITHUB_PAT}",
+            "custom": "{FAKE_CUSTOM_TOKEN}"
+        }}"#
+    );
+    let action = tool_call_with_args(&payload);
+    let result = evaluate(&action, 0xA6);
+
+    assert_eq!(
+        result.decision,
+        PolicyResult::Allow,
+        "scanner-only detection must not deny",
+    );
+    assert!(
+        result.credential_findings.len() >= 4,
+        "expected at least one finding per embedded secret (>=4); got {:?}",
+        result.credential_findings,
+    );
+
+    let redacted = result
+        .redacted_payload
+        .expect("multi-secret payload must produce a redacted output");
+
+    // Primary security invariant: NO raw secret string appears in the redacted output.
+    for (label, raw) in [
+        ("AWS access key", FAKE_AWS_ACCESS_KEY),
+        ("OpenAI key", FAKE_OPENAI_KEY),
+        ("GitHub PAT", FAKE_GITHUB_PAT),
+        ("custom token", FAKE_CUSTOM_TOKEN),
+    ] {
+        assert!(
+            !redacted.contains(raw),
+            "SECURITY INVARIANT VIOLATED: {label} appears in redacted payload — value would leak to downstream audit / alert / upstream",
+        );
+    }
+
+    // Sanity check: at least one redaction marker was emitted somewhere in the
+    // output. The specific kind / count is not asserted because overlapping
+    // findings can collapse adjacent markers under the current redact() logic.
+    assert!(
+        redacted.contains("[REDACTED:"),
+        "redacted payload must contain at least one [REDACTED:Kind] marker, got: {redacted}",
+    );
+}
