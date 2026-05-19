@@ -25,4 +25,7 @@ if ! command -v uv &>/dev/null; then
 fi
 
 cd "$PYTHON_DIR"
-exec uv run --extra runner --extra all run_agents.py "$@"
+# ``--frozen`` honours the committed uv.lock and skips the resolution step,
+# so a transient PyPI yank or version-window gap in one optional extra does
+# not block the developer from running the others.
+exec uv run --frozen --extra runner --extra all run_agents.py "$@"

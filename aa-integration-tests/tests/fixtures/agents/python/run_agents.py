@@ -189,7 +189,11 @@ def run_script(script: AgentScript, cfg: RunConfig) -> RunResult:
 
     try:
         proc = subprocess.run(
-            ["uv", "run", "--extra", "runner", "--extra", "all", str(rel_path)],
+            [
+                "uv", "run", "--frozen",
+                "--extra", "runner", "--extra", "all",
+                str(rel_path),
+            ],
             cwd=python_root,
             env=_env_for(script, cfg),
             capture_output=True,
