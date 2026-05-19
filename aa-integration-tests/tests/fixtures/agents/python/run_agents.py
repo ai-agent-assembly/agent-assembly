@@ -8,6 +8,7 @@ scenario / glob, runs each subprocess with a timeout, and emits a summary.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import fnmatch
 import json
@@ -420,3 +421,137 @@ def _results_as_json(results: list[RunResult]) -> str:
         for r in results
     ]
     return json.dumps(payload)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Create the argparse parser matching the CLI documented in AAASM-1543."""
+    parser = argparse.ArgumentParser(
+        prog="run_agents.py",
+        description="Run AI agent fixture scripts against a live aasm gateway.",
+    )
+
+    parser.add_argument(
+        "-f", "--framework", action="append", default=[],
+        choices=sorted(FRAMEWORK_PATTERNS.keys()),
+        help="Framework filter (repeatable; OR within group).",
+    )
+    parser.add_argument(
+        "-s", "--scenario", action="append", default=[], choices=SCENARIOS,
+        help="Scenario filter (repeatable; OR within group).",
+    )
+    parser.add_argument(
+        "--file", default=None,
+        help='Glob match on filename stem, e.g. "*hierarchy*".',
+    )
+
+    parser.add_argument("--gateway-url", default="http://127.0.0.1:8080",
+                        help="Gateway base URL.")
+    parser.add_argument("--api-key", default="dev-key", help="API key.")
+    parser.add_argument("--proxy-addr", default=None,
+                        help="Proxy address for Layer 2 tests (optional).")
+    parser.add_argument("--auto-gateway", action="store_true",
+                        help="Spawn aa-gateway automatically; tear down on exit.")
+
+    parser.add_argument("--parallel", action="store_true",
+                        help="Run all scripts concurrently (default: sequential).")
+    parser.add_argument("--timeout", type=int, default=30,
+                        help="Per-script timeout in seconds (default: 30).")
+    parser.add_argument("--selftest", action="store_true",
+                        help="Hermetic mode: no gateway required.")
+
+    parser.add_argument("--list", dest="list_only", action="store_true",
+                        help="Print matching scripts and exit (dry-run).")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Stream each script's stdout.")
+    parser.add_argument("--json", dest="json_out", action="store_true",
+                        help="Emit machine-readable JSON results to stdout.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns 0 on full success, non-zero otherwise."""
+    args = _build_arg_parser().parse_args(argv)
+
+    root = Path(__file__).resolve().parent
+    # python/ → agents/ → fixtures/ → tests/ → aa-integration-tests/ → repo root
+    repo_root = root.parents[4]
+
+    all_scripts = discover(root)
+    selected = filter_scripts(
+        all_scripts,
+        args.framework or None,
+        args.scenario or None,
+        args.file,
+    )
+
+    if not selected:
+        print("[run_agents] No matching scripts found.", file=sys.stderr)
+        return 1
+
+    if args.list_only:
+        _print_list_table(selected)
+        return 0
+
+    if args.auto_gateway and args.selftest:
+        print("[run_agents] --auto-gateway is incompatible with --selftest",
+              file=sys.stderr)
+        return 2
+
+    cfg = RunConfig(
+        timeout=args.timeout,
+        gateway_url=args.gateway_url,
+        api_key=args.api_key,
+        proxy_addr=args.proxy_addr,
+        selftest=args.selftest,
+        verbose=args.verbose,
+    )
+
+    # Mirror run_agents_ts.sh: if no gateway is configured and the user did
+    # not ask for --auto-gateway, fall back to selftest so the script is
+    # never silently waiting on a missing gateway.
+    if (
+        not args.auto_gateway
+        and not args.selftest
+        and "AA_GATEWAY_ADDR" not in os.environ
+        and args.gateway_url == "http://127.0.0.1:8080"
+    ):
+        cfg.selftest = True
+        print("[run_agents] No gateway specified; running in --selftest mode.",
+              file=sys.stderr)
+
+    info_stream = sys.stderr if args.json_out else sys.stdout
+    auto: AutoGateway | None = None
+    try:
+        if args.auto_gateway:
+            auto = AutoGateway(repo_root)
+            auto.__enter__()
+            cfg.gateway_url = f"http://{auto.addr}"
+            print(f"[run_agents] Gateway started on {auto.addr}", file=info_stream)
+
+        header = (
+            f" Running {len(selected)} agent scripts  "
+            f"({'parallel' if args.parallel else 'sequential'} · "
+            f"timeout {cfg.timeout}s)"
+        )
+        print(header, file=info_stream)
+        print(file=info_stream)
+
+        if args.parallel:
+            results = asyncio.run(run_all_parallel(selected, cfg))
+        else:
+            results = run_all_sequential(selected, cfg)
+    finally:
+        if auto is not None:
+            auto.__exit__(None, None, None)
+
+    if args.json_out:
+        print(_results_as_json(results))
+        # Compute exit code without printing the human summary to stdout.
+        failed = sum(1 for r in results if not r.passed)
+        return 0 if failed == 0 else 1
+
+    return print_summary(results)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
