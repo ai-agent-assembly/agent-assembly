@@ -152,6 +152,41 @@ impl MockLlmServer {
             server_handle: Some(server_handle),
         })
     }
+
+    /// Number of inbound requests recorded so far.
+    ///
+    /// Used by AAASM-1521 / AAASM-1549 to assert that a `block` policy
+    /// stopped the request *before* it reached the upstream — i.e.
+    /// `assert_eq!(mock.request_count(), 0)` after a denied call.
+    pub fn request_count(&self) -> usize {
+        self.history.lock().expect("mock LLM history mutex poisoned").len()
+    }
+
+    /// Body of the most recently recorded request as a UTF-8 string, or
+    /// `None` if no request has arrived yet or the last body was not valid
+    /// UTF-8.
+    ///
+    /// Used by `redact_only` policy tests to assert that what reached the
+    /// upstream contains the redacted placeholder and not the raw secret.
+    pub fn last_body(&self) -> Option<String> {
+        self.history
+            .lock()
+            .expect("mock LLM history mutex poisoned")
+            .last()
+            .and_then(|r| r.body_str().map(|s| s.to_owned()))
+    }
+
+    /// Snapshot of every recorded request body, in arrival order. Each entry
+    /// is the raw bytes captured by the handler — callers can decode as
+    /// UTF-8 themselves if appropriate.
+    pub fn all_bodies(&self) -> Vec<Vec<u8>> {
+        self.history
+            .lock()
+            .expect("mock LLM history mutex poisoned")
+            .iter()
+            .map(|r| r.body.clone())
+            .collect()
+    }
 }
 
 impl Drop for MockLlmServer {
