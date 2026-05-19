@@ -28,7 +28,7 @@
 //! | # | Name | Status |
 //! |---|------|--------|
 //! | 1 | `ebpf_ssl_write_uprobe_captures_plaintext` | enabled (root + libssl) |
-//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | `#[ignore]` — blocked on AAASM-1548 |
+//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | `#[ignore]` — blocked on AAASM-1567 (exec event not delivered) |
 //! | 3 | `ebpf_catches_traffic_that_bypasses_proxy` | enabled (root + libssl) |
 //! | 4 | `ebpf_catches_traffic_without_sdk_init` | enabled (root + libssl) |
 //! | 5 | `ebpf_event_includes_pid_and_cgroup` | enabled (root) |
@@ -235,15 +235,15 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
 /// the tracepoint fires. Asserts: filename contains `curl`,
 /// `pid == child_pid`, `ppid` is the test process id.
 ///
-/// **Blocked on AAASM-1548**: `aa-ebpf-probes::try_sched_process_exec`
-/// reserves a ring-buffer entry then `?`-propagates the `ctx.read_at`
-/// errors without discarding the reservation. The Linux 6.x BPF
-/// verifier rejects the program (`Unreleased reference id=6 alloc_insn=17`)
-/// so `TracepointManager::attach` returns `ProbeAttach` before any test
-/// code runs. Remove `#[ignore]` once AAASM-1548 lands a `entry.discard(0)`
-/// on the error branches.
+/// **Blocked on AAASM-1567**: after AAASM-1548 fixed the verifier
+/// reference leak and renamed the exec ring buffer to `EVENTS`, the
+/// program loads and `RingBufReader::new` succeeds — but the
+/// `sched_process_exec` event for the spawned `curl` is not observed
+/// by the test within 10 s. Suspected PID-filter timing race; see
+/// AAASM-1567 for the investigation plan. Remove `#[ignore]` once
+/// that ticket lands a reliable fix.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1548: aa-exec-probes verifier rejects program due to ringbuf reference leak"]
+#[ignore = "blocked on AAASM-1567: exec event for spawned subprocess never delivered to ring buffer"]
 async fn ebpf_exec_probe_captures_subprocess_spawn() {
     let mut bpf = Ebpf::load(AA_EXEC_BPF).expect("failed to load exec BPF object — run with sudo");
     let _mgr = TracepointManager::attach(&mut bpf).expect("failed to attach exec tracepoints");
