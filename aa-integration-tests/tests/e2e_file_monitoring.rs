@@ -171,18 +171,24 @@ fn register_pid(bpf: &mut Ebpf, pid: u32) {
 
 /// Open the `EVENTS` perf event array, spawn one tokio task per online
 /// CPU to read it, and forward every successfully-decoded
-/// [`FileIoEvent`] onto an mpsc channel. The returned receiver yields
-/// events as they arrive across CPUs.
+/// [`FileIoEvent`] onto an mpsc channel.
 ///
-/// The map is **taken by ownership** (`take_map`) rather than borrowed
-/// (`map_mut`). Borrowing would chain `bpf`'s non-static lifetime into
-/// the per-CPU `AsyncPerfEventArrayBuffer`s, which `tokio::spawn`
-/// rejects (its futures must be `'static`). Transferring ownership of
-/// the userspace `MapData` is safe because the kernel-side BPF program
+/// Returns both the receiver **and** the owning `AsyncPerfEventArray` so
+/// the caller can keep the array alive for the duration of the test —
+/// the per-CPU `AsyncPerfEventArrayBuffer`s aya hands out depend on the
+/// parent array's state, and dropping the parent before reading drains
+/// them silently (the perf reader tasks return `Err`/`None` without
+/// emitting anything). The test holds the returned array in a `_` bind
+/// alongside `bpf` until the assertions finish.
+///
+/// The map itself is **taken by ownership** (`take_map`) rather than
+/// borrowed (`map_mut`) so the per-CPU buffer types carry no borrow
+/// into `bpf` — which would otherwise leak `bpf`'s non-static lifetime
+/// into `tokio::spawn`'s `'static` future requirement (E0521).
+/// Transferring ownership is safe because the kernel-side BPF program
 /// holds its own map references via the relocation table set up at
-/// `Ebpf::load` time — closing the userspace handle later does not
-/// detach the program from its map.
-fn start_perf_reader(bpf: &mut Ebpf) -> mpsc::Receiver<FileIoEvent> {
+/// `Ebpf::load` time.
+fn start_perf_reader(bpf: &mut Ebpf) -> (mpsc::Receiver<FileIoEvent>, AsyncPerfEventArray<MapData>) {
     let events_map = bpf.take_map("EVENTS").expect("EVENTS map should exist");
     let mut perf_array: AsyncPerfEventArray<MapData> =
         AsyncPerfEventArray::try_from(events_map).expect("EVENTS should be an AsyncPerfEventArray");
@@ -213,7 +219,7 @@ fn start_perf_reader(bpf: &mut Ebpf) -> mpsc::Receiver<FileIoEvent> {
         });
     }
     drop(tx);
-    rx
+    (rx, perf_array)
 }
 
 /// Spawn the Python driver with stdin piped and paused on the
@@ -288,7 +294,7 @@ async fn await_event(
 #[tokio::test(flavor = "multi_thread")]
 async fn file_create_emits_event_with_path_and_pid() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("create");
     let target = tmp.join("created.txt");
@@ -336,7 +342,7 @@ async fn file_create_emits_event_with_path_and_pid() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_write_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("write");
     let target = tmp.join("payload.txt");
@@ -388,7 +394,7 @@ async fn file_write_syscall_emits_event_for_target_pid() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_read_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("read");
     let target = tmp.join("source.txt");
@@ -441,7 +447,7 @@ async fn file_read_syscall_emits_event_for_target_pid() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_rename_emits_event_with_old_path() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("rename");
     let old = tmp.join("before.txt");
@@ -489,7 +495,7 @@ async fn file_rename_emits_event_with_old_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_unlink_emits_event_with_path() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("unlink");
     let target = tmp.join("doomed.txt");
@@ -539,7 +545,7 @@ async fn file_unlink_emits_event_with_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_events_attributed_to_filtered_pid_only() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("attribution");
     let path_a = tmp.join("agent-a.txt");
@@ -606,7 +612,7 @@ async fn file_events_attributed_to_filtered_pid_only() {
 #[tokio::test(flavor = "multi_thread")]
 async fn pid_not_in_filter_map_produces_no_event() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("unregistered");
     let target = tmp.join("ghost.txt");
@@ -660,7 +666,7 @@ async fn pid_not_in_filter_map_produces_no_event() {
 #[tokio::test(flavor = "multi_thread")]
 async fn file_event_records_path_when_openat_is_absolute() {
     let mut bpf = load_file_io_bpf();
-    let mut rx = start_perf_reader(&mut bpf);
+    let (mut rx, _events_array) = start_perf_reader(&mut bpf);
 
     let tmp = test_tmpdir("abspath");
     let nested = tmp.join("a").join("b").join("c");
