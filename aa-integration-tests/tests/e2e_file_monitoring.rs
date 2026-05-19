@@ -305,3 +305,58 @@ async fn file_create_emits_event_with_path_and_pid() {
         ev.return_code
     );
 }
+
+// =============================================================================
+// Test 2 — write syscall emits an event attributed to the driver pid
+// =============================================================================
+
+/// AAASM-1522 test 2 — `file_write_syscall_emits_event_for_target_pid`.
+///
+/// Drives the write kprobe by having the Python driver
+/// `os.write(fd, b"hello world")` (11 bytes) into a file it just
+/// created. Asserts a `Write` event arrives with `pid == driver_pid` and
+/// `path == <target>`, and that the `return_code` (which IS the byte
+/// count for a successful `write(2)`) matches the payload length.
+///
+/// Note: the ticket asked for a dedicated `bytes` field; the probe does
+/// not expose one, so this test asserts against `return_code` directly.
+/// When `FileIoEvent` gains a typed `bytes` accessor (AAASM-1425), this
+/// assertion can switch over without changing the byte-count claim.
+#[tokio::test(flavor = "multi_thread")]
+async fn file_write_syscall_emits_event_for_target_pid() {
+    let mut bpf = load_file_io_bpf();
+    let mut rx = start_perf_reader(&mut bpf);
+
+    let tmp = test_tmpdir("write");
+    let target = tmp.join("payload.txt");
+    let target_str = target.to_string_lossy().to_string();
+    let payload = "hello world";
+
+    let mut driver = spawn_driver_paused(&["--mode", "write", "--path", &target_str, "--payload", payload]);
+    let driver_pid = driver.id();
+    register_pid(&mut bpf, driver_pid);
+    release_driver(&mut driver);
+
+    let target_for_pred = target_str.clone();
+    let ev = await_event(&mut rx, Duration::from_secs(10), move |ev| {
+        ev.pid == driver_pid && ev.syscall == SyscallKind::Write && ev.path == target_for_pred
+    })
+    .await;
+
+    let json = drain_driver_json(driver);
+
+    assert_eq!(ev.pid, driver_pid, "write event must be attributed to the driver pid");
+    assert_eq!(ev.syscall, SyscallKind::Write);
+    assert_eq!(ev.path, target_str);
+    assert_eq!(
+        ev.return_code as i64,
+        payload.len() as i64,
+        "write event return_code should equal the bytes written ({} bytes)",
+        payload.len()
+    );
+    assert_eq!(
+        json["bytes"].as_u64(),
+        Some(payload.len() as u64),
+        "driver-reported byte count should agree with the kernel event"
+    );
+}
