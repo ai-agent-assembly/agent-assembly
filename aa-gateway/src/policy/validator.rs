@@ -557,6 +557,14 @@ mod tests {
         assert_eq!(dp.sensitive_patterns.len(), 1);
     }
 
+    #[test]
+    fn data_credential_action_block_parses() {
+        let yaml = "data:\n  credential_action: block\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let dp = out.document.data.unwrap();
+        assert_eq!(dp.credential_action, CredentialAction::Block);
+    }
+
     // ── Budget validation ───────────────────────────────────────────────────
 
     #[test]
