@@ -142,11 +142,32 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
 /// `latency_us` is the measured evaluation wall time in microseconds.
 /// `policy_rule` is the identifier of the rule that triggered (empty for Allow).
 ///
-/// When the engine detected credential/PII findings and produced a redacted payload,
-/// the response uses `Decision::Redact` with the redacted field paths.
+/// Mapping rules:
+/// * `decision == Deny` → `Decision::Deny` (covers `credential_action: block`,
+///   which short-circuits with findings *and* a Deny verdict).
+/// * findings non-empty *and* `redacted_payload.is_some()` →
+///   `Decision::Redact` (covers `credential_action: redact_only`).
+/// * findings non-empty *and* `redacted_payload.is_none()` →
+///   `Decision::Allow` (covers `credential_action: alert_only`, where the
+///   payload is forwarded unmodified; the alert side-effect is wired
+///   separately).
+/// * everything else falls through to the underlying `PolicyResult`.
 pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_rule: &str) -> CheckActionResponse {
-    // If the scanner produced redaction findings, return REDACT with instructions.
-    if !eval.credential_findings.is_empty() {
+    // Deny short-circuits everything, including the findings-driven Redact path,
+    // so `credential_action: block` returns a hard Deny even though findings exist.
+    if let PolicyResult::Deny { reason } = &eval.decision {
+        return CheckActionResponse {
+            decision: Decision::Deny as i32,
+            reason: reason.clone(),
+            policy_rule: policy_rule.to_string(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: latency_us,
+        };
+    }
+
+    // Findings + redacted payload → Redact instructions.
+    if !eval.credential_findings.is_empty() && eval.redacted_payload.is_some() {
         let rules: Vec<RedactRule> = eval
             .credential_findings
             .iter()
@@ -174,14 +195,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             redact: None,
             decision_latency_us: latency_us,
         },
-        PolicyResult::Deny { reason } => CheckActionResponse {
-            decision: Decision::Deny as i32,
-            reason: reason.clone(),
-            policy_rule: policy_rule.to_string(),
-            approval_id: String::new(),
-            redact: None,
-            decision_latency_us: latency_us,
-        },
+        PolicyResult::Deny { .. } => unreachable!("Deny is handled by the short-circuit above"),
         PolicyResult::RequiresApproval { .. } => {
             panic!(
                 "RequiresApproval must be handled before conversion — \
@@ -372,5 +386,39 @@ mod tests {
         let proto = pending_to_proto(&p);
         assert_eq!(proto.team_id, "");
         assert_eq!(proto.routing_status, "no_team_id");
+    }
+
+    #[test]
+    fn eval_with_deny_and_findings_maps_to_decision_deny() {
+        // credential_action: block → engine returns Deny *and* findings populated.
+        // The wire response must still be Decision::Deny — no Redact instructions.
+        let eval = EvaluationResult {
+            decision: PolicyResult::Deny {
+                reason: "credential detected".into(),
+            },
+            redacted_payload: None,
+            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            deny_action: None,
+        };
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+        assert_eq!(resp.decision, Decision::Deny as i32);
+        assert_eq!(resp.reason, "credential detected");
+        assert!(resp.redact.is_none());
+    }
+
+    #[test]
+    fn eval_with_allow_and_findings_but_no_redacted_payload_maps_to_allow() {
+        // credential_action: alert_only → engine returns Allow + findings but
+        // leaves redacted_payload = None. The wire response must be
+        // Decision::Allow so the payload is forwarded unmodified.
+        let eval = EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: None,
+            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            deny_action: None,
+        };
+        let resp = eval_result_to_response(&eval, 0, "");
+        assert_eq!(resp.decision, Decision::Allow as i32);
+        assert!(resp.redact.is_none());
     }
 }

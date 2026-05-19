@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use crate::policy::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument,
-        SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy,
+        PolicyDocument, SchedulePolicy, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{GovernancePolicyEnvelope, RawPolicyDocument},
@@ -308,8 +308,22 @@ impl PolicyValidator {
             }
         }
 
+        let credential_action = match raw.credential_action.as_deref() {
+            None | Some("redact_only") => CredentialAction::RedactOnly,
+            Some("block") => CredentialAction::Block,
+            Some("alert_only") => CredentialAction::AlertOnly,
+            Some(other) => {
+                errors.push(ValidationError::new(
+                    "data.credential_action",
+                    format!("must be 'block', 'redact_only', or 'alert_only', got '{}'", other),
+                ));
+                CredentialAction::RedactOnly
+            }
+        };
+
         Some(DataPolicy {
             sensitive_patterns: patterns,
+            credential_action,
         })
     }
 
@@ -541,6 +555,31 @@ mod tests {
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         let dp = out.document.data.unwrap();
         assert_eq!(dp.sensitive_patterns.len(), 1);
+    }
+
+    #[test]
+    fn data_credential_action_block_parses() {
+        let yaml = "data:\n  credential_action: block\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let dp = out.document.data.unwrap();
+        assert_eq!(dp.credential_action, CredentialAction::Block);
+    }
+
+    #[test]
+    fn data_credential_action_alert_only_parses() {
+        let yaml = "data:\n  credential_action: alert_only\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let dp = out.document.data.unwrap();
+        assert_eq!(dp.credential_action, CredentialAction::AlertOnly);
+    }
+
+    #[test]
+    fn data_credential_action_invalid_value_is_an_error() {
+        let yaml = "data:\n  credential_action: not_a_real_mode\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err());
+        let errs = result.unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "data.credential_action"));
     }
 
     // ── Budget validation ───────────────────────────────────────────────────

@@ -26,7 +26,7 @@ use crate::budget::BudgetTracker;
 
 use crate::engine::decision::{merge_decisions, PolicyDecision};
 use crate::engine::scope_index::ScopeIndex;
-use crate::policy::document::ActionOnExceed;
+use crate::policy::document::{ActionOnExceed, CredentialAction};
 use crate::policy::{PolicyDocument, PolicyValidator};
 use crate::registry::AgentRegistry;
 
@@ -492,15 +492,27 @@ impl PolicyEngine {
             }
         }
 
+        let credential_action = policy.data.as_ref().map(|d| d.credential_action).unwrap_or_default();
+
+        // Hard-block path: a finding with `credential_action: block` short-circuits
+        // every downstream stage so the payload never reaches the LLM in any form.
+        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+            all_findings.sort_by_key(|f| f.offset);
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny {
+                    reason: "credential detected".into(),
+                },
+                redacted_payload: None,
+                credential_findings: all_findings,
+                deny_action: None,
+            };
+        }
+
         let (redacted_payload, credential_findings) = if all_findings.is_empty() {
             (None, vec![])
         } else {
             // Sort by offset for deterministic redaction order.
             all_findings.sort_by_key(|f| f.offset);
-            let merged = aa_core::ScanResult {
-                findings: all_findings.clone(),
-            };
-            let redacted = merged.redact(text);
             // TODO(AAASM-31): wrap in EnrichedEvent::DataLeak(DataLeakEvent { ... }) and
             // send on the broadcast_tx once AAASM-31 adds the DataLeak variant to EnrichedEvent.
             // DataLeakEvent fields are available here:
@@ -514,7 +526,21 @@ impl PolicyEngine {
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
-            (Some(redacted), all_findings)
+            if credential_action == CredentialAction::AlertOnly {
+                // Forward the unmodified payload upstream; alert side-effect emission
+                // is wired by sibling subtask AAASM-1545.
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                );
+                (None, all_findings)
+            } else {
+                let merged = aa_core::ScanResult {
+                    findings: all_findings.clone(),
+                };
+                let redacted = merged.redact(text);
+                (Some(redacted), all_findings)
+            }
         };
 
         // Stage 7 — Budget check (monthly first, then daily).
@@ -683,19 +709,52 @@ impl PolicyEngine {
                 }
             }
         }
+
+        // Most-restrictive-wins across the cascade: Block > RedactOnly > AlertOnly.
+        // Docs without a `data` section don't vote — RedactOnly remains the default.
+        let credential_action = cascade
+            .iter()
+            .filter_map(|d| d.data.as_ref().map(|dp| dp.credential_action))
+            .max_by_key(|a| match a {
+                CredentialAction::Block => 2,
+                CredentialAction::RedactOnly => 1,
+                CredentialAction::AlertOnly => 0,
+            })
+            .unwrap_or_default();
+
+        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+            all_findings.sort_by_key(|f| f.offset);
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny {
+                    reason: "credential detected".into(),
+                },
+                redacted_payload: None,
+                credential_findings: all_findings,
+                deny_action: None,
+            };
+        }
+
         let (redacted_payload, credential_findings) = if all_findings.is_empty() {
             (None, vec![])
         } else {
             all_findings.sort_by_key(|f| f.offset);
-            let merged = aa_core::ScanResult {
-                findings: all_findings.clone(),
-            };
-            let redacted = merged.redact(text);
             tracing::warn!(
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
-            (Some(redacted), all_findings)
+            if credential_action == CredentialAction::AlertOnly {
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                );
+                (None, all_findings)
+            } else {
+                let merged = aa_core::ScanResult {
+                    findings: all_findings.clone(),
+                };
+                let redacted = merged.redact(text);
+                (Some(redacted), all_findings)
+            }
         };
 
         // Stage 7 — Budget: check against all cascade docs' budget configs.
@@ -1005,8 +1064,8 @@ impl aa_core::PolicyEvaluator for PolicyEngine {
 mod tests {
     use super::*;
     use crate::policy::document::{
-        ActionOnExceed, ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy,
-        ToolPolicy,
+        ActionOnExceed, ActiveHours, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy, PolicyDocument,
+        SchedulePolicy, ToolPolicy,
     };
     use aa_core::{
         identity::{AgentId, SessionId},
@@ -1301,6 +1360,7 @@ mod tests {
         let mut doc = empty_doc();
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1313,6 +1373,45 @@ mod tests {
         let redacted = result.redacted_payload.unwrap();
         assert!(!redacted.contains("secret"), "raw secret leaked into redacted payload");
         assert!(redacted.contains("[REDACTED:Custom]"));
+    }
+
+    #[test]
+    fn data_pattern_blocks_when_credential_action_is_block() {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::Block,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(
+            result.decision,
+            PolicyResult::Deny {
+                reason: "credential detected".into(),
+            }
+        );
+        assert!(!result.credential_findings.is_empty());
+        // Block must never produce a redacted form — the payload is rejected outright.
+        assert!(result.redacted_payload.is_none());
+    }
+
+    #[test]
+    fn data_pattern_forwards_when_credential_action_is_alert_only() {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::AlertOnly,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(!result.credential_findings.is_empty());
+        // Alert-only mode forwards the payload unmodified — no redacted form is set.
+        assert!(result.redacted_payload.is_none());
     }
 
     #[test]
@@ -1504,6 +1603,7 @@ mod tests {
         );
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![".*".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1618,6 +1718,7 @@ mod tests {
         let mut doc = empty_doc();
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"api_key=[A-Za-z0-9]+".to_string()],
+            credential_action: CredentialAction::default(),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
