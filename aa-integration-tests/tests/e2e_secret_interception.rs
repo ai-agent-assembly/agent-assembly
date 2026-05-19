@@ -46,7 +46,6 @@ const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
 const FAKE_GITHUB_PAT: &str = "ghp_0000000000000000000000000000000000";
 
 /// OpenAI key with the documented `sk-test-` test prefix. Synthetic.
-#[allow(dead_code)] // wired in by the OpenAI key detection test commit
 const FAKE_OPENAI_KEY: &str = "sk-test-AbCdEf1234567890ABCDEF1234567890ABCDEF1234567890";
 
 /// Custom-pattern token shaped to match `MYCO-SECRET-[A-Za-z0-9]+`.
@@ -190,5 +189,28 @@ fn github_pat_in_tool_args_is_detected_and_redacted() {
     assert!(
         !redacted.contains(FAKE_GITHUB_PAT),
         "redacted payload must not retain the original GitHub PAT",
+    );
+}
+
+// ── Test 3 — OpenAI key in tool args ─────────────────────────────────────────
+
+#[test]
+fn openai_key_in_tool_args_is_detected_and_redacted() {
+    let payload = format!(r#"{{"messages":[{{"role":"user","content":"my key is {FAKE_OPENAI_KEY}"}}]}}"#);
+    let action = tool_call_with_args(&payload);
+    let result = evaluate(&action, 0xA3);
+
+    assert_detected(&result, CredentialKind::OpenAiKey);
+
+    let redacted = result
+        .redacted_payload
+        .expect("OpenAI key must produce a redacted payload");
+    assert!(
+        redacted.contains("[REDACTED:OpenAiKey]"),
+        "redacted payload must carry the [REDACTED:OpenAiKey] label, got: {redacted}",
+    );
+    assert!(
+        !redacted.contains(FAKE_OPENAI_KEY),
+        "redacted payload must not retain the original OpenAI key",
     );
 }
