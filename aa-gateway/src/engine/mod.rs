@@ -26,7 +26,7 @@ use crate::budget::BudgetTracker;
 
 use crate::engine::decision::{merge_decisions, PolicyDecision};
 use crate::engine::scope_index::ScopeIndex;
-use crate::policy::document::ActionOnExceed;
+use crate::policy::document::{ActionOnExceed, CredentialAction};
 use crate::policy::{PolicyDocument, PolicyValidator};
 use crate::registry::AgentRegistry;
 
@@ -490,6 +490,22 @@ impl PolicyEngine {
             for m in re.find_iter(text) {
                 all_findings.push(aa_core::CredentialFinding::from_regex_match(m.start(), m.end()));
             }
+        }
+
+        let credential_action = policy.data.as_ref().map(|d| d.credential_action).unwrap_or_default();
+
+        // Hard-block path: a finding with `credential_action: block` short-circuits
+        // every downstream stage so the payload never reaches the LLM in any form.
+        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+            all_findings.sort_by_key(|f| f.offset);
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny {
+                    reason: "credential detected".into(),
+                },
+                redacted_payload: None,
+                credential_findings: all_findings,
+                deny_action: None,
+            };
         }
 
         let (redacted_payload, credential_findings) = if all_findings.is_empty() {
