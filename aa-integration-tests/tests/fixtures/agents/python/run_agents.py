@@ -8,6 +8,7 @@ scenario / glob, runs each subprocess with a timeout, and emits a summary.
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,3 +65,37 @@ class RunConfig:
     proxy_addr: str | None = None
     selftest: bool = False
     verbose: bool = False
+
+
+def _framework_for(stem: str) -> str:
+    """Map a script filename stem to a framework name (or 'unknown')."""
+    for framework, pattern in FRAMEWORK_PATTERNS.items():
+        if fnmatch.fnmatch(stem, pattern):
+            return framework
+    return "unknown"
+
+
+def discover(root: Path) -> list[AgentScript]:
+    """Walk ``root`` and collect fixture scripts.
+
+    Skips ``_shared.py`` and ``run_agents.py``. Scenarios are taken from
+    :data:`SCENARIOS` so missing directories (e.g. ``secret_leaker`` before
+    that fixture set lands) are silently tolerated.
+    """
+    scripts: list[AgentScript] = []
+    for scenario in SCENARIOS:
+        scenario_dir = root / scenario
+        if not scenario_dir.is_dir():
+            continue
+        for path in sorted(scenario_dir.glob("*.py")):
+            if path.name in EXCLUDED_FILENAMES:
+                continue
+            scripts.append(
+                AgentScript(
+                    path=path,
+                    scenario=scenario,
+                    framework=_framework_for(path.stem),
+                    name=path.stem,
+                )
+            )
+    return scripts
