@@ -464,7 +464,6 @@ async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
 /// renameat2 today, so only the source path is asserted — see
 /// AAASM-1425 for the dual-path schema extension.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_rename_emits_event_with_old_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
