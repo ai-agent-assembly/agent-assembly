@@ -8,6 +8,7 @@ scenario / glob, runs each subprocess with a timeout, and emits a summary.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import os
@@ -239,4 +240,32 @@ def run_all_sequential(
         result = run_script(script, cfg)
         print(_format_result_line(result), flush=True)
         results.append(result)
+    return results
+
+
+async def _run_script_async(script: AgentScript, cfg: RunConfig) -> RunResult:
+    """Thin async adapter so run_script can join an asyncio.gather group."""
+    return await asyncio.to_thread(run_script, script, cfg)
+
+
+async def run_all_parallel(
+    scripts: list[AgentScript], cfg: RunConfig
+) -> list[RunResult]:
+    """Run all scripts concurrently and stream PASS/FAIL as each finishes."""
+    pending: dict[asyncio.Task[RunResult], AgentScript] = {
+        asyncio.create_task(_run_script_async(s, cfg)): s for s in scripts
+    }
+    results: list[RunResult] = []
+    while pending:
+        done, _ = await asyncio.wait(
+            pending.keys(), return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            del pending[task]
+            result = task.result()
+            print(_format_result_line(result), flush=True)
+            results.append(result)
+    # Preserve input order for the final summary.
+    order = {script.path: idx for idx, script in enumerate(scripts)}
+    results.sort(key=lambda r: order[r.script.path])
     return results
