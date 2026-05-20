@@ -683,4 +683,101 @@ mod tests {
         let id = store.record(&test_alert(80));
         assert_eq!(id.len(), 26, "ULID is always 26 chars");
     }
+
+    // ============================================================
+    // dedup_or_record_rule_alert — AAASM-1627
+    // ============================================================
+
+    fn fixed_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-05-20T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn dedup_refire_within_window_increments_count_and_returns_deduped() {
+        let store = InMemoryAlertStore::new();
+        let seed = test_rule_seed();
+
+        let now = fixed_now();
+        let (first_id, first_outcome) = store.dedup_or_record_rule_alert(&seed, now);
+        assert_eq!(first_outcome, DedupOutcome::Created);
+
+        // Re-fire 5 minutes later — still inside the 600-second window.
+        let later = now + chrono::Duration::seconds(300);
+        let (second_id, second_outcome) = store.dedup_or_record_rule_alert(&seed, later);
+        assert_eq!(second_id, first_id, "dedup must absorb into the existing alert id");
+        assert_eq!(
+            second_outcome,
+            DedupOutcome::Deduped {
+                existing_id: first_id.clone()
+            }
+        );
+
+        let stored = store.get_by_id(&first_id).unwrap();
+        let ctx = stored.rule_context.as_ref().unwrap();
+        assert_eq!(ctx.dedup_occurrence_count, 2);
+        assert_eq!(
+            ctx.routing_log.len(),
+            seed.routing_log.len(),
+            "dedup must NOT append to routing_log",
+        );
+    }
+
+    #[test]
+    fn dedup_refire_after_window_expiry_creates_new_alert() {
+        let store = InMemoryAlertStore::new();
+        let seed = test_rule_seed();
+
+        let now = fixed_now();
+        let (first_id, _) = store.dedup_or_record_rule_alert(&seed, now);
+
+        // Re-fire 700 seconds later — past the 600-second window.
+        let later = now + chrono::Duration::seconds(700);
+        let (second_id, outcome) = store.dedup_or_record_rule_alert(&seed, later);
+        assert_eq!(outcome, DedupOutcome::Created);
+        assert_ne!(second_id, first_id, "post-expiry re-fire must allocate a new id");
+
+        let second = store.get_by_id(&second_id).unwrap();
+        let ctx = second.rule_context.as_ref().unwrap();
+        assert_eq!(ctx.dedup_occurrence_count, 1);
+        assert!(ctx.dedup_window_expires_at.is_some());
+    }
+
+    #[test]
+    fn dedup_window_zero_short_circuits_to_create() {
+        let store = InMemoryAlertStore::new();
+        let mut seed = test_rule_seed();
+        seed.rule_snapshot.dedup_window_seconds = 0;
+
+        let now = fixed_now();
+        let (first_id, first_outcome) = store.dedup_or_record_rule_alert(&seed, now);
+        let (second_id, second_outcome) = store.dedup_or_record_rule_alert(&seed, now);
+
+        assert_eq!(first_outcome, DedupOutcome::Created);
+        assert_eq!(second_outcome, DedupOutcome::Created);
+        assert_ne!(first_id, second_id, "zero window must always create");
+
+        let stored = store.get_by_id(&first_id).unwrap();
+        assert!(
+            stored.rule_context.as_ref().unwrap().dedup_window_expires_at.is_none(),
+            "dedup_window_expires_at must be None when window is 0",
+        );
+    }
+
+    #[test]
+    fn dedup_isolates_distinct_rule_ids() {
+        let store = InMemoryAlertStore::new();
+        let mut seed_a = test_rule_seed();
+        seed_a.rule_id = "rule-a".to_string();
+        let mut seed_b = test_rule_seed();
+        seed_b.rule_id = "rule-b".to_string();
+
+        let now = fixed_now();
+        let (id_a, _) = store.dedup_or_record_rule_alert(&seed_a, now);
+        let (id_b, outcome_b) = store.dedup_or_record_rule_alert(&seed_b, now);
+
+        assert_ne!(id_a, id_b, "different rule_ids must not dedup against each other");
+        assert_eq!(outcome_b, DedupOutcome::Created);
+    }
 }
