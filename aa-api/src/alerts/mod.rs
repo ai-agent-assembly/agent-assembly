@@ -5,6 +5,7 @@
 //! historical alerts.
 
 pub mod capture;
+pub mod detail;
 pub mod store;
 
 use aa_gateway::alerts::SecretAlert;
