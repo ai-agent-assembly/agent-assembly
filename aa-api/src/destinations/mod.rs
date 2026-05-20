@@ -4,3 +4,4 @@
 //! See `routes::destinations` for the HTTP surface that wraps this module.
 
 pub mod types;
+pub mod validate;
