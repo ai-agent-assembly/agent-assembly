@@ -190,7 +190,7 @@ async fn budget_exhausted_request_is_rejected_at_tracking_layer() {
 /// sub-day budget windows (e.g. `window: "5s"`) are not supported in v0.0.1.
 /// Remove the `#[ignore]` and implement once a configurable flush interval is
 /// added to `BudgetTracker`.
-#[ignore]
+#[ignore = "blocked on AAASM-1600: BudgetTracker sub-day window flush interval not implemented"]
 #[tokio::test(flavor = "multi_thread")]
 async fn budget_resets_after_daily_window() {
     unimplemented!(

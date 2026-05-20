@@ -251,7 +251,7 @@ async fn audit_chain_break_detected_when_entry_modified() {
 /// Blocked: requires spawning the `aa-gateway` binary, sending SIGTERM, and
 /// restarting — infrastructure not yet available in the integration harness.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires binary gateway spawn + SIGTERM/restart infrastructure"]
+#[ignore = "blocked on AAASM-1601: binary gateway spawn + SIGTERM/restart test infrastructure not yet available"]
 async fn audit_chain_survives_gateway_restart() {
     todo!("implement once binary-spawn harness is available")
 }
