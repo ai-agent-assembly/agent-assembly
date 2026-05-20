@@ -5,9 +5,16 @@ use std::sync::{Mutex, RwLock};
 
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
+use tokio::sync::broadcast;
 use ulid::Generator;
 
-use super::{stored_alert_from, stored_secret_alert_from, AlertStore, StoredAlert};
+use super::{stored_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, StoredAlert};
+
+/// Capacity of the per-store `tokio::broadcast` channel used for the
+/// `AlertEvent` lifecycle bus. Subscribers that lag past this many
+/// pending events get a `RecvError::Lagged` and must reconcile state
+/// from the store directly.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Default maximum number of alerts retained in the ring buffer.
 const DEFAULT_CAPACITY: usize = 10_000;
@@ -23,6 +30,10 @@ pub struct InMemoryAlertStore {
     /// the random portion within a single millisecond so IDs sort by
     /// insertion order even at sub-millisecond record rates.
     id_gen: Mutex<Generator>,
+    /// Lifecycle event sender. Retained on `self` so the bus stays open
+    /// even when no subscriber is currently attached — late subscribers
+    /// receive events from the moment of their `subscribe()` call.
+    event_tx: broadcast::Sender<AlertEvent>,
 }
 
 impl InMemoryAlertStore {
@@ -33,10 +44,12 @@ impl InMemoryAlertStore {
 
     /// Create a new store with the given maximum capacity.
     pub fn with_capacity(capacity: usize) -> Self {
+        let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             alerts: RwLock::new(VecDeque::with_capacity(capacity.min(DEFAULT_CAPACITY))),
             capacity,
             id_gen: Mutex::new(Generator::new()),
+            event_tx,
         }
     }
 
@@ -62,11 +75,15 @@ impl AlertStore for InMemoryAlertStore {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let stored = stored_alert_from(alert, id.clone(), timestamp);
 
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
         }
-        buf.push_back(stored);
+        // Best-effort publish; ignore `SendError` when no subscriber is attached.
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
     }
 
@@ -75,11 +92,14 @@ impl AlertStore for InMemoryAlertStore {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let stored = stored_secret_alert_from(alert, id.clone(), timestamp);
 
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
         }
-        buf.push_back(stored);
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
     }
 
@@ -99,16 +119,27 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        let alert = buf.iter_mut().find(|a| a.id == id)?;
-        // Idempotent: don't bump timestamps on subsequent resolves.
-        if alert.status != "resolved" {
-            let now = chrono::Utc::now().to_rfc3339();
-            alert.status = "resolved".to_string();
-            alert.updated_at = Some(now.clone());
-            alert.resolved_at = Some(now);
+        let (snapshot, was_mutation) = {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let alert = buf.iter_mut().find(|a| a.id == id)?;
+            // Idempotent: don't bump timestamps on subsequent resolves.
+            let mutated = alert.status != "resolved";
+            if mutated {
+                let now = chrono::Utc::now().to_rfc3339();
+                alert.status = "resolved".to_string();
+                alert.updated_at = Some(now.clone());
+                alert.resolved_at = Some(now);
+            }
+            (alert.clone(), mutated)
+        };
+        if was_mutation {
+            let _ = self.event_tx.send(AlertEvent::Resolve(snapshot.clone()));
         }
-        Some(alert.clone())
+        Some(snapshot)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AlertEvent> {
+        self.event_tx.subscribe()
     }
 }
 

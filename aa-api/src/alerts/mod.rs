@@ -15,6 +15,7 @@ pub use event::AlertEvent;
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
+use tokio::sync::broadcast;
 
 use crate::alerts::detail::RuleContext;
 
@@ -244,4 +245,11 @@ pub trait AlertStore: Send + Sync {
     /// record and does not bump `updated_at`. `_reason` is accepted for
     /// API parity but the in-memory store does not persist it.
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert>;
+
+    /// Subscribe to the lifecycle event bus. Each mutation
+    /// (`record`/`record_secret` → `Fire`, `resolve` → `Resolve`,
+    /// `suppress` → `Silence`) publishes one [`AlertEvent`] carrying
+    /// a snapshot of the post-mutation alert. Implementations that
+    /// don't emit events should still return a live receiver.
+    fn subscribe(&self) -> broadcast::Receiver<AlertEvent>;
 }
