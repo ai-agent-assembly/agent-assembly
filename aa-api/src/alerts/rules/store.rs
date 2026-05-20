@@ -129,8 +129,16 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
         rules.get(id).cloned()
     }
 
-    fn list(&self, _enabled_filter: Option<bool>) -> Vec<AlertRule> {
-        unimplemented!("AAASM-1616: list lands next")
+    fn list(&self, enabled_filter: Option<bool>) -> Vec<AlertRule> {
+        let rules = self.rules.read().expect("alert rule store lock poisoned");
+        rules
+            .values()
+            .filter(|r| match enabled_filter {
+                Some(want) => r.enabled == want,
+                None => true,
+            })
+            .cloned()
+            .collect()
     }
 
     fn update(&self, _id: &str, _rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
