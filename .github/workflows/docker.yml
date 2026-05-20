@@ -83,6 +83,10 @@ jobs:
             version: "3.13-slim"
             dockerfile: docker/Dockerfile.python-3.13-slim
             smoke_run: "python -c \"from agent_assembly import init_assembly\""
+          - lang: python
+            version: "3.12-slim"
+            dockerfile: docker/Dockerfile.python-3.12-slim
+            smoke_run: "python -c \"from agent_assembly import init_assembly\""
           # Node 24 is intentionally absent here. Re-enabled by AAASM-1503
           # once AAASM-1203 publishes `@agent-assembly/sdk` to npm. The
           # transitional git/tarball install paths can't produce a working
