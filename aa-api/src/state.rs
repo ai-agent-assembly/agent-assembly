@@ -5,8 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aa_devtool::DiscoveryService;
+use tokio::sync::mpsc;
 
 use aa_core::topology::EdgeRepo;
+use aa_core::AuditEntry;
 use aa_gateway::budget::tracker::BudgetTracker;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::iam::IamApiKeyStore;
@@ -86,4 +88,11 @@ pub struct AppState {
     pub iam_api_key_store: Arc<IamApiKeyStore>,
     /// In-flight operation lifecycle registry (AAASM-1525).
     pub ops_registry: Arc<OpsRegistry>,
+    /// Optional sender into the shared audit-ingest channel (see
+    /// `aa-gateway::audit::AuditWriter`). When `None`, audit-emitting
+    /// handlers respond with HTTP 503 to signal that the audit pipeline
+    /// is not connected — they do not buffer events. The webhook handler
+    /// in `routes::devtools::saas_webhook` is the first consumer of this
+    /// seam (AAASM-924); future routes wire in the same way.
+    pub audit_sender: Option<mpsc::Sender<AuditEntry>>,
 }

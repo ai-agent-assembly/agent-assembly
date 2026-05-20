@@ -161,6 +161,7 @@ spec:
         capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
+        audit_sender: None,
     }
 }
 
