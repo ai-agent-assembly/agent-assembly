@@ -8,7 +8,10 @@ use aa_gateway::budget::types::BudgetAlert;
 use tokio::sync::broadcast;
 use ulid::Generator;
 
-use super::{stored_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, StoredAlert};
+use super::{
+    stored_alert_from, stored_rule_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, RuleAlertSeed,
+    StoredAlert,
+};
 
 /// Capacity of the per-store `tokio::broadcast` channel used for the
 /// `AlertEvent` lifecycle bus. Subscribers that lag past this many
@@ -103,6 +106,22 @@ impl AlertStore for InMemoryAlertStore {
         id
     }
 
+    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String {
+        let id = self.next_id();
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = stored_rule_alert_from(seed, id.clone(), timestamp);
+
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
+        }
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
+        id
+    }
+
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64) {
         let buf = self.alerts.read().expect("alert store lock poisoned");
         let total = buf.len() as u64;
@@ -113,7 +132,7 @@ impl AlertStore for InMemoryAlertStore {
         (items, total)
     }
 
-    fn get(&self, id: &str) -> Option<StoredAlert> {
+    fn get_by_id(&self, id: &str) -> Option<StoredAlert> {
         let buf = self.alerts.read().expect("alert store lock poisoned");
         buf.iter().find(|a| a.id == id).cloned()
     }
@@ -194,6 +213,34 @@ mod tests {
             team_id: Some("team-pioneer".to_string()),
             kinds: vec![kind],
             finding_count: 1,
+        }
+    }
+
+    fn test_rule_seed() -> RuleAlertSeed {
+        use crate::alerts::detail::{RoutingLogEntry, RuleSnapshot};
+        use std::collections::BTreeMap;
+
+        RuleAlertSeed {
+            agent_id: Some(AgentId::from_bytes([0x55; 16])),
+            team_id: Some("team-platform".to_string()),
+            rule_id: "rule-budget-90".to_string(),
+            rule_name: "Budget threshold > 90%".to_string(),
+            rule_snapshot: RuleSnapshot {
+                metric: "budget_spent_pct".to_string(),
+                operator: ">".to_string(),
+                threshold: 90.0,
+                evaluation_window_seconds: 300,
+                severity: "CRITICAL".to_string(),
+                dedup_window_seconds: 600,
+                suppression_labels: BTreeMap::new(),
+            },
+            destination_ids: vec!["slack-ops".to_string()],
+            event_payload: serde_json::json!({ "metric_value": 92.3 }),
+            routing_log: vec![RoutingLogEntry {
+                destination_id: "slack-ops".to_string(),
+                delivered_at: "2026-05-13T09:12:01Z".to_string(),
+                status: "ok".to_string(),
+            }],
         }
     }
 
@@ -291,13 +338,13 @@ mod tests {
         let store = InMemoryAlertStore::new();
         let id = store.record(&test_alert(95));
 
-        let found = store.get(&id).expect("known id should return Some");
+        let found = store.get_by_id(&id).expect("known id should return Some");
         assert_eq!(found.id, id);
         assert_eq!(found.threshold_pct, 95);
         assert_eq!(found.status, "unresolved");
 
         assert!(
-            store.get("00000000000000000000000000").is_none(),
+            store.get_by_id("00000000000000000000000000").is_none(),
             "unknown id returns None"
         );
     }
@@ -309,14 +356,14 @@ mod tests {
         store.record(&test_alert(80));
         store.record(&test_alert(90));
 
-        assert!(store.get(&id1).is_none(), "evicted id should return None");
+        assert!(store.get_by_id(&id1).is_none(), "evicted id should return None");
     }
 
     #[test]
     fn resolve_flips_status_and_sets_updated_at() {
         let store = InMemoryAlertStore::new();
         let id = store.record(&test_alert(95));
-        let before = store.get(&id).unwrap();
+        let before = store.get_by_id(&id).unwrap();
         assert_eq!(before.status, "unresolved");
         assert!(before.updated_at.is_none());
 
@@ -328,7 +375,7 @@ mod tests {
             "resolved_at must be set in lockstep with updated_at on the first resolve",
         );
 
-        let from_store = store.get(&id).unwrap();
+        let from_store = store.get_by_id(&id).unwrap();
         assert_eq!(from_store.status, "resolved");
         assert_eq!(from_store.updated_at, after.updated_at);
     }
@@ -375,7 +422,7 @@ mod tests {
         let store = InMemoryAlertStore::new();
         let id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
 
-        let found = store.get(&id).expect("recorded secret alert must be retrievable");
+        let found = store.get_by_id(&id).expect("recorded secret alert must be retrievable");
         assert_eq!(found.severity, super::super::AlertSeverity::Critical);
         assert_eq!(found.category, super::super::AlertCategory::SecretDetected);
         assert_eq!(found.detected_pattern_type.as_deref(), Some("AwsAccessKey"));
@@ -384,13 +431,42 @@ mod tests {
     }
 
     #[test]
+    fn record_rule_alert_round_trips_via_get_by_id() {
+        let store = InMemoryAlertStore::new();
+        let seed = test_rule_seed();
+        let id = store.record_rule_alert(&seed);
+
+        let stored = store.get_by_id(&id).expect("recorded rule alert must be retrievable");
+        assert_eq!(stored.id, id);
+        assert_eq!(stored.category, super::super::AlertCategory::Rule);
+
+        let ctx = stored.rule_context.as_ref().expect("rule_context must be populated");
+        assert_eq!(ctx.rule_id, "rule-budget-90");
+        assert_eq!(ctx.rule_name, "Budget threshold > 90%");
+        assert_eq!(ctx.dedup_occurrence_count, 1);
+        assert!(
+            ctx.dedup_window_expires_at.is_none(),
+            "dedup expiry seeded by 1626 only"
+        );
+        assert_eq!(ctx.destination_ids, vec!["slack-ops".to_string()]);
+        assert_eq!(ctx.routing_log.len(), 1);
+    }
+
+    #[test]
+    fn get_by_id_returns_none_for_unknown_rule_alert_id() {
+        let store = InMemoryAlertStore::new();
+        store.record_rule_alert(&test_rule_seed());
+        assert!(store.get_by_id("00000000000000000000000000").is_none());
+    }
+
+    #[test]
     fn legacy_alert_constructors_default_rule_context_to_none() {
         let store = InMemoryAlertStore::new();
         let budget_id = store.record(&test_alert(80));
         let secret_id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
 
-        let budget = store.get(&budget_id).expect("budget alert");
-        let secret = store.get(&secret_id).expect("secret alert");
+        let budget = store.get_by_id(&budget_id).expect("budget alert");
+        let secret = store.get_by_id(&secret_id).expect("secret alert");
 
         for stored in [&budget, &secret] {
             assert!(
@@ -456,7 +532,7 @@ mod tests {
         assert_eq!(suppressed.prior_status.as_deref(), Some("unresolved"));
         assert!(suppressed.updated_at.is_some());
 
-        let from_store = store.get(&id).unwrap();
+        let from_store = store.get_by_id(&id).unwrap();
         assert_eq!(from_store.status, "suppressed");
         assert_eq!(from_store.prior_status.as_deref(), Some("unresolved"));
     }

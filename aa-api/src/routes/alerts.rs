@@ -125,7 +125,7 @@ pub async fn get_alert(
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
-    let stored = state.alert_store.get(&id).ok_or_else(|| {
+    let stored = state.alert_store.get_by_id(&id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
     })?;
 
