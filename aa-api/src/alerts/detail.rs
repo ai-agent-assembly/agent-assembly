@@ -4,8 +4,36 @@
 //! spec — rule snapshot at fire time, routing-log entries written by the
 //! connector framework, and active silence records.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+/// Snapshot of the rule definition at the moment the alert fired.
+///
+/// Recording the rule inline keeps alert detail self-contained — operators
+/// see the exact thresholds and windows that triggered the fire, even if
+/// the underlying rule has since been edited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct RuleSnapshot {
+    /// Metric the rule evaluates (e.g. `"budget_spent_pct"`).
+    pub metric: String,
+    /// Comparison operator (`">"`, `"<"`, `">="`, etc.).
+    pub operator: String,
+    /// Numeric threshold the metric is compared against.
+    pub threshold: f64,
+    /// Window over which the metric is aggregated before evaluation.
+    pub evaluation_window_seconds: u32,
+    /// Severity level emitted when the rule fires (e.g. `"CRITICAL"`).
+    pub severity: String,
+    /// Window during which subsequent fires are deduplicated. `0`
+    /// disables deduplication.
+    pub dedup_window_seconds: u32,
+    /// Label selectors used to suppress otherwise-matching alerts. The
+    /// `BTreeMap` ordering keeps OpenAPI examples deterministic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub suppression_labels: BTreeMap<String, String>,
+}
 
 /// One delivery attempt by the connector framework for a routed alert.
 ///
@@ -42,6 +70,44 @@ pub struct Silence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_snapshot_round_trips_with_suppression_labels() {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        labels.insert("region".to_string(), "us-west".to_string());
+
+        let snapshot = RuleSnapshot {
+            metric: "budget_spent_pct".to_string(),
+            operator: ">".to_string(),
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: "CRITICAL".to_string(),
+            dedup_window_seconds: 600,
+            suppression_labels: labels,
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let parsed: RuleSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, snapshot);
+    }
+
+    #[test]
+    fn rule_snapshot_omits_empty_suppression_labels() {
+        let snapshot = RuleSnapshot {
+            metric: "p95_latency_ms".to_string(),
+            operator: ">".to_string(),
+            threshold: 250.0,
+            evaluation_window_seconds: 60,
+            severity: "HIGH".to_string(),
+            dedup_window_seconds: 0,
+            suppression_labels: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(
+            !json.contains("suppression_labels"),
+            "empty suppression_labels must be omitted from JSON",
+        );
+    }
 
     #[test]
     fn routing_log_entry_round_trips() {
