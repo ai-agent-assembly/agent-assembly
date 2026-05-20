@@ -6,6 +6,7 @@
 
 pub mod capture;
 pub mod detail;
+pub mod silence;
 pub mod store;
 
 use aa_gateway::alerts::SecretAlert;
