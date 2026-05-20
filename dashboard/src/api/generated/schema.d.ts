@@ -350,8 +350,10 @@ export interface paths {
         };
         /**
          * `GET /api/v1/alerts/:id` — fetch one governance alert by ID.
-         * @description Returns 404 with an RFC 7807 problem detail if the alert is unknown
-         *     or has been evicted from the in-memory ring buffer.
+         * @description Returns the rich [`AlertDetailResponse`] shape — rule snapshot,
+         *     routing log, silence, dedup state, plus the legacy budget/secret
+         *     alert fields. Returns 404 with an RFC 7807 problem detail if the
+         *     alert is unknown or has been evicted from the in-memory ring buffer.
          */
         get: operations["get_alert"];
         put?: never;
@@ -1287,6 +1289,78 @@ export interface components {
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
         };
+        /**
+         * @description Rich alert detail response used by `GET /api/v1/alerts/:id`.
+         *
+         *     Carries the rule-engine context defined in AAASM-1385 (rule snapshot,
+         *     routing log, silence, dedup state) alongside the legacy budget/secret
+         *     alert fields for backward compatibility. Rule-engine fields serialize
+         *     as `null` / empty when the underlying `StoredAlert` lacks a
+         *     `rule_context` (i.e. it was a budget or secret-detection alert).
+         */
+        AlertDetailResponse: {
+            /** @description Agent ID that triggered the alert. `null` for org-scope alerts. */
+            agent_id?: string | null;
+            /** @description Alert category — `"budget"`, `"secret_detected"`, or `"rule"`. */
+            category: string;
+            /**
+             * Format: int32
+             * @description Number of times this alert has matched within the active dedup
+             *     window. Always `1` for legacy alerts.
+             */
+            dedup_occurrence_count: number;
+            /** @description Timestamp when the active dedup window ends, or `null`. */
+            dedup_window_expires_at?: string | null;
+            /** @description Destinations the rule routes to. Empty for legacy alerts. */
+            destination_ids: string[];
+            /** @description Primary detected credential kind for `secret_detected` alerts. */
+            detected_pattern_type?: string | null;
+            /**
+             * @description Free-form payload of the triggering event. `null` for legacy
+             *     alerts.
+             */
+            event_payload: unknown;
+            /** @description ISO 8601 timestamp of the first fire. */
+            first_fired_at: string;
+            /** @description Unique alert identifier. */
+            id: string;
+            /** @description Human-readable alert message. */
+            message: string;
+            /** @description `[REDACTED:<Kind>]` label for `secret_detected` alerts. */
+            redacted_value?: string | null;
+            /**
+             * @description ISO 8601 timestamp at which the alert was resolved, or `null`
+             *     while firing.
+             */
+            resolved_at?: string | null;
+            /** @description Connector-framework delivery log. Empty for legacy alerts. */
+            routing_log: components["schemas"]["RoutingLogEntry"][];
+            /**
+             * @description Identifier of the rule that produced the alert, or `null` for
+             *     legacy budget/secret alerts.
+             */
+            rule_id?: string | null;
+            /** @description Human-readable rule name, or `null` for legacy alerts. */
+            rule_name?: string | null;
+            rule_snapshot?: null | components["schemas"]["RuleSnapshot"];
+            /** @description Alert severity level (`info` / `warning` / `critical`). */
+            severity: string;
+            silence?: null | components["schemas"]["Silence"];
+            /**
+             * @description Lifecycle status — `"unresolved"` on capture, flipped to
+             *     `"resolved"` once `POST /alerts/:id/resolve` has fired.
+             */
+            status: string;
+            /** @description Team attribution. `null` when not scoped to a team. */
+            team_id?: string | null;
+            /**
+             * @description ISO 8601 timestamp when the alert was captured (mirrors
+             *     `first_fired_at` for legacy alerts).
+             */
+            timestamp: string;
+            /** @description ISO 8601 timestamp of the last mutation. `null` pre-resolve. */
+            updated_at?: string | null;
+        };
         /** @description JSON representation of a governance alert. */
         AlertResponse: {
             /** @description Agent ID that triggered the alert (if applicable). */
@@ -2173,6 +2247,27 @@ export interface components {
             /** @description Role the request was routed or escalated to. */
             to_role: string;
         };
+        /**
+         * @description One delivery attempt by the connector framework for a routed alert.
+         *
+         *     Each entry records the outcome of fanning an alert out to a configured
+         *     destination — Slack, PagerDuty, webhook, etc. The framework appends a
+         *     new entry per attempt; dedup-suppressed re-fires must NOT add entries.
+         */
+        RoutingLogEntry: {
+            /**
+             * @description ISO 8601 timestamp at which the connector framework completed
+             *     the delivery attempt.
+             */
+            delivered_at: string;
+            /** @description Identifier of the destination the alert was routed to. */
+            destination_id: string;
+            /**
+             * @description Outcome label — typically `"ok"`, `"error"`, or a connector-
+             *     specific status string.
+             */
+            status: string;
+        };
         /** @description Structured routing metadata set by the approval router. */
         RoutingStatusInfo: {
             /**
@@ -2193,6 +2288,44 @@ export interface components {
             target_role?: string | null;
             /** @description Team the request was routed to, if known. */
             target_team_id?: string | null;
+        };
+        /**
+         * @description Snapshot of the rule definition at the moment the alert fired.
+         *
+         *     Recording the rule inline keeps alert detail self-contained — operators
+         *     see the exact thresholds and windows that triggered the fire, even if
+         *     the underlying rule has since been edited.
+         */
+        RuleSnapshot: {
+            /**
+             * Format: int32
+             * @description Window during which subsequent fires are deduplicated. `0`
+             *     disables deduplication.
+             */
+            dedup_window_seconds: number;
+            /**
+             * Format: int32
+             * @description Window over which the metric is aggregated before evaluation.
+             */
+            evaluation_window_seconds: number;
+            /** @description Metric the rule evaluates (e.g. `"budget_spent_pct"`). */
+            metric: string;
+            /** @description Comparison operator (`">"`, `"<"`, `">="`, etc.). */
+            operator: string;
+            /** @description Severity level emitted when the rule fires (e.g. `"CRITICAL"`). */
+            severity: string;
+            /**
+             * @description Label selectors used to suppress otherwise-matching alerts. The
+             *     `BTreeMap` ordering keeps OpenAPI examples deterministic.
+             */
+            suppression_labels?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: double
+             * @description Numeric threshold the metric is compared against.
+             */
+            threshold: number;
         };
         /**
          * @description A representative call sample shown alongside the matrix to explain the
@@ -2218,6 +2351,20 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /**
+         * @description Active silence record attached to an alert.
+         *
+         *     Present when an operator has acknowledged the alert and asked the
+         *     notification framework to suppress further routing until `expires_at`.
+         */
+        Silence: {
+            /** @description ISO 8601 timestamp at which the silence expires. */
+            expires_at: string;
+            /** @description Stable identifier of the silence record. */
+            id: string;
+            /** @description Optional free-text reason captured at silence creation time. */
+            reason?: string | null;
+        };
         /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
         SubtreeBurnResponse: {
             /** @description Hex-encoded root agent ID. */
@@ -3306,7 +3453,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlertResponse"];
+                    "application/json": components["schemas"]["AlertDetailResponse"];
                 };
             };
             /** @description Alert not found */

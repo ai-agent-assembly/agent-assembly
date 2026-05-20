@@ -6,6 +6,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::alerts::detail::{RoutingLogEntry, RuleSnapshot, Silence};
 use crate::alerts::StoredAlert;
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
@@ -25,6 +26,136 @@ pub fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
         agent_id: Some(a.agent_id),
         team_id: a.team_id,
         status: a.status,
+        updated_at: a.updated_at,
+        detected_pattern_type: a.detected_pattern_type,
+        redacted_value: a.redacted_value,
+    }
+}
+
+/// Rich alert detail response used by `GET /api/v1/alerts/:id`.
+///
+/// Carries the rule-engine context defined in AAASM-1385 (rule snapshot,
+/// routing log, silence, dedup state) alongside the legacy budget/secret
+/// alert fields for backward compatibility. Rule-engine fields serialize
+/// as `null` / empty when the underlying `StoredAlert` lacks a
+/// `rule_context` (i.e. it was a budget or secret-detection alert).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AlertDetailResponse {
+    /// Unique alert identifier.
+    pub id: String,
+    /// Identifier of the rule that produced the alert, or `null` for
+    /// legacy budget/secret alerts.
+    pub rule_id: Option<String>,
+    /// Human-readable rule name, or `null` for legacy alerts.
+    pub rule_name: Option<String>,
+    /// Rule snapshot at fire time. `null` for legacy alerts.
+    pub rule_snapshot: Option<RuleSnapshot>,
+    /// Alert severity level (`info` / `warning` / `critical`).
+    pub severity: String,
+    /// Lifecycle status — `"unresolved"` on capture, flipped to
+    /// `"resolved"` once `POST /alerts/:id/resolve` has fired.
+    pub status: String,
+    /// Agent ID that triggered the alert. `null` for org-scope alerts.
+    pub agent_id: Option<String>,
+    /// Team attribution. `null` when not scoped to a team.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// ISO 8601 timestamp of the first fire.
+    pub first_fired_at: String,
+    /// ISO 8601 timestamp at which the alert was resolved, or `null`
+    /// while firing.
+    pub resolved_at: Option<String>,
+    /// Destinations the rule routes to. Empty for legacy alerts.
+    pub destination_ids: Vec<String>,
+    /// Free-form payload of the triggering event. `null` for legacy
+    /// alerts.
+    pub event_payload: serde_json::Value,
+    /// Connector-framework delivery log. Empty for legacy alerts.
+    pub routing_log: Vec<RoutingLogEntry>,
+    /// Active silence record, or `null`.
+    pub silence: Option<Silence>,
+    /// Number of times this alert has matched within the active dedup
+    /// window. Always `1` for legacy alerts.
+    pub dedup_occurrence_count: u32,
+    /// Timestamp when the active dedup window ends, or `null`.
+    pub dedup_window_expires_at: Option<String>,
+    // ------------------------------------------------------------
+    // Backward-compatibility passthrough fields from AlertResponse.
+    // ------------------------------------------------------------
+    /// Alert category — `"budget"`, `"secret_detected"`, or `"rule"`.
+    pub category: String,
+    /// Human-readable alert message.
+    pub message: String,
+    /// ISO 8601 timestamp when the alert was captured (mirrors
+    /// `first_fired_at` for legacy alerts).
+    pub timestamp: String,
+    /// ISO 8601 timestamp of the last mutation. `null` pre-resolve.
+    pub updated_at: Option<String>,
+    /// Primary detected credential kind for `secret_detected` alerts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_pattern_type: Option<String>,
+    /// `[REDACTED:<Kind>]` label for `secret_detected` alerts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted_value: Option<String>,
+}
+
+/// Convert a `StoredAlert` into the rich `AlertDetailResponse`.
+fn alert_detail_from_stored(a: StoredAlert) -> AlertDetailResponse {
+    let (
+        rule_id,
+        rule_name,
+        rule_snapshot,
+        destination_ids,
+        event_payload,
+        routing_log,
+        silence,
+        dedup_count,
+        dedup_expires,
+    ) = match a.rule_context {
+        Some(ctx) => (
+            Some(ctx.rule_id),
+            Some(ctx.rule_name),
+            Some(ctx.rule_snapshot),
+            ctx.destination_ids,
+            ctx.event_payload,
+            ctx.routing_log,
+            ctx.silence,
+            ctx.dedup_occurrence_count,
+            ctx.dedup_window_expires_at,
+        ),
+        None => (
+            None,
+            None,
+            None,
+            Vec::new(),
+            serde_json::Value::Null,
+            Vec::new(),
+            None,
+            1,
+            None,
+        ),
+    };
+
+    AlertDetailResponse {
+        id: a.id.to_string(),
+        rule_id,
+        rule_name,
+        rule_snapshot,
+        severity: a.severity.to_string(),
+        status: a.status,
+        agent_id: if a.agent_id.is_empty() { None } else { Some(a.agent_id) },
+        team_id: a.team_id,
+        first_fired_at: a.first_fired_at,
+        resolved_at: a.resolved_at,
+        destination_ids,
+        event_payload,
+        routing_log,
+        silence,
+        dedup_occurrence_count: dedup_count,
+        dedup_window_expires_at: dedup_expires,
+        category: a.category.to_string(),
+        message: a.message,
+        timestamp: a.timestamp,
         updated_at: a.updated_at,
         detected_pattern_type: a.detected_pattern_type,
         redacted_value: a.redacted_value,
@@ -112,14 +243,16 @@ pub async fn list_alerts(
 
 /// `GET /api/v1/alerts/:id` — fetch one governance alert by ID.
 ///
-/// Returns 404 with an RFC 7807 problem detail if the alert is unknown
-/// or has been evicted from the in-memory ring buffer.
+/// Returns the rich [`AlertDetailResponse`] shape — rule snapshot,
+/// routing log, silence, dedup state, plus the legacy budget/secret
+/// alert fields. Returns 404 with an RFC 7807 problem detail if the
+/// alert is unknown or has been evicted from the in-memory ring buffer.
 #[utoipa::path(
     get,
     path = "/api/v1/alerts/{id}",
     params(("id" = String, Path, description = "ULID alert identifier (26 chars)")),
     responses(
-        (status = 200, description = "Alert detail", body = AlertResponse),
+        (status = 200, description = "Alert detail", body = AlertDetailResponse),
         (status = 404, description = "Alert not found")
     ),
     tag = "alerts"
@@ -127,12 +260,12 @@ pub async fn list_alerts(
 pub async fn get_alert(
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+) -> Result<(StatusCode, Json<AlertDetailResponse>), ProblemDetail> {
     let stored = state.alert_store.get_by_id(&id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
     })?;
 
-    Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
+    Ok((StatusCode::OK, Json(alert_detail_from_stored(stored))))
 }
 
 /// `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
