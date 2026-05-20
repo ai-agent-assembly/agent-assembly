@@ -343,4 +343,15 @@ mod tests {
         assert!(matches!(err, AlertRuleValidationError::InvalidName { .. }));
         assert_eq!(err.error_code(), "invalid_name");
     }
+
+    #[test]
+    fn name_over_128_chars_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            name: "x".repeat(129),
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("long name must fail");
+        assert!(matches!(err, AlertRuleValidationError::InvalidName { .. }));
+    }
 }
