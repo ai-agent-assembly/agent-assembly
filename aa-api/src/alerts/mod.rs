@@ -6,11 +6,16 @@
 
 pub mod capture;
 pub mod detail;
+pub mod event;
+pub mod silence;
 pub mod store;
+
+pub use event::AlertEvent;
 
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
+use tokio::sync::broadcast;
 
 use crate::alerts::detail::RuleContext;
 
@@ -41,8 +46,16 @@ pub struct StoredAlert {
     /// Configured daily limit in USD.
     pub limit_usd: f64,
     /// Lifecycle status — `"unresolved"` on capture, flipped to
-    /// `"resolved"` once `AlertStore::resolve` is called.
+    /// `"resolved"` once `AlertStore::resolve` is called, or
+    /// `"suppressed"` while an active silence covers the alert
+    /// (AAASM-1645).
     pub status: String,
+    /// Status the alert held immediately before being suppressed
+    /// (AAASM-1645). Populated only while `status == "suppressed"`;
+    /// the expiry watcher reads it to know whether to restore the
+    /// alert to `"unresolved"` or `"resolved"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior_status: Option<String>,
     /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
     /// while the alert is still in its initial captured state.
     pub updated_at: Option<String>,
@@ -171,6 +184,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         spent_usd: 0.0,
         limit_usd: 0.0,
         status: "unresolved".to_string(),
+        prior_status: None,
         updated_at: None,
         detected_pattern_type: Some(kind.as_str().to_string()),
         redacted_value: Some(alert.redacted_label()),
@@ -194,6 +208,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
         status: "unresolved".to_string(),
+        prior_status: None,
         updated_at: None,
         detected_pattern_type: None,
         redacted_value: None,
@@ -230,4 +245,40 @@ pub trait AlertStore: Send + Sync {
     /// record and does not bump `updated_at`. `_reason` is accepted for
     /// API parity but the in-memory store does not persist it.
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert>;
+
+    /// Subscribe to the lifecycle event bus. Each mutation
+    /// (`record`/`record_secret` → `Fire`, `resolve` → `Resolve`,
+    /// `suppress` → `Silence`) publishes one [`AlertEvent`] carrying
+    /// a snapshot of the post-mutation alert. Implementations that
+    /// don't emit events should still return a live receiver.
+    fn subscribe(&self) -> broadcast::Receiver<AlertEvent>;
+
+    /// Suppress an alert — flip its status to `"suppressed"` and capture
+    /// the prior status in `prior_status` so the silence-expiry watcher
+    /// can restore it later.
+    ///
+    /// Returns the post-mutation record on success, or `None` when:
+    /// * the ID is unknown or evicted from the ring buffer, **or**
+    /// * the alert is already `"suppressed"` (defensive — the route
+    ///   handler is expected to catch double-suppression at the
+    ///   `SilenceStore` layer and return 409 `alert_already_silenced`
+    ///   before reaching this method).
+    ///
+    /// On success an `AlertEvent::Silence(snapshot)` is published on the
+    /// bus.
+    fn suppress(&self, id: &str) -> Option<StoredAlert>;
+
+    /// Restore a previously-suppressed alert to its `prior_status`.
+    /// Called by the silence-expiry watcher (AAASM-1646) when a silence
+    /// window ends, or by an explicit DELETE silence path.
+    ///
+    /// Returns the post-mutation record on success, or `None` when:
+    /// * the ID is unknown or evicted, **or**
+    /// * the alert is not currently `"suppressed"` (nothing to restore).
+    ///
+    /// If `prior_status` is missing (shouldn't happen, but defensive),
+    /// the alert is restored to `"unresolved"`. The expiry watcher
+    /// composes the appropriate bus event itself based on the restored
+    /// status; this method publishes no event.
+    fn restore(&self, id: &str) -> Option<StoredAlert>;
 }

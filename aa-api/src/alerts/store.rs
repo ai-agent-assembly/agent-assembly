@@ -5,9 +5,16 @@ use std::sync::{Mutex, RwLock};
 
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
+use tokio::sync::broadcast;
 use ulid::Generator;
 
-use super::{stored_alert_from, stored_secret_alert_from, AlertStore, StoredAlert};
+use super::{stored_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, StoredAlert};
+
+/// Capacity of the per-store `tokio::broadcast` channel used for the
+/// `AlertEvent` lifecycle bus. Subscribers that lag past this many
+/// pending events get a `RecvError::Lagged` and must reconcile state
+/// from the store directly.
+const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Default maximum number of alerts retained in the ring buffer.
 const DEFAULT_CAPACITY: usize = 10_000;
@@ -23,6 +30,10 @@ pub struct InMemoryAlertStore {
     /// the random portion within a single millisecond so IDs sort by
     /// insertion order even at sub-millisecond record rates.
     id_gen: Mutex<Generator>,
+    /// Lifecycle event sender. Retained on `self` so the bus stays open
+    /// even when no subscriber is currently attached — late subscribers
+    /// receive events from the moment of their `subscribe()` call.
+    event_tx: broadcast::Sender<AlertEvent>,
 }
 
 impl InMemoryAlertStore {
@@ -33,10 +44,12 @@ impl InMemoryAlertStore {
 
     /// Create a new store with the given maximum capacity.
     pub fn with_capacity(capacity: usize) -> Self {
+        let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             alerts: RwLock::new(VecDeque::with_capacity(capacity.min(DEFAULT_CAPACITY))),
             capacity,
             id_gen: Mutex::new(Generator::new()),
+            event_tx,
         }
     }
 
@@ -62,11 +75,15 @@ impl AlertStore for InMemoryAlertStore {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let stored = stored_alert_from(alert, id.clone(), timestamp);
 
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
         }
-        buf.push_back(stored);
+        // Best-effort publish; ignore `SendError` when no subscriber is attached.
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
     }
 
@@ -75,11 +92,14 @@ impl AlertStore for InMemoryAlertStore {
         let timestamp = chrono::Utc::now().to_rfc3339();
         let stored = stored_secret_alert_from(alert, id.clone(), timestamp);
 
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
         }
-        buf.push_back(stored);
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
     }
 
@@ -99,15 +119,55 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
+        let (snapshot, was_mutation) = {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let alert = buf.iter_mut().find(|a| a.id == id)?;
+            // Idempotent: don't bump timestamps on subsequent resolves.
+            let mutated = alert.status != "resolved";
+            if mutated {
+                let now = chrono::Utc::now().to_rfc3339();
+                alert.status = "resolved".to_string();
+                alert.updated_at = Some(now.clone());
+                alert.resolved_at = Some(now);
+            }
+            (alert.clone(), mutated)
+        };
+        if was_mutation {
+            let _ = self.event_tx.send(AlertEvent::Resolve(snapshot.clone()));
+        }
+        Some(snapshot)
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AlertEvent> {
+        self.event_tx.subscribe()
+    }
+
+    fn suppress(&self, id: &str) -> Option<StoredAlert> {
+        let snapshot = {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let alert = buf.iter_mut().find(|a| a.id == id)?;
+            if alert.status == "suppressed" {
+                // Defensive: refuse to overwrite an existing prior_status.
+                return None;
+            }
+            alert.prior_status = Some(alert.status.clone());
+            alert.status = "suppressed".to_string();
+            alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            alert.clone()
+        };
+        let _ = self.event_tx.send(AlertEvent::Silence(snapshot.clone()));
+        Some(snapshot)
+    }
+
+    fn restore(&self, id: &str) -> Option<StoredAlert> {
         let mut buf = self.alerts.write().expect("alert store lock poisoned");
         let alert = buf.iter_mut().find(|a| a.id == id)?;
-        // Idempotent: don't bump timestamps on subsequent resolves.
-        if alert.status != "resolved" {
-            let now = chrono::Utc::now().to_rfc3339();
-            alert.status = "resolved".to_string();
-            alert.updated_at = Some(now.clone());
-            alert.resolved_at = Some(now);
+        if alert.status != "suppressed" {
+            return None; // not currently under a silence
         }
+        let prior = alert.prior_status.take().unwrap_or_else(|| "unresolved".to_string());
+        alert.status = prior;
+        alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
         Some(alert.clone())
     }
 }
@@ -353,5 +413,132 @@ mod tests {
         let secret_id = store.record_secret(&test_secret_alert(CredentialKind::OpenAiKey));
         assert_ne!(budget_id, secret_id);
         assert!(budget_id < secret_id, "ULIDs sort by timestamp");
+    }
+
+    // ─── AlertEvent bus (AAASM-1645) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn subscribe_receives_fire_on_record() {
+        let store = InMemoryAlertStore::new();
+        let mut rx = store.subscribe();
+        let id = store.record(&test_alert(80));
+        match rx.recv().await.expect("event must arrive") {
+            AlertEvent::Fire(stored) => assert_eq!(stored.id, id),
+            other => panic!("expected Fire, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_receives_resolve_only_on_state_change() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        let mut rx = store.subscribe();
+        store.resolve(&id, None).unwrap();
+        match rx.recv().await.expect("first resolve emits") {
+            AlertEvent::Resolve(stored) => assert_eq!(stored.status, "resolved"),
+            other => panic!("expected Resolve, got {other:?}"),
+        }
+        // Second (idempotent) resolve must not emit a second event.
+        store.resolve(&id, None).unwrap();
+        let res = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(res.is_err(), "no event should arrive on idempotent re-resolve");
+    }
+
+    // ─── suppress / restore (AAASM-1645) ─────────────────────────────────────
+
+    #[test]
+    fn suppress_flips_status_and_saves_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+
+        let suppressed = store.suppress(&id).expect("suppress must succeed");
+        assert_eq!(suppressed.status, "suppressed");
+        assert_eq!(suppressed.prior_status.as_deref(), Some("unresolved"));
+        assert!(suppressed.updated_at.is_some());
+
+        let from_store = store.get(&id).unwrap();
+        assert_eq!(from_store.status, "suppressed");
+        assert_eq!(from_store.prior_status.as_deref(), Some("unresolved"));
+    }
+
+    #[test]
+    fn suppress_preserves_resolved_as_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        store.resolve(&id, None).unwrap();
+
+        let suppressed = store.suppress(&id).expect("suppress must succeed");
+        assert_eq!(suppressed.status, "suppressed");
+        assert_eq!(suppressed.prior_status.as_deref(), Some("resolved"));
+    }
+
+    #[test]
+    fn suppress_returns_none_for_unknown_id() {
+        let store = InMemoryAlertStore::new();
+        store.record(&test_alert(80));
+        assert!(store.suppress("00000000000000000000000000").is_none());
+    }
+
+    #[test]
+    fn suppress_returns_none_when_already_suppressed() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        store.suppress(&id).expect("first suppress succeeds");
+
+        // Second suppress must refuse so prior_status isn't overwritten.
+        assert!(store.suppress(&id).is_none(), "double-suppress must return None");
+    }
+
+    #[tokio::test]
+    async fn suppress_publishes_silence_event() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        let mut rx = store.subscribe();
+        store.suppress(&id).unwrap();
+        match rx.recv().await.expect("silence event must arrive") {
+            AlertEvent::Silence(stored) => {
+                assert_eq!(stored.id, id);
+                assert_eq!(stored.status, "suppressed");
+                assert_eq!(stored.prior_status.as_deref(), Some("unresolved"));
+            }
+            other => panic!("expected Silence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restore_returns_alert_to_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        store.suppress(&id).unwrap();
+
+        let restored = store.restore(&id).expect("restore must succeed");
+        assert_eq!(restored.status, "unresolved");
+        assert!(restored.prior_status.is_none(), "prior_status must be cleared");
+    }
+
+    #[test]
+    fn restore_returns_to_resolved_when_that_was_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        store.resolve(&id, None).unwrap();
+        store.suppress(&id).unwrap();
+
+        let restored = store.restore(&id).unwrap();
+        assert_eq!(restored.status, "resolved");
+        assert!(restored.prior_status.is_none());
+    }
+
+    #[test]
+    fn restore_returns_none_when_not_suppressed() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        // Alert is "unresolved", not "suppressed" — restore must refuse.
+        assert!(store.restore(&id).is_none());
+    }
+
+    #[test]
+    fn restore_returns_none_for_unknown_id() {
+        let store = InMemoryAlertStore::new();
+        assert!(store.restore("00000000000000000000000000").is_none());
     }
 }
