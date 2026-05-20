@@ -4,6 +4,9 @@
 //! [`InMemoryAlertRuleStore`] — a persisted store (e.g. SQLite) is
 //! deferred per the Story's acceptance criteria.
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use super::types::AlertRule;
 
 /// Errors surfaced from [`AlertRuleStore`] mutations.
@@ -78,4 +81,66 @@ pub trait AlertRuleStore: Send + Sync {
     /// [`AlertRuleStoreError::NameConflict`] before re-inserting on
     /// PUT requests that change the name.
     fn find_by_name(&self, name: &str) -> Option<AlertRule>;
+}
+
+/// Thread-safe in-memory [`AlertRuleStore`].
+///
+/// Backed by an `RwLock<HashMap<id, AlertRule>>`. Suitable for
+/// development and tests; a durable backend (e.g. SQLite) is tracked
+/// as a follow-up under AAASM-1386.
+pub struct InMemoryAlertRuleStore {
+    rules: RwLock<HashMap<String, AlertRule>>,
+}
+
+impl InMemoryAlertRuleStore {
+    /// Create an empty store.
+    pub fn new() -> Self {
+        Self {
+            rules: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for InMemoryAlertRuleStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AlertRuleStore for InMemoryAlertRuleStore {
+    fn create(&self, mut rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
+        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+
+        if rules.values().any(|r| r.name == rule.name) {
+            return Err(AlertRuleStoreError::NameConflict { name: rule.name });
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        rule.id = id.clone();
+        rule.created_at = now.clone();
+        rule.updated_at = now;
+        rules.insert(id, rule.clone());
+        Ok(rule)
+    }
+
+    fn get(&self, _id: &str) -> Option<AlertRule> {
+        unimplemented!("AAASM-1616: get lands next")
+    }
+
+    fn list(&self, _enabled_filter: Option<bool>) -> Vec<AlertRule> {
+        unimplemented!("AAASM-1616: list lands next")
+    }
+
+    fn update(&self, _id: &str, _rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
+        unimplemented!("AAASM-1616: update lands next")
+    }
+
+    fn delete(&self, _id: &str) -> bool {
+        unimplemented!("AAASM-1616: delete lands next")
+    }
+
+    fn find_by_name(&self, _name: &str) -> Option<AlertRule> {
+        unimplemented!("AAASM-1616: find_by_name lands next")
+    }
 }
