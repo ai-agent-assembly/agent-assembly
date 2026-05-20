@@ -2913,8 +2913,10 @@ components:
       type: string
       description: Lifecycle state of a registered in-flight operation.
       enum:
+      - pending
       - running
       - paused
+      - completing
       - terminated
     OverrideRecord:
       type: object
