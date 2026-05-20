@@ -224,6 +224,25 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
     }
 }
 
+/// Outcome of `AlertStore::dedup_or_record_rule_alert`.
+///
+/// `Created` is returned when a new alert was inserted (either no
+/// matching dedup window was active, or the rule has dedup disabled).
+/// `Deduped` is returned when the seed matched an existing alert's
+/// active window; the existing alert's `dedup_occurrence_count` is
+/// incremented in place and its `routing_log` is left untouched —
+/// i.e. the connector framework will NOT re-route the alert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedupOutcome {
+    /// A new alert was inserted.
+    Created,
+    /// The seed matched an existing alert within an active dedup window.
+    Deduped {
+        /// ID of the existing alert that absorbed this fire.
+        existing_id: u64,
+    },
+}
+
 /// Input payload for `AlertStore::record_rule_alert`.
 ///
 /// Carries everything the store needs to build a `StoredAlert` with
