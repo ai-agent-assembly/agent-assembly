@@ -280,3 +280,55 @@ fn threshold_range_violation(metric: RuleMetric, value: f64) -> Option<String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Minimal in-test destination registry. The real seeded
+    /// implementation ships under AAASM-1617.
+    struct TestRegistry {
+        ids: HashSet<String>,
+    }
+
+    impl TestRegistry {
+        fn with(ids: &[&str]) -> Self {
+            Self {
+                ids: ids.iter().map(|s| (*s).to_string()).collect(),
+            }
+        }
+    }
+
+    impl DestinationRegistryLookup for TestRegistry {
+        fn contains(&self, id: &str) -> bool {
+            self.ids.contains(id)
+        }
+    }
+
+    fn valid_rule() -> AlertRule {
+        AlertRule {
+            id: "01HX0000000000000000000000".to_string(),
+            name: "Budget > 90%".to_string(),
+            description: "Fire CRITICAL when budget spend exceeds 90% over 5m".to_string(),
+            metric: RuleMetric::BudgetSpentPct,
+            operator: RuleOperator::Gt,
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: RuleSeverity::Critical,
+            destination_ids: vec!["slack-ops".to_string()],
+            dedup_window_seconds: 600,
+            suppression_labels: HashMap::new(),
+            enabled: true,
+            created_at: "2026-05-13T09:00:00Z".to_string(),
+            updated_at: "2026-05-13T09:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn valid_rule_passes_validation() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = valid_rule();
+        assert_eq!(rule.validate(&registry), Ok(()));
+    }
+}
