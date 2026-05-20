@@ -15,6 +15,8 @@ use aa_gateway::registry::AgentRegistry;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::alerts::rules::destinations::DestinationRegistry;
+use crate::alerts::rules::store::AlertRuleStore;
 use crate::alerts::AlertStore;
 use crate::auth::api_key::ApiKeyStore;
 use crate::auth::config::AuthConfig;
@@ -86,4 +88,8 @@ pub struct AppState {
     pub iam_api_key_store: Arc<IamApiKeyStore>,
     /// In-flight operation lifecycle registry (AAASM-1525).
     pub ops_registry: Arc<OpsRegistry>,
+    /// Alert-rule CRUD store (AAASM-1386).
+    pub alert_rule_store: Arc<dyn AlertRuleStore>,
+    /// Allow-set of destinations alert rules may target (AAASM-1386).
+    pub destination_registry: Arc<DestinationRegistry>,
 }

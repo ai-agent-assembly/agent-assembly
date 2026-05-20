@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::Instant;
 
+use aa_api::alerts::rules::destinations::DestinationRegistry;
+use aa_api::alerts::rules::store::InMemoryAlertRuleStore;
 use aa_api::alerts::store::InMemoryAlertStore;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
@@ -161,6 +163,8 @@ spec:
         capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
+        alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
+        destination_registry: Arc::new(DestinationRegistry::seeded()),
     }
 }
 
