@@ -2064,6 +2064,17 @@ export interface components {
         ProblemDetail: {
             /** @description Human-readable explanation specific to this occurrence. */
             detail?: string | null;
+            /**
+             * @description Stable machine-readable error code (e.g. `"invalid_threshold"`)
+             *     for clients that need to branch on the specific failure
+             *     without parsing the human-readable `detail`. Omitted from the
+             *     wire when unset so existing endpoints stay byte-identical.
+             *
+             *     Codes are static identifiers — `&'static str` keeps the struct
+             *     small enough that handlers returning `Result<_, ProblemDetail>`
+             *     stay under clippy's `result_large_err` threshold.
+             */
+            error_code?: string | null;
             /** @description URI reference identifying the specific occurrence. */
             instance?: string | null;
             /**
