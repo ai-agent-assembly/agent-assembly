@@ -11,6 +11,7 @@ langgraph     = ["langgraph>=0.2,<0.4"]
 crewai        = ["crewai>=0.80,<1.0"]
 pydantic_ai   = ["pydantic-ai>=0.1.0,<1.0"]
 openai_agents = ["openai-agents>=1.0.0,<2.0"]
+google_adk    = ["google-adk>=1.0.0,<2.0"]
 all           = [
     "langchain>=0.3,<0.4",
     "langchain-openai>=0.2,<0.3",
@@ -18,6 +19,7 @@ all           = [
     "crewai>=0.80,<1.0",
     "pydantic-ai>=0.1.0,<1.0",
     "openai-agents>=1.0.0,<2.0",
+    "google-adk>=1.0.0,<2.0",
 ]
 runner    = ["rich>=13.0,<15.0"]
 
