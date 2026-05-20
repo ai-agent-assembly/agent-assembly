@@ -80,4 +80,10 @@ mod tests {
         assert!(registry.contains("custom-webhook"));
         assert!(!registry.contains("missing"));
     }
+
+    #[test]
+    fn seeded_registry_rejects_unknown_id() {
+        let registry = DestinationRegistry::seeded();
+        assert!(!registry.contains("does-not-exist"));
+    }
 }
