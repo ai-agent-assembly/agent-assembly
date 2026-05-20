@@ -51,13 +51,20 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
 
-# Drop the prebuilt `aasm` binary into the image PATH.
-COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
-
-# Install the AAASM Python SDK. Transitional git source; switches to
+# Install the AAASM Python SDK FIRST. The `agent-assembly` package registers
+# its own `aasm` entrypoint in [project.scripts] at `/usr/local/bin/aasm` —
+# we must install it before the Rust binary `COPY` below, otherwise pip's
+# entrypoint shadows the Rust governance CLI (which is what `aasm --version`
+# needs to invoke). See AAASM-1500. Transitional git source; switches to
 # `pip install agent-assembly` once AAASM-1202 lands.
 RUN pip install --no-cache-dir \
         'agent-assembly @ git+https://github.com/AI-agent-assembly/python-sdk.git'
+
+# Drop the prebuilt Rust `aasm` binary into the image PATH, overlaying the
+# pip-installed Python entrypoint. The Python SDK stays importable from
+# Python (`from agent_assembly import init_assembly`); only the CLI binary
+# is replaced with the Rust governance operator binary.
+COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
