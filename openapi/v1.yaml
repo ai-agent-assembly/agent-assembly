@@ -421,6 +421,155 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/AlertResponse'
+  /api/v1/alerts/destinations:
+    get:
+      tags:
+      - alert-destinations
+      summary: '`GET /api/v1/alerts/destinations` — list destinations.'
+      operationId: list_destinations
+      parameters:
+      - name: kind
+        in: query
+        description: Optional kind filter (`webhook`, `slack`, `pagerduty`, `opsgenie`).
+        required: false
+        schema:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/DestinationKind'
+      responses:
+        '200':
+          description: List of destinations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DestinationResponse'
+    post:
+      tags:
+      - alert-destinations
+      summary: '`POST /api/v1/alerts/destinations` — create a destination.'
+      operationId: create_destination
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDestinationRequest'
+        required: true
+      responses:
+        '201':
+          description: Destination created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DestinationResponse'
+        '400':
+          description: Invalid kind or config
+  /api/v1/alerts/destinations/{id}:
+    get:
+      tags:
+      - alert-destinations
+      summary: '`GET /api/v1/alerts/destinations/{id}` — fetch one destination.'
+      operationId: get_destination
+      parameters:
+      - name: id
+        in: path
+        description: Destination identifier
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Destination
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DestinationResponse'
+        '404':
+          description: Destination not found
+    put:
+      tags:
+      - alert-destinations
+      summary: '`PUT /api/v1/alerts/destinations/{id}` — update a destination.'
+      operationId: update_destination
+      parameters:
+      - name: id
+        in: path
+        description: Destination identifier
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDestinationRequest'
+        required: true
+      responses:
+        '200':
+          description: Destination updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DestinationResponse'
+        '400':
+          description: Invalid update payload
+        '404':
+          description: Destination not found
+    delete:
+      tags:
+      - alert-destinations
+      summary: '`DELETE /api/v1/alerts/destinations/{id}` — remove a destination.'
+      operationId: delete_destination
+      parameters:
+      - name: id
+        in: path
+        description: Destination identifier
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Destination removed
+        '404':
+          description: Destination not found
+        '409':
+          description: Destination still referenced by a routing rule
+  /api/v1/alerts/destinations/{id}/test:
+    post:
+      tags:
+      - alert-destinations
+      summary: '`POST /api/v1/alerts/destinations/{id}/test` — fire a test notification.'
+      operationId: test_destination
+      parameters:
+      - name: id
+        in: path
+        description: Destination identifier
+        required: true
+        schema:
+          type: string
+      requestBody:
+        description: Optional severity / message overrides
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestDestinationRequest'
+        required: true
+      responses:
+        '200':
+          description: Connector accepted the test
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestDestinationResponse'
+        '404':
+          description: Destination not found
+        '502':
+          description: Connector failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorFailedBody'
   /api/v1/alerts/{id}:
     get:
       tags:
@@ -2460,6 +2609,27 @@ components:
         spent_usd:
           type: string
           description: USD spent by this child on the given date (string-encoded Decimal).
+    ConnectorFailedBody:
+      type: object
+      description: Response body for a failed test-fire (502).
+      required:
+      - error
+      - connector_status
+      - connector_body
+      properties:
+        connector_body:
+          type: string
+          description: |-
+            Up-to-2048-byte snippet of the connector response body (or transport
+            error description if no HTTP response was reached).
+        connector_status:
+          type: integer
+          format: int32
+          description: HTTP status the connector observed, or `0` if no response was received.
+          minimum: 0
+        error:
+          type: string
+          description: Always `"connector_failed"`.
     CostSummary:
       type: object
       description: JSON representation of the cost/budget summary.
@@ -2498,6 +2668,21 @@ components:
           items:
             $ref: '#/components/schemas/TeamCostEntry'
           description: Per-team cost rollup for the current day.
+    CreateDestinationRequest:
+      allOf:
+      - $ref: '#/components/schemas/DestinationConfig'
+        description: Discriminated per-kind configuration.
+      - type: object
+        required:
+        - name
+        properties:
+          enabled:
+            type: boolean
+            description: Whether dispatch is enabled on creation (defaults to true).
+          name:
+            type: string
+            description: Operator-supplied display name.
+      description: Body for `POST /api/v1/alerts/destinations`.
     CreatePolicyRequest:
       type: object
       description: Request body for creating a new policy.
@@ -2558,6 +2743,194 @@ components:
       - approval
       - deny
       - na
+    Destination:
+      allOf:
+      - $ref: '#/components/schemas/DestinationConfig'
+        description: Discriminated per-kind configuration.
+      - type: object
+        required:
+        - id
+        - name
+        - enabled
+        - created_at
+        - updated_at
+        properties:
+          created_at:
+            type: string
+            description: RFC 3339 creation timestamp.
+          enabled:
+            type: boolean
+            description: Whether dispatch is allowed against this destination.
+          id:
+            type: string
+            description: Stable identifier, prefix `dst_` followed by 32 hex chars.
+          name:
+            type: string
+            description: Operator-supplied display name.
+          updated_at:
+            type: string
+            description: RFC 3339 last-mutation timestamp.
+      description: |-
+        A persisted notification destination.
+
+        `config` is flattened into the surrounding JSON object so the public
+        representation is `{ id, name, kind, config, enabled, created_at, updated_at }`.
+    DestinationConfig:
+      oneOf:
+      - type: object
+        description: Generic HTTP webhook.
+        required:
+        - config
+        - kind
+        properties:
+          config:
+            type: object
+            description: Generic HTTP webhook.
+            required:
+            - url
+            properties:
+              secret_header:
+                type:
+                - string
+                - 'null'
+                description: Optional secret shipped in the `X-AAASM-Token` header.
+              url:
+                type: string
+                description: Target URL (http or https).
+          kind:
+            type: string
+            enum:
+            - webhook
+      - type: object
+        description: Slack incoming webhook.
+        required:
+        - config
+        - kind
+        properties:
+          config:
+            type: object
+            description: Slack incoming webhook.
+            required:
+            - webhook_url
+            properties:
+              channel_override:
+                type:
+                - string
+                - 'null'
+                description: Optional `#channel` or `@user` override.
+              webhook_url:
+                type: string
+                description: Slack-issued incoming webhook URL.
+          kind:
+            type: string
+            enum:
+            - slack
+      - type: object
+        description: PagerDuty Events API v2.
+        required:
+        - config
+        - kind
+        properties:
+          config:
+            type: object
+            description: PagerDuty Events API v2.
+            required:
+            - routing_key
+            properties:
+              routing_key:
+                type: string
+                description: Integration routing key.
+              severity_map:
+                type:
+                - object
+                - 'null'
+                description: Optional severity-name mapping (AAASM severity → PagerDuty severity).
+                additionalProperties:
+                  type: string
+                propertyNames:
+                  type: string
+          kind:
+            type: string
+            enum:
+            - pagerduty
+      - type: object
+        description: OpsGenie REST alerts API.
+        required:
+        - config
+        - kind
+        properties:
+          config:
+            type: object
+            description: OpsGenie REST alerts API.
+            required:
+            - api_key
+            - team_id
+            properties:
+              api_key:
+                type: string
+                description: OpsGenie API key (GenieKey).
+              team_id:
+                type: string
+                description: Target team identifier.
+          kind:
+            type: string
+            enum:
+            - opsgenie
+      description: |-
+        Per-kind configuration payload for a `Destination`.
+
+        Serialised as `{ "kind": "...", "config": { ... } }` so that the API
+        surface keeps configuration fields cleanly grouped under `config`.
+    DestinationKind:
+      type: string
+      description: Kind of notification destination.
+      enum:
+      - webhook
+      - slack
+      - pagerduty
+      - opsgenie
+    DestinationResponse:
+      allOf:
+      - $ref: '#/components/schemas/DestinationConfig'
+        description: Discriminated per-kind configuration (`kind` + `config`).
+      - type: object
+        required:
+        - id
+        - name
+        - enabled
+        - created_at
+        - updated_at
+        properties:
+          created_at:
+            type: string
+            description: RFC 3339 creation timestamp.
+          enabled:
+            type: boolean
+            description: Whether dispatch is allowed.
+          id:
+            type: string
+            description: Stable identifier (`dst_<32 hex>`).
+          name:
+            type: string
+            description: Operator-supplied display name.
+          updated_at:
+            type: string
+            description: RFC 3339 last-mutation timestamp.
+      description: Public JSON shape returned by every destination handler.
+    DispatchRequest:
+      type: object
+      description: |-
+        Body of a test-fire request.
+
+        Both fields default so callers can `POST` with an empty body and still
+        get a meaningful payload at the connector.
+      properties:
+        message:
+          type: string
+          description: Human-readable message body.
+        severity:
+          type: string
+          description: Severity label propagated to the connector (e.g. `"LOW"`, `"CRITICAL"`).
     EdgeListResponse:
       type: object
       description: Paginated list of directed edges for an agent.
@@ -3497,6 +3870,39 @@ components:
         agent_count: 2
         members: []
         team_id: team-alpha
+    TestDestinationRequest:
+      type: object
+      description: Body for `POST /api/v1/alerts/destinations/{id}/test`.
+      properties:
+        message:
+          type:
+          - string
+          - 'null'
+          description: Optional message body; defaults to `"AAASM test fire"`.
+        severity:
+          type:
+          - string
+          - 'null'
+          description: Optional severity label; defaults to `"LOW"`.
+    TestDestinationResponse:
+      type: object
+      description: Response body for a successful test-fire.
+      required:
+      - delivered_at
+      - connector_response_status
+      - connector_response_body
+      properties:
+        connector_response_body:
+          type: string
+          description: Up-to-2048-byte snippet of the connector response body.
+        connector_response_status:
+          type: integer
+          format: int32
+          description: HTTP status the connector observed.
+          minimum: 0
+        delivered_at:
+          type: string
+          description: RFC 3339 timestamp when the connector reported success.
     TokenRequest:
       type: object
       description: Request body for `POST /auth/token`.
@@ -3769,6 +4175,31 @@ components:
         start_time:
           type: string
           description: Start time of the span (ISO 8601).
+    UpdateDestinationRequest:
+      allOf:
+      - oneOf:
+        - type: 'null'
+        - $ref: '#/components/schemas/DestinationConfig'
+          description: |-
+            New discriminated configuration. When supplied it fully replaces
+            the existing config and is re-validated.
+      - type: object
+        properties:
+          enabled:
+            type:
+            - boolean
+            - 'null'
+            description: New enabled flag.
+          name:
+            type:
+            - string
+            - 'null'
+            description: New display name.
+      description: |-
+        Body for `PUT /api/v1/alerts/destinations/{id}`.
+
+        All fields are optional — supplying just `enabled` toggles dispatch
+        without touching the configuration payload.
     Verb:
       type: string
       description: Verb a capability cell scopes its decision to.
@@ -3963,6 +4394,8 @@ tags:
   description: Cost and budget tracking
 - name: alerts
   description: Governance alerts
+- name: alert-destinations
+  description: Notification destinations — CRUD + test
 - name: auth
   description: Authentication and token issuance
 - name: events
