@@ -45,8 +45,8 @@ use common::TopologyTestEnv;
 /// Record one budget alert directly into the test env's alert store.
 ///
 /// `threshold_pct` drives severity: `< 75` → info, `75..=89` → warning,
-/// `>= 90` → critical. Returns the auto-incremented alert id.
-fn seed_alert(env: &TopologyTestEnv, threshold_pct: u8, agent_id: [u8; 16]) -> u64 {
+/// `>= 90` → critical. Returns the assigned ULID.
+fn seed_alert(env: &TopologyTestEnv, threshold_pct: u8, agent_id: [u8; 16]) -> String {
     let limit_usd = 10.0_f64;
     let spent_usd = limit_usd * f64::from(threshold_pct) / 100.0;
     let alert = BudgetAlert {
@@ -87,8 +87,8 @@ async fn alerts_list_returns_seeded_in_recency_order() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
     let client = reqwest::Client::new();
 
-    // Insertion order: info (id=1), warning (id=2), critical (id=3).
-    // Live contract: store returns newest-first, so critical must appear first.
+    // Insertion order: info, warning, critical. Live contract: store
+    // returns newest-first, so critical must appear first.
     seed_alert(&env, 50, [0x01; 16]); // info    — oldest
     seed_alert(&env, 80, [0x02; 16]); // warning
     let newest_id = seed_alert(&env, 95, [0x03; 16]); // critical — newest
@@ -106,7 +106,7 @@ async fn alerts_list_returns_seeded_in_recency_order() {
     assert_eq!(items.len(), 3, "all 3 seeded alerts should be present");
     assert_eq!(
         items[0]["id"].as_str(),
-        Some(newest_id.to_string().as_str()),
+        Some(newest_id.as_str()),
         "newest alert (id={newest_id}) must appear first",
     );
     assert_eq!(
@@ -165,7 +165,7 @@ async fn alerts_list_filter_by_status() {
     seed_alert(&env, 80, [0xBB; 16]); // stays open
 
     // Resolve one alert so the store holds both statuses.
-    env.alert_store.resolve(id1, None).expect("seeded alert must resolve");
+    env.alert_store.resolve(&id1, None).expect("seeded alert must resolve");
 
     let resp = client
         .get(format!("{}/api/v1/alerts?status=open", env.base_url()))
@@ -208,11 +208,7 @@ async fn alerts_inspect_returns_full_record() {
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = resp.json().await.expect("response should parse as JSON");
 
-    assert_eq!(
-        body["id"].as_str(),
-        Some(id.to_string().as_str()),
-        "id must match the seeded alert"
-    );
+    assert_eq!(body["id"].as_str(), Some(id.as_str()), "id must match the seeded alert");
     assert_eq!(
         body["severity"].as_str(),
         Some("critical"),
@@ -246,10 +242,10 @@ async fn alerts_inspect_unknown_id_returns_404() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!("{}/api/v1/alerts/999999", env.base_url()))
+        .get(format!("{}/api/v1/alerts/00000000000000000000000000", env.base_url()))
         .send()
         .await
-        .expect("GET /api/v1/alerts/999999 should reach the server");
+        .expect("GET unknown alert ULID should reach the server");
 
     assert_eq!(
         resp.status(),
@@ -351,11 +347,14 @@ async fn alerts_resolve_unknown_id_returns_404() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{}/api/v1/alerts/999999/resolve", env.base_url()))
+        .post(format!(
+            "{}/api/v1/alerts/00000000000000000000000000/resolve",
+            env.base_url()
+        ))
         .json(&serde_json::json!({"reason": "no-op"}))
         .send()
         .await
-        .expect("POST /resolve on unknown id should reach the server");
+        .expect("POST /resolve on unknown ULID should reach the server");
 
     assert_eq!(
         resp.status(),

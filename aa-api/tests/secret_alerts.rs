@@ -103,10 +103,9 @@ async fn get_alert_returns_secret_payload_with_critical_severity() {
     secret_tx.send(aws_secret_alert()).unwrap();
     tokio::time::sleep(Duration::from_millis(80)).await;
 
-    // Resolve the assigned id from the store directly so the test does not
-    // depend on the global id counter starting at 1.
+    // Resolve the assigned ULID from the store directly.
     let (items, _) = alert_store.list(10, 0);
-    let id = items.first().expect("a secret alert must be recorded").id;
+    let id = items.first().expect("a secret alert must be recorded").id.clone();
 
     let app = aa_api::server::build_app(state);
     let response = app
