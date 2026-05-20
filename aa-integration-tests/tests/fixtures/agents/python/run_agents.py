@@ -38,6 +38,7 @@ FRAMEWORK_PATTERNS: dict[str, str] = {
     "crewai": "*crewai*",
     "pydantic_ai": "*pydantic_ai*",
     "openai_agents": "*openai_agents*",
+    "google_adk": "*google_adk*",
 }
 
 EXCLUDED_FILENAMES: set[str] = {"_shared.py", "run_agents.py"}
