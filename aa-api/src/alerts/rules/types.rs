@@ -184,3 +184,99 @@ impl std::fmt::Display for AlertRuleValidationError {
 }
 
 impl std::error::Error for AlertRuleValidationError {}
+
+/// Maximum name length per the Story spec ("`name` 1-128 chars").
+const NAME_MAX_LEN: usize = 128;
+
+/// Allowed `evaluation_window_seconds` values per the Story spec.
+const ALLOWED_EVAL_WINDOWS: [u32; 3] = [300, 900, 3600];
+
+impl AlertRule {
+    /// Validate the rule against the constraints enumerated in the
+    /// Story's "Validation rules" section. Returns the first failure
+    /// encountered — callers are expected to fix one issue at a time
+    /// based on the surfaced `error_code`.
+    pub fn validate<R: DestinationRegistryLookup + ?Sized>(
+        &self,
+        destinations: &R,
+    ) -> Result<(), AlertRuleValidationError> {
+        // name: 1-128 chars
+        if self.name.is_empty() {
+            return Err(AlertRuleValidationError::InvalidName {
+                reason: "name must not be empty".to_string(),
+            });
+        }
+        if self.name.chars().count() > NAME_MAX_LEN {
+            return Err(AlertRuleValidationError::InvalidName {
+                reason: format!("name must be at most {NAME_MAX_LEN} chars"),
+            });
+        }
+
+        // threshold: range per metric
+        if let Some(reason) = threshold_range_violation(self.metric, self.threshold) {
+            return Err(AlertRuleValidationError::InvalidThreshold {
+                metric: self.metric,
+                value: self.threshold,
+                reason,
+            });
+        }
+
+        // evaluation_window_seconds ∈ {300, 900, 3600}
+        if !ALLOWED_EVAL_WINDOWS.contains(&self.evaluation_window_seconds) {
+            return Err(AlertRuleValidationError::InvalidEvaluationWindow {
+                value: self.evaluation_window_seconds,
+            });
+        }
+
+        // destination_ids: non-empty + each must exist in registry
+        if self.destination_ids.is_empty() {
+            return Err(AlertRuleValidationError::EmptyDestinations);
+        }
+        for id in &self.destination_ids {
+            if !destinations.contains(id) {
+                return Err(AlertRuleValidationError::UnknownDestination { id: id.clone() });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Returns `Some(reason)` when `value` is out of the metric's allowed
+/// range, `None` when valid. Centralized so the per-metric units stay
+/// in one place.
+fn threshold_range_violation(metric: RuleMetric, value: f64) -> Option<String> {
+    if !value.is_finite() {
+        return Some("threshold must be a finite number".to_string());
+    }
+    match metric {
+        RuleMetric::BudgetSpentPct => {
+            if !(0.0..=100.0).contains(&value) {
+                Some("budget_spent_pct threshold must be in [0, 100]".to_string())
+            } else {
+                None
+            }
+        }
+        RuleMetric::AnomalyScore => {
+            if value < 0.0 {
+                Some("anomaly_score threshold must be >= 0".to_string())
+            } else {
+                None
+            }
+        }
+        RuleMetric::ApprovalPendingAge => {
+            if value < 0.0 {
+                Some("approval_pending_age threshold (seconds) must be >= 0".to_string())
+            } else {
+                None
+            }
+        }
+        RuleMetric::PolicyViolationCount => {
+            if value < 0.0 {
+                Some("policy_violation_count threshold must be >= 0".to_string())
+            } else {
+                None
+            }
+        }
+    }
+}
