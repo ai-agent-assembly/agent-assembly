@@ -316,6 +316,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/ws": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/alerts/ws` — upgrade to a WebSocket and stream
+         *     real-time alert lifecycle events.
+         * @description **Subprotocol**: clients MUST offer `aaasm-alerts-v1` in the
+         *     `Sec-WebSocket-Protocol` upgrade header. Upgrades without it are
+         *     rejected with `400` before protocol switch. The committed
+         *     `openapi/v1.yaml` carries this as `x-ws-subprotocol:
+         *     aaasm-alerts-v1` on the path object.
+         */
+        get: operations["ws_alerts_handler"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/{id}": {
         parameters: {
             query?: never;
@@ -1301,6 +1326,41 @@ export interface components {
              *     while the alert is still in its initial captured state.
              */
             updated_at?: string | null;
+        };
+        /**
+         * @description Lifecycle frame pushed to clients over the alerts WebSocket.
+         *
+         *     Server-only — `AlertResponse` does not currently derive
+         *     `Deserialize`, so this enum is `Serialize`-only. Client-side
+         *     parsing happens through `serde_json::Value` in tests.
+         */
+        AlertWsFrame: {
+            /** @description Full alert payload — same shape as `GET /api/v1/alerts/{id}`. */
+            alert: components["schemas"]["AlertResponse"];
+            /** @description ISO 8601 timestamp at which the server emitted this frame. */
+            ts: string;
+            /** @enum {string} */
+            type: "alert.fire";
+        } | {
+            alert: components["schemas"]["AlertResponse"];
+            ts: string;
+            /** @enum {string} */
+            type: "alert.resolve";
+        } | {
+            alert: components["schemas"]["AlertResponse"];
+            /**
+             * @description Silence metadata — left as a free-form object so the
+             *     concrete `Silence` schema can land in a follow-up without
+             *     breaking the WS contract.
+             */
+            silence: unknown;
+            ts: string;
+            /** @enum {string} */
+            type: "alert.silence";
+        } | {
+            ts: string;
+            /** @enum {string} */
+            type: "heartbeat";
         };
         ApiKeyResponse: {
             assigned_policies: string[];
@@ -3178,6 +3238,53 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConnectorFailedBody"];
                 };
+            };
+        };
+    };
+    ws_alerts_handler: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Comma-separated lifecycle filter: `fire`, `resolve`, `silence`.
+                 *     All three are included when omitted.
+                 */
+                events?: string | null;
+                /**
+                 * @description Comma-separated severity filter: `CRITICAL`, `HIGH`, `MEDIUM`,
+                 *     `LOW`. All four are included when omitted.
+                 */
+                severity?: string | null;
+                /** @description Restrict the stream to a single hex-encoded agent id. */
+                agent_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebSocket upgrade successful. Server streams AlertWsFrame JSON text frames. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Frame schema (delivered as WebSocket text frames, not as an HTTP response body). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertWsFrame"];
+                };
+            };
+            /** @description Bad request — missing subprotocol or invalid filter query parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

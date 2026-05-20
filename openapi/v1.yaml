@@ -593,6 +593,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectorFailedBody'
+  /api/v1/alerts/ws:
+    get:
+      tags:
+      - alerts-stream
+      summary: |-
+        `GET /api/v1/alerts/ws` — upgrade to a WebSocket and stream
+        real-time alert lifecycle events.
+      description: |-
+        **Subprotocol**: clients MUST offer `aaasm-alerts-v1` in the
+        `Sec-WebSocket-Protocol` upgrade header. Upgrades without it are
+        rejected with `400` before protocol switch. The committed
+        `openapi/v1.yaml` carries this as `x-ws-subprotocol:
+        aaasm-alerts-v1` on the path object.
+      operationId: ws_alerts_handler
+      parameters:
+      - name: events
+        in: query
+        description: |-
+          Comma-separated lifecycle filter: `fire`, `resolve`, `silence`.
+          All three are included when omitted.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: severity
+        in: query
+        description: |-
+          Comma-separated severity filter: `CRITICAL`, `HIGH`, `MEDIUM`,
+          `LOW`. All four are included when omitted.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agent_id
+        in: query
+        description: Restrict the stream to a single hex-encoded agent id.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '101':
+          description: WebSocket upgrade successful. Server streams AlertWsFrame JSON text frames.
+        '200':
+          description: Frame schema (delivered as WebSocket text frames, not as an HTTP response body).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertWsFrame'
+        '400':
+          description: Bad request — missing subprotocol or invalid filter query parameter
+    x-ws-subprotocol: aaasm-alerts-v1
   /api/v1/alerts/{id}:
     get:
       tags:
@@ -2184,6 +2239,87 @@ components:
           description: |-
             ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
             while the alert is still in its initial captured state.
+    AlertWsFrame:
+      oneOf:
+      - type: object
+        description: A new alert was just captured into the store.
+        required:
+        - ts
+        - alert
+        - type
+        properties:
+          alert:
+            $ref: '#/components/schemas/AlertResponse'
+            description: Full alert payload — same shape as `GET /api/v1/alerts/{id}`.
+          ts:
+            type: string
+            description: ISO 8601 timestamp at which the server emitted this frame.
+          type:
+            type: string
+            enum:
+            - alert.fire
+      - type: object
+        description: |-
+          An existing alert was acknowledged via the resolve endpoint.
+          `alert.status` is `"resolved"`.
+        required:
+        - ts
+        - alert
+        - type
+        properties:
+          alert:
+            $ref: '#/components/schemas/AlertResponse'
+          ts:
+            type: string
+          type:
+            type: string
+            enum:
+            - alert.resolve
+      - type: object
+        description: |-
+          An existing alert was suppressed by an active silence. Reserved
+          for the future suppression feature — no production code emits
+          this variant today; the schema is published so clients can
+          already round-trip frames once a producer exists.
+        required:
+        - ts
+        - alert
+        - silence
+        - type
+        properties:
+          alert:
+            $ref: '#/components/schemas/AlertResponse'
+          silence:
+            description: |-
+              Silence metadata — left as a free-form object so the
+              concrete `Silence` schema can land in a follow-up without
+              breaking the WS contract.
+          ts:
+            type: string
+          type:
+            type: string
+            enum:
+            - alert.silence
+      - type: object
+        description: |-
+          Keep-alive frame emitted every 30 s when no other frame was
+          sent in that window (AC).
+        required:
+        - ts
+        - type
+        properties:
+          ts:
+            type: string
+          type:
+            type: string
+            enum:
+            - heartbeat
+      description: |-
+        Lifecycle frame pushed to clients over the alerts WebSocket.
+
+        Server-only — `AlertResponse` does not currently derive
+        `Deserialize`, so this enum is `Serialize`-only. Client-side
+        parsing happens through `serde_json::Value` in tests.
     ApiKeyResponse:
       type: object
       required:
@@ -4379,6 +4515,8 @@ tags:
   description: Authentication and token issuance
 - name: events
   description: Real-time event streaming via WebSocket
+- name: alerts-stream
+  description: Real-time alert lifecycle WebSocket stream (subprotocol aaasm-alerts-v1) — AAASM-1389
 - name: topology
   description: Agent topology — tree, team, lineage, statistics, and mesh edge queries
 - name: ops

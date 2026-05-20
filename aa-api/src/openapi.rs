@@ -1,9 +1,11 @@
 //! OpenAPI spec aggregation via utoipa.
 
+use utoipa::openapi::extensions::ExtensionsBuilder;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::ComponentsBuilder;
 use utoipa::{Modify, OpenApi};
 
+use crate::models::alert_ws_payloads::AlertWsFrame;
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
     CapabilityOverrideResponse, ChangeType, Decision, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
@@ -43,6 +45,7 @@ use crate::routes::{
         (name = "alert-destinations", description = "Notification destinations — CRUD + test"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
+        (name = "alerts-stream", description = "Real-time alert lifecycle WebSocket stream (subprotocol aaasm-alerts-v1) — AAASM-1389"),
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
         (name = "ops", description = "Per-operation lifecycle actions (pause / resume / terminate)"),
         (name = "capability", description = "Dashboard Capability Matrix — agent × resource × verb × decision view"),
@@ -78,6 +81,7 @@ use crate::routes::{
         destinations::update_destination,
         destinations::delete_destination,
         destinations::test_destination,
+        crate::ws::alerts_handler::ws_alerts_handler,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
         topology::get_overview,
@@ -140,6 +144,7 @@ use crate::routes::{
         destinations::ConnectorFailedBody,
         crate::destinations::types::DestinationKind,
         crate::destinations::types::DestinationConfig,
+        AlertWsFrame,
         auth::TokenRequest,
         auth::TokenResponse,
         crate::auth::scope::Scope,
@@ -192,9 +197,26 @@ use crate::routes::{
         iam::GeneratedApiKeyResponse,
         iam::GenerateApiKeyRequest,
     )),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &AlertsWsSubprotocolAddon),
 )]
 pub struct ApiDoc;
+
+/// Stamps `x-ws-subprotocol: aaasm-alerts-v1` onto the
+/// `/api/v1/alerts/ws` path object so the generated YAML matches the
+/// AAASM-1389 AC. `utoipa::path` doesn't expose path-level `x-*`
+/// extensions, so we inject it after the spec is built.
+struct AlertsWsSubprotocolAddon;
+
+impl Modify for AlertsWsSubprotocolAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(path_item) = openapi.paths.paths.get_mut("/api/v1/alerts/ws") {
+            let extensions = ExtensionsBuilder::new()
+                .add("x-ws-subprotocol", serde_json::json!("aaasm-alerts-v1"))
+                .build();
+            path_item.extensions = Some(extensions);
+        }
+    }
+}
 
 /// Adds the `bearer_auth` security scheme to the generated OpenAPI spec.
 struct SecurityAddon;

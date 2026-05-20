@@ -12,7 +12,10 @@ use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
 
 /// Convert a `StoredAlert` into the public-facing `AlertResponse` shape.
-fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
+///
+/// Public so the alerts WebSocket handler (AAASM-1389) can emit the
+/// same payload shape inside `AlertWsFrame::Fire`/`Resolve`/`Silence`.
+pub fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
     AlertResponse {
         id: a.id,
         severity: a.severity.to_string(),
