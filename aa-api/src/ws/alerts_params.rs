@@ -218,3 +218,149 @@ impl AlertsWsQueryParams {
         Ok(filter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::{AlertCategory, StoredAlert};
+
+    fn params(events: Option<&str>, severity: Option<&str>, agent_id: Option<&str>) -> AlertsWsQueryParams {
+        AlertsWsQueryParams {
+            events: events.map(str::to_string),
+            severity: severity.map(str::to_string),
+            agent_id: agent_id.map(str::to_string),
+        }
+    }
+
+    fn stored(severity: AlertSeverity, agent_id: &str) -> StoredAlert {
+        StoredAlert {
+            id: 1,
+            severity,
+            category: AlertCategory::Budget,
+            message: "test".to_string(),
+            agent_id: agent_id.to_string(),
+            team_id: None,
+            timestamp: "2026-05-20T00:00:00Z".to_string(),
+            threshold_pct: 80,
+            spent_usd: 8.0,
+            limit_usd: 10.0,
+            status: "unresolved".to_string(),
+            updated_at: None,
+            detected_pattern_type: None,
+            redacted_value: None,
+        }
+    }
+
+    #[test]
+    fn defaults_match_all_events_and_severities() {
+        let f = params(None, None, None).try_into_filter().unwrap();
+        assert_eq!(f.events.len(), 3);
+        assert_eq!(f.severities.len(), 4);
+        assert!(f.agent_id.is_none());
+        // The default filter matches every kind / severity / agent.
+        for sev in [AlertSeverity::Critical, AlertSeverity::Warning, AlertSeverity::Info] {
+            assert!(f.matches(&AlertEvent::Fire(stored(sev, "abc"))));
+            assert!(f.matches(&AlertEvent::Resolve(stored(sev, "abc"))));
+            assert!(f.matches(&AlertEvent::Silence(stored(sev, "abc"))));
+        }
+    }
+
+    #[test]
+    fn events_csv_subset_parses() {
+        let f = params(Some("fire,resolve"), None, None).try_into_filter().unwrap();
+        assert!(f.events.contains(&AlertEventKind::Fire));
+        assert!(f.events.contains(&AlertEventKind::Resolve));
+        assert!(!f.events.contains(&AlertEventKind::Silence));
+    }
+
+    #[test]
+    fn severity_csv_mixed_case_accepted() {
+        let f = params(None, Some("critical,High,mEdIuM"), None)
+            .try_into_filter()
+            .unwrap();
+        assert!(f.severities.contains(&WireSeverity::Critical));
+        assert!(f.severities.contains(&WireSeverity::High));
+        assert!(f.severities.contains(&WireSeverity::Medium));
+        assert!(!f.severities.contains(&WireSeverity::Low));
+    }
+
+    #[test]
+    fn unknown_event_rejected() {
+        let err = params(Some("fire,bogus"), None, None).try_into_filter().unwrap_err();
+        assert_eq!(err, FilterError::UnknownEvent("bogus".to_string()));
+    }
+
+    #[test]
+    fn unknown_severity_rejected() {
+        let err = params(None, Some("CRITICAL,EXTREME"), None)
+            .try_into_filter()
+            .unwrap_err();
+        assert_eq!(err, FilterError::UnknownSeverity("EXTREME".to_string()));
+    }
+
+    #[test]
+    fn agent_id_passes_through() {
+        let f = params(None, None, Some("agent-xyz")).try_into_filter().unwrap();
+        assert_eq!(f.agent_id.as_deref(), Some("agent-xyz"));
+
+        // Empty agent_id is treated as absent (no filter).
+        let f = params(None, None, Some("   ")).try_into_filter().unwrap();
+        assert!(f.agent_id.is_none());
+    }
+
+    #[test]
+    fn whitespace_in_csv_trimmed() {
+        let f = params(Some("  fire ,, resolve  "), Some("  CRITICAL ,  HIGH  "), None)
+            .try_into_filter()
+            .unwrap();
+        assert_eq!(f.events.len(), 2);
+        assert!(f.events.contains(&AlertEventKind::Fire));
+        assert!(f.events.contains(&AlertEventKind::Resolve));
+        assert_eq!(f.severities.len(), 2);
+        assert!(f.severities.contains(&WireSeverity::Critical));
+        assert!(f.severities.contains(&WireSeverity::High));
+    }
+
+    #[test]
+    fn matches_excludes_wrong_event_kind() {
+        let f = params(Some("resolve"), None, None).try_into_filter().unwrap();
+        assert!(!f.matches(&AlertEvent::Fire(stored(AlertSeverity::Critical, "agent-1"))));
+        assert!(f.matches(&AlertEvent::Resolve(stored(AlertSeverity::Critical, "agent-1"))));
+    }
+
+    #[test]
+    fn matches_excludes_wrong_severity() {
+        // AC: severity=CRITICAL excludes a MEDIUM fire (stored Info → wire Medium).
+        let f = params(None, Some("CRITICAL"), None).try_into_filter().unwrap();
+        assert!(!f.matches(&AlertEvent::Fire(stored(AlertSeverity::Info, "agent-1"))));
+        assert!(!f.matches(&AlertEvent::Fire(stored(AlertSeverity::Warning, "agent-1"))));
+        assert!(f.matches(&AlertEvent::Fire(stored(AlertSeverity::Critical, "agent-1"))));
+    }
+
+    #[test]
+    fn matches_excludes_wrong_agent_id() {
+        let f = params(None, None, Some("agent-allow")).try_into_filter().unwrap();
+        assert!(!f.matches(&AlertEvent::Fire(stored(AlertSeverity::Critical, "agent-deny"))));
+        assert!(f.matches(&AlertEvent::Fire(stored(AlertSeverity::Critical, "agent-allow"))));
+    }
+
+    #[test]
+    fn filter_error_renders_400_problem_detail() {
+        let resp = FilterError::UnknownEvent("bogus".to_string()).into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let ct = resp.headers().get(axum::http::header::CONTENT_TYPE);
+        assert_eq!(ct.map(|v| v.to_str().unwrap()), Some("application/problem+json"));
+    }
+
+    #[test]
+    fn wire_severity_low_is_reserved_unmapped() {
+        // The store can't currently produce LOW (no source). Make sure
+        // requesting LOW alone leaves the filter accepting nothing
+        // from the current store — but the parser must still accept
+        // the value so future producers don't need an API revision.
+        let f = params(None, Some("LOW"), None).try_into_filter().unwrap();
+        for sev in [AlertSeverity::Critical, AlertSeverity::Warning, AlertSeverity::Info] {
+            assert!(!f.matches(&AlertEvent::Fire(stored(sev, "agent-1"))));
+        }
+    }
+}
