@@ -13,6 +13,7 @@ import {
 import { ApprovalCountdown } from '../features/approvals/ApprovalCountdown'
 import { ApprovalDetailRow } from '../features/approvals/ApprovalDetailRow'
 import { ApprovalsFilterBar } from '../features/approvals/ApprovalsFilterBar'
+import { ExpiredApprovalsSection } from '../features/approvals/ExpiredApprovalsSection'
 import {
   EMPTY_FILTER,
   applyFilter,
@@ -130,7 +131,7 @@ export function ApprovalsPage() {
   const queryClient = useQueryClient()
   const { data: approvals, isLoading, isError, refetch } = useApprovalsQuery()
   const { connected } = useApprovalsStream()
-  const { expire } = useExpiredApprovals()
+  const { expired, expire } = useExpiredApprovals()
   const approveMutation = useApproveAction()
   const rejectMutation = useRejectAction()
   const { toast } = useToast()
@@ -387,6 +388,8 @@ export function ApprovalsPage() {
               </tbody>
             </table>
           )}
+
+          <ExpiredApprovalsSection rows={expired} />
         </>
       )}
 
