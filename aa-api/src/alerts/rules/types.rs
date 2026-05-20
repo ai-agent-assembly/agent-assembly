@@ -53,3 +53,12 @@ pub enum RuleSeverity {
     Medium,
     Low,
 }
+
+/// Read-only view of the destination registry that an alert rule's
+/// `destination_ids` are validated against. Kept as a trait here so the
+/// validation logic does not depend on the concrete in-memory registry
+/// (delivered separately under AAASM-1617).
+pub trait DestinationRegistryLookup {
+    /// Returns true when `id` is a known destination.
+    fn contains(&self, id: &str) -> bool;
+}
