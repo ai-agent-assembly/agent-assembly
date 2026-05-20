@@ -263,7 +263,7 @@ fn selftest_langgraph_hierarchy_exits_zero_and_emits_root_planner_executor_start
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "requires running aa-gateway and Node.js native bindings (AAASM-1514 follow-up)"]
+#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langchain_single_agent_registers_with_gateway_and_emits_started_done() {
     let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let output = run_ts_script(
@@ -289,7 +289,7 @@ fn real_langchain_single_agent_registers_with_gateway_and_emits_started_done() {
 }
 
 #[test]
-#[ignore = "requires running aa-gateway and Node.js native bindings (AAASM-1514 follow-up)"]
+#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_single_agent_registers_with_gateway_and_emits_started_done() {
     let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let output = run_ts_script(
@@ -315,7 +315,7 @@ fn real_langgraph_single_agent_registers_with_gateway_and_emits_started_done() {
 }
 
 #[test]
-#[ignore = "requires running aa-gateway and Node.js native bindings (AAASM-1514 follow-up)"]
+#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langchain_team_registers_root_and_member_with_gateway() {
     let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let output = run_ts_script(
@@ -348,7 +348,7 @@ fn real_langchain_team_registers_root_and_member_with_gateway() {
 }
 
 #[test]
-#[ignore = "requires running aa-gateway and Node.js native bindings (AAASM-1514 follow-up)"]
+#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_team_registers_coordinator_and_worker_with_gateway() {
     let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let output = run_ts_script(
@@ -381,7 +381,7 @@ fn real_langgraph_team_registers_coordinator_and_worker_with_gateway() {
 }
 
 #[test]
-#[ignore = "requires running aa-gateway and Node.js native bindings (AAASM-1514 follow-up)"]
+#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_hierarchy_registers_root_planner_executor_with_gateway() {
     let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
     let output = run_ts_script(
