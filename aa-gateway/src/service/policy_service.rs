@@ -703,6 +703,38 @@ impl PolicyServiceImpl {
             tracing::trace!(error = %err, "no subscribers for SecretAlert broadcast");
         }
     }
+
+    /// Compose the live-ops registry id and ingest if a registry is attached.
+    ///
+    /// Returns `Some(op_id)` when ingestion happened so the caller can drive
+    /// later transitions; returns `None` when no registry is attached (the
+    /// typical setup for unit tests that don't exercise the live-ops view) or
+    /// when the request lacks a trace identifier (a malformed request the
+    /// engine will reject anyway).
+    fn ingest_op(&self, req: &CheckActionRequest) -> Option<String> {
+        let registry = self.ops_registry.as_ref()?;
+        if req.trace_id.is_empty() {
+            return None;
+        }
+        let op_id = format!("{}:{}", req.trace_id, req.span_id);
+        registry.ingest(op_id.clone());
+        Some(op_id)
+    }
+
+    /// Transition `Pending → Running` for an op that was just allowed.
+    ///
+    /// Swallows `OpsError::InvalidTransition` because a re-issued check for
+    /// an op already in `Running` is a valid no-op, not a bug. Logs but does
+    /// not error on `NotFound` since that only happens if the registry is
+    /// dropped between [`ingest_op`] and here, which is non-fatal.
+    fn allow_op(&self, op_id: &str) {
+        let Some(registry) = self.ops_registry.as_ref() else {
+            return;
+        };
+        if let Err(err) = registry.allow(op_id) {
+            tracing::trace!(op_id = %op_id, ?err, "ops_registry.allow no-op");
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -720,6 +752,12 @@ impl PolicyService for PolicyServiceImpl {
             "check_action request"
         );
 
+        // AAASM-1422: ingest the op into the live-ops registry before
+        // evaluation so the dashboard sees the in-flight check even when
+        // the engine takes time to decide. Idempotent — a retry of the
+        // same {trace_id}:{span_id} pair keeps the existing state.
+        let ops_op_id = self.ingest_op(&req);
+
         let (eval, latency_us, policy_rule) = self.evaluate_one(&req)?;
         self.maybe_emit_secret_alert(&req, &eval);
         let deny_action = eval.deny_action;
@@ -731,6 +769,14 @@ impl PolicyService for PolicyServiceImpl {
             } else {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
+
+        // AAASM-1422: transition Pending → Running on Allow so the registry
+        // reflects the final policy decision. Deny path is deferred to PR-H.
+        if let Some(op_id) = ops_op_id.as_deref() {
+            if response.decision == aa_proto::assembly::common::v1::Decision::Allow as i32 {
+                self.allow_op(op_id);
+            }
+        }
 
         tracing::debug!(
             decision = response.decision,
