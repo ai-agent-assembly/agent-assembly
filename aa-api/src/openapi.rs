@@ -1,5 +1,6 @@
 //! OpenAPI spec aggregation via utoipa.
 
+use utoipa::openapi::extensions::ExtensionsBuilder;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::ComponentsBuilder;
 use utoipa::{Modify, OpenApi};
@@ -196,9 +197,26 @@ use crate::routes::{
         iam::GeneratedApiKeyResponse,
         iam::GenerateApiKeyRequest,
     )),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &AlertsWsSubprotocolAddon),
 )]
 pub struct ApiDoc;
+
+/// Stamps `x-ws-subprotocol: aaasm-alerts-v1` onto the
+/// `/api/v1/alerts/ws` path object so the generated YAML matches the
+/// AAASM-1389 AC. `utoipa::path` doesn't expose path-level `x-*`
+/// extensions, so we inject it after the spec is built.
+struct AlertsWsSubprotocolAddon;
+
+impl Modify for AlertsWsSubprotocolAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(path_item) = openapi.paths.paths.get_mut("/api/v1/alerts/ws") {
+            let extensions = ExtensionsBuilder::new()
+                .add("x-ws-subprotocol", serde_json::json!("aaasm-alerts-v1"))
+                .build();
+            path_item.extensions = Some(extensions);
+        }
+    }
+}
 
 /// Adds the `bearer_auth` security scheme to the generated OpenAPI spec.
 struct SecurityAddon;
