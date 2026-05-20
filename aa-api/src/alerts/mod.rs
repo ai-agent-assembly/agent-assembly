@@ -111,6 +111,9 @@ pub enum AlertCategory {
     /// One or more credential / sensitive-value patterns detected in an
     /// outbound payload by the gateway's credential scanner.
     SecretDetected,
+    /// Alert produced by the rule engine — carries `rule_context` with
+    /// the rule snapshot, routing log, and dedup state (AAASM-1385).
+    Rule,
 }
 
 impl std::fmt::Display for AlertCategory {
@@ -118,6 +121,7 @@ impl std::fmt::Display for AlertCategory {
         match self {
             AlertCategory::Budget => write!(f, "budget"),
             AlertCategory::SecretDetected => write!(f, "secret_detected"),
+            AlertCategory::Rule => write!(f, "rule"),
         }
     }
 }
