@@ -109,3 +109,78 @@ pub struct AlertRule {
     /// RFC 3339 timestamp of the last mutation.
     pub updated_at: String,
 }
+
+/// Validation failure surfaced from [`AlertRule::validate`].
+///
+/// Each variant carries an `error_code()` matching the Story's wire
+/// contract. `invalid_metric` is not represented here because that case
+/// is caught by serde during request deserialization (the unknown
+/// `metric` string never round-trips into [`AlertRule`] in the first
+/// place); the handler in AAASM-1620 maps the serde error to a 400 with
+/// `error: "invalid_metric"`.
+///
+/// `invalid_name` and `invalid_evaluation_window` are extension codes
+/// covering the validation rules the Story's prose lists but does not
+/// label in its HTTP error table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlertRuleValidationError {
+    /// Name length is outside `[1, 128]` characters.
+    InvalidName {
+        /// Why the name was rejected (e.g. `"name must be 1-128 chars"`).
+        reason: String,
+    },
+    /// `threshold` is out of the metric's allowed range
+    /// (e.g. 0-100 for percentage metrics).
+    InvalidThreshold {
+        /// Metric whose unit constraint was violated.
+        metric: RuleMetric,
+        /// Submitted threshold value.
+        value: f64,
+        /// Reason the value was rejected.
+        reason: String,
+    },
+    /// `evaluation_window_seconds` is not in the allowed set
+    /// `{300, 900, 3600}`.
+    InvalidEvaluationWindow {
+        /// Submitted window value.
+        value: u32,
+    },
+    /// `destination_ids` is empty.
+    EmptyDestinations,
+    /// `destination_ids` references an id the registry does not know.
+    UnknownDestination {
+        /// The id that was rejected.
+        id: String,
+    },
+}
+
+impl AlertRuleValidationError {
+    /// Stable error code returned in the RFC 7807 response.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::InvalidName { .. } => "invalid_name",
+            Self::InvalidThreshold { .. } => "invalid_threshold",
+            Self::InvalidEvaluationWindow { .. } => "invalid_evaluation_window",
+            Self::EmptyDestinations | Self::UnknownDestination { .. } => "destination_unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for AlertRuleValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName { reason } => write!(f, "invalid name: {reason}"),
+            Self::InvalidThreshold { metric, value, reason } => {
+                write!(f, "invalid threshold {value} for metric {metric:?}: {reason}")
+            }
+            Self::InvalidEvaluationWindow { value } => write!(
+                f,
+                "invalid evaluation_window_seconds {value}: must be 300, 900, or 3600",
+            ),
+            Self::EmptyDestinations => write!(f, "destination_ids must be non-empty"),
+            Self::UnknownDestination { id } => write!(f, "destination_unknown: {id}"),
+        }
+    }
+}
+
+impl std::error::Error for AlertRuleValidationError {}
