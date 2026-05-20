@@ -94,6 +94,28 @@ impl OpsRegistry {
         record
     }
 
+    /// Ingest an op from a policy-check request in the `Pending` state.
+    ///
+    /// Called from `PolicyServiceImpl::check_action` *before* the engine
+    /// decision so the op appears in the live-ops view even if evaluation
+    /// takes time. Idempotent re-ingestion of an already-known `op_id`
+    /// returns the existing record unchanged (preserves any later state
+    /// transition that may have occurred since first ingest).
+    pub fn ingest(&self, op_id: String) -> OpRecord {
+        if let Some(existing) = self.ops.get(&op_id) {
+            return existing.clone();
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = OpRecord {
+            op_id: op_id.clone(),
+            state: OpState::Pending,
+            registered_at: now.clone(),
+            updated_at: now,
+        };
+        self.ops.insert(op_id, record.clone());
+        record
+    }
+
     /// Return a snapshot of the named op, or `None` if it is not registered.
     pub fn get(&self, op_id: &str) -> Option<OpRecord> {
         self.ops.get(op_id).map(|r| r.clone())
