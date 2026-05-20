@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 description = "HTTP presentation layer with OpenAPI spec generation for Agent Assembly"
 
+[features]
+default = []
+connector-pagerduty = []
+connector-opsgenie = []
+
 [dependencies]
 aa-core = { path = "../aa-core" }
 aa-devtool       = { path = "../aa-devtool" }
@@ -14,6 +19,7 @@ aa-gateway = { path = "../aa-gateway" }
 aa-proto = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 argon2 = "0.5"
+async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 dashmap = "6"
 http = "1"
@@ -21,6 +27,7 @@ hyper = { version = "1", features = ["full"] }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -39,6 +46,7 @@ moka = { version = "0.12", features = ["future"] }
 rust_decimal = { version = "1", features = ["serde-str"] }
 tokio-stream = "0.1"
 ulid = "1"
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
@@ -46,6 +54,7 @@ axum-test = "20"
 chrono-tz = "0.10"
 futures = "0.3"
 hmac = "0.13"
+httpmock = "0.7"
 rstest = "0.26"
 serde_json = "1"
 sha2 = "0.11"

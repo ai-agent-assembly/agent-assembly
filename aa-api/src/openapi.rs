@@ -14,7 +14,8 @@ use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alerts, approvals, audit, auth, capability, costs, edges, iam, logs, ops, policies, topology, traces,
+    agents, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops, policies, topology,
+    traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -39,6 +40,7 @@ use crate::routes::{
         (name = "approvals", description = "Human-in-the-loop approvals"),
         (name = "costs", description = "Cost and budget tracking"),
         (name = "alerts", description = "Governance alerts"),
+        (name = "alert-destinations", description = "Notification destinations — CRUD + test"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
@@ -70,6 +72,12 @@ use crate::routes::{
         alerts::list_alerts,
         alerts::get_alert,
         alerts::resolve_alert,
+        destinations::list_destinations,
+        destinations::create_destination,
+        destinations::get_destination,
+        destinations::update_destination,
+        destinations::delete_destination,
+        destinations::test_destination,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
         topology::get_overview,
@@ -124,6 +132,14 @@ use crate::routes::{
         costs::TeamCostEntry,
         alerts::AlertResponse,
         alerts::ResolveAlertRequest,
+        destinations::DestinationResponse,
+        destinations::CreateDestinationRequest,
+        destinations::UpdateDestinationRequest,
+        destinations::TestDestinationRequest,
+        destinations::TestDestinationResponse,
+        destinations::ConnectorFailedBody,
+        crate::destinations::types::DestinationKind,
+        crate::destinations::types::DestinationConfig,
         auth::TokenRequest,
         auth::TokenResponse,
         crate::auth::scope::Scope,

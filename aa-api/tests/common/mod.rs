@@ -11,6 +11,7 @@ use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
 use aa_api::auth::rate_limit::RateLimiter;
 use aa_api::auth::scope::Scope;
+use aa_api::destinations::store::{InMemoryDestinationStore, NoopRuleReferenceChecker};
 use aa_api::events::EventBroadcast;
 use aa_api::ops::OpsRegistry;
 use aa_api::replay::ReplayBuffer;
@@ -161,6 +162,7 @@ spec:
         capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
+        destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
         audit_sender: None,
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
     }
@@ -170,6 +172,16 @@ spec:
 #[allow(dead_code)]
 pub fn test_app() -> Router {
     build_app(test_state())
+}
+
+/// Build an `AppState` whose destination_store is swapped out for the
+/// caller-supplied implementation. Used by destinations integration tests
+/// that need to drive the 409 destination_in_use path.
+#[allow(dead_code)]
+pub fn test_state_with_destination_store(store: Arc<dyn aa_api::destinations::store::DestinationStore>) -> AppState {
+    let mut state = test_state();
+    state.destination_store = store;
+    state
 }
 
 /// Build the full app with auth enabled and the given API key entries.

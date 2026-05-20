@@ -50,6 +50,7 @@ use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
 use aa_api::auth::jwt::{JwtSigner, JwtVerifier};
 use aa_api::auth::rate_limit::RateLimiter;
+use aa_api::destinations::store::{InMemoryDestinationStore, NoopRuleReferenceChecker};
 use aa_api::events::EventBroadcast;
 use aa_api::ops::OpsRegistry;
 use aa_api::replay::ReplayBuffer;
@@ -661,6 +662,7 @@ spec:
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         },
@@ -791,6 +793,7 @@ spec:
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         },
@@ -922,6 +925,7 @@ spec:
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         },
@@ -1039,6 +1043,7 @@ spec:
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         },
@@ -1152,6 +1157,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         },

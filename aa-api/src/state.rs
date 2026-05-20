@@ -22,6 +22,7 @@ use crate::auth::api_key::ApiKeyStore;
 use crate::auth::config::AuthConfig;
 use crate::auth::jwt::{JwtSigner, JwtVerifier};
 use crate::auth::rate_limit::RateLimiter;
+use crate::destinations::store::DestinationStore;
 use crate::events::EventBroadcast;
 use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
 use crate::ops::OpsRegistry;
@@ -88,6 +89,8 @@ pub struct AppState {
     pub iam_api_key_store: Arc<IamApiKeyStore>,
     /// In-flight operation lifecycle registry (AAASM-1525).
     pub ops_registry: Arc<OpsRegistry>,
+    /// Notification-destination store backing `/alerts/destinations` (AAASM-1388).
+    pub destination_store: Arc<dyn DestinationStore>,
     /// Optional sender into the shared audit-ingest channel (see
     /// `aa-gateway::audit::AuditWriter`). When `None`, audit-emitting
     /// handlers respond with HTTP 503 to signal that the audit pipeline

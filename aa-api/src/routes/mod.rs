@@ -9,6 +9,7 @@ pub mod audit;
 pub mod auth;
 pub mod capability;
 pub mod costs;
+pub mod destinations;
 pub mod devtools;
 pub mod edges;
 pub mod health;
@@ -68,6 +69,18 @@ pub fn v1_router() -> Router {
         .route("/alerts", get(alerts::list_alerts))
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
+        // Alert destinations — AAASM-1388
+        .route(
+            "/alerts/destinations",
+            get(destinations::list_destinations).post(destinations::create_destination),
+        )
+        .route(
+            "/alerts/destinations/{id}",
+            get(destinations::get_destination)
+                .put(destinations::update_destination)
+                .delete(destinations::delete_destination),
+        )
+        .route("/alerts/destinations/{id}/test", post(destinations::test_destination))
         // Dev tool webhooks
         .route(
             "/devtools/saas/{provider}/events",
