@@ -21,6 +21,7 @@ use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
+use crate::ops::OpsRegistry;
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
@@ -43,6 +44,12 @@ pub struct PolicyServiceImpl {
     /// produces non-empty `credential_findings` (AAASM-1545). `None`
     /// disables emission — used by unit tests that don't need alerts.
     secret_alert_tx: Option<broadcast::Sender<SecretAlert>>,
+    /// Optional in-flight ops registry. When set, every `check_action`
+    /// call ingests an op keyed by `"{trace_id}:{span_id}"` and transitions
+    /// it on the engine decision (AAASM-1422). `None` disables ingestion,
+    /// matching the pre-1422 behaviour expected by unit tests that
+    /// construct the service directly.
+    ops_registry: Option<Arc<OpsRegistry>>,
 }
 
 impl PolicyServiceImpl {
@@ -70,6 +77,7 @@ impl PolicyServiceImpl {
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
+            ops_registry: None,
         }
     }
 
@@ -97,6 +105,7 @@ impl PolicyServiceImpl {
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
+            ops_registry: None,
         }
     }
 
@@ -126,6 +135,7 @@ impl PolicyServiceImpl {
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
+            ops_registry: None,
         }
     }
 
@@ -160,6 +170,7 @@ impl PolicyServiceImpl {
             seq: AtomicU64::new(0),
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
+            ops_registry: None,
         }
     }
 
@@ -190,6 +201,17 @@ impl PolicyServiceImpl {
     /// `spawn_secret_alert_capture` to persist the alerts into the store.
     pub fn with_secret_alert_tx(mut self, tx: broadcast::Sender<SecretAlert>) -> Self {
         self.secret_alert_tx = Some(tx);
+        self
+    }
+
+    /// Attach an [`OpsRegistry`] for in-flight operation tracking (AAASM-1422).
+    ///
+    /// When present, every `check_action` call ingests an op keyed by
+    /// `"{trace_id}:{span_id}"` and transitions it on the engine decision:
+    /// `Pending → Running` on `Allow`. The terminate-on-deny path and WS
+    /// `OpStateChanged` emission are deferred to PR-H.
+    pub fn with_ops_registry(mut self, registry: Arc<OpsRegistry>) -> Self {
+        self.ops_registry = Some(registry);
         self
     }
 
