@@ -158,6 +158,18 @@ impl AlertStore for InMemoryAlertStore {
         let _ = self.event_tx.send(AlertEvent::Silence(snapshot.clone()));
         Some(snapshot)
     }
+
+    fn restore(&self, id: &str) -> Option<StoredAlert> {
+        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        let alert = buf.iter_mut().find(|a| a.id == id)?;
+        if alert.status != "suppressed" {
+            return None; // not currently under a silence
+        }
+        let prior = alert.prior_status.take().unwrap_or_else(|| "unresolved".to_string());
+        alert.status = prior;
+        alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        Some(alert.clone())
+    }
 }
 
 #[cfg(test)]

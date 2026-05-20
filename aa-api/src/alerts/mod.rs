@@ -267,4 +267,18 @@ pub trait AlertStore: Send + Sync {
     /// On success an `AlertEvent::Silence(snapshot)` is published on the
     /// bus.
     fn suppress(&self, id: &str) -> Option<StoredAlert>;
+
+    /// Restore a previously-suppressed alert to its `prior_status`.
+    /// Called by the silence-expiry watcher (AAASM-1646) when a silence
+    /// window ends, or by an explicit DELETE silence path.
+    ///
+    /// Returns the post-mutation record on success, or `None` when:
+    /// * the ID is unknown or evicted, **or**
+    /// * the alert is not currently `"suppressed"` (nothing to restore).
+    ///
+    /// If `prior_status` is missing (shouldn't happen, but defensive),
+    /// the alert is restored to `"unresolved"`. The expiry watcher
+    /// composes the appropriate bus event itself based on the restored
+    /// status; this method publishes no event.
+    fn restore(&self, id: &str) -> Option<StoredAlert>;
 }
