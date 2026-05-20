@@ -307,6 +307,7 @@ async fn ws_cli_logs_follow_integration() {
         EventType::Violation => 0,
         EventType::Approval => 1,
         EventType::Budget => 2,
+        EventType::OpsChange => 3,
     });
     assert_eq!(
         received_types,

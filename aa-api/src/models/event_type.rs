@@ -16,6 +16,10 @@ pub enum EventType {
     Approval,
     /// Budget threshold alerts.
     Budget,
+    /// In-flight ops registry state transitions (AAASM-1422 PR-B).
+    /// Emitted on every `OpsRegistry` transition; payload is
+    /// [`super::ws_payloads::OpsChangePayload`].
+    OpsChange,
 }
 
 impl EventType {
