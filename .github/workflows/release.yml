@@ -118,6 +118,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Upload assets to GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           files: |
