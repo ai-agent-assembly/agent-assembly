@@ -392,4 +392,18 @@ mod tests {
         let err = rule.validate(&registry).expect_err("NaN threshold must fail");
         assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
     }
+
+    #[test]
+    fn anomaly_threshold_negative_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            metric: RuleMetric::AnomalyScore,
+            threshold: -0.1,
+            ..valid_rule()
+        };
+        let err = rule
+            .validate(&registry)
+            .expect_err("negative anomaly_score threshold must fail");
+        assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
+    }
 }
