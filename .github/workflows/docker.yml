@@ -67,10 +67,11 @@ jobs:
       contents: read
       packages: write
 
-    # Matrix mirrors AAASM-1204 (F114) — latest-per-language Phase 1 set.
-    # Each entry feeds a single Dockerfile from docker/ plus its language-specific
-    # smoke command. The aasm-builder stage is identical across all three, so
-    # GHA cache (type=gha,mode=max) deduplicates the cargo build across entries.
+    # Matrix covers AAASM-1204 (F114, Phase 1: latest per language) + AAASM-1441
+    # (F114b, Phase 2: extended-version variants). Each entry feeds a single
+    # Dockerfile from docker/ plus its language-specific smoke command. The
+    # aasm-builder stage is identical across every entry, so GHA cache
+    # (type=gha,mode=max) deduplicates the cargo build across the matrix.
     strategy:
       fail-fast: false
       matrix:
