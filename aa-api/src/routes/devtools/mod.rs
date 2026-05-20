@@ -2,7 +2,41 @@
 //!
 //! Currently exposes one endpoint:
 //! - `POST /devtools/saas/{provider}/events` — ingests signed audit webhook
-//!   events from SaaS coding-agent providers.
+//!   events from SaaS coding-agent providers (AAASM-924).
+//!
+//! # Webhook pipeline
+//!
+//! 1. **Parse provider** — the `{provider}` path segment is parsed into
+//!    [`aa_devtool_saas::provider::SaasProvider`]. Unknown values return 404.
+//! 2. **Resolve secret** — the per-provider secret reference is looked up
+//!    through [`secret_cache::SecretCache`], which caches resolved bytes for
+//!    [`secret_cache::SECRET_CACHE_TTL`] (5 minutes). The default resolver
+//!    reads from an environment variable; the Vault backend swaps in via the
+//!    [`secret_cache::SecretResolver`] trait. Returns 401 if absent.
+//! 3. **Verify signature** — [`aa_devtool_saas::signature::verify`] runs the
+//!    per-provider scheme (Anthropic, OpenAI, or Cursor) using a constant-time
+//!    HMAC-SHA256 compare. Returns 401 on missing header or mismatch BEFORE
+//!    parsing the body.
+//! 4. **Parse body** — [`aa_devtool_saas::parser::parse`] decodes the
+//!    provider-specific JSON into a single
+//!    [`aa_devtool_saas::event::SaasAuditEvent`]. Returns 400 on malformed JSON
+//!    or missing required field.
+//! 5. **Persist to audit pipeline** —
+//!    [`audit_mapping::to_audit_entry`] builds an [`aa_core::AuditEntry`] tagged
+//!    with `Lineage::spawned_by_tool = "saas:<provider>"`, then
+//!    `try_send`s it onto [`crate::state::AppState::audit_sender`]. The send
+//!    is non-blocking: 503 on `Full`, 503 on `Closed`, 503 if the sender is
+//!    `None` (pipeline unconnected). Success returns 202.
+//!
+//! # Status code summary
+//!
+//! | Code | Meaning |
+//! | --- | --- |
+//! | 202 | Signed, parsed, queued. |
+//! | 400 | Body failed provider-specific parse. |
+//! | 401 | Signature header missing, secret unresolved, or HMAC mismatch. |
+//! | 404 | `{provider}` not in `{claude-ai, chatgpt, cursor-cloud}`. |
+//! | 503 | Audit pipeline disconnected or at capacity. |
 
 pub mod audit_mapping;
 pub mod secret_cache;
