@@ -9,6 +9,7 @@ pub mod audit;
 pub mod auth;
 pub mod capability;
 pub mod costs;
+pub mod destinations;
 pub mod devtools;
 pub mod edges;
 pub mod health;
