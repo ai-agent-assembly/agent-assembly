@@ -324,6 +324,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_alert_constructors_default_rule_context_to_none() {
+        let store = InMemoryAlertStore::new();
+        let budget_id = store.record(&test_alert(80));
+        let secret_id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
+
+        let budget = store.get(&budget_id).expect("budget alert");
+        let secret = store.get(&secret_id).expect("secret alert");
+
+        for stored in [&budget, &secret] {
+            assert!(
+                stored.rule_context.is_none(),
+                "legacy alerts must not carry a rule_context",
+            );
+            assert!(!stored.first_fired_at.is_empty(), "first_fired_at must be populated",);
+            assert_eq!(
+                stored.first_fired_at, stored.timestamp,
+                "first_fired_at must mirror timestamp for legacy alerts",
+            );
+            assert!(stored.resolved_at.is_none(), "resolved_at must be None pre-resolve");
+        }
+    }
+
+    #[test]
     fn record_and_record_secret_produce_distinct_ulids() {
         let store = InMemoryAlertStore::new();
         let budget_id = store.record(&test_alert(80));
