@@ -4,6 +4,8 @@
 //! - `POST /devtools/saas/{provider}/events` — ingests signed audit webhook
 //!   events from SaaS coding-agent providers.
 
+pub mod secret_cache;
+
 use axum::body::Bytes;
 use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
