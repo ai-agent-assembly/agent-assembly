@@ -72,4 +72,12 @@ mod tests {
         assert!(!registry.contains("slack-ops"));
         assert!(!registry.contains("anything"));
     }
+
+    #[test]
+    fn register_extends_the_allow_set() {
+        let mut registry = DestinationRegistry::empty();
+        registry.register("custom-webhook");
+        assert!(registry.contains("custom-webhook"));
+        assert!(!registry.contains("missing"));
+    }
 }
