@@ -53,3 +53,16 @@ impl DestinationRegistryLookup for DestinationRegistry {
         self.ids.contains(id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeded_registry_contains_every_seed_entry() {
+        let registry = DestinationRegistry::seeded();
+        for id in SEEDED_DESTINATIONS {
+            assert!(registry.contains(id), "expected seeded id {id} to be present");
+        }
+    }
+}
