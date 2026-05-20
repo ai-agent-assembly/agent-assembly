@@ -332,6 +332,7 @@ mod tests {
 /// - `"violation"` → [`ViolationPayload`]
 /// - `"approval"` → [`ApprovalPayload`]
 /// - `"budget"` → [`BudgetAlertPayload`]
+/// - `"ops_change"` → [`OpsChangePayload`]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum EventPayload {
@@ -341,4 +342,6 @@ pub enum EventPayload {
     Approval(ApprovalPayload),
     /// Budget threshold alert payload.
     Budget(BudgetAlertPayload),
+    /// In-flight ops registry state-transition payload (AAASM-1422 PR-B).
+    OpsChange(OpsChangePayload),
 }
