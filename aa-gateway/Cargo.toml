@@ -44,6 +44,7 @@ metrics      = "0.24"
 sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
 tokio-util   = "0.7"
 parking_lot  = "0.12"
+utoipa       = { version = "5", features = ["axum_extras"] }
 
 [dev-dependencies]
 criterion    = { version = "0.8", features = ["async_tokio"] }

@@ -1735,7 +1735,7 @@ export interface components {
          * @description Lifecycle state of a registered in-flight operation.
          * @enum {string}
          */
-        OpState: "running" | "paused" | "terminated";
+        OpState: "pending" | "running" | "paused" | "completing" | "terminated";
         /**
          * @description A recorded capability override entry returned by
          *     `GET /api/v1/capability/override`.
