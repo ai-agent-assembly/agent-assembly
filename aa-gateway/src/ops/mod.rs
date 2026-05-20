@@ -3,13 +3,19 @@
 //! Tracks each op by its string ID through the state machine:
 //!
 //! ```text
-//! Running ──pause──▶ Paused ──resume──▶ Running
+//! Pending ──allow──▶ Running ──pause──▶ Paused ──resume──▶ Running
+//!   │                  │                  │
+//!   │                  └──complete──▶ Completing
 //!   │                  │
 //!   └──terminate──▶ Terminated ◀──terminate──┘
 //! ```
 //!
-//! Terminated ops accept a second `terminate` call (idempotent) but reject
-//! all other transitions with `OpsError::InvalidTransition`.
+//! `Pending` is the entry state for ops ingested from a policy-check request
+//! before the engine has decided; `Completing` is the post-success drain state
+//! before the entry is swept. `Terminated` ops accept a second `terminate`
+//! call (idempotent) but reject all other transitions with
+//! `OpsError::InvalidTransition`. See
+//! `docs/src/operations/ops-registry-architecture.md` for the full diagram.
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -19,8 +25,15 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OpState {
+    /// Ingested from a policy-check request; awaiting the engine decision.
+    Pending,
+    /// Policy allowed; agent is actively executing.
     Running,
+    /// Operator paused via `POST /api/v1/ops/{id}/pause`.
     Paused,
+    /// Action signalled complete by the SDK; entry is draining.
+    Completing,
+    /// Operator terminated, or policy denied. Terminal.
     Terminated,
 }
 
@@ -95,8 +108,8 @@ impl OpsRegistry {
     ///
     /// Returns the updated record on success.
     /// Returns [`OpsError::NotFound`] if the ID is unknown.
-    /// Returns [`OpsError::InvalidTransition`] if the op is already `Paused`
-    /// or `Terminated`.
+    /// Returns [`OpsError::InvalidTransition`] if the op is not currently
+    /// `Running` (Pending / Paused / Completing / Terminated all reject).
     pub fn pause(&self, op_id: &str) -> Result<OpRecord, OpsError> {
         let mut entry = self.ops.get_mut(op_id).ok_or(OpsError::NotFound)?;
         match entry.state {
@@ -105,7 +118,9 @@ impl OpsRegistry {
                 entry.updated_at = chrono::Utc::now().to_rfc3339();
                 Ok(entry.clone())
             }
-            OpState::Paused | OpState::Terminated => Err(OpsError::InvalidTransition),
+            OpState::Pending | OpState::Paused | OpState::Completing | OpState::Terminated => {
+                Err(OpsError::InvalidTransition)
+            }
         }
     }
 
@@ -113,8 +128,8 @@ impl OpsRegistry {
     ///
     /// Returns the updated record on success.
     /// Returns [`OpsError::NotFound`] if the ID is unknown.
-    /// Returns [`OpsError::InvalidTransition`] if the op is `Running` or
-    /// `Terminated`.
+    /// Returns [`OpsError::InvalidTransition`] if the op is not currently
+    /// `Paused` (Pending / Running / Completing / Terminated all reject).
     pub fn resume(&self, op_id: &str) -> Result<OpRecord, OpsError> {
         let mut entry = self.ops.get_mut(op_id).ok_or(OpsError::NotFound)?;
         match entry.state {
@@ -123,25 +138,28 @@ impl OpsRegistry {
                 entry.updated_at = chrono::Utc::now().to_rfc3339();
                 Ok(entry.clone())
             }
-            OpState::Running | OpState::Terminated => Err(OpsError::InvalidTransition),
+            OpState::Pending | OpState::Running | OpState::Completing | OpState::Terminated => {
+                Err(OpsError::InvalidTransition)
+            }
         }
     }
 
-    /// Transition `Running | Paused → Terminated`.
+    /// Transition `Pending | Running | Paused → Terminated`.
     ///
-    /// Idempotent: a second call on an already-terminated op returns the
-    /// existing record unchanged (no error).
+    /// Idempotent on both terminal states: calling `terminate` on an op
+    /// already in `Terminated` or `Completing` returns the existing record
+    /// unchanged (no error).
     ///
     /// Returns [`OpsError::NotFound`] if the ID is unknown.
     pub fn terminate(&self, op_id: &str) -> Result<OpRecord, OpsError> {
         let mut entry = self.ops.get_mut(op_id).ok_or(OpsError::NotFound)?;
         match entry.state {
-            OpState::Running | OpState::Paused => {
+            OpState::Pending | OpState::Running | OpState::Paused => {
                 entry.state = OpState::Terminated;
                 entry.updated_at = chrono::Utc::now().to_rfc3339();
                 Ok(entry.clone())
             }
-            OpState::Terminated => Ok(entry.clone()),
+            OpState::Completing | OpState::Terminated => Ok(entry.clone()),
         }
     }
 }
