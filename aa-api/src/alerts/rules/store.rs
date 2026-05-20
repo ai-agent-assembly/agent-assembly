@@ -141,8 +141,21 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
             .collect()
     }
 
-    fn update(&self, _id: &str, _rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
-        unimplemented!("AAASM-1616: update lands next")
+    fn update(&self, id: &str, mut rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
+        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+        let existing = rules.get(id).ok_or(AlertRuleStoreError::NotFound)?;
+
+        // Reject the update when the new name collides with another
+        // rule. Same-id same-name (i.e. unchanged name) is allowed.
+        if rule.name != existing.name && rules.values().any(|r| r.id != id && r.name == rule.name) {
+            return Err(AlertRuleStoreError::NameConflict { name: rule.name });
+        }
+
+        rule.id = existing.id.clone();
+        rule.created_at = existing.created_at.clone();
+        rule.updated_at = chrono::Utc::now().to_rfc3339();
+        rules.insert(id.to_string(), rule.clone());
+        Ok(rule)
     }
 
     fn delete(&self, _id: &str) -> bool {
