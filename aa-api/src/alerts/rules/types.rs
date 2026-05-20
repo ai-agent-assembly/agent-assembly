@@ -447,4 +447,18 @@ mod tests {
             other => panic!("expected UnknownDestination, got {other:?}"),
         }
     }
+
+    #[test]
+    fn alert_rule_round_trips_through_serde() {
+        let rule = valid_rule();
+        let json = serde_json::to_string(&rule).expect("serialize");
+        let parsed: AlertRule = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, rule);
+
+        // Spot-check wire-form values match the Story example.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["metric"], "budget_spent_pct");
+        assert_eq!(v["operator"], ">");
+        assert_eq!(v["severity"], "CRITICAL");
+    }
 }
