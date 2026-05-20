@@ -248,6 +248,9 @@ mod tests {
             updated_at: None,
             detected_pattern_type: None,
             redacted_value: None,
+            first_fired_at: "2026-05-20T00:00:00Z".to_string(),
+            resolved_at: None,
+            rule_context: None,
         }
     }
 
