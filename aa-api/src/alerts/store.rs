@@ -617,4 +617,15 @@ mod tests {
         let store = InMemoryAlertStore::new();
         assert!(store.restore("00000000000000000000000000").is_none());
     }
+
+    #[tokio::test]
+    async fn record_with_no_subscriber_does_not_panic() {
+        // No subscribe() call — broadcast::Sender::send returns Err but
+        // the store must swallow it. Test passes if no panic. This
+        // complements master's subscribe-attached AAASM-1645 tests by
+        // proving the publish path is robust to zero subscribers.
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        assert_eq!(id.len(), 26, "ULID is always 26 chars");
+    }
 }
