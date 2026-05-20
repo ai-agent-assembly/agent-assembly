@@ -274,3 +274,29 @@ fn selftest_google_adk_single_agent() {
     );
     assert_eq!(events.last().unwrap()["event"], "done", "last event must be 'done'");
 }
+
+// ── test 12 ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn selftest_google_adk_agent_team_emits_two_started_events() {
+    let out = run_agent("agent_team/google_adk_team.py", &[("AA_SELFTEST", "1")]).expect("spawn google_adk_team.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    let events = parse_events(&stdout);
+    let started: Vec<_> = events.iter().filter(|e| e["event"] == "started").collect();
+    assert_eq!(
+        started.len(),
+        2,
+        "agent_team must emit exactly 2 'started' events; got {}",
+        started.len()
+    );
+    assert_eq!(started[0]["framework"], "google_adk");
+    let done = events.last().unwrap();
+    assert_eq!(done["event"], "done");
+    assert_eq!(done["agent_count"], 2, "done event must carry agent_count=2");
+}
