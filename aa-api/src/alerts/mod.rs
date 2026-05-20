@@ -17,7 +17,7 @@ use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::alerts::detail::RuleContext;
+use crate::alerts::detail::{RoutingLogEntry, RuleContext, RuleSnapshot};
 
 /// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +219,92 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         first_fired_at: timestamp,
         resolved_at: None,
         rule_context: None,
+    }
+}
+
+/// Input payload for `AlertStore::record_rule_alert`.
+///
+/// Carries everything the store needs to build a `StoredAlert` with
+/// populated `rule_context`. Intentionally constructible from test
+/// fixtures and (eventually) the gateway's rule engine — the in-memory
+/// store does not own the rule lifecycle.
+#[derive(Debug, Clone)]
+pub struct RuleAlertSeed {
+    /// Agent that triggered the rule. `None` for org-scope alerts.
+    pub agent_id: Option<aa_core::AgentId>,
+    /// Team attribution. `None` when the alert is not scoped to a team.
+    pub team_id: Option<String>,
+    /// Identifier of the rule that produced the alert.
+    pub rule_id: String,
+    /// Human-readable rule name.
+    pub rule_name: String,
+    /// Snapshot of the rule definition at fire time.
+    pub rule_snapshot: RuleSnapshot,
+    /// Destinations the rule routes to (in priority order).
+    pub destination_ids: Vec<String>,
+    /// Free-form payload of the triggering event.
+    pub event_payload: serde_json::Value,
+    /// Connector-framework delivery log seeded with this fire's attempts.
+    pub routing_log: Vec<RoutingLogEntry>,
+}
+
+/// Map a rule-engine severity string to the existing `AlertSeverity` enum.
+///
+/// The spec uses `"CRITICAL"`, `"HIGH"`, `"MEDIUM"`, `"LOW"`; the existing
+/// enum only models `Critical / Warning / Info`. `HIGH` collapses into
+/// `Critical`, `MEDIUM` into `Warning`, everything else into `Info`. The
+/// original spec string is preserved on `rule_snapshot.severity` for the UI.
+pub fn severity_from_rule_string(s: &str) -> AlertSeverity {
+    match s.to_ascii_uppercase().as_str() {
+        "CRITICAL" | "HIGH" => AlertSeverity::Critical,
+        "MEDIUM" | "WARNING" => AlertSeverity::Warning,
+        _ => AlertSeverity::Info,
+    }
+}
+
+/// Build a human-readable message for a rule alert.
+fn build_rule_alert_message(seed: &RuleAlertSeed) -> String {
+    format!(
+        "Rule alert: {} ({}) fired with severity {}",
+        seed.rule_name, seed.rule_id, seed.rule_snapshot.severity,
+    )
+}
+
+/// Convert a `RuleAlertSeed` into a `StoredAlert` with populated
+/// `rule_context`. The dedup occurrence counter is seeded to 1 and
+/// `dedup_window_expires_at` is left for the store's dedup state
+/// machine to compute (AAASM-1627).
+pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: u64, timestamp: String) -> StoredAlert {
+    let agent_id_str = seed.agent_id.as_ref().map(format_agent_id).unwrap_or_default();
+    let severity = severity_from_rule_string(&seed.rule_snapshot.severity);
+    StoredAlert {
+        id,
+        severity,
+        category: AlertCategory::Rule,
+        message: build_rule_alert_message(seed),
+        agent_id: agent_id_str,
+        team_id: seed.team_id.clone(),
+        timestamp: timestamp.clone(),
+        threshold_pct: 0,
+        spent_usd: 0.0,
+        limit_usd: 0.0,
+        status: "unresolved".to_string(),
+        updated_at: None,
+        detected_pattern_type: None,
+        redacted_value: None,
+        first_fired_at: timestamp,
+        resolved_at: None,
+        rule_context: Some(RuleContext {
+            rule_id: seed.rule_id.clone(),
+            rule_name: seed.rule_name.clone(),
+            rule_snapshot: seed.rule_snapshot.clone(),
+            destination_ids: seed.destination_ids.clone(),
+            event_payload: seed.event_payload.clone(),
+            routing_log: seed.routing_log.clone(),
+            silence: None,
+            dedup_occurrence_count: 1,
+            dedup_window_expires_at: None,
+        }),
     }
 }
 
