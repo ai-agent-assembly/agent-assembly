@@ -15,6 +15,7 @@ pub mod engine;
 pub mod events;
 pub mod iam;
 pub mod message_router;
+pub mod ops;
 pub mod policy;
 pub mod registry;
 pub mod server;

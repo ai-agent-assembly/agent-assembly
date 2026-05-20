@@ -290,6 +290,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "utoipa",
  "uuid",
 ]
 
