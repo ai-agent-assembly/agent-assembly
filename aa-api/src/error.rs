@@ -27,6 +27,16 @@ pub struct ProblemDetail {
     /// URI reference identifying the specific occurrence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+    /// Stable machine-readable error code (e.g. `"invalid_threshold"`)
+    /// for clients that need to branch on the specific failure
+    /// without parsing the human-readable `detail`. Omitted from the
+    /// wire when unset so existing endpoints stay byte-identical.
+    ///
+    /// Codes are static identifiers — `&'static str` keeps the struct
+    /// small enough that handlers returning `Result<_, ProblemDetail>`
+    /// stay under clippy's `result_large_err` threshold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<&'static str>,
 }
 
 impl ProblemDetail {
@@ -38,6 +48,7 @@ impl ProblemDetail {
             status: status.as_u16(),
             detail: None,
             instance: None,
+            error_code: None,
         }
     }
 
