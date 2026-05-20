@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::Instant;
 
+use aa_api::alerts::silence_store::InMemorySilenceStore;
 use aa_api::alerts::store::InMemoryAlertStore;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
@@ -117,6 +118,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(secret));
     let rate_limiter = Arc::new(RateLimiter::new(rpm));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
 
     let audit_id = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let audit_dir = std::env::temp_dir().join(format!("aa-api-test-audit-{}-{audit_id}", std::process::id()));
@@ -130,6 +132,7 @@ spec:
         approval_queue,
         policy_history,
         alert_store,
+        silence_store,
         events,
         replay_buffer: ReplayBuffer::new(),
         next_event_id: Arc::new(AtomicU64::new(0)),

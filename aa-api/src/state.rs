@@ -17,6 +17,7 @@ use aa_gateway::registry::AgentRegistry;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::alerts::silence_store::SilenceStore;
 use crate::alerts::AlertStore;
 use crate::auth::api_key::ApiKeyStore;
 use crate::auth::config::AuthConfig;
@@ -45,6 +46,10 @@ pub struct AppState {
     pub policy_history: Arc<dyn PolicyHistoryStore>,
     /// Persistent alert store for budget alerts.
     pub alert_store: Arc<dyn AlertStore>,
+    /// In-memory store for active alert silences. Populated by
+    /// `POST /api/v1/alerts/silence` and drained by the silence-expiry
+    /// watcher spawned in `run_server` (AAASM-1646 / AAASM-1647).
+    pub silence_store: Arc<dyn SilenceStore>,
     /// Unified event broadcast bus for streaming to clients.
     pub events: Arc<EventBroadcast>,
     /// Circular replay buffer for reconnecting WebSocket clients.
