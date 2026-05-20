@@ -1982,14 +1982,12 @@ export interface components {
          *     Actual emission on registry transitions ships in PR-H. PR-B only
          *     defines the payload shape so PR-C (dashboard rework) and PR-H
          *     (gateway emission) can build against a stable schema in parallel.
+         *
+         *     Agent attribution travels on the enclosing
+         *     [`super::event::GovernanceEvent::agent_id`] — same convention as
+         *     `ViolationPayload`, `ApprovalPayload`, and `BudgetAlertPayload`.
          */
         OpsChangePayload: {
-            /**
-             * @description Agent that owns the operation. Mirrors `GovernanceEvent.agent_id`
-             *     so a single agent's live-ops can be filtered without joining
-             *     against the audit channel.
-             */
-            agent_id: string;
             /**
              * @description Stable operation identifier — `"{trace_id}:{span_id}"` composed
              *     in the gateway. The dashboard keys its row map by this value so
