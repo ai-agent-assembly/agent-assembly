@@ -7,6 +7,7 @@
 pub mod capture;
 pub mod detail;
 pub mod event;
+pub mod rules;
 pub mod silence;
 pub mod silence_store;
 pub mod silence_watcher;
