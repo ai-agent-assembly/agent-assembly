@@ -158,11 +158,13 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
         Ok(rule)
     }
 
-    fn delete(&self, _id: &str) -> bool {
-        unimplemented!("AAASM-1616: delete lands next")
+    fn delete(&self, id: &str) -> bool {
+        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+        rules.remove(id).is_some()
     }
 
-    fn find_by_name(&self, _name: &str) -> Option<AlertRule> {
-        unimplemented!("AAASM-1616: find_by_name lands next")
+    fn find_by_name(&self, name: &str) -> Option<AlertRule> {
+        let rules = self.rules.read().expect("alert rule store lock poisoned");
+        rules.values().find(|r| r.name == name).cloned()
     }
 }
