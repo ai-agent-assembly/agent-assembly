@@ -141,6 +141,23 @@ impl AlertStore for InMemoryAlertStore {
     fn subscribe(&self) -> broadcast::Receiver<AlertEvent> {
         self.event_tx.subscribe()
     }
+
+    fn suppress(&self, id: &str) -> Option<StoredAlert> {
+        let snapshot = {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let alert = buf.iter_mut().find(|a| a.id == id)?;
+            if alert.status == "suppressed" {
+                // Defensive: refuse to overwrite an existing prior_status.
+                return None;
+            }
+            alert.prior_status = Some(alert.status.clone());
+            alert.status = "suppressed".to_string();
+            alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            alert.clone()
+        };
+        let _ = self.event_tx.send(AlertEvent::Silence(snapshot.clone()));
+        Some(snapshot)
+    }
 }
 
 #[cfg(test)]

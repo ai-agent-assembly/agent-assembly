@@ -252,4 +252,19 @@ pub trait AlertStore: Send + Sync {
     /// a snapshot of the post-mutation alert. Implementations that
     /// don't emit events should still return a live receiver.
     fn subscribe(&self) -> broadcast::Receiver<AlertEvent>;
+
+    /// Suppress an alert — flip its status to `"suppressed"` and capture
+    /// the prior status in `prior_status` so the silence-expiry watcher
+    /// can restore it later.
+    ///
+    /// Returns the post-mutation record on success, or `None` when:
+    /// * the ID is unknown or evicted from the ring buffer, **or**
+    /// * the alert is already `"suppressed"` (defensive — the route
+    ///   handler is expected to catch double-suppression at the
+    ///   `SilenceStore` layer and return 409 `alert_already_silenced`
+    ///   before reaching this method).
+    ///
+    /// On success an `AlertEvent::Silence(snapshot)` is published on the
+    /// bus.
+    fn suppress(&self, id: &str) -> Option<StoredAlert>;
 }
