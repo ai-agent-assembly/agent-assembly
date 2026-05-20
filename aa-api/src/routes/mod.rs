@@ -67,6 +67,10 @@ pub fn v1_router() -> Router {
         .route("/iam/api-keys/{id}/rotate", post(iam::rotate_api_key))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
+        // AAASM-1389: real-time alert event stream (placed BEFORE the
+        // /alerts/{id} catch-all so the literal "ws" path segment is
+        // matched first).
+        .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         // Alert destinations — AAASM-1388
