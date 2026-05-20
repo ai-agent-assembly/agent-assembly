@@ -233,6 +233,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/destinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/alerts/destinations` — list destinations.
+         * @description List configured notification destinations. The `kind` query parameter filters
+         *     to webhook, slack, pagerduty, or opsgenie. Returns the full set when absent.
+         */
+        get: operations["list_destinations"];
+        put?: never;
+        /**
+         * `POST /api/v1/alerts/destinations` — create a destination.
+         * @description Register a new notification destination. The request `kind` discriminates the
+         *     `config` shape and is validated server-side; an unknown kind returns 400
+         *     `invalid_kind` and a malformed config returns 400 `invalid_config`.
+         */
+        post: operations["create_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/destinations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/alerts/destinations/{id}` — fetch one destination.
+         * @description Retrieve a single notification destination by id. Returns 404
+         *     `destination_not_found` when the id is unknown.
+         */
+        get: operations["get_destination"];
+        /**
+         * `PUT /api/v1/alerts/destinations/{id}` — update a destination.
+         * @description Replace name, config, or enabled state on an existing destination. Preserves
+         *     the original `created_at`, bumps `updated_at`, and re-validates the config —
+         *     invalid input returns 400.
+         */
+        put: operations["update_destination"];
+        post?: never;
+        /**
+         * `DELETE /api/v1/alerts/destinations/{id}` — remove a destination.
+         * @description Remove a destination. Returns 409 `destination_in_use` when any active alert
+         *     rule still references this id — the rule must be removed or re-targeted
+         *     before the destination can be deleted.
+         */
+        delete: operations["delete_destination"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/destinations/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/alerts/destinations/{id}/test` — fire a test notification.
+         * @description Send a real test notification through the destination's connector — no
+         *     dry-run — so operators can verify the round-trip end-to-end. Returns 502
+         *     `connector_failed` with the upstream status and body when the connector
+         *     rejects the payload.
+         */
+        post: operations["test_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/{id}": {
         parameters: {
             query?: never;
@@ -1471,6 +1554,21 @@ export interface components {
             /** @description USD spent by this child on the given date (string-encoded Decimal). */
             spent_usd: string;
         };
+        /** @description Response body for a failed test-fire (502). */
+        ConnectorFailedBody: {
+            /**
+             * @description Up-to-2048-byte snippet of the connector response body (or transport
+             *     error description if no HTTP response was reached).
+             */
+            connector_body: string;
+            /**
+             * Format: int32
+             * @description HTTP status the connector observed, or `0` if no response was received.
+             */
+            connector_status: number;
+            /** @description Always `"connector_failed"`. */
+            error: string;
+        };
         /** @description JSON representation of the cost/budget summary. */
         CostSummary: {
             /** @description Configured daily budget limit in USD, if set. */
@@ -1487,6 +1585,13 @@ export interface components {
             per_agent?: components["schemas"]["AgentCostEntry"][];
             /** @description Per-team cost rollup for the current day. */
             per_team?: components["schemas"]["TeamCostEntry"][];
+        };
+        /** @description Body for `POST /api/v1/alerts/destinations`. */
+        CreateDestinationRequest: components["schemas"]["DestinationConfig"] & {
+            /** @description Whether dispatch is enabled on creation (defaults to true). */
+            enabled?: boolean;
+            /** @description Operator-supplied display name. */
+            name: string;
         };
         /** @description Request body for creating a new policy. */
         CreatePolicyRequest: {
@@ -1521,6 +1626,73 @@ export interface components {
          * @enum {string}
          */
         Decision: "allow" | "narrow" | "approval" | "deny" | "na";
+        /**
+         * @description Per-kind configuration payload for a `Destination`.
+         *
+         *     Serialised as `{ "kind": "...", "config": { ... } }` so that the API
+         *     surface keeps configuration fields cleanly grouped under `config`.
+         */
+        DestinationConfig: {
+            /** @description Generic HTTP webhook. */
+            config: {
+                /** @description Optional secret shipped in the `X-AAASM-Token` header. */
+                secret_header?: string | null;
+                /** @description Target URL (http or https). */
+                url: string;
+            };
+            /** @enum {string} */
+            kind: "webhook";
+        } | {
+            /** @description Slack incoming webhook. */
+            config: {
+                /** @description Optional `#channel` or `@user` override. */
+                channel_override?: string | null;
+                /** @description Slack-issued incoming webhook URL. */
+                webhook_url: string;
+            };
+            /** @enum {string} */
+            kind: "slack";
+        } | {
+            /** @description PagerDuty Events API v2. */
+            config: {
+                /** @description Integration routing key. */
+                routing_key: string;
+                /** @description Optional severity-name mapping (AAASM severity → PagerDuty severity). */
+                severity_map?: {
+                    [key: string]: string;
+                } | null;
+            };
+            /** @enum {string} */
+            kind: "pagerduty";
+        } | {
+            /** @description OpsGenie REST alerts API. */
+            config: {
+                /** @description OpsGenie API key (GenieKey). */
+                api_key: string;
+                /** @description Target team identifier. */
+                team_id: string;
+            };
+            /** @enum {string} */
+            kind: "opsgenie";
+        };
+        /**
+         * @description Kind of notification destination.
+         * @enum {string}
+         */
+        DestinationKind: "webhook" | "slack" | "pagerduty" | "opsgenie";
+        /** @description Public JSON shape returned by every destination handler. */
+        DestinationResponse: components["schemas"]["DestinationConfig"] & {
+            /** @description RFC 3339 creation timestamp. */
+            created_at: string;
+            /** @description Whether dispatch is allowed. */
+            enabled: boolean;
+            /** @description Stable identifier (`dst_<32 hex>`). */
+            id: string;
+            /** @description Operator-supplied display name. */
+            name: string;
+            /** @description RFC 3339 last-mutation timestamp. */
+            updated_at: string;
+        };
         /** @description Paginated list of directed edges for an agent. */
         EdgeListResponse: {
             /** @description The queried agent ID. */
@@ -2062,6 +2234,25 @@ export interface components {
             /** @description Team identifier. */
             team_id: string;
         };
+        /** @description Body for `POST /api/v1/alerts/destinations/{id}/test`. */
+        TestDestinationRequest: {
+            /** @description Optional message body; defaults to `"AAASM test fire"`. */
+            message?: string | null;
+            /** @description Optional severity label; defaults to `"LOW"`. */
+            severity?: string | null;
+        };
+        /** @description Response body for a successful test-fire. */
+        TestDestinationResponse: {
+            /** @description Up-to-2048-byte snippet of the connector response body. */
+            connector_response_body: string;
+            /**
+             * Format: int32
+             * @description HTTP status the connector observed.
+             */
+            connector_response_status: number;
+            /** @description RFC 3339 timestamp when the connector reported success. */
+            delivered_at: string;
+        };
         /** @description Request body for `POST /auth/token`. */
         TokenRequest: {
             /**
@@ -2237,6 +2428,18 @@ export interface components {
             span_id: string;
             /** @description Start time of the span (ISO 8601). */
             start_time: string;
+        };
+        /**
+         * @description Body for `PUT /api/v1/alerts/destinations/{id}`.
+         *
+         *     All fields are optional — supplying just `enabled` toggles dispatch
+         *     without touching the configuration payload.
+         */
+        UpdateDestinationRequest: (null | components["schemas"]["DestinationConfig"]) & {
+            /** @description New enabled flag. */
+            enabled?: boolean | null;
+            /** @description New display name. */
+            name?: string | null;
         };
         /**
          * @description Verb a capability cell scopes its decision to.
@@ -2770,6 +2973,210 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertResponse"][];
+                };
+            };
+        };
+    };
+    list_destinations: {
+        parameters: {
+            query?: {
+                /** @description Optional kind filter (`webhook`, `slack`, `pagerduty`, `opsgenie`). */
+                kind?: null | components["schemas"]["DestinationKind"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of destinations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationResponse"][];
+                };
+            };
+        };
+    };
+    create_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description Destination created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationResponse"];
+                };
+            };
+            /** @description Invalid kind or config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Destination identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Destination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationResponse"];
+                };
+            };
+            /** @description Destination not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Destination identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description Destination updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationResponse"];
+                };
+            };
+            /** @description Invalid update payload */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Destination not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Destination identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Destination removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Destination not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Destination still referenced by a routing rule */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Destination identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Optional severity / message overrides */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestDestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description Connector accepted the test */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestDestinationResponse"];
+                };
+            };
+            /** @description Destination not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Connector failed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorFailedBody"];
                 };
             };
         };
