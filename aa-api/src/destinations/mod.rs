@@ -3,6 +3,7 @@
 //!
 //! See `routes::destinations` for the HTTP surface that wraps this module.
 
+pub mod connectors;
 pub mod store;
 pub mod types;
 pub mod validate;
