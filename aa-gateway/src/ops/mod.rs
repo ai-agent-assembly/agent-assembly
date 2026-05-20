@@ -234,3 +234,118 @@ impl OpsRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingest_creates_pending_entry() {
+        let registry = OpsRegistry::new();
+        let record = registry.ingest("trace-1:span-1".to_string());
+
+        assert_eq!(record.op_id, "trace-1:span-1");
+        assert_eq!(record.state, OpState::Pending);
+        assert_eq!(registry.get("trace-1:span-1").unwrap().state, OpState::Pending);
+    }
+
+    #[test]
+    fn ingest_is_idempotent_and_preserves_later_state() {
+        let registry = OpsRegistry::new();
+        let first = registry.ingest("op-1".to_string());
+        registry.allow("op-1").unwrap();
+        let second = registry.ingest("op-1".to_string());
+
+        // Second ingest must not reset the op back to Pending — the policy
+        // service may re-call ingest after the SDK retries the request.
+        assert_eq!(second.state, OpState::Running);
+        assert_eq!(second.registered_at, first.registered_at);
+    }
+
+    #[test]
+    fn allow_transitions_pending_to_running() {
+        let registry = OpsRegistry::new();
+        registry.ingest("op-1".to_string());
+
+        let updated = registry.allow("op-1").unwrap();
+
+        assert_eq!(updated.state, OpState::Running);
+    }
+
+    #[test]
+    fn allow_rejects_non_pending_states() {
+        let registry = OpsRegistry::new();
+        registry.register("running-op".to_string());
+        registry.ingest("paused-op".to_string());
+        registry.allow("paused-op").unwrap();
+        registry.pause("paused-op").unwrap();
+
+        assert_eq!(registry.allow("running-op").unwrap_err(), OpsError::InvalidTransition);
+        assert_eq!(registry.allow("paused-op").unwrap_err(), OpsError::InvalidTransition);
+    }
+
+    #[test]
+    fn allow_unknown_op_returns_not_found() {
+        let registry = OpsRegistry::new();
+        assert_eq!(registry.allow("never-ingested").unwrap_err(), OpsError::NotFound);
+    }
+
+    #[test]
+    fn complete_transitions_running_to_completing() {
+        let registry = OpsRegistry::new();
+        registry.register("op-1".to_string());
+
+        let updated = registry.complete("op-1").unwrap();
+
+        assert_eq!(updated.state, OpState::Completing);
+    }
+
+    #[test]
+    fn complete_rejects_non_running_states() {
+        let registry = OpsRegistry::new();
+        registry.ingest("pending-op".to_string());
+        registry.register("paused-op".to_string());
+        registry.pause("paused-op").unwrap();
+        registry.register("terminated-op".to_string());
+        registry.terminate("terminated-op").unwrap();
+
+        assert_eq!(
+            registry.complete("pending-op").unwrap_err(),
+            OpsError::InvalidTransition
+        );
+        assert_eq!(registry.complete("paused-op").unwrap_err(), OpsError::InvalidTransition);
+        assert_eq!(
+            registry.complete("terminated-op").unwrap_err(),
+            OpsError::InvalidTransition
+        );
+    }
+
+    #[test]
+    fn complete_unknown_op_returns_not_found() {
+        let registry = OpsRegistry::new();
+        assert_eq!(registry.complete("never-registered").unwrap_err(), OpsError::NotFound);
+    }
+
+    #[test]
+    fn terminate_absorbs_pending_into_terminated() {
+        // Important: a policy Deny path (PR-H) needs Pending → Terminated.
+        let registry = OpsRegistry::new();
+        registry.ingest("op-1".to_string());
+
+        let updated = registry.terminate("op-1").unwrap();
+
+        assert_eq!(updated.state, OpState::Terminated);
+    }
+
+    #[test]
+    fn terminate_is_idempotent_on_completing() {
+        let registry = OpsRegistry::new();
+        registry.register("op-1".to_string());
+        registry.complete("op-1").unwrap();
+
+        let updated = registry.terminate("op-1").unwrap();
+
+        // Completing is terminal — terminate is a no-op rather than an error.
+        assert_eq!(updated.state, OpState::Completing);
+    }
+}
