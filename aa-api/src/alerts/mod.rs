@@ -237,7 +237,7 @@ pub trait AlertStore: Send + Sync {
 
     /// Retrieve a single alert by its ULID, or `None` if the ID is
     /// unknown or has been evicted by the ring buffer.
-    fn get(&self, id: &str) -> Option<StoredAlert>;
+    fn get_by_id(&self, id: &str) -> Option<StoredAlert>;
 
     /// Mark an alert as resolved. Returns the post-mutation record, or
     /// `None` if the ID is unknown / evicted. Must be **idempotent** —

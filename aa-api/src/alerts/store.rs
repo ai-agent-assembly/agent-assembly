@@ -113,7 +113,7 @@ impl AlertStore for InMemoryAlertStore {
         (items, total)
     }
 
-    fn get(&self, id: &str) -> Option<StoredAlert> {
+    fn get_by_id(&self, id: &str) -> Option<StoredAlert> {
         let buf = self.alerts.read().expect("alert store lock poisoned");
         buf.iter().find(|a| a.id == id).cloned()
     }
@@ -291,13 +291,13 @@ mod tests {
         let store = InMemoryAlertStore::new();
         let id = store.record(&test_alert(95));
 
-        let found = store.get(&id).expect("known id should return Some");
+        let found = store.get_by_id(&id).expect("known id should return Some");
         assert_eq!(found.id, id);
         assert_eq!(found.threshold_pct, 95);
         assert_eq!(found.status, "unresolved");
 
         assert!(
-            store.get("00000000000000000000000000").is_none(),
+            store.get_by_id("00000000000000000000000000").is_none(),
             "unknown id returns None"
         );
     }
@@ -309,14 +309,14 @@ mod tests {
         store.record(&test_alert(80));
         store.record(&test_alert(90));
 
-        assert!(store.get(&id1).is_none(), "evicted id should return None");
+        assert!(store.get_by_id(&id1).is_none(), "evicted id should return None");
     }
 
     #[test]
     fn resolve_flips_status_and_sets_updated_at() {
         let store = InMemoryAlertStore::new();
         let id = store.record(&test_alert(95));
-        let before = store.get(&id).unwrap();
+        let before = store.get_by_id(&id).unwrap();
         assert_eq!(before.status, "unresolved");
         assert!(before.updated_at.is_none());
 
@@ -328,7 +328,7 @@ mod tests {
             "resolved_at must be set in lockstep with updated_at on the first resolve",
         );
 
-        let from_store = store.get(&id).unwrap();
+        let from_store = store.get_by_id(&id).unwrap();
         assert_eq!(from_store.status, "resolved");
         assert_eq!(from_store.updated_at, after.updated_at);
     }
@@ -375,7 +375,7 @@ mod tests {
         let store = InMemoryAlertStore::new();
         let id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
 
-        let found = store.get(&id).expect("recorded secret alert must be retrievable");
+        let found = store.get_by_id(&id).expect("recorded secret alert must be retrievable");
         assert_eq!(found.severity, super::super::AlertSeverity::Critical);
         assert_eq!(found.category, super::super::AlertCategory::SecretDetected);
         assert_eq!(found.detected_pattern_type.as_deref(), Some("AwsAccessKey"));
@@ -389,8 +389,8 @@ mod tests {
         let budget_id = store.record(&test_alert(80));
         let secret_id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
 
-        let budget = store.get(&budget_id).expect("budget alert");
-        let secret = store.get(&secret_id).expect("secret alert");
+        let budget = store.get_by_id(&budget_id).expect("budget alert");
+        let secret = store.get_by_id(&secret_id).expect("secret alert");
 
         for stored in [&budget, &secret] {
             assert!(
