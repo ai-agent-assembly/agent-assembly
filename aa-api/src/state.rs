@@ -95,4 +95,8 @@ pub struct AppState {
     /// in `routes::devtools::saas_webhook` is the first consumer of this
     /// seam (AAASM-924); future routes wire in the same way.
     pub audit_sender: Option<mpsc::Sender<AuditEntry>>,
+    /// Per-provider HMAC secret cache used by the SaaS webhook handler
+    /// (AAASM-924). 5-minute TTL by default. Shared across requests so
+    /// the resolver backend is hit at most once per TTL window per key.
+    pub saas_secret_cache: Arc<crate::routes::devtools::secret_cache::SecretCache>,
 }
