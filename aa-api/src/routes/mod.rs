@@ -3,6 +3,7 @@
 //! All endpoints are nested under `/api/v1/`.
 
 pub mod agents;
+pub mod alert_rules;
 pub mod alerts;
 pub mod approvals;
 pub mod audit;
@@ -68,6 +69,17 @@ pub fn v1_router() -> Router {
         .route("/alerts", get(alerts::list_alerts))
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
+        // Alert rules — CRUD (AAASM-1386)
+        .route(
+            "/alerts/rules",
+            get(alert_rules::list_rules).post(alert_rules::create_rule),
+        )
+        .route(
+            "/alerts/rules/{id}",
+            get(alert_rules::get_rule)
+                .put(alert_rules::update_rule)
+                .delete(alert_rules::delete_rule),
+        )
         // Dev tool webhooks
         .route(
             "/devtools/saas/{provider}/events",

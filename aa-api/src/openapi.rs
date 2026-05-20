@@ -14,7 +14,8 @@ use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alerts, approvals, audit, auth, capability, costs, edges, iam, logs, ops, policies, topology, traces,
+    agents, alert_rules, alerts, approvals, audit, auth, capability, costs, edges, iam, logs, ops, policies, topology,
+    traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -39,6 +40,7 @@ use crate::routes::{
         (name = "approvals", description = "Human-in-the-loop approvals"),
         (name = "costs", description = "Cost and budget tracking"),
         (name = "alerts", description = "Governance alerts"),
+        (name = "alert-rules", description = "Alert-rule CRUD (AAASM-1386)"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "topology", description = "Agent topology — tree, team, lineage, statistics, and mesh edge queries"),
@@ -70,6 +72,11 @@ use crate::routes::{
         alerts::list_alerts,
         alerts::get_alert,
         alerts::resolve_alert,
+        alert_rules::list_rules,
+        alert_rules::create_rule,
+        alert_rules::get_rule,
+        alert_rules::update_rule,
+        alert_rules::delete_rule,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
         topology::get_overview,
@@ -124,6 +131,11 @@ use crate::routes::{
         costs::TeamCostEntry,
         alerts::AlertResponse,
         alerts::ResolveAlertRequest,
+        alert_rules::AlertRuleRequest,
+        crate::alerts::rules::types::AlertRule,
+        crate::alerts::rules::types::RuleMetric,
+        crate::alerts::rules::types::RuleOperator,
+        crate::alerts::rules::types::RuleSeverity,
         auth::TokenRequest,
         auth::TokenResponse,
         crate::auth::scope::Scope,

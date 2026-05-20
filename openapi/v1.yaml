@@ -421,6 +421,164 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/AlertResponse'
+  /api/v1/alerts/rules:
+    get:
+      tags:
+      - alert-rules
+      summary: List alert rules.
+      description: |-
+        Returns every persisted [`AlertRule`] ordered by `created_at` then
+        `id`. Pass `?enabled=true|false` to restrict the response to the
+        matching subset. Pagination follows the workspace convention —
+        `?page` (1-indexed) and `?per_page` (default 50).
+      operationId: list_rules
+      parameters:
+      - name: enabled
+        in: query
+        description: Filter by the rule's `enabled` flag. Omit to return every rule.
+        required: false
+        schema:
+          type:
+          - boolean
+          - 'null'
+      - name: page
+        in: query
+        description: 1-indexed page number, default 1.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      - name: per_page
+        in: query
+        description: Page size, default 50.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      responses:
+        '200':
+          description: Paginated list of alert rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AlertRule'
+    post:
+      tags:
+      - alert-rules
+      summary: Create a new alert rule.
+      description: |-
+        Validates the request body against the destination registry and the
+        per-metric range rules, then persists it with a server-assigned id
+        and RFC 3339 `created_at` / `updated_at` timestamps. Returns the
+        stored record. Surfaces `invalid_metric`, `invalid_threshold`,
+        `destination_unknown`, or `rule_name_conflict` on rejection.
+      operationId: create_rule
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertRuleRequest'
+        required: true
+      responses:
+        '201':
+          description: Created rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          description: Validation failure (invalid_metric, invalid_threshold, destination_unknown, ...)
+        '409':
+          description: rule_name_conflict
+  /api/v1/alerts/rules/{id}:
+    get:
+      tags:
+      - alert-rules
+      summary: Fetch a single alert rule by id.
+      description: |-
+        Returns the full [`AlertRule`] record, or `rule_not_found` (404)
+        when `id` is unknown.
+      operationId: get_rule
+      parameters:
+      - name: id
+        in: path
+        description: Rule id assigned by the server
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Rule detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '404':
+          description: rule_not_found
+    put:
+      tags:
+      - alert-rules
+      summary: Replace an alert rule.
+      description: |-
+        Same validation as `POST`. The store preserves the existing `id`
+        and `created_at` while bumping `updated_at`. Returns the updated
+        record, or `rule_not_found` (404) when `id` is unknown.
+      operationId: update_rule
+      parameters:
+      - name: id
+        in: path
+        description: Rule id assigned by the server
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertRuleRequest'
+        required: true
+      responses:
+        '200':
+          description: Updated rule
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertRule'
+        '400':
+          description: Validation failure
+        '404':
+          description: rule_not_found
+        '409':
+          description: rule_name_conflict
+    delete:
+      tags:
+      - alert-rules
+      summary: Delete an alert rule.
+      description: |-
+        Returns `204 No Content` on success, or `rule_not_found` (404) when
+        the id is unknown. Already-fired alerts derived from a deleted rule
+        keep their snapshot so the alert detail view still works.
+      operationId: delete_rule
+      parameters:
+      - name: id
+        in: path
+        description: Rule id assigned by the server
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Rule deleted
+        '404':
+          description: rule_not_found
   /api/v1/alerts/{id}:
     get:
       tags:
@@ -2012,6 +2170,147 @@ components:
           description: |-
             ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
             while the alert is still in its initial captured state.
+    AlertRule:
+      type: object
+      description: |-
+        A persisted alert rule. Same shape is used for request bodies on
+        POST / PUT and for response bodies on GET, matching the Story
+        description verbatim.
+
+        `id`, `created_at`, and `updated_at` are server-assigned; clients
+        must omit them on POST (the in-memory store will populate them) and
+        the store will overwrite them on PUT to preserve `id` + `created_at`
+        and bump `updated_at`.
+      required:
+      - id
+      - name
+      - description
+      - metric
+      - operator
+      - threshold
+      - evaluation_window_seconds
+      - severity
+      - destination_ids
+      - dedup_window_seconds
+      - enabled
+      - created_at
+      - updated_at
+      properties:
+        created_at:
+          type: string
+          description: RFC 3339 timestamp when the rule was first created.
+        dedup_window_seconds:
+          type: integer
+          format: int32
+          description: Window in seconds during which repeat firings are deduplicated.
+          minimum: 0
+        description:
+          type: string
+          description: Free-form description displayed in the dashboard rule list.
+        destination_ids:
+          type: array
+          items:
+            type: string
+          description: |-
+            Destinations the alert is routed to. Non-empty; each id must
+            exist in the destination registry.
+        enabled:
+          type: boolean
+          description: Whether the rule is actively evaluated.
+        evaluation_window_seconds:
+          type: integer
+          format: int32
+          description: Evaluation window in seconds — must be one of `{300, 900, 3600}`.
+          minimum: 0
+        id:
+          type: string
+          description: Server-assigned ULID-style identifier.
+        metric:
+          $ref: '#/components/schemas/RuleMetric'
+          description: Metric the rule polls.
+        name:
+          type: string
+          description: |-
+            Human-readable rule name. Must be 1-128 characters and unique
+            per tenant (uniqueness is enforced at the store layer).
+        operator:
+          $ref: '#/components/schemas/RuleOperator'
+          description: |-
+            Comparison operator applied between the metric value and
+            [`Self::threshold`].
+        severity:
+          $ref: '#/components/schemas/RuleSeverity'
+          description: Severity propagated to alerts emitted by this rule.
+        suppression_labels:
+          type: object
+          description: Optional free-form `key=value` suppression labels.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        threshold:
+          type: number
+          format: double
+          description: |-
+            Numeric threshold. Must be 0-100 for percentage metrics
+            (see [`AlertRule::validate`]).
+        updated_at:
+          type: string
+          description: RFC 3339 timestamp of the last mutation.
+    AlertRuleRequest:
+      type: object
+      description: |-
+        Wire shape for POST / PUT request bodies.
+
+        Mirrors the Story's JSON example. Enum-shaped fields are accepted as
+        strings so the handler can map unknown values onto the spec's
+        `invalid_metric` error code rather than relying on serde's default
+        422 rejection.
+      required:
+      - name
+      - description
+      - metric
+      - operator
+      - threshold
+      - evaluation_window_seconds
+      - severity
+      - destination_ids
+      - dedup_window_seconds
+      - enabled
+      properties:
+        dedup_window_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+        description:
+          type: string
+        destination_ids:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        evaluation_window_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+        metric:
+          type: string
+        name:
+          type: string
+        operator:
+          type: string
+        severity:
+          type: string
+        suppression_labels:
+          type: object
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
+        threshold:
+          type: number
+          format: double
     ApiKeyResponse:
       type: object
       required:
@@ -3334,6 +3633,38 @@ components:
           - string
           - 'null'
           description: Team the request was routed to, if known.
+    RuleMetric:
+      type: string
+      description: |-
+        Metric a rule evaluates against. Snake-case wire form matches the
+        Story's enum exactly so the dashboard rule-builder dropdown can map
+        1:1 onto these variants.
+      enum:
+      - budget_spent_pct
+      - anomaly_score
+      - approval_pending_age
+      - policy_violation_count
+    RuleOperator:
+      type: string
+      description: |-
+        Comparison operator applied between the metric's current value and
+        the rule's threshold. Wire form is the literal symbol (e.g. `">"`),
+        matching the Story description.
+      enum:
+      - '>'
+      - '>='
+      - <
+      - =
+    RuleSeverity:
+      type: string
+      description: |-
+        Severity assigned to alerts that this rule fires. Wire form is the
+        uppercase string matching the Story (e.g. `"CRITICAL"`).
+      enum:
+      - CRITICAL
+      - HIGH
+      - MEDIUM
+      - LOW
     SampleCall:
       type: object
       description: |-
@@ -3976,6 +4307,8 @@ tags:
   description: Cost and budget tracking
 - name: alerts
   description: Governance alerts
+- name: alert-rules
+  description: Alert-rule CRUD (AAASM-1386)
 - name: auth
   description: Authentication and token issuance
 - name: events
