@@ -74,6 +74,7 @@ pub trait DestinationRegistryLookup {
 /// the store will overwrite them on PUT to preserve `id` + `created_at`
 /// and bump `updated_at`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertRule {
     /// Server-assigned ULID-style identifier.
     pub id: String,
@@ -460,6 +461,22 @@ mod tests {
         assert_eq!(v["metric"], "budget_spent_pct");
         assert_eq!(v["operator"], ">");
         assert_eq!(v["severity"], "CRITICAL");
+    }
+
+    #[test]
+    fn field_names_serialize_as_camel_case() {
+        let rule = valid_rule();
+        let v: serde_json::Value = serde_json::to_value(&rule).unwrap();
+        // Matches dashboard AlertRule TS interface field names (AAASM-1075).
+        assert!(v.get("evaluationWindowSeconds").is_some());
+        assert!(v.get("destinationIds").is_some());
+        assert!(v.get("dedupWindowSeconds").is_some());
+        assert!(v.get("createdAt").is_some());
+        assert!(v.get("updatedAt").is_some());
+        // Snake-case form must not appear on the wire.
+        assert!(v.get("evaluation_window_seconds").is_none());
+        assert!(v.get("destination_ids").is_none());
+        assert!(v.get("created_at").is_none());
     }
 
     #[test]
