@@ -126,6 +126,30 @@ impl OpsRegistry {
         self.ops.iter().map(|r| r.clone()).collect()
     }
 
+    /// Transition `Pending → Running`.
+    ///
+    /// Called from `PolicyServiceImpl::check_action` after the engine
+    /// returns an `Allow` decision for an op previously created via
+    /// [`OpsRegistry::ingest`].
+    ///
+    /// Returns the updated record on success.
+    /// Returns [`OpsError::NotFound`] if the ID is unknown.
+    /// Returns [`OpsError::InvalidTransition`] if the op is not currently
+    /// `Pending` (Running / Paused / Completing / Terminated all reject).
+    pub fn allow(&self, op_id: &str) -> Result<OpRecord, OpsError> {
+        let mut entry = self.ops.get_mut(op_id).ok_or(OpsError::NotFound)?;
+        match entry.state {
+            OpState::Pending => {
+                entry.state = OpState::Running;
+                entry.updated_at = chrono::Utc::now().to_rfc3339();
+                Ok(entry.clone())
+            }
+            OpState::Running | OpState::Paused | OpState::Completing | OpState::Terminated => {
+                Err(OpsError::InvalidTransition)
+            }
+        }
+    }
+
     /// Transition `Running → Paused`.
     ///
     /// Returns the updated record on success.
