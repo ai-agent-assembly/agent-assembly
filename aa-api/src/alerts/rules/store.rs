@@ -205,4 +205,13 @@ mod tests {
         assert!(!created.created_at.is_empty(), "created_at must be assigned");
         assert_eq!(created.created_at, created.updated_at);
     }
+
+    #[test]
+    fn create_rejects_duplicate_name() {
+        let store = InMemoryAlertRuleStore::new();
+        store.create(rule_named("dup")).expect("first create");
+        let err = store.create(rule_named("dup")).expect_err("duplicate name must fail");
+        assert!(matches!(err, AlertRuleStoreError::NameConflict { ref name } if name == "dup"));
+        assert_eq!(err.error_code(), "rule_name_conflict");
+    }
 }
