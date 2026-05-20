@@ -224,6 +224,25 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
     }
 }
 
+/// Outcome of `AlertStore::dedup_or_record_rule_alert`.
+///
+/// `Created` is returned when a new alert was inserted (either no
+/// matching dedup window was active, or the rule has dedup disabled).
+/// `Deduped` is returned when the seed matched an existing alert's
+/// active window; the existing alert's `dedup_occurrence_count` is
+/// incremented in place and its `routing_log` is left untouched —
+/// i.e. the connector framework will NOT re-route the alert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DedupOutcome {
+    /// A new alert was inserted.
+    Created,
+    /// The seed matched an existing alert within an active dedup window.
+    Deduped {
+        /// ULID of the existing alert that absorbed this fire.
+        existing_id: String,
+    },
+}
+
 /// Input payload for `AlertStore::record_rule_alert`.
 ///
 /// Carries everything the store needs to build a `StoredAlert` with
@@ -329,6 +348,25 @@ pub trait AlertStore: Send + Sync {
     /// with no window expiry — `dedup_or_record_rule_alert` (AAASM-1627)
     /// is the dedup-aware entry point.
     fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String;
+
+    /// Record a rule alert with deduplication.
+    ///
+    /// If an existing alert with the same `seed.rule_id` is inside an
+    /// active dedup window (`dedup_window_expires_at > now`), its
+    /// `dedup_occurrence_count` is incremented in place and its
+    /// `routing_log` is left untouched. The returned outcome is
+    /// `Deduped { existing_id }`.
+    ///
+    /// Otherwise — including when `seed.rule_snapshot.dedup_window_seconds`
+    /// is `0` — a new alert is inserted with `dedup_occurrence_count: 1`
+    /// and `dedup_window_expires_at` set to `now + dedup_window_seconds`
+    /// (or `None` when dedup is disabled). The returned outcome is
+    /// `Created`.
+    fn dedup_or_record_rule_alert(
+        &self,
+        seed: &RuleAlertSeed,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> (String, DedupOutcome);
 
     /// List stored alerts with pagination.
     ///
