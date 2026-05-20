@@ -368,4 +368,17 @@ mod tests {
         assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
         assert_eq!(err.error_code(), "invalid_threshold");
     }
+
+    #[test]
+    fn budget_threshold_below_zero_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            threshold: -1.0,
+            ..valid_rule()
+        };
+        let err = rule
+            .validate(&registry)
+            .expect_err("negative threshold must fail for budget_spent_pct");
+        assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
+    }
 }
