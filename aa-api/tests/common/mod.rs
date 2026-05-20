@@ -172,6 +172,16 @@ pub fn test_app() -> Router {
     build_app(test_state())
 }
 
+/// Build an `AppState` whose destination_store is swapped out for the
+/// caller-supplied implementation. Used by destinations integration tests
+/// that need to drive the 409 destination_in_use path.
+#[allow(dead_code)]
+pub fn test_state_with_destination_store(store: Arc<dyn aa_api::destinations::store::DestinationStore>) -> AppState {
+    let mut state = test_state();
+    state.destination_store = store;
+    state
+}
+
 /// Build the full app with auth enabled and the given API key entries.
 #[allow(dead_code)]
 pub fn test_app_with_auth(entries: &[ApiKeyEntry], rpm: u32) -> Router {
