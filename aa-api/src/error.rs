@@ -65,6 +65,13 @@ impl ProblemDetail {
         self.instance = Some(instance.into());
         self
     }
+
+    /// Attach a stable machine-readable error code.
+    #[must_use]
+    pub fn with_error_code(mut self, code: &'static str) -> Self {
+        self.error_code = Some(code);
+        self
+    }
 }
 
 impl IntoResponse for ProblemDetail {
