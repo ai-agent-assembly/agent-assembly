@@ -406,4 +406,19 @@ mod tests {
             .expect_err("negative anomaly_score threshold must fail");
         assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
     }
+
+    #[test]
+    fn evaluation_window_not_in_allowed_set_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            evaluation_window_seconds: 600,
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("600 is not in {300, 900, 3600}");
+        assert!(matches!(
+            err,
+            AlertRuleValidationError::InvalidEvaluationWindow { value: 600 }
+        ));
+        assert_eq!(err.error_code(), "invalid_evaluation_window");
+    }
 }
