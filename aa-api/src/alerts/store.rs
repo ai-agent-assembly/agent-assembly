@@ -101,10 +101,12 @@ impl AlertStore for InMemoryAlertStore {
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
         let mut buf = self.alerts.write().expect("alert store lock poisoned");
         let alert = buf.iter_mut().find(|a| a.id == id)?;
-        // Idempotent: don't bump `updated_at` on subsequent resolves.
+        // Idempotent: don't bump timestamps on subsequent resolves.
         if alert.status != "resolved" {
+            let now = chrono::Utc::now().to_rfc3339();
             alert.status = "resolved".to_string();
-            alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            alert.updated_at = Some(now.clone());
+            alert.resolved_at = Some(now);
         }
         Some(alert.clone())
     }
@@ -261,6 +263,10 @@ mod tests {
         let after = store.resolve(&id, Some("ack")).expect("known id resolves");
         assert_eq!(after.status, "resolved");
         assert!(after.updated_at.is_some());
+        assert_eq!(
+            after.resolved_at, after.updated_at,
+            "resolved_at must be set in lockstep with updated_at on the first resolve",
+        );
 
         let from_store = store.get(&id).unwrap();
         assert_eq!(from_store.status, "resolved");
