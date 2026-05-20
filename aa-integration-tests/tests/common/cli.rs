@@ -273,7 +273,7 @@ impl CliFixture {
     /// Used by `cli_alerts.rs` (AAASM-1460) to populate the gateway's
     /// alert state before testing `aasm alerts list`. The harness boots
     /// with `AuthMode::Off`, so no auth context is needed.
-    pub fn seed_alert(&self, threshold_pct: u8, agent_id: [u8; 16]) -> u64 {
+    pub fn seed_alert(&self, threshold_pct: u8, agent_id: [u8; 16]) -> String {
         use aa_api::alerts::AlertStore;
         let limit_usd = 10.0_f64;
         let spent_usd = limit_usd * f64::from(threshold_pct) / 100.0;

@@ -162,11 +162,14 @@ async fn list_alerts_pagination_with_multiple_alerts() {
     assert_eq!(json["per_page"], 2);
     let items = json["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
-    // Newest first: IDs 5, 4
-    assert_eq!(items[0]["id"], "5");
-    assert_eq!(items[1]["id"], "4");
+    // Newest first — assert ULID format and lexicographic ordering.
+    let id0 = items[0]["id"].as_str().unwrap();
+    let id1 = items[1]["id"].as_str().unwrap();
+    assert_eq!(id0.len(), 26);
+    assert_eq!(id1.len(), 26);
+    assert!(id0 > id1, "newest-first: {id0} must sort after {id1}");
 
-    // Request page 3 with 2 items per page → should get 1 item (ID 1).
+    // Request page 3 with 2 items per page → should get 1 item (oldest).
     let response = app
         .oneshot(
             Request::builder()
@@ -181,7 +184,9 @@ async fn list_alerts_pagination_with_multiple_alerts() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let items = json["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["id"], "1");
+    let oldest = items[0]["id"].as_str().unwrap();
+    assert_eq!(oldest.len(), 26);
+    assert!(oldest < id1, "page-3 entry must be older than page-1 entries");
 }
 
 // ============================================================================
@@ -227,7 +232,7 @@ async fn get_alert_returns_404_for_unknown_id() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/alerts/9999")
+                .uri("/api/v1/alerts/00000000000000000000000000")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -238,12 +243,12 @@ async fn get_alert_returns_404_for_unknown_id() {
 }
 
 #[tokio::test]
-async fn get_alert_returns_404_for_non_numeric_id() {
+async fn get_alert_returns_404_for_unrecognized_id() {
     let app = common::test_app();
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/alerts/not-a-number")
+                .uri("/api/v1/alerts/not-a-ulid")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -346,7 +351,7 @@ async fn resolve_alert_returns_404_for_unknown_id() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/alerts/9999/resolve")
+                .uri("/api/v1/alerts/00000000000000000000000000/resolve")
                 .body(Body::empty())
                 .unwrap(),
         )

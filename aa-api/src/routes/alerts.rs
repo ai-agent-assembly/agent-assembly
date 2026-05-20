@@ -14,7 +14,7 @@ use crate::state::AppState;
 /// Convert a `StoredAlert` into the public-facing `AlertResponse` shape.
 fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
     AlertResponse {
-        id: a.id.to_string(),
+        id: a.id,
         severity: a.severity.to_string(),
         category: a.category.to_string(),
         message: a.message,
@@ -114,7 +114,7 @@ pub async fn list_alerts(
 #[utoipa::path(
     get,
     path = "/api/v1/alerts/{id}",
-    params(("id" = String, Path, description = "Numeric alert identifier")),
+    params(("id" = String, Path, description = "ULID alert identifier (26 chars)")),
     responses(
         (status = 200, description = "Alert detail", body = AlertResponse),
         (status = 404, description = "Alert not found")
@@ -125,11 +125,7 @@ pub async fn get_alert(
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
-    let numeric_id = id
-        .parse::<u64>()
-        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
-
-    let stored = state.alert_store.get(numeric_id).ok_or_else(|| {
+    let stored = state.alert_store.get(&id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
     })?;
 
@@ -139,12 +135,12 @@ pub async fn get_alert(
 /// `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
 ///
 /// Idempotent — calling against an already-resolved alert returns the same
-/// record with `updated_at` unchanged. Returns 404 if the id is unknown,
-/// evicted, or not a valid u64.
+/// record with `updated_at` unchanged. Returns 404 if the id is unknown or
+/// has been evicted from the ring buffer.
 #[utoipa::path(
     post,
     path = "/api/v1/alerts/{id}/resolve",
-    params(("id" = String, Path, description = "Numeric alert identifier")),
+    params(("id" = String, Path, description = "ULID alert identifier (26 chars)")),
     request_body(content = ResolveAlertRequest, description = "Optional resolution metadata"),
     responses(
         (status = 200, description = "Alert resolved", body = AlertResponse),
@@ -157,18 +153,11 @@ pub async fn resolve_alert(
     axum::extract::Path(id): axum::extract::Path<String>,
     body: Option<Json<ResolveAlertRequest>>,
 ) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
-    let numeric_id = id
-        .parse::<u64>()
-        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}")))?;
-
     let reason = body.and_then(|Json(req)| req.reason);
 
-    let stored = state
-        .alert_store
-        .resolve(numeric_id, reason.as_deref())
-        .ok_or_else(|| {
-            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
-        })?;
+    let stored = state.alert_store.resolve(&id, reason.as_deref()).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+    })?;
 
     Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
 }
