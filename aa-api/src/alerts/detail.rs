@@ -52,6 +52,47 @@ pub struct RoutingLogEntry {
     pub status: String,
 }
 
+/// Rich rule-based context attached to an alert.
+///
+/// Populated when an alert was produced by the rule engine (rather than
+/// the legacy budget/secret-detection pipelines). The `GET /api/v1/alerts/{id}`
+/// endpoint surfaces this payload so the dashboard detail drawer can render
+/// the rule definition, routing log, and dedup state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct RuleContext {
+    /// Identifier of the rule that produced the alert.
+    pub rule_id: String,
+    /// Human-readable rule name as configured in the dashboard.
+    pub rule_name: String,
+    /// Snapshot of the rule definition at fire time.
+    pub rule_snapshot: RuleSnapshot,
+    /// Destinations the rule was routed to. Order matches the
+    /// destination registry's configured priority.
+    #[serde(default)]
+    pub destination_ids: Vec<String>,
+    /// Free-form payload of the triggering event — metric value,
+    /// recent samples, or any rule-specific context.
+    #[serde(default)]
+    pub event_payload: serde_json::Value,
+    /// Connector-framework delivery log. One entry per successful
+    /// attempt; dedup-suppressed re-fires do not append entries.
+    #[serde(default)]
+    pub routing_log: Vec<RoutingLogEntry>,
+    /// Active silence record, if one was applied. `None` when the
+    /// alert is firing normally.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub silence: Option<Silence>,
+    /// Number of times this alert has matched within the active dedup
+    /// window, including the fire that opened it. `1` when no
+    /// deduplication has happened yet.
+    pub dedup_occurrence_count: u32,
+    /// Timestamp when the active dedup window ends. `None` when the
+    /// alert is not inside a dedup window (e.g. resolved alerts or
+    /// rules with `dedup_window_seconds == 0`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dedup_window_expires_at: Option<String>,
+}
+
 /// Active silence record attached to an alert.
 ///
 /// Present when an operator has acknowledged the alert and asked the
@@ -70,6 +111,67 @@ pub struct Silence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_rule_snapshot() -> RuleSnapshot {
+        let mut labels = BTreeMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        RuleSnapshot {
+            metric: "budget_spent_pct".to_string(),
+            operator: ">".to_string(),
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: "CRITICAL".to_string(),
+            dedup_window_seconds: 600,
+            suppression_labels: labels,
+        }
+    }
+
+    #[test]
+    fn rule_context_round_trips_with_routing_log_and_silence() {
+        let ctx = RuleContext {
+            rule_id: "rule-budget-90".to_string(),
+            rule_name: "Budget threshold > 90%".to_string(),
+            rule_snapshot: sample_rule_snapshot(),
+            destination_ids: vec!["slack-ops".to_string()],
+            event_payload: serde_json::json!({ "metric_value": 92.3 }),
+            routing_log: vec![RoutingLogEntry {
+                destination_id: "slack-ops".to_string(),
+                delivered_at: "2026-05-13T09:12:01Z".to_string(),
+                status: "ok".to_string(),
+            }],
+            silence: Some(Silence {
+                id: "sil-001".to_string(),
+                expires_at: "2026-05-13T10:12:00Z".to_string(),
+                reason: None,
+            }),
+            dedup_occurrence_count: 1,
+            dedup_window_expires_at: Some("2026-05-13T09:22:00Z".to_string()),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let parsed: RuleContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ctx);
+    }
+
+    #[test]
+    fn rule_context_omits_silence_and_dedup_expiry_when_none() {
+        let ctx = RuleContext {
+            rule_id: "rule-budget-90".to_string(),
+            rule_name: "Budget threshold > 90%".to_string(),
+            rule_snapshot: sample_rule_snapshot(),
+            destination_ids: vec![],
+            event_payload: serde_json::Value::Null,
+            routing_log: vec![],
+            silence: None,
+            dedup_occurrence_count: 1,
+            dedup_window_expires_at: None,
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(!json.contains("\"silence\""), "silence must be omitted when None");
+        assert!(
+            !json.contains("dedup_window_expires_at"),
+            "dedup_window_expires_at must be omitted when None",
+        );
+    }
 
     #[test]
     fn rule_snapshot_round_trips_with_suppression_labels() {
