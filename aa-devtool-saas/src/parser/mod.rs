@@ -13,6 +13,7 @@
 
 pub mod chatgpt;
 pub mod claude_ai;
+pub mod cursor;
 
 /// Error returned when a provider-specific body fails to decode.
 #[derive(Debug, thiserror::Error)]
