@@ -287,4 +287,14 @@ mod tests {
         );
         assert_eq!(updated.threshold, 95.0);
     }
+
+    #[test]
+    fn update_returns_not_found_for_unknown_id() {
+        let store = InMemoryAlertRuleStore::new();
+        let err = store
+            .update("missing", rule_named("r1"))
+            .expect_err("unknown id must fail");
+        assert_eq!(err, AlertRuleStoreError::NotFound);
+        assert_eq!(err.error_code(), "rule_not_found");
+    }
 }
