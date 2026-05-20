@@ -18,6 +18,7 @@
 //! | --- | --- |
 //! | [`adapter`] | [`SaasCodingAgentAdapter`] + [`DevToolAdapter`] impl |
 //! | [`event`] | [`SaasAuditEvent`] — normalized webhook event type |
+//! | [`parser`] | Per-provider webhook body parsers |
 //! | [`provider`] | [`SaasProvider`] enum and [`SaasProviderConfig`] |
 //! | [`signature`] | Per-provider HMAC-SHA256 webhook signature verification |
 //! | [`overlay`] | Per-provider governance overlay types |
@@ -30,5 +31,6 @@
 pub mod adapter;
 pub mod event;
 pub mod overlay;
+pub mod parser;
 pub mod provider;
 pub mod signature;
