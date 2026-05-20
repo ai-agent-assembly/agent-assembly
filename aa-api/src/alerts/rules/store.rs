@@ -214,4 +214,12 @@ mod tests {
         assert!(matches!(err, AlertRuleStoreError::NameConflict { ref name } if name == "dup"));
         assert_eq!(err.error_code(), "rule_name_conflict");
     }
+
+    #[test]
+    fn get_returns_some_for_known_id_and_none_otherwise() {
+        let store = InMemoryAlertRuleStore::new();
+        let created = store.create(rule_named("r1")).expect("create");
+        assert_eq!(store.get(&created.id).map(|r| r.name), Some("r1".to_string()));
+        assert!(store.get("does-not-exist").is_none());
+    }
 }
