@@ -138,6 +138,39 @@ pub struct BudgetAlertPayload {
     pub limit_usd: f64,
 }
 
+/// Payload for `event_type: "ops_change"` events.
+///
+/// Emitted on every transition of an in-flight operation in the
+/// gateway-side [`aa_gateway::ops::OpsRegistry`] (AAASM-1422 PR-B).
+/// The dashboard's `useLiveOpsStream` hook correlates rows by `op_id`
+/// (composed from `trace_id:span_id`) and updates the matching row in
+/// place, so a `pause` followed by the confirming `paused` event
+/// auto-clears any optimistic override.
+///
+/// Actual emission on registry transitions ships in PR-H. PR-B only
+/// defines the payload shape so PR-C (dashboard rework) and PR-H
+/// (gateway emission) can build against a stable schema in parallel.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OpsChangePayload {
+    /// Stable operation identifier — `"{trace_id}:{span_id}"` composed
+    /// in the gateway. The dashboard keys its row map by this value so
+    /// successive `ops_change` events for the same op merge into one
+    /// row instead of stacking.
+    pub op_id: String,
+    /// New lifecycle state after the transition. Mirrors the
+    /// `aa_gateway::ops::OpState` enum (snake_case wire format:
+    /// `pending` / `running` / `paused` / `completing` / `terminated`).
+    #[schema(value_type = String, example = "running")]
+    pub state: aa_gateway::ops::OpState,
+    /// RFC 3339 UTC timestamp of the transition. Same value as the
+    /// matching `OpRecord.updated_at` returned by the registry.
+    pub updated_at: String,
+    /// Agent that owns the operation. Mirrors `GovernanceEvent.agent_id`
+    /// so a single agent's live-ops can be filtered without joining
+    /// against the audit channel.
+    pub agent_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
