@@ -421,4 +421,16 @@ mod tests {
         ));
         assert_eq!(err.error_code(), "invalid_evaluation_window");
     }
+
+    #[test]
+    fn empty_destination_ids_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            destination_ids: Vec::new(),
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("empty destination_ids must fail");
+        assert!(matches!(err, AlertRuleValidationError::EmptyDestinations));
+        assert_eq!(err.error_code(), "destination_unknown");
+    }
 }
