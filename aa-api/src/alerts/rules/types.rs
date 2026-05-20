@@ -331,4 +331,16 @@ mod tests {
         let rule = valid_rule();
         assert_eq!(rule.validate(&registry), Ok(()));
     }
+
+    #[test]
+    fn empty_name_rejected_as_invalid_name() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            name: String::new(),
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("empty name must fail");
+        assert!(matches!(err, AlertRuleValidationError::InvalidName { .. }));
+        assert_eq!(err.error_code(), "invalid_name");
+    }
 }
