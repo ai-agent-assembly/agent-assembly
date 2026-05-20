@@ -65,4 +65,11 @@ mod tests {
             assert!(registry.contains(id), "expected seeded id {id} to be present");
         }
     }
+
+    #[test]
+    fn empty_registry_rejects_all_lookups() {
+        let registry = DestinationRegistry::empty();
+        assert!(!registry.contains("slack-ops"));
+        assert!(!registry.contains("anything"));
+    }
 }
