@@ -45,6 +45,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use aa_api::alerts::silence_store::InMemorySilenceStore;
 use aa_api::alerts::store::InMemoryAlertStore;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
 use aa_api::auth::config::{AuthConfig, AuthMode};
@@ -615,6 +616,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -630,6 +632,7 @@ spec:
             approval_queue,
             policy_history,
             alert_store,
+            silence_store,
             events,
             replay_buffer: ReplayBuffer::new(),
             next_event_id: Arc::new(AtomicU64::new(0)),
@@ -746,6 +749,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(AUTH_IT_JWT_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(rate_limit_rpm));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -761,6 +765,7 @@ spec:
             approval_queue,
             policy_history,
             alert_store,
+            silence_store,
             events,
             replay_buffer: ReplayBuffer::new(),
             next_event_id: Arc::new(AtomicU64::new(0)),
@@ -878,6 +883,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(AUTH_IT_JWT_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new_with_window(rate_limit_rpm, rate_limit_window_secs));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -893,6 +899,7 @@ spec:
             approval_queue,
             policy_history,
             alert_store,
+            silence_store,
             events,
             replay_buffer: ReplayBuffer::new(),
             next_event_id: Arc::new(AtomicU64::new(0)),
@@ -996,6 +1003,7 @@ spec:
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1011,6 +1019,7 @@ spec:
             approval_queue,
             policy_history,
             alert_store,
+            silence_store,
             events,
             replay_buffer: ReplayBuffer::new(),
             next_event_id: Arc::new(AtomicU64::new(0)),
@@ -1110,6 +1119,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
     let jwt_verifier = Arc::new(JwtVerifier::new(TEST_SECRET));
     let rate_limiter = Arc::new(RateLimiter::new(1000));
     let alert_store: Arc<InMemoryAlertStore> = Arc::new(InMemoryAlertStore::new());
+    let silence_store: Arc<InMemorySilenceStore> = Arc::new(InMemorySilenceStore::new());
     let alert_store_handle = Arc::clone(&alert_store);
 
     let audit_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1125,6 +1135,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             approval_queue,
             policy_history,
             alert_store,
+            silence_store,
             events,
             replay_buffer: ReplayBuffer::new(),
             next_event_id: Arc::new(AtomicU64::new(0)),
