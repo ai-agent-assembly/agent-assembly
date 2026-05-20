@@ -316,4 +316,10 @@ mod tests {
         assert!(store.delete(&created.id), "delete must return true for known id");
         assert!(store.get(&created.id).is_none(), "rule must be gone");
     }
+
+    #[test]
+    fn delete_returns_false_for_unknown_id() {
+        let store = InMemoryAlertRuleStore::new();
+        assert!(!store.delete("missing"));
+    }
 }
