@@ -150,6 +150,10 @@ pub struct BudgetAlertPayload {
 /// Actual emission on registry transitions ships in PR-H. PR-B only
 /// defines the payload shape so PR-C (dashboard rework) and PR-H
 /// (gateway emission) can build against a stable schema in parallel.
+///
+/// Agent attribution travels on the enclosing
+/// [`super::event::GovernanceEvent::agent_id`] — same convention as
+/// `ViolationPayload`, `ApprovalPayload`, and `BudgetAlertPayload`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct OpsChangePayload {
     /// Stable operation identifier — `"{trace_id}:{span_id}"` composed
@@ -165,10 +169,6 @@ pub struct OpsChangePayload {
     /// RFC 3339 UTC timestamp of the transition. Same value as the
     /// matching `OpRecord.updated_at` returned by the registry.
     pub updated_at: String,
-    /// Agent that owns the operation. Mirrors `GovernanceEvent.agent_id`
-    /// so a single agent's live-ops can be filtered without joining
-    /// against the audit channel.
-    pub agent_id: String,
 }
 
 #[cfg(test)]
@@ -333,13 +333,13 @@ mod tests {
             op_id: "trace-abc:span-1".into(),
             state: aa_gateway::ops::OpState::Running,
             updated_at: "2026-05-20T15:30:00Z".into(),
-            agent_id: "agent-7".into(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["op_id"], "trace-abc:span-1");
         assert_eq!(json["state"], "running");
         assert_eq!(json["updated_at"], "2026-05-20T15:30:00Z");
-        assert_eq!(json["agent_id"], "agent-7");
+        // Agent attribution travels on the outer GovernanceEvent, not the payload.
+        assert!(!json.as_object().unwrap().contains_key("agent_id"));
     }
 
     #[test]
@@ -348,7 +348,6 @@ mod tests {
             op_id: "t1:s2".into(),
             state: aa_gateway::ops::OpState::Completing,
             updated_at: "2026-05-20T16:00:00Z".into(),
-            agent_id: "agent-9".into(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: OpsChangePayload = serde_json::from_str(&json).unwrap();
@@ -370,7 +369,6 @@ mod tests {
                 op_id: "t:s".into(),
                 state,
                 updated_at: "2026-05-20T00:00:00Z".into(),
-                agent_id: "agent-1".into(),
             };
             let json = serde_json::to_value(&payload).unwrap();
             assert!(json["state"].is_string(), "state serialised as string for {state:?}");
@@ -380,13 +378,12 @@ mod tests {
     #[test]
     fn event_payload_dispatches_ops_change_through_untagged_decode() {
         // The untagged enum must distinguish OpsChangePayload from sibling
-        // payloads by field shape alone — op_id + state + updated_at +
-        // agent_id is the unique combination.
+        // payloads by field shape alone — op_id + state + updated_at is
+        // the unique combination among the four variants.
         let raw = serde_json::json!({
             "op_id": "t1:s1",
             "state": "paused",
-            "updated_at": "2026-05-20T16:00:00Z",
-            "agent_id": "agent-3"
+            "updated_at": "2026-05-20T16:00:00Z"
         });
         let decoded: EventPayload = serde_json::from_value(raw).unwrap();
         let EventPayload::OpsChange(p) = decoded else {
