@@ -6,8 +6,11 @@
 
 pub mod capture;
 pub mod detail;
+pub mod event;
 pub mod silence;
 pub mod store;
+
+pub use event::AlertEvent;
 
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
