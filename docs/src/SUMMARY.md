@@ -30,6 +30,10 @@
 
 - [Cross-Team Edge](events/cross_team_edge.md)
 
+# Operations
+
+- [In-Flight Ops Registry](operations/ops-registry-architecture.md)
+
 # Benchmarks
 
 - [Baseline](benchmarks/BASELINE.md)

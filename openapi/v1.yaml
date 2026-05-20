@@ -605,7 +605,7 @@ paths:
       parameters:
       - name: id
         in: path
-        description: Numeric alert identifier
+        description: ULID alert identifier (26 chars)
         required: true
         schema:
           type: string
@@ -625,13 +625,13 @@ paths:
       summary: '`POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.'
       description: |-
         Idempotent — calling against an already-resolved alert returns the same
-        record with `updated_at` unchanged. Returns 404 if the id is unknown,
-        evicted, or not a valid u64.
+        record with `updated_at` unchanged. Returns 404 if the id is unknown or
+        has been evicted from the ring buffer.
       operationId: resolve_alert
       parameters:
       - name: id
         in: path
-        description: Numeric alert identifier
+        description: ULID alert identifier (26 chars)
         required: true
         schema:
           type: string
@@ -3263,8 +3263,10 @@ components:
       type: string
       description: Lifecycle state of a registered in-flight operation.
       enum:
+      - pending
       - running
       - paused
+      - completing
       - terminated
     OverrideRecord:
       type: object

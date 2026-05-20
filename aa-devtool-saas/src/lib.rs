@@ -12,11 +12,21 @@
 //! `"vault:secret/saas/claude-ai/hmac"`). The adapter never holds or logs a
 //! plaintext secret; the resolution step is the caller's responsibility.
 //!
+//! # Wire-up (AAASM-924)
+//!
+//! The webhook handler `aa-api::routes::devtools::saas_webhook` consumes
+//! [`signature::verify`] for HMAC validation and [`parser::parse`] for body
+//! decoding, then maps the resulting [`event::SaasAuditEvent`] into the
+//! existing `aa_core::AuditEntry` audit pipeline (Epic 6) — no new
+//! persistence path is introduced.
+//!
 //! # Modules
 //!
 //! | Module | Purpose |
 //! | --- | --- |
 //! | [`adapter`] | [`SaasCodingAgentAdapter`] + [`DevToolAdapter`] impl |
+//! | [`event`] | [`SaasAuditEvent`] — normalized webhook event type |
+//! | [`parser`] | Per-provider webhook body parsers |
 //! | [`provider`] | [`SaasProvider`] enum and [`SaasProviderConfig`] |
 //! | [`signature`] | Per-provider HMAC-SHA256 webhook signature verification |
 //! | [`overlay`] | Per-provider governance overlay types |
@@ -24,8 +34,11 @@
 //! [`DevToolAdapter`]: aa_core::DevToolAdapter
 //! [`GovernanceLevel::L1Observe`]: aa_core::GovernanceLevel::L1Observe
 //! [`SaasCodingAgentAdapter`]: adapter::SaasCodingAgentAdapter
+//! [`SaasAuditEvent`]: event::SaasAuditEvent
 
 pub mod adapter;
+pub mod event;
 pub mod overlay;
+pub mod parser;
 pub mod provider;
 pub mod signature;

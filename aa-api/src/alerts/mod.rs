@@ -5,6 +5,7 @@
 //! historical alerts.
 
 pub mod capture;
+pub mod detail;
 pub mod store;
 
 use aa_gateway::alerts::SecretAlert;
@@ -14,8 +15,8 @@ use serde::Serialize;
 /// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredAlert {
-    /// Auto-incremented alert identifier.
-    pub id: u64,
+    /// Lexicographically sortable, URL-safe ULID identifier (26 chars).
+    pub id: String,
     /// Alert severity level derived from `threshold_pct`.
     pub severity: AlertSeverity,
     /// Source classification — `Budget` today, `SecretDetected` once
@@ -142,7 +143,7 @@ fn build_secret_alert_message(alert: &SecretAlert) -> String {
 
 /// Convert a [`SecretAlert`] into a [`StoredAlert`] with the given ID
 /// and timestamp. Severity is always `Critical` per AAASM-1545.
-pub fn stored_secret_alert_from(alert: &SecretAlert, id: u64, timestamp: String) -> StoredAlert {
+pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: String) -> StoredAlert {
     let kind = alert.primary_kind();
     StoredAlert {
         id,
@@ -163,7 +164,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: u64, timestamp: String)
 }
 
 /// Convert a `BudgetAlert` into a `StoredAlert` with the given ID and timestamp.
-pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> StoredAlert {
+pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> StoredAlert {
     StoredAlert {
         id,
         severity: severity_from_threshold(alert.threshold_pct),
@@ -186,27 +187,27 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: u64, timestamp: String) -> Sto
 ///
 /// Implementations must be thread-safe (`Send + Sync`).
 pub trait AlertStore: Send + Sync {
-    /// Record a new budget alert, returning the assigned ID.
-    fn record(&self, alert: &BudgetAlert) -> u64;
+    /// Record a new budget alert, returning the assigned ULID.
+    fn record(&self, alert: &BudgetAlert) -> String;
 
-    /// Record a new secret-detection alert, returning the assigned ID
+    /// Record a new secret-detection alert, returning the assigned ULID
     /// (AAASM-1545). The stored alert has `severity=critical` and
     /// `category=secret_detected`.
-    fn record_secret(&self, alert: &SecretAlert) -> u64;
+    fn record_secret(&self, alert: &SecretAlert) -> String;
 
     /// List stored alerts with pagination.
     ///
     /// Returns `(alerts, total_count)`. Results are ordered newest-first.
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64);
 
-    /// Retrieve a single alert by its numeric ID, or `None` if the ID is
+    /// Retrieve a single alert by its ULID, or `None` if the ID is
     /// unknown or has been evicted by the ring buffer.
-    fn get(&self, id: u64) -> Option<StoredAlert>;
+    fn get(&self, id: &str) -> Option<StoredAlert>;
 
     /// Mark an alert as resolved. Returns the post-mutation record, or
     /// `None` if the ID is unknown / evicted. Must be **idempotent** —
     /// calling `resolve` on an already-resolved alert returns the same
     /// record and does not bump `updated_at`. `_reason` is accepted for
     /// API parity but the in-memory store does not persist it.
-    fn resolve(&self, id: u64, _reason: Option<&str>) -> Option<StoredAlert>;
+    fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert>;
 }

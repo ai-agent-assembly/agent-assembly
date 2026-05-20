@@ -406,7 +406,7 @@ async fn policy_requires_approval_for_spawn_child_at_depth_two() {
 ///
 /// Marked `#[ignore]` because `AgentRegistry` does not yet implement
 /// re-parenting. Unblock by implementing `AgentRegistry::reparent`.
-#[ignore = "re-parenting not implemented in AgentRegistry (follow-up ticket pending)"]
+#[ignore = "blocked on AAASM-1599: AgentRegistry::reparent not implemented"]
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_evaluates_against_current_topology_after_reparent() {
     let env = TopologyTestEnv::start().await.expect("harness should start");

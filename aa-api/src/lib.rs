@@ -14,7 +14,6 @@ pub mod events;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
-pub mod ops;
 pub mod pagination;
 pub mod replay;
 pub mod routes;
@@ -24,6 +23,10 @@ pub mod state;
 pub mod trace_store;
 pub mod ws;
 
+/// Re-export of the ops registry, which moved to `aa_gateway::ops` in
+/// AAASM-1422 so the policy service can ingest operations from
+/// `CheckActionRequest` without a reverse crate dependency.
+pub use aa_gateway::ops;
 pub use config::ApiConfig;
 pub use error::ProblemDetail;
 pub use events::EventBroadcast;

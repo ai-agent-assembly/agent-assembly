@@ -27,7 +27,7 @@ use common::TopologyTestEnv;
 use reqwest::StatusCode;
 use serde_json::Value;
 
-fn seed_alert(env: &TopologyTestEnv, threshold_pct: u8, agent_id_bytes: [u8; 16]) -> u64 {
+fn seed_alert(env: &TopologyTestEnv, threshold_pct: u8, agent_id_bytes: [u8; 16]) -> String {
     let limit_usd = 10.0_f64;
     let spent_usd = limit_usd * f64::from(threshold_pct) / 100.0;
     env.alert_store.record(&BudgetAlert {
@@ -221,7 +221,7 @@ async fn openapi_spec_error_envelope_matches_for_404() {
 
     let urls = [
         format!("{}/api/v1/agents/{}", env.base_url(), "00".repeat(16)),
-        format!("{}/api/v1/alerts/99999999", env.base_url()),
+        format!("{}/api/v1/alerts/00000000000000000000000000", env.base_url()),
         format!("{}/api/v1/traces/no-such-session-contract-q", env.base_url()),
     ];
 
