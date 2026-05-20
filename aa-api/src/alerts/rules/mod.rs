@@ -5,4 +5,5 @@
 //! the in-memory store, the destination registry stub, and the minimum
 //! viable rule evaluator.
 
+pub mod store;
 pub mod types;
