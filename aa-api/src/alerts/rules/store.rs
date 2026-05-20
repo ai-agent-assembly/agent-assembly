@@ -261,4 +261,30 @@ mod tests {
         let names: Vec<String> = store.list(Some(false)).into_iter().map(|r| r.name).collect();
         assert_eq!(names, vec!["off".to_string()]);
     }
+
+    #[test]
+    fn update_preserves_id_and_created_at_and_bumps_updated_at() {
+        let store = InMemoryAlertRuleStore::new();
+        let created = store.create(rule_named("r1")).expect("create");
+        // Force a measurable delta so updated_at != created_at.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let updated = store
+            .update(
+                &created.id,
+                AlertRule {
+                    threshold: 95.0,
+                    ..rule_named("r1")
+                },
+            )
+            .expect("update");
+        assert_eq!(updated.id, created.id, "id must be preserved");
+        assert_eq!(updated.created_at, created.created_at, "created_at must be preserved",);
+        assert!(
+            updated.updated_at > created.updated_at,
+            "updated_at must be bumped: {} > {}",
+            updated.updated_at,
+            created.updated_at,
+        );
+        assert_eq!(updated.threshold, 95.0);
+    }
 }
