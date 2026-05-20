@@ -9,8 +9,8 @@ use tokio::sync::broadcast;
 use ulid::Generator;
 
 use super::{
-    stored_alert_from, stored_rule_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, RuleAlertSeed,
-    StoredAlert,
+    stored_alert_from, stored_rule_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, DedupOutcome,
+    RuleAlertSeed, StoredAlert,
 };
 
 /// Capacity of the per-store `tokio::broadcast` channel used for the
@@ -120,6 +120,61 @@ impl AlertStore for InMemoryAlertStore {
         }
         let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
+    }
+
+    fn dedup_or_record_rule_alert(
+        &self,
+        seed: &RuleAlertSeed,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> (String, DedupOutcome) {
+        let window_seconds = seed.rule_snapshot.dedup_window_seconds;
+
+        if window_seconds > 0 {
+            // Look for an existing alert with the same rule_id whose
+            // dedup window has not yet expired. Hold the write lock for
+            // the whole search-and-mutate to avoid a TOCTOU race.
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            for alert in buf.iter_mut() {
+                let Some(ctx) = alert.rule_context.as_mut() else {
+                    continue;
+                };
+                if ctx.rule_id != seed.rule_id {
+                    continue;
+                }
+                let Some(expires_at_str) = ctx.dedup_window_expires_at.as_deref() else {
+                    continue;
+                };
+                let Ok(expires_at) = chrono::DateTime::parse_from_rfc3339(expires_at_str) else {
+                    continue;
+                };
+                if expires_at.with_timezone(&chrono::Utc) > now {
+                    ctx.dedup_occurrence_count = ctx.dedup_occurrence_count.saturating_add(1);
+                    let existing_id = alert.id.clone();
+                    return (existing_id.clone(), DedupOutcome::Deduped { existing_id });
+                }
+            }
+        }
+
+        // No active window matched (or dedup disabled) — create a new alert.
+        let id = self.next_id();
+        let timestamp = now.to_rfc3339();
+        let mut stored = stored_rule_alert_from(seed, id.clone(), timestamp);
+        if window_seconds > 0 {
+            let expires = now + chrono::Duration::seconds(i64::from(window_seconds));
+            if let Some(ctx) = stored.rule_context.as_mut() {
+                ctx.dedup_window_expires_at = Some(expires.to_rfc3339());
+            }
+        }
+
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
+        }
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
+        (id, DedupOutcome::Created)
     }
 
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64) {
