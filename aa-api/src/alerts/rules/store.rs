@@ -297,4 +297,15 @@ mod tests {
         assert_eq!(err, AlertRuleStoreError::NotFound);
         assert_eq!(err.error_code(), "rule_not_found");
     }
+
+    #[test]
+    fn update_rejects_name_conflict_with_other_rule() {
+        let store = InMemoryAlertRuleStore::new();
+        let a = store.create(rule_named("a")).expect("a");
+        store.create(rule_named("b")).expect("b");
+        let err = store
+            .update(&a.id, rule_named("b"))
+            .expect_err("renaming a -> b must collide with the existing b");
+        assert!(matches!(err, AlertRuleStoreError::NameConflict { ref name } if name == "b"));
+    }
 }
