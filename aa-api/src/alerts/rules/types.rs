@@ -42,3 +42,14 @@ pub enum RuleOperator {
     #[serde(rename = "=")]
     Eq,
 }
+
+/// Severity assigned to alerts that this rule fires. Wire form is the
+/// uppercase string matching the Story (e.g. `"CRITICAL"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum RuleSeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
