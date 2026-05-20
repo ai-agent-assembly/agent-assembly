@@ -244,6 +244,9 @@ impl IntoResponse for TestDestinationFailure {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/alerts/destinations` — list destinations.
+///
+/// List configured notification destinations. The `kind` query parameter filters
+/// to webhook, slack, pagerduty, or opsgenie. Returns the full set when absent.
 #[utoipa::path(
     get,
     path = "/api/v1/alerts/destinations",
@@ -267,6 +270,10 @@ pub async fn list_destinations(
 }
 
 /// `POST /api/v1/alerts/destinations` — create a destination.
+///
+/// Register a new notification destination. The request `kind` discriminates the
+/// `config` shape and is validated server-side; an unknown kind returns 400
+/// `invalid_kind` and a malformed config returns 400 `invalid_config`.
 #[utoipa::path(
     post,
     path = "/api/v1/alerts/destinations",
@@ -294,6 +301,9 @@ pub async fn create_destination(
 }
 
 /// `GET /api/v1/alerts/destinations/{id}` — fetch one destination.
+///
+/// Retrieve a single notification destination by id. Returns 404
+/// `destination_not_found` when the id is unknown.
 #[utoipa::path(
     get,
     path = "/api/v1/alerts/destinations/{id}",
@@ -313,6 +323,10 @@ pub async fn get_destination(
 }
 
 /// `PUT /api/v1/alerts/destinations/{id}` — update a destination.
+///
+/// Replace name, config, or enabled state on an existing destination. Preserves
+/// the original `created_at`, bumps `updated_at`, and re-validates the config —
+/// invalid input returns 400.
 #[utoipa::path(
     put,
     path = "/api/v1/alerts/destinations/{id}",
@@ -353,6 +367,10 @@ pub async fn update_destination(
 }
 
 /// `DELETE /api/v1/alerts/destinations/{id}` — remove a destination.
+///
+/// Remove a destination. Returns 409 `destination_in_use` when any active alert
+/// rule still references this id — the rule must be removed or re-targeted
+/// before the destination can be deleted.
 #[utoipa::path(
     delete,
     path = "/api/v1/alerts/destinations/{id}",
@@ -376,6 +394,11 @@ pub async fn delete_destination(
 }
 
 /// `POST /api/v1/alerts/destinations/{id}/test` — fire a test notification.
+///
+/// Send a real test notification through the destination's connector — no
+/// dry-run — so operators can verify the round-trip end-to-end. Returns 502
+/// `connector_failed` with the upstream status and body when the connector
+/// rejects the payload.
 #[utoipa::path(
     post,
     path = "/api/v1/alerts/destinations/{id}/test",
