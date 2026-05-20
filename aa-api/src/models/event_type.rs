@@ -28,13 +28,14 @@ impl EventType {
     /// Returns all variants when the input is empty or `None`.
     pub fn parse_filter(input: Option<&str>) -> Vec<EventType> {
         match input {
-            None | Some("") => vec![Self::Violation, Self::Approval, Self::Budget],
+            None | Some("") => vec![Self::Violation, Self::Approval, Self::Budget, Self::OpsChange],
             Some(s) => s
                 .split(',')
                 .filter_map(|t| match t.trim() {
                     "violation" => Some(Self::Violation),
                     "approval" => Some(Self::Approval),
                     "budget" => Some(Self::Budget),
+                    "ops_change" => Some(Self::OpsChange),
                     _ => None,
                 })
                 .collect(),
