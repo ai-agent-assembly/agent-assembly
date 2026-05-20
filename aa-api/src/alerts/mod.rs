@@ -320,6 +320,13 @@ pub trait AlertStore: Send + Sync {
     /// `category=secret_detected`.
     fn record_secret(&self, alert: &SecretAlert) -> String;
 
+    /// Record a rule-engine alert (AAASM-1385), returning the assigned
+    /// ID. The stored alert has `category: AlertCategory::Rule` and a
+    /// populated `rule_context`. Dedup state defaults to occurrence 1
+    /// with no window expiry — `dedup_or_record_rule_alert` (AAASM-1627)
+    /// is the dedup-aware entry point.
+    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> u64;
+
     /// List stored alerts with pagination.
     ///
     /// Returns `(alerts, total_count)`. Results are ordered newest-first.

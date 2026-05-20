@@ -8,7 +8,10 @@ use aa_gateway::budget::types::BudgetAlert;
 use tokio::sync::broadcast;
 use ulid::Generator;
 
-use super::{stored_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, StoredAlert};
+use super::{
+    stored_alert_from, stored_rule_alert_from, stored_secret_alert_from, AlertEvent, AlertStore, RuleAlertSeed,
+    StoredAlert,
+};
 
 /// Capacity of the per-store `tokio::broadcast` channel used for the
 /// `AlertEvent` lifecycle bus. Subscribers that lag past this many
@@ -100,6 +103,19 @@ impl AlertStore for InMemoryAlertStore {
             buf.push_back(stored.clone());
         }
         let _ = self.event_tx.send(AlertEvent::Fire(stored));
+        id
+    }
+
+    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = stored_rule_alert_from(seed, id, timestamp);
+
+        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        if buf.len() >= self.capacity {
+            buf.pop_front();
+        }
+        buf.push_back(stored);
         id
     }
 
