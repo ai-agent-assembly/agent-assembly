@@ -17,6 +17,7 @@
 //! | Module | Purpose |
 //! | --- | --- |
 //! | [`adapter`] | [`SaasCodingAgentAdapter`] + [`DevToolAdapter`] impl |
+//! | [`event`] | [`SaasAuditEvent`] — normalized webhook event type |
 //! | [`provider`] | [`SaasProvider`] enum and [`SaasProviderConfig`] |
 //! | [`signature`] | Per-provider HMAC-SHA256 webhook signature verification |
 //! | [`overlay`] | Per-provider governance overlay types |
@@ -24,8 +25,10 @@
 //! [`DevToolAdapter`]: aa_core::DevToolAdapter
 //! [`GovernanceLevel::L1Observe`]: aa_core::GovernanceLevel::L1Observe
 //! [`SaasCodingAgentAdapter`]: adapter::SaasCodingAgentAdapter
+//! [`SaasAuditEvent`]: event::SaasAuditEvent
 
 pub mod adapter;
+pub mod event;
 pub mod overlay;
 pub mod provider;
 pub mod signature;
