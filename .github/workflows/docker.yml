@@ -95,11 +95,13 @@ jobs:
             version: "3.10-slim"
             dockerfile: docker/Dockerfile.python-3.10-slim
             smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          # Node 24 is intentionally absent here. Re-enabled by AAASM-1503
-          # once AAASM-1203 publishes `@agent-assembly/sdk` to npm. The
-          # transitional git/tarball install paths can't produce a working
-          # image because the SDK's `dist/` and native `.node` files are
-          # gitignored — see AAASM-1501 for the full investigation.
+          # Node 20 / 22 / 24 are all intentionally absent here. Re-enabled
+          # by AAASM-1660 (node 20) / AAASM-1661 (node 22) / AAASM-1503
+          # (node 24) once AAASM-1203 publishes `@agent-assembly/sdk` to
+          # npm. The transitional git/tarball install paths can't produce
+          # a working image because the SDK's `dist/` and native `.node`
+          # files are gitignored — see AAASM-1501 for the full
+          # investigation. Three follow-up subtasks share one PR.
           - lang: go
             version: "1.26-alpine"
             dockerfile: docker/Dockerfile.go-1.26-alpine
