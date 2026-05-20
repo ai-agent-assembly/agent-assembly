@@ -140,7 +140,7 @@ async fn ws_alerts_resolve_frame_follows_fire() {
     assert_eq!(fire_value["type"], "alert.fire");
 
     // Resolve must emit alert.resolve.
-    handle.state.alert_store.resolve(id, Some("ack")).expect("resolve");
+    handle.state.alert_store.resolve(&id, Some("ack")).expect("resolve");
     let resolve = tokio::time::timeout(std::time::Duration::from_millis(100), ws.next())
         .await
         .unwrap()

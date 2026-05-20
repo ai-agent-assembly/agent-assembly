@@ -234,7 +234,7 @@ mod tests {
 
     fn stored(severity: AlertSeverity, agent_id: &str) -> StoredAlert {
         StoredAlert {
-            id: 1,
+            id: "01JC0000000000000000000001".to_string(),
             severity,
             category: AlertCategory::Budget,
             message: "test".to_string(),
@@ -245,6 +245,7 @@ mod tests {
             spent_usd: 8.0,
             limit_usd: 10.0,
             status: "unresolved".to_string(),
+            prior_status: None,
             updated_at: None,
             detected_pattern_type: None,
             redacted_value: None,
