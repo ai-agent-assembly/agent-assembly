@@ -97,7 +97,7 @@ mod tests {
         let expired = tick(&silence_store, &alert_store, Utc::now());
         assert_eq!(expired, 1);
 
-        let restored = alert_store.get(&alert_id).unwrap();
+        let restored = alert_store.get_by_id(&alert_id).unwrap();
         assert_eq!(restored.status, "unresolved", "alert must be restored");
         assert!(restored.prior_status.is_none(), "prior_status must be cleared");
     }
@@ -122,7 +122,7 @@ mod tests {
         let expired = tick(&silence_store, &alert_store, Utc::now());
         assert_eq!(expired, 0);
 
-        let still_suppressed = alert_store.get(&alert_id).unwrap();
+        let still_suppressed = alert_store.get_by_id(&alert_id).unwrap();
         assert_eq!(still_suppressed.status, "suppressed");
     }
 
