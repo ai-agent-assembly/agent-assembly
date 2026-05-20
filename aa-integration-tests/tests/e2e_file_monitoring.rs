@@ -311,7 +311,6 @@ async fn await_event(
 /// shape, so failures here usually mean the probe is mis-attached or
 /// `PID_FILTER` is mis-keyed.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_create_emits_event_with_path_and_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -360,7 +359,6 @@ async fn ebpf_file_create_emits_event_with_path_and_pid() {
 /// When `FileIoEvent` gains a typed `bytes` accessor (AAASM-1425), this
 /// assertion can switch over without changing the byte-count claim.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_write_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -413,7 +411,6 @@ async fn ebpf_file_write_syscall_emits_event_for_target_pid() {
 /// from the driver's own `open()` is filtered out by the predicate so
 /// the assertion targets exactly the read.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -467,7 +464,7 @@ async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
 /// renameat2 today, so only the source path is asserted — see
 /// AAASM-1425 for the dual-path schema extension.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
+#[ignore = "blocked on AAASM-1574: aa-file-io probe attaches to __x64_sys_renameat2 but glibc rename() routes through __x64_sys_rename on x86_64"]
 async fn ebpf_file_rename_emits_event_with_old_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -516,7 +513,7 @@ async fn ebpf_file_rename_emits_event_with_old_path() {
 /// pid. Confirms the file is actually gone afterwards as a sanity check
 /// that the driver did the right syscall.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
+#[ignore = "blocked on AAASM-1574: aa-file-io probe attaches to __x64_sys_unlinkat but glibc unlink() routes through __x64_sys_unlink on x86_64"]
 async fn ebpf_file_unlink_emits_event_with_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -567,7 +564,6 @@ async fn ebpf_file_unlink_emits_event_with_path() {
 /// consume. Once that map is wired up, this test trivially extends to
 /// a `agent_id_A != agent_id_B` claim by adding the gateway lookup.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_events_attributed_to_filtered_pid_only() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -689,7 +685,6 @@ async fn ebpf_pid_not_in_filter_map_produces_no_event() {
 /// pointers would require additional BPF helpers (`bpf_d_path` etc.)
 /// not currently used. Tracked under AAASM-1425.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1552: aa-file-io probe reads garbage filename pointer on SYSCALL_WRAPPER kernels (path always empty)"]
 async fn ebpf_file_event_records_path_when_openat_is_absolute() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
