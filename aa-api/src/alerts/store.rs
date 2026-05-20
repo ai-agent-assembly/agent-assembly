@@ -101,10 +101,12 @@ impl AlertStore for InMemoryAlertStore {
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
         let mut buf = self.alerts.write().expect("alert store lock poisoned");
         let alert = buf.iter_mut().find(|a| a.id == id)?;
-        // Idempotent: don't bump `updated_at` on subsequent resolves.
+        // Idempotent: don't bump timestamps on subsequent resolves.
         if alert.status != "resolved" {
+            let now = chrono::Utc::now().to_rfc3339();
             alert.status = "resolved".to_string();
-            alert.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            alert.updated_at = Some(now.clone());
+            alert.resolved_at = Some(now);
         }
         Some(alert.clone())
     }
@@ -261,6 +263,10 @@ mod tests {
         let after = store.resolve(&id, Some("ack")).expect("known id resolves");
         assert_eq!(after.status, "resolved");
         assert!(after.updated_at.is_some());
+        assert_eq!(
+            after.resolved_at, after.updated_at,
+            "resolved_at must be set in lockstep with updated_at on the first resolve",
+        );
 
         let from_store = store.get(&id).unwrap();
         assert_eq!(from_store.status, "resolved");
@@ -315,6 +321,29 @@ mod tests {
         assert_eq!(found.detected_pattern_type.as_deref(), Some("AwsAccessKey"));
         assert_eq!(found.redacted_value.as_deref(), Some("[REDACTED:AwsAccessKey]"));
         assert_eq!(found.status, "unresolved");
+    }
+
+    #[test]
+    fn legacy_alert_constructors_default_rule_context_to_none() {
+        let store = InMemoryAlertStore::new();
+        let budget_id = store.record(&test_alert(80));
+        let secret_id = store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
+
+        let budget = store.get(&budget_id).expect("budget alert");
+        let secret = store.get(&secret_id).expect("secret alert");
+
+        for stored in [&budget, &secret] {
+            assert!(
+                stored.rule_context.is_none(),
+                "legacy alerts must not carry a rule_context",
+            );
+            assert!(!stored.first_fired_at.is_empty(), "first_fired_at must be populated",);
+            assert_eq!(
+                stored.first_fired_at, stored.timestamp,
+                "first_fired_at must mirror timestamp for legacy alerts",
+            );
+            assert!(stored.resolved_at.is_none(), "resolved_at must be None pre-resolve");
+        }
     }
 
     #[test]

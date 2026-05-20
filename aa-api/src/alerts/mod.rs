@@ -12,6 +12,8 @@ use aa_gateway::alerts::SecretAlert;
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 
+use crate::alerts::detail::RuleContext;
+
 /// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredAlert {
@@ -51,6 +53,18 @@ pub struct StoredAlert {
     /// contains any byte of the original secret. `None` for budget
     /// alerts.
     pub redacted_value: Option<String>,
+    /// ISO 8601 timestamp of the first fire — mirrors `timestamp` for
+    /// budget/secret alerts and is set explicitly for rule alerts so
+    /// re-fires within a dedup window keep the original fire time.
+    pub first_fired_at: String,
+    /// ISO 8601 timestamp at which the alert was resolved. `None`
+    /// while the alert is still firing.
+    pub resolved_at: Option<String>,
+    /// Rich rule-engine context attached to alerts that came from the
+    /// rule engine. `None` for legacy budget/secret alerts. See
+    /// AAASM-1385 for the full schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_context: Option<RuleContext>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -152,7 +166,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         message: build_secret_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
         team_id: alert.team_id.clone(),
-        timestamp,
+        timestamp: timestamp.clone(),
         threshold_pct: 0,
         spent_usd: 0.0,
         limit_usd: 0.0,
@@ -160,6 +174,9 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         updated_at: None,
         detected_pattern_type: Some(kind.as_str().to_string()),
         redacted_value: Some(alert.redacted_label()),
+        first_fired_at: timestamp,
+        resolved_at: None,
+        rule_context: None,
     }
 }
 
@@ -172,7 +189,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         message: build_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
         team_id: alert.team_id.clone(),
-        timestamp,
+        timestamp: timestamp.clone(),
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
@@ -180,6 +197,9 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         updated_at: None,
         detected_pattern_type: None,
         redacted_value: None,
+        first_fired_at: timestamp,
+        resolved_at: None,
+        rule_context: None,
     }
 }
 
