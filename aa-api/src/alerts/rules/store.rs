@@ -308,4 +308,12 @@ mod tests {
             .expect_err("renaming a -> b must collide with the existing b");
         assert!(matches!(err, AlertRuleStoreError::NameConflict { ref name } if name == "b"));
     }
+
+    #[test]
+    fn delete_removes_existing_rule_and_returns_true() {
+        let store = InMemoryAlertRuleStore::new();
+        let created = store.create(rule_named("r1")).expect("create");
+        assert!(store.delete(&created.id), "delete must return true for known id");
+        assert!(store.get(&created.id).is_none(), "rule must be gone");
+    }
 }
