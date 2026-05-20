@@ -6,5 +6,6 @@
 //! viable rule evaluator.
 
 pub mod destinations;
+pub mod evaluator;
 pub mod store;
 pub mod types;
