@@ -11,6 +11,7 @@
 //! 2. Expose a `pub fn parse(body: &[u8]) -> Result<SaasAuditEvent, ParseError>`.
 //! 3. Add the arm in [`parse`].
 
+pub mod chatgpt;
 pub mod claude_ai;
 
 /// Error returned when a provider-specific body fails to decode.
