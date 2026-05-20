@@ -250,3 +250,27 @@ fn selftest_crewai_root_sub_agent_hierarchy() {
     );
     assert_eq!(events.last().unwrap()["event"], "done");
 }
+
+// ── test 11 ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn selftest_google_adk_single_agent() {
+    let out =
+        run_agent("single_agent/google_adk_agent.py", &[("AA_SELFTEST", "1")]).expect("spawn google_adk_agent.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    let events = parse_events(&stdout);
+    assert!(!events.is_empty(), "expected at least one JSON event");
+    assert_eq!(events[0]["event"], "started", "first event must be 'started'");
+    assert_eq!(events[0]["framework"], "google_adk");
+    assert!(
+        events[0].get("agent_id").and_then(|v| v.as_str()).is_some(),
+        "started event must include agent_id"
+    );
+    assert_eq!(events.last().unwrap()["event"], "done", "last event must be 'done'");
+}
