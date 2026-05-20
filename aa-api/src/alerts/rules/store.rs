@@ -168,3 +168,41 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
         rules.values().find(|r| r.name == name).cloned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::rules::types::{RuleMetric, RuleOperator, RuleSeverity};
+    use std::collections::HashMap;
+
+    /// Build a rule with the given name but otherwise default values.
+    /// `id`, `created_at`, `updated_at` are left empty — the store
+    /// overwrites them on `create`.
+    fn rule_named(name: &str) -> AlertRule {
+        AlertRule {
+            id: String::new(),
+            name: name.to_string(),
+            description: format!("desc for {name}"),
+            metric: RuleMetric::BudgetSpentPct,
+            operator: RuleOperator::Gt,
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: RuleSeverity::Critical,
+            destination_ids: vec!["slack-ops".to_string()],
+            dedup_window_seconds: 600,
+            suppression_labels: HashMap::new(),
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn create_assigns_id_and_timestamps() {
+        let store = InMemoryAlertRuleStore::new();
+        let created = store.create(rule_named("r1")).expect("create");
+        assert!(!created.id.is_empty(), "id must be assigned");
+        assert!(!created.created_at.is_empty(), "created_at must be assigned");
+        assert_eq!(created.created_at, created.updated_at);
+    }
+}
