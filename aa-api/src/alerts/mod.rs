@@ -42,8 +42,16 @@ pub struct StoredAlert {
     /// Configured daily limit in USD.
     pub limit_usd: f64,
     /// Lifecycle status — `"unresolved"` on capture, flipped to
-    /// `"resolved"` once `AlertStore::resolve` is called.
+    /// `"resolved"` once `AlertStore::resolve` is called, or
+    /// `"suppressed"` while an active silence covers the alert
+    /// (AAASM-1645).
     pub status: String,
+    /// Status the alert held immediately before being suppressed
+    /// (AAASM-1645). Populated only while `status == "suppressed"`;
+    /// the expiry watcher reads it to know whether to restore the
+    /// alert to `"unresolved"` or `"resolved"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior_status: Option<String>,
     /// ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
     /// while the alert is still in its initial captured state.
     pub updated_at: Option<String>,
@@ -172,6 +180,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         spent_usd: 0.0,
         limit_usd: 0.0,
         status: "unresolved".to_string(),
+        prior_status: None,
         updated_at: None,
         detected_pattern_type: Some(kind.as_str().to_string()),
         redacted_value: Some(alert.redacted_label()),
@@ -195,6 +204,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         spent_usd: alert.spent_usd,
         limit_usd: alert.limit_usd,
         status: "unresolved".to_string(),
+        prior_status: None,
         updated_at: None,
         detected_pattern_type: None,
         redacted_value: None,
