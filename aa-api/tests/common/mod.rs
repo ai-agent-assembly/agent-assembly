@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::Instant;
 
+use aa_api::alerts::rules::destinations::DestinationRegistry;
+use aa_api::alerts::rules::store::InMemoryAlertRuleStore;
 use aa_api::alerts::silence_store::InMemorySilenceStore;
 use aa_api::alerts::store::InMemoryAlertStore;
 use aa_api::auth::api_key::{ApiKey, ApiKeyEntry, ApiKeyStore};
@@ -168,6 +170,8 @@ spec:
         destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
         audit_sender: None,
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+        alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
+        destination_registry: Arc::new(DestinationRegistry::seeded()),
     }
 }
 
