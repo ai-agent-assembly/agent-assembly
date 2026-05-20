@@ -71,6 +71,10 @@ pub fn v1_router() -> Router {
         // /alerts/{id} catch-all so the literal "ws" path segment is
         // matched first).
         .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
+        // AAASM-1648: silence-an-alert endpoint. Literal "silence" path
+        // segment must come BEFORE /alerts/{id} so it isn't captured
+        // as an id.
+        .route("/alerts/silence", post(alerts::silence_alert))
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         // Alert destinations — AAASM-1388
