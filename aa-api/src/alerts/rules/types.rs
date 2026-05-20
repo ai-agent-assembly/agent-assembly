@@ -433,4 +433,18 @@ mod tests {
         assert!(matches!(err, AlertRuleValidationError::EmptyDestinations));
         assert_eq!(err.error_code(), "destination_unknown");
     }
+
+    #[test]
+    fn unknown_destination_id_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            destination_ids: vec!["slack-ops".to_string(), "unknown-dest".to_string()],
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("unknown destination id must fail");
+        match err {
+            AlertRuleValidationError::UnknownDestination { id } => assert_eq!(id, "unknown-dest"),
+            other => panic!("expected UnknownDestination, got {other:?}"),
+        }
+    }
 }
