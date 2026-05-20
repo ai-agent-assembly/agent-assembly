@@ -23,3 +23,22 @@ pub enum RuleMetric {
     /// Count of policy violations within the evaluation window.
     PolicyViolationCount,
 }
+
+/// Comparison operator applied between the metric's current value and
+/// the rule's threshold. Wire form is the literal symbol (e.g. `">"`),
+/// matching the Story description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum RuleOperator {
+    /// Strictly greater than.
+    #[serde(rename = ">")]
+    Gt,
+    /// Greater than or equal to.
+    #[serde(rename = ">=")]
+    Gte,
+    /// Strictly less than.
+    #[serde(rename = "<")]
+    Lt,
+    /// Equal to.
+    #[serde(rename = "=")]
+    Eq,
+}
