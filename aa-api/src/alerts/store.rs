@@ -414,4 +414,131 @@ mod tests {
         assert_ne!(budget_id, secret_id);
         assert!(budget_id < secret_id, "ULIDs sort by timestamp");
     }
+
+    // ─── AlertEvent bus (AAASM-1645) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn subscribe_receives_fire_on_record() {
+        let store = InMemoryAlertStore::new();
+        let mut rx = store.subscribe();
+        let id = store.record(&test_alert(80));
+        match rx.recv().await.expect("event must arrive") {
+            AlertEvent::Fire(stored) => assert_eq!(stored.id, id),
+            other => panic!("expected Fire, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_receives_resolve_only_on_state_change() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        let mut rx = store.subscribe();
+        store.resolve(&id, None).unwrap();
+        match rx.recv().await.expect("first resolve emits") {
+            AlertEvent::Resolve(stored) => assert_eq!(stored.status, "resolved"),
+            other => panic!("expected Resolve, got {other:?}"),
+        }
+        // Second (idempotent) resolve must not emit a second event.
+        store.resolve(&id, None).unwrap();
+        let res = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(res.is_err(), "no event should arrive on idempotent re-resolve");
+    }
+
+    // ─── suppress / restore (AAASM-1645) ─────────────────────────────────────
+
+    #[test]
+    fn suppress_flips_status_and_saves_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+
+        let suppressed = store.suppress(&id).expect("suppress must succeed");
+        assert_eq!(suppressed.status, "suppressed");
+        assert_eq!(suppressed.prior_status.as_deref(), Some("unresolved"));
+        assert!(suppressed.updated_at.is_some());
+
+        let from_store = store.get(&id).unwrap();
+        assert_eq!(from_store.status, "suppressed");
+        assert_eq!(from_store.prior_status.as_deref(), Some("unresolved"));
+    }
+
+    #[test]
+    fn suppress_preserves_resolved_as_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        store.resolve(&id, None).unwrap();
+
+        let suppressed = store.suppress(&id).expect("suppress must succeed");
+        assert_eq!(suppressed.status, "suppressed");
+        assert_eq!(suppressed.prior_status.as_deref(), Some("resolved"));
+    }
+
+    #[test]
+    fn suppress_returns_none_for_unknown_id() {
+        let store = InMemoryAlertStore::new();
+        store.record(&test_alert(80));
+        assert!(store.suppress("00000000000000000000000000").is_none());
+    }
+
+    #[test]
+    fn suppress_returns_none_when_already_suppressed() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        store.suppress(&id).expect("first suppress succeeds");
+
+        // Second suppress must refuse so prior_status isn't overwritten.
+        assert!(store.suppress(&id).is_none(), "double-suppress must return None");
+    }
+
+    #[tokio::test]
+    async fn suppress_publishes_silence_event() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        let mut rx = store.subscribe();
+        store.suppress(&id).unwrap();
+        match rx.recv().await.expect("silence event must arrive") {
+            AlertEvent::Silence(stored) => {
+                assert_eq!(stored.id, id);
+                assert_eq!(stored.status, "suppressed");
+                assert_eq!(stored.prior_status.as_deref(), Some("unresolved"));
+            }
+            other => panic!("expected Silence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restore_returns_alert_to_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        store.suppress(&id).unwrap();
+
+        let restored = store.restore(&id).expect("restore must succeed");
+        assert_eq!(restored.status, "unresolved");
+        assert!(restored.prior_status.is_none(), "prior_status must be cleared");
+    }
+
+    #[test]
+    fn restore_returns_to_resolved_when_that_was_prior_status() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(95));
+        store.resolve(&id, None).unwrap();
+        store.suppress(&id).unwrap();
+
+        let restored = store.restore(&id).unwrap();
+        assert_eq!(restored.status, "resolved");
+        assert!(restored.prior_status.is_none());
+    }
+
+    #[test]
+    fn restore_returns_none_when_not_suppressed() {
+        let store = InMemoryAlertStore::new();
+        let id = store.record(&test_alert(80));
+        // Alert is "unresolved", not "suppressed" — restore must refuse.
+        assert!(store.restore(&id).is_none());
+    }
+
+    #[test]
+    fn restore_returns_none_for_unknown_id() {
+        let store = InMemoryAlertStore::new();
+        assert!(store.restore("00000000000000000000000000").is_none());
+    }
 }
