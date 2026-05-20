@@ -53,14 +53,28 @@ FROM golang:1.24-alpine
 # Drop the prebuilt `aasm` binary into the image PATH.
 COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
+# go-sdk's go.mod declares `go 1.26.0`; the golang:1.24-alpine base image
+# ships a 1.24 toolchain. GOTOOLCHAIN=auto lets `go install` fetch the
+# required 1.26 toolchain on demand, matching the "courtesy buffer"
+# semantics of this F114b variant (host stays on Go 1.24, AAASM-managed
+# go-sdk install transparently uses 1.26). See AAASM-1672.
+ENV GOTOOLCHAIN=auto
+
 # Install the AAASM Go SDK. `go install` uses Go's native git-based
 # distribution model — no registry-publish prerequisite (unlike pip/npm).
 RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
+#
+# `go list -m <module>@latest` is a self-contained query against GOPROXY:
+# it doesn't need a local go.mod (works from `/`), and it asserts the
+# module is resolvable. The plain `go list <import>` form needs both a
+# module context AND a package at the import path — neither holds here
+# (go-sdk's module root has no .go files; sources are under assembly/,
+# internal/ffi/, examples/minimal/). See AAASM-1508.
 RUN aasm --version
-RUN go list github.com/agent-assembly/go-sdk
+RUN go list -m github.com/AI-agent-assembly/go-sdk@latest
 
 LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.24 agent base image" \
