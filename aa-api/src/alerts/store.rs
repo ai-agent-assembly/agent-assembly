@@ -106,16 +106,19 @@ impl AlertStore for InMemoryAlertStore {
         id
     }
 
-    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String {
+        let id = self.next_id();
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let stored = stored_rule_alert_from(seed, id, timestamp);
+        let stored = stored_rule_alert_from(seed, id.clone(), timestamp);
 
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
         }
-        buf.push_back(stored);
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
         id
     }
 
@@ -210,6 +213,34 @@ mod tests {
             team_id: Some("team-pioneer".to_string()),
             kinds: vec![kind],
             finding_count: 1,
+        }
+    }
+
+    fn test_rule_seed() -> RuleAlertSeed {
+        use crate::alerts::detail::{RoutingLogEntry, RuleSnapshot};
+        use std::collections::BTreeMap;
+
+        RuleAlertSeed {
+            agent_id: Some(AgentId::from_bytes([0x55; 16])),
+            team_id: Some("team-platform".to_string()),
+            rule_id: "rule-budget-90".to_string(),
+            rule_name: "Budget threshold > 90%".to_string(),
+            rule_snapshot: RuleSnapshot {
+                metric: "budget_spent_pct".to_string(),
+                operator: ">".to_string(),
+                threshold: 90.0,
+                evaluation_window_seconds: 300,
+                severity: "CRITICAL".to_string(),
+                dedup_window_seconds: 600,
+                suppression_labels: BTreeMap::new(),
+            },
+            destination_ids: vec!["slack-ops".to_string()],
+            event_payload: serde_json::json!({ "metric_value": 92.3 }),
+            routing_log: vec![RoutingLogEntry {
+                destination_id: "slack-ops".to_string(),
+                delivered_at: "2026-05-13T09:12:01Z".to_string(),
+                status: "ok".to_string(),
+            }],
         }
     }
 
@@ -400,6 +431,35 @@ mod tests {
     }
 
     #[test]
+    fn record_rule_alert_round_trips_via_get_by_id() {
+        let store = InMemoryAlertStore::new();
+        let seed = test_rule_seed();
+        let id = store.record_rule_alert(&seed);
+
+        let stored = store.get_by_id(&id).expect("recorded rule alert must be retrievable");
+        assert_eq!(stored.id, id);
+        assert_eq!(stored.category, super::super::AlertCategory::Rule);
+
+        let ctx = stored.rule_context.as_ref().expect("rule_context must be populated");
+        assert_eq!(ctx.rule_id, "rule-budget-90");
+        assert_eq!(ctx.rule_name, "Budget threshold > 90%");
+        assert_eq!(ctx.dedup_occurrence_count, 1);
+        assert!(
+            ctx.dedup_window_expires_at.is_none(),
+            "dedup expiry seeded by 1626 only"
+        );
+        assert_eq!(ctx.destination_ids, vec!["slack-ops".to_string()]);
+        assert_eq!(ctx.routing_log.len(), 1);
+    }
+
+    #[test]
+    fn get_by_id_returns_none_for_unknown_rule_alert_id() {
+        let store = InMemoryAlertStore::new();
+        store.record_rule_alert(&test_rule_seed());
+        assert!(store.get_by_id("00000000000000000000000000").is_none());
+    }
+
+    #[test]
     fn legacy_alert_constructors_default_rule_context_to_none() {
         let store = InMemoryAlertStore::new();
         let budget_id = store.record(&test_alert(80));
@@ -472,7 +532,7 @@ mod tests {
         assert_eq!(suppressed.prior_status.as_deref(), Some("unresolved"));
         assert!(suppressed.updated_at.is_some());
 
-        let from_store = store.get(&id).unwrap();
+        let from_store = store.get_by_id(&id).unwrap();
         assert_eq!(from_store.status, "suppressed");
         assert_eq!(from_store.prior_status.as_deref(), Some("unresolved"));
     }

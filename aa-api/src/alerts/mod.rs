@@ -274,7 +274,7 @@ fn build_rule_alert_message(seed: &RuleAlertSeed) -> String {
 /// `rule_context`. The dedup occurrence counter is seeded to 1 and
 /// `dedup_window_expires_at` is left for the store's dedup state
 /// machine to compute (AAASM-1627).
-pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: u64, timestamp: String) -> StoredAlert {
+pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: String, timestamp: String) -> StoredAlert {
     let agent_id_str = seed.agent_id.as_ref().map(format_agent_id).unwrap_or_default();
     let severity = severity_from_rule_string(&seed.rule_snapshot.severity);
     StoredAlert {
@@ -289,6 +289,7 @@ pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: u64, timestamp: String) 
         spent_usd: 0.0,
         limit_usd: 0.0,
         status: "unresolved".to_string(),
+        prior_status: None,
         updated_at: None,
         detected_pattern_type: None,
         redacted_value: None,
@@ -325,7 +326,7 @@ pub trait AlertStore: Send + Sync {
     /// populated `rule_context`. Dedup state defaults to occurrence 1
     /// with no window expiry — `dedup_or_record_rule_alert` (AAASM-1627)
     /// is the dedup-aware entry point.
-    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> u64;
+    fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String;
 
     /// List stored alerts with pagination.
     ///
