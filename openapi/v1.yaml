@@ -426,6 +426,9 @@ paths:
       tags:
       - alert-destinations
       summary: '`GET /api/v1/alerts/destinations` — list destinations.'
+      description: |-
+        List configured notification destinations. The `kind` query parameter filters
+        to webhook, slack, pagerduty, or opsgenie. Returns the full set when absent.
       operationId: list_destinations
       parameters:
       - name: kind
@@ -449,6 +452,10 @@ paths:
       tags:
       - alert-destinations
       summary: '`POST /api/v1/alerts/destinations` — create a destination.'
+      description: |-
+        Register a new notification destination. The request `kind` discriminates the
+        `config` shape and is validated server-side; an unknown kind returns 400
+        `invalid_kind` and a malformed config returns 400 `invalid_config`.
       operationId: create_destination
       requestBody:
         content:
@@ -470,6 +477,9 @@ paths:
       tags:
       - alert-destinations
       summary: '`GET /api/v1/alerts/destinations/{id}` — fetch one destination.'
+      description: |-
+        Retrieve a single notification destination by id. Returns 404
+        `destination_not_found` when the id is unknown.
       operationId: get_destination
       parameters:
       - name: id
@@ -491,6 +501,10 @@ paths:
       tags:
       - alert-destinations
       summary: '`PUT /api/v1/alerts/destinations/{id}` — update a destination.'
+      description: |-
+        Replace name, config, or enabled state on an existing destination. Preserves
+        the original `created_at`, bumps `updated_at`, and re-validates the config —
+        invalid input returns 400.
       operationId: update_destination
       parameters:
       - name: id
@@ -520,6 +534,10 @@ paths:
       tags:
       - alert-destinations
       summary: '`DELETE /api/v1/alerts/destinations/{id}` — remove a destination.'
+      description: |-
+        Remove a destination. Returns 409 `destination_in_use` when any active alert
+        rule still references this id — the rule must be removed or re-targeted
+        before the destination can be deleted.
       operationId: delete_destination
       parameters:
       - name: id
@@ -540,6 +558,11 @@ paths:
       tags:
       - alert-destinations
       summary: '`POST /api/v1/alerts/destinations/{id}/test` — fire a test notification.'
+      description: |-
+        Send a real test notification through the destination's connector — no
+        dry-run — so operators can verify the round-trip end-to-end. Returns 502
+        `connector_failed` with the upstream status and body when the connector
+        rejects the payload.
       operationId: test_destination
       parameters:
       - name: id
@@ -2743,38 +2766,6 @@ components:
       - approval
       - deny
       - na
-    Destination:
-      allOf:
-      - $ref: '#/components/schemas/DestinationConfig'
-        description: Discriminated per-kind configuration.
-      - type: object
-        required:
-        - id
-        - name
-        - enabled
-        - created_at
-        - updated_at
-        properties:
-          created_at:
-            type: string
-            description: RFC 3339 creation timestamp.
-          enabled:
-            type: boolean
-            description: Whether dispatch is allowed against this destination.
-          id:
-            type: string
-            description: Stable identifier, prefix `dst_` followed by 32 hex chars.
-          name:
-            type: string
-            description: Operator-supplied display name.
-          updated_at:
-            type: string
-            description: RFC 3339 last-mutation timestamp.
-      description: |-
-        A persisted notification destination.
-
-        `config` is flattened into the surrounding JSON object so the public
-        representation is `{ id, name, kind, config, enabled, created_at, updated_at }`.
     DestinationConfig:
       oneOf:
       - type: object
@@ -2917,20 +2908,6 @@ components:
             type: string
             description: RFC 3339 last-mutation timestamp.
       description: Public JSON shape returned by every destination handler.
-    DispatchRequest:
-      type: object
-      description: |-
-        Body of a test-fire request.
-
-        Both fields default so callers can `POST` with an empty body and still
-        get a meaningful payload at the connector.
-      properties:
-        message:
-          type: string
-          description: Human-readable message body.
-        severity:
-          type: string
-          description: Severity label propagated to the connector (e.g. `"LOW"`, `"CRITICAL"`).
     EdgeListResponse:
       type: object
       description: Paginated list of directed edges for an agent.
