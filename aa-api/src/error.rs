@@ -88,3 +88,28 @@ impl IntoResponse for ProblemDetail {
             .into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_code_is_omitted_when_unset() {
+        let problem = ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail("missing");
+        let v: serde_json::Value = serde_json::to_value(&problem).unwrap();
+        assert!(
+            v.get("error_code").is_none(),
+            "unset error_code must not appear on the wire"
+        );
+    }
+
+    #[test]
+    fn error_code_is_serialized_when_set() {
+        let problem = ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail("duplicate")
+            .with_error_code("rule_name_conflict");
+        let v: serde_json::Value = serde_json::to_value(&problem).unwrap();
+        assert_eq!(v["error_code"], "rule_name_conflict");
+        assert_eq!(v["status"], 409);
+    }
+}
