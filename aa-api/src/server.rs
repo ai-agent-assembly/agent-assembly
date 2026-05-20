@@ -50,6 +50,12 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
     let _secret_alert_capture_handle =
         crate::alerts::capture::spawn_secret_alert_capture(secret_rx, state.alert_store.clone());
 
+    // Spawn background task to restore alerts when their silence expires (AAASM-1646 / AAASM-1647).
+    let _silence_expiry_handle = crate::alerts::silence_watcher::spawn_silence_expiry_watcher(
+        state.silence_store.clone(),
+        state.alert_store.clone(),
+    );
+
     let app = build_app(state);
 
     let listener = TcpListener::bind(config.bind_addr).await?;
