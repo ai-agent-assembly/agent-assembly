@@ -10,6 +10,7 @@ import {
   useRejectAction,
   type Approval,
 } from '../features/approvals/api'
+import { ApprovalCountdown } from '../features/approvals/ApprovalCountdown'
 import { ApprovalDetailRow } from '../features/approvals/ApprovalDetailRow'
 import { ApprovalsFilterBar } from '../features/approvals/ApprovalsFilterBar'
 import {
@@ -19,9 +20,10 @@ import {
   type ApprovalsFilter,
 } from '../features/approvals/filter'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
+import { useExpiredApprovals } from '../features/approvals/useExpiredApprovals'
 import './ApprovalsPage.css'
 
-const APPROVAL_ROW_COL_COUNT = 7
+const APPROVAL_ROW_COL_COUNT = 8
 
 // ── Reject dialog ─────────────────────────────────────────────────────────────
 
@@ -128,6 +130,7 @@ export function ApprovalsPage() {
   const queryClient = useQueryClient()
   const { data: approvals, isLoading, isError, refetch } = useApprovalsQuery()
   const { connected } = useApprovalsStream()
+  const { expire } = useExpiredApprovals()
   const approveMutation = useApproveAction()
   const rejectMutation = useRejectAction()
   const { toast } = useToast()
@@ -303,6 +306,7 @@ export function ApprovalsPage() {
                   <th>Reason</th>
                   <th>Routing</th>
                   <th>Requested at</th>
+                  <th>Expires in</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -310,7 +314,7 @@ export function ApprovalsPage() {
                 {isLoading
                   ? Array.from({ length: 3 }).map((_, i) => (
                     <tr key={i} data-testid="approval-row-skeleton">
-                      {Array.from({ length: 7 }).map((_, j) => (
+                      {Array.from({ length: 8 }).map((_, j) => (
                         <td key={j} style={{ padding: '8px 12px' }}>
                           <span style={{ display: 'block', height: '0.875rem', background: 'var(--line)', borderRadius: '4px' }} />
                         </td>
@@ -347,6 +351,12 @@ export function ApprovalsPage() {
                           : <span className="approvals-table__unrouted">—</span>}
                       </td>
                       <td>{row.created_at}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <ApprovalCountdown
+                          expiresAt={row.expires_at}
+                          onExpire={() => expire(row.id)}
+                        />
+                      </td>
                       <td style={{ display: 'flex', gap: '0.375rem' }} onClick={(e) => e.stopPropagation()}>
                         <button
                           data-testid="approve-btn"
