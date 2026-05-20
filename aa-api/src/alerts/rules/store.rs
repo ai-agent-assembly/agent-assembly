@@ -322,4 +322,12 @@ mod tests {
         let store = InMemoryAlertRuleStore::new();
         assert!(!store.delete("missing"));
     }
+
+    #[test]
+    fn find_by_name_returns_some_for_known_and_none_otherwise() {
+        let store = InMemoryAlertRuleStore::new();
+        store.create(rule_named("r1")).expect("create");
+        assert!(store.find_by_name("r1").is_some());
+        assert!(store.find_by_name("not-there").is_none());
+    }
 }
