@@ -222,4 +222,15 @@ mod tests {
         assert_eq!(store.get(&created.id).map(|r| r.name), Some("r1".to_string()));
         assert!(store.get("does-not-exist").is_none());
     }
+
+    #[test]
+    fn list_returns_all_rules_when_filter_is_none() {
+        let store = InMemoryAlertRuleStore::new();
+        store.create(rule_named("a")).expect("a");
+        store.create(rule_named("b")).expect("b");
+        store.create(rule_named("c")).expect("c");
+        let mut names: Vec<String> = store.list(None).into_iter().map(|r| r.name).collect();
+        names.sort();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
 }
