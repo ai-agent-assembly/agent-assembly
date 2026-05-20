@@ -266,8 +266,8 @@ export interface paths {
         /**
          * `POST /api/v1/alerts/:id/resolve` — mark a governance alert as resolved.
          * @description Idempotent — calling against an already-resolved alert returns the same
-         *     record with `updated_at` unchanged. Returns 404 if the id is unknown,
-         *     evicted, or not a valid u64.
+         *     record with `updated_at` unchanged. Returns 404 if the id is unknown or
+         *     has been evicted from the ring buffer.
          */
         post: operations["resolve_alert"];
         delete?: never;
@@ -2779,7 +2779,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Numeric alert identifier */
+                /** @description ULID alert identifier (26 chars) */
                 id: string;
             };
             cookie?: never;
@@ -2809,7 +2809,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Numeric alert identifier */
+                /** @description ULID alert identifier (26 chars) */
                 id: string;
             };
             cookie?: never;
