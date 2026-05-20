@@ -381,4 +381,15 @@ mod tests {
             .expect_err("negative threshold must fail for budget_spent_pct");
         assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
     }
+
+    #[test]
+    fn non_finite_threshold_rejected() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        let rule = AlertRule {
+            threshold: f64::NAN,
+            ..valid_rule()
+        };
+        let err = rule.validate(&registry).expect_err("NaN threshold must fail");
+        assert!(matches!(err, AlertRuleValidationError::InvalidThreshold { .. }));
+    }
 }
