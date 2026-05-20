@@ -64,6 +64,13 @@ jobs:
       - name: Build aasm release binary
         run: cargo build --release --target ${{ matrix.target }} -p aa-cli
 
+      - name: Smoke-test aasm binary (size + --version)
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aasm"
+          ls -lh "$BIN"
+          "$BIN" --version
+
       - name: Archive binary
         shell: bash
         run: |
