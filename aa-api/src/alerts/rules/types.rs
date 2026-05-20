@@ -461,4 +461,15 @@ mod tests {
         assert_eq!(v["operator"], ">");
         assert_eq!(v["severity"], "CRITICAL");
     }
+
+    #[test]
+    fn empty_suppression_labels_are_omitted_on_the_wire() {
+        let rule = valid_rule();
+        let json = serde_json::to_string(&rule).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.get("suppression_labels").is_none(),
+            "empty suppression_labels should be omitted, got {v}",
+        );
+    }
 }
