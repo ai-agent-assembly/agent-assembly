@@ -190,6 +190,31 @@ impl OpsRegistry {
         }
     }
 
+    /// Transition `Running → Completing`.
+    ///
+    /// Intended to be called from the SDK return-channel (PR-D…G) when
+    /// the agent reports the action finished successfully. The entry stays
+    /// in the registry briefly so the dashboard renders the completion;
+    /// sweep policy is deferred to PR-H.
+    ///
+    /// Returns the updated record on success.
+    /// Returns [`OpsError::NotFound`] if the ID is unknown.
+    /// Returns [`OpsError::InvalidTransition`] if the op is not currently
+    /// `Running` (Pending / Paused / Completing / Terminated all reject).
+    pub fn complete(&self, op_id: &str) -> Result<OpRecord, OpsError> {
+        let mut entry = self.ops.get_mut(op_id).ok_or(OpsError::NotFound)?;
+        match entry.state {
+            OpState::Running => {
+                entry.state = OpState::Completing;
+                entry.updated_at = chrono::Utc::now().to_rfc3339();
+                Ok(entry.clone())
+            }
+            OpState::Pending | OpState::Paused | OpState::Completing | OpState::Terminated => {
+                Err(OpsError::InvalidTransition)
+            }
+        }
+    }
+
     /// Transition `Pending | Running | Paused → Terminated`.
     ///
     /// Idempotent on both terminal states: calling `terminate` on an op
