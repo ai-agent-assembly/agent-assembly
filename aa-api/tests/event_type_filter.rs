@@ -5,16 +5,17 @@ use aa_api::models::EventType;
 #[test]
 fn parse_filter_none_returns_all_types() {
     let types = EventType::parse_filter(None);
-    assert_eq!(types.len(), 3);
+    assert_eq!(types.len(), 4);
     assert!(types.contains(&EventType::Violation));
     assert!(types.contains(&EventType::Approval));
     assert!(types.contains(&EventType::Budget));
+    assert!(types.contains(&EventType::OpsChange));
 }
 
 #[test]
 fn parse_filter_empty_string_returns_all_types() {
     let types = EventType::parse_filter(Some(""));
-    assert_eq!(types.len(), 3);
+    assert_eq!(types.len(), 4);
 }
 
 #[test]
