@@ -8,6 +8,7 @@
 pub mod alerts;
 pub mod auth;
 pub mod config;
+pub mod destinations;
 pub mod error;
 pub mod events;
 pub mod middleware;
