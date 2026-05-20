@@ -172,6 +172,21 @@ pub struct ResolveAlertRequest {
     pub reason: Option<String>,
 }
 
+/// Request body for `POST /api/v1/alerts/silence` (AAASM-1387 / AAASM-1648).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SilenceAlertRequest {
+    /// ULID of the alert to silence.
+    pub alert_id: String,
+    /// Duration of the silence window in seconds. Must be > 0 and
+    /// ≤ 604_800 (7 days). Validation lives in the handler and returns
+    /// HTTP 400 `invalid_duration` on violation.
+    pub duration_seconds: u32,
+    /// Optional free-text note recorded on the silence (max 500 chars).
+    /// Returns HTTP 400 `reason_too_long` when oversize.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// JSON representation of a governance alert.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AlertResponse {
