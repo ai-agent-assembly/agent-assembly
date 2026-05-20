@@ -7,6 +7,23 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// One delivery attempt by the connector framework for a routed alert.
+///
+/// Each entry records the outcome of fanning an alert out to a configured
+/// destination — Slack, PagerDuty, webhook, etc. The framework appends a
+/// new entry per attempt; dedup-suppressed re-fires must NOT add entries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+pub struct RoutingLogEntry {
+    /// Identifier of the destination the alert was routed to.
+    pub destination_id: String,
+    /// ISO 8601 timestamp at which the connector framework completed
+    /// the delivery attempt.
+    pub delivered_at: String,
+    /// Outcome label — typically `"ok"`, `"error"`, or a connector-
+    /// specific status string.
+    pub status: String,
+}
+
 /// Active silence record attached to an alert.
 ///
 /// Present when an operator has acknowledged the alert and asked the
@@ -25,6 +42,18 @@ pub struct Silence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routing_log_entry_round_trips() {
+        let entry = RoutingLogEntry {
+            destination_id: "slack-ops".to_string(),
+            delivered_at: "2026-05-13T09:12:01Z".to_string(),
+            status: "ok".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: RoutingLogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, entry);
+    }
 
     #[test]
     fn silence_round_trips_with_reason() {
