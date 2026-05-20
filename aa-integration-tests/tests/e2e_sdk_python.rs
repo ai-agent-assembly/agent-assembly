@@ -300,3 +300,34 @@ fn selftest_google_adk_agent_team_emits_two_started_events() {
     assert_eq!(done["event"], "done");
     assert_eq!(done["agent_count"], 2, "done event must carry agent_count=2");
 }
+
+// ── test 13 ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn selftest_google_adk_root_sub_agent_hierarchy() {
+    let out = run_agent("root_sub_agents/google_adk_hierarchy.py", &[("AA_SELFTEST", "1")])
+        .expect("spawn google_adk_hierarchy.py");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    let events = parse_events(&stdout);
+    let started: Vec<_> = events.iter().filter(|e| e["event"] == "started").collect();
+    assert_eq!(
+        started.len(),
+        2,
+        "hierarchy must emit root + child 'started' events; got {}",
+        started.len()
+    );
+    assert_eq!(started[0]["role"], "root", "first started must be root");
+    assert_eq!(started[1]["role"], "child", "second started must be child");
+    assert_eq!(started[0]["framework"], "google_adk");
+    assert!(
+        started[1].get("parent").and_then(|v| v.as_str()).is_some(),
+        "child started event must include 'parent' field"
+    );
+    assert_eq!(events.last().unwrap()["event"], "done");
+}
