@@ -247,4 +247,18 @@ mod tests {
         let names: Vec<String> = store.list(Some(true)).into_iter().map(|r| r.name).collect();
         assert_eq!(names, vec!["on".to_string()]);
     }
+
+    #[test]
+    fn list_filter_false_returns_only_disabled_rules() {
+        let store = InMemoryAlertRuleStore::new();
+        store.create(rule_named("on")).expect("on");
+        store
+            .create(AlertRule {
+                enabled: false,
+                ..rule_named("off")
+            })
+            .expect("off");
+        let names: Vec<String> = store.list(Some(false)).into_iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["off".to_string()]);
+    }
 }
