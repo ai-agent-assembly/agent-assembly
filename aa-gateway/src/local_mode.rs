@@ -1,0 +1,131 @@
+//! Local Dev Mode bootstrap (Epic 17 S-B, AAASM-1576).
+//!
+//! Hosts the lightweight in-process control plane the gateway runs in
+//! [`DeploymentMode::Local`]. The module is built up across the eight
+//! sub-tasks of AAASM-1576; this file currently provides only the type
+//! surface that the remaining sub-tasks layer behaviour onto.
+//!
+//! [`DeploymentMode::Local`]: aa_core::config::DeploymentMode::Local
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+
+/// Handle returned by `start_local()` once the local control plane is up.
+///
+/// Holds the bound socket address (useful in tests that bind to port `0`
+/// to pick a free port) and the one-shot sender that drives the graceful
+/// shutdown path installed in AAASM-1728.
+///
+/// The handle is intentionally **not** `Clone` — only one caller can
+/// own the shutdown trigger at a time.
+#[allow(dead_code)] // consumed by start_local() / run_until_shutdown — AAASM-1725, AAASM-1728
+pub struct LocalGatewayHandle {
+    /// Address the local gateway is actually bound to. In normal
+    /// operation this is `127.0.0.1:{config.port}`; in tests that pass
+    /// port `0`, the resolved ephemeral port lives here.
+    pub local_addr: SocketAddr,
+    /// One-shot channel that signals the Axum server task to begin
+    /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
+    pub(crate) shutdown_tx: oneshot::Sender<()>,
+}
+
+/// JSON payload returned by `GET /healthz` in local mode.
+///
+/// Documented response shape from AAASM-1576 AC #4:
+///
+/// ```json
+/// {"mode":"local","storage":"sqlite","version":"0.0.1"}
+/// ```
+///
+/// `Deserialize` is derived so the pre-flight probe in AAASM-1715 can
+/// re-parse the response and reject other servers that happen to be
+/// listening on the same port but speak a different protocol.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthzResponse {
+    /// Always `"local"` when produced by this module.
+    pub mode: String,
+    /// Storage backend label — `"sqlite"` for local mode.
+    pub storage: String,
+    /// Gateway binary version (set from `CARGO_PKG_VERSION` at compile time).
+    pub version: String,
+}
+
+/// Errors that can occur while booting the local-mode control plane.
+///
+/// Each variant maps to a discrete failure mode an operator running
+/// `aasm start --mode local` (or a test calling `start_local()`
+/// directly) might hit. The `#[source]` fields preserve the original
+/// I/O / sqlx / signal error so `{:?}` and `tracing` capture the full
+/// chain.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalModeError {
+    /// `TcpListener::bind` failed — port already in use by a foreign
+    /// process, permission denied, or address invalid.
+    #[error("failed to bind local gateway to {addr}: {source}")]
+    Bind {
+        /// The socket address `start_local()` tried to bind.
+        addr: String,
+        /// Underlying `std::io::Error` from `TcpListener::bind`.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Opening or migrating the SQLite database at `path` failed.
+    #[error("failed to open SQLite at {path}: {source}", path = path.display())]
+    Storage {
+        /// The resolved on-disk path the gateway tried to open.
+        path: PathBuf,
+        /// Underlying `sqlx::Error` from `SqlitePool::connect_with`.
+        #[source]
+        source: sqlx::Error,
+    },
+    /// Writing the PID file to `~/.aasm/gateway.pid` failed.
+    #[error("failed to write PID file at {path}: {source}", path = path.display())]
+    PidFile {
+        /// The PID-file path the gateway tried to write.
+        path: PathBuf,
+        /// Underlying `std::io::Error` from `std::fs::write`.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Installing the SIGTERM / SIGINT handler failed (Unix only).
+    #[error("shutdown signal handler installation failed: {0}")]
+    Signal(#[source] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AAASM-1576 AC #4: `/healthz` must return exactly
+    /// `{"mode":"local","storage":"sqlite","version":"<v>"}` —
+    /// no extra fields, no extra whitespace, lowercase values,
+    /// and the keys in the documented order.
+    #[test]
+    fn healthz_response_serialises_to_documented_shape() {
+        let resp = HealthzResponse {
+            mode: "local".to_string(),
+            storage: "sqlite".to_string(),
+            version: "0.0.1".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("serde_json::to_string");
+        assert_eq!(json, r#"{"mode":"local","storage":"sqlite","version":"0.0.1"}"#);
+    }
+
+    /// The probe path in AAASM-1715 re-parses `/healthz` responses as
+    /// `HealthzResponse`; round-tripping the documented shape must
+    /// recover the exact same struct.
+    #[test]
+    fn healthz_response_round_trips_through_serde() {
+        let original = HealthzResponse {
+            mode: "local".to_string(),
+            storage: "sqlite".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialise");
+        let parsed: HealthzResponse = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(parsed, original);
+    }
+}
