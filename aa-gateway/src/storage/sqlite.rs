@@ -247,4 +247,22 @@ mod tests {
             assert!(actual.contains(entry), "missing schema entry: {entry:?}");
         }
     }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent_across_repeated_calls() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("first migrate");
+        backend.migrate().await.expect("second migrate should be a no-op");
+        backend.migrate().await.expect("third migrate should still be a no-op");
+
+        // Schema row count should be unchanged across re-runs.
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_one(backend.pool())
+        .await
+        .expect("count probe");
+        assert_eq!(count, 6, "exactly 4 tables + 2 indexes expected");
+    }
 }
