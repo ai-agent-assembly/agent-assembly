@@ -134,7 +134,109 @@ fn python_init_assembly_raises_runtime_error_when_missing() {
     );
 }
 
-// ── Node.js ───────────────────────────────────────────────────────────────────
+// ── Go ────────────────────────────────────────────────────────────────────────
+
+fn go_sdk_path() -> PathBuf {
+    sibling_repo("GO_SDK_PATH", "go-sdk")
+}
+
+/// True when the sibling go-sdk has the AAASM-1229 runtime file.
+fn go_runtime_present() -> bool {
+    go_sdk_path().join("assembly/aasm_runtime.go").exists()
+}
+
+fn probe_go_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f115/probe_go")
+}
+
+/// Rewrite the fixture's go.mod replace directive to point at the
+/// effective sibling go-sdk path. Idempotent — `go mod edit -replace=`
+/// overwrites any existing directive for the same module.
+fn refresh_go_replace_directive() -> bool {
+    let arg = format!(
+        "-replace=github.com/AI-agent-assembly/go-sdk={}",
+        go_sdk_path().display()
+    );
+    Command::new("go")
+        .args(["mod", "edit", &arg])
+        .current_dir(probe_go_dir())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn go_init_assembly_succeeds_when_binary_in_path() {
+    if !go_runtime_present() {
+        eprintln!(
+            "skip go_init_assembly_succeeds_…: {} has no assembly/aasm_runtime.go \
+             (AAASM-1229 likely not yet merged)",
+            go_sdk_path().display()
+        );
+        return;
+    }
+    if Command::new("go").arg("version").output().is_err() {
+        eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
+        return;
+    }
+    if !refresh_go_replace_directive() {
+        eprintln!("skip go_init_assembly_succeeds_…: go mod edit failed");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let _fake = make_fake_aasm(tmp.path());
+    let out = Command::new("go")
+        .args(["run", "."])
+        .arg("find")
+        .current_dir(probe_go_dir())
+        .env("PATH", tmp.path())
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn go run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "go probe failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.trim() == "FOUND", "expected FOUND, got: {stdout:?}");
+}
+
+#[test]
+fn go_init_assembly_returns_err_when_missing() {
+    if !go_runtime_present() {
+        eprintln!(
+            "skip go_init_assembly_returns_err_…: {} has no assembly/aasm_runtime.go",
+            go_sdk_path().display()
+        );
+        return;
+    }
+    if Command::new("go").arg("version").output().is_err() {
+        eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
+        return;
+    }
+    if !refresh_go_replace_directive() {
+        eprintln!("skip go_init_assembly_returns_err_…: go mod edit failed");
+        return;
+    }
+    let out = Command::new("go")
+        .args(["run", "."])
+        .arg("init")
+        .current_dir(probe_go_dir())
+        .env("PATH", EMPTY_PATH_DIR)
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn go run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when binary missing; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("agent-assembly runtime not found"),
+        "InstallHint missing from stderr:\n{stderr}"
+    );
+}
 
 fn node_sdk_path() -> PathBuf {
     sibling_repo("NODE_SDK_PATH", "node-sdk")
