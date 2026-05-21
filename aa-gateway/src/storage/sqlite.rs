@@ -101,6 +101,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn expand_tilde_leaves_non_tilde_path_unchanged() {
@@ -109,5 +110,25 @@ mod tests {
 
         let relative = Path::new("data/db.sqlite");
         assert_eq!(expand_tilde(relative), PathBuf::from("data/db.sqlite"));
+    }
+
+    #[tokio::test]
+    async fn open_creates_parent_dir_and_enables_wal() {
+        let tmp = TempDir::new().expect("tempdir");
+        // Intentionally nest two levels under the temp root so create_dir_all
+        // has actual work to do — covers the parent-creation AC.
+        let path = tmp.path().join("nested").join("dir").join("test.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path: path.clone() })
+            .await
+            .expect("open should succeed");
+
+        assert!(path.exists(), "database file should be created");
+        assert!(path.parent().expect("parent").exists(), "parent dir should be created");
+
+        let (mode,): (String,) = sqlx::query_as("PRAGMA journal_mode")
+            .fetch_one(backend.pool())
+            .await
+            .expect("journal_mode probe");
+        assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
     }
 }
