@@ -322,4 +322,55 @@ api_key: "secret"
         assert_eq!(cfg.gateway_url, "https://cp.company.internal:7391");
         assert_eq!(cfg.api_key.as_deref(), Some("secret"));
     }
+
+    #[test]
+    fn gateway_config_default_uses_local_mode_and_documented_defaults() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.mode, DeploymentMode::Local);
+        assert_eq!(cfg.local.port, 7391);
+        assert_eq!(cfg.remote.listen_addr, SocketAddr::from(([0, 0, 0, 0], 7391)));
+        assert_eq!(cfg.agent.gateway_url, "http://localhost:7391");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_from_yaml_str_parses_full_epic_example() {
+        let yaml = r#"
+mode: remote
+local:
+  port: 8080
+  dashboard: false
+  storage_path: ~/.aasm/dev.db
+remote:
+  listen_addr: "127.0.0.1:7391"
+  tls:
+    cert_file: /etc/aasm/tls.crt
+    key_file: /etc/aasm/tls.key
+  database_url: "postgres://aasm@db.internal/aasm"
+  redis_url: "redis://redis.internal:6379"
+agent:
+  gateway_url: "https://cp.company.internal:7391"
+  api_key: "secret"
+"#;
+        let cfg = GatewayConfig::from_yaml_str(yaml).expect("valid YAML should parse");
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+        assert_eq!(cfg.local.port, 8080);
+        assert!(!cfg.local.dashboard);
+        assert_eq!(cfg.remote.listen_addr, SocketAddr::from(([127, 0, 0, 1], 7391)));
+        let tls = cfg.remote.tls.expect("tls present");
+        assert_eq!(tls.cert_file, PathBuf::from("/etc/aasm/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/etc/aasm/tls.key"));
+        assert_eq!(
+            cfg.remote.database_url.as_deref(),
+            Some("postgres://aasm@db.internal/aasm")
+        );
+        assert_eq!(cfg.agent.api_key.as_deref(), Some("secret"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_from_yaml_str_empty_doc_returns_default() {
+        let cfg = GatewayConfig::from_yaml_str("{}").unwrap();
+        assert_eq!(cfg, GatewayConfig::default());
+    }
 }
