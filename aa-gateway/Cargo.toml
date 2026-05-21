@@ -59,6 +59,13 @@ tower        = { version = "0.5", features = ["util"] }
 rcgen        = { version = "0.14", features = ["pem"] }
 time         = "0.3"
 
+[features]
+default = []
+# Pulls the `redis` crate in and gates the Redis-backed `PolicyCache` variant.
+# Off by default — the gateway runs with `PolicyCache::Disabled` unless a
+# downstream binary explicitly enables this feature.
+redis-cache = ["dep:redis"]
+
 [[bin]]
 name = "aa-gateway"
 path = "src/main.rs"
