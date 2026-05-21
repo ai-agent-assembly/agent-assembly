@@ -148,6 +148,54 @@ impl SqliteBackend {
     }
 }
 
+/// Encode an [`AgentId`] for storage as a TEXT column (canonical UUID
+/// hyphenated string).
+#[allow(dead_code)] // first consumer arrives in append_audit_event
+fn agent_id_to_text(id: &AgentId) -> String {
+    uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
+}
+
+/// Decode an `agent_id` TEXT column value back into an [`AgentId`].
+#[allow(dead_code)] // first consumer arrives in query_audit_events
+fn agent_id_from_text(s: &str) -> StorageResult<AgentId> {
+    let uuid = uuid::Uuid::parse_str(s).map_err(|e| StorageError::QueryFailed(format!("invalid agent_id {s}: {e}")))?;
+    Ok(AgentId::from_bytes(*uuid.as_bytes()))
+}
+
+/// Push the audit-event WHERE clause derived from `filter` into `qb`.
+#[allow(dead_code)] // first consumer arrives in query_audit_events
+///
+/// Adds clauses for `agent_id`, `team_id`, `from`/`to` (`ts >=` / `ts <`),
+/// and `dry_run_only`. Pushes nothing when `filter` is empty, leaving the
+/// caller's `SELECT … FROM audit_events` unchanged.
+fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &'q AuditFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(agent_id) = filter.agent_id.as_ref() {
+        connective(qb);
+        qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+    }
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(from) = filter.from {
+        connective(qb);
+        qb.push("ts >= ").push_bind(from.to_rfc3339());
+    }
+    if let Some(to) = filter.to {
+        connective(qb);
+        qb.push("ts < ").push_bind(to.to_rfc3339());
+    }
+    if filter.dry_run_only {
+        connective(qb);
+        qb.push("dry_run = 1");
+    }
+}
+
 /// Trait wiring. Concrete method bodies for each slice land in their own
 /// Epic-18 S-B sub-task; until then the unimplemented slices return
 /// `todo!("AAASM-…")` so the workspace compiles.
