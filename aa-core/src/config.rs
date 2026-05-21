@@ -280,6 +280,20 @@ impl GatewayConfig {
         if let Some(url) = get_env("AAASM_REDIS_URL") {
             self.remote.redis_url = Some(url);
         }
+        let cert = get_env("AAASM_TLS_CERT");
+        let key = get_env("AAASM_TLS_KEY");
+        if cert.is_some() || key.is_some() {
+            let tls = self.remote.tls.get_or_insert(TlsConfig {
+                cert_file: PathBuf::new(),
+                key_file: PathBuf::new(),
+            });
+            if let Some(path) = cert {
+                tls.cert_file = PathBuf::from(path);
+            }
+            if let Some(path) = key {
+                tls.key_file = PathBuf::from(path);
+            }
+        }
         Ok(())
     }
 }
