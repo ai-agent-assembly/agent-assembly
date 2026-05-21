@@ -599,6 +599,36 @@ impl GatewayConfig {
     }
 }
 
+impl GatewayConfig {
+    /// Validate the fully-loaded config — call this **after**
+    /// [`expand_paths`](Self::expand_paths) and
+    /// [`apply_env_overrides`](Self::apply_env_overrides) so values
+    /// coming in from env vars are included in the checks.
+    ///
+    /// Currently enforces two storage-retention invariants from
+    /// E18 S-H (AAASM-1582):
+    ///
+    /// * `storage.retention.cold_action = archive` requires
+    ///   `storage.retention.archive_url` to be set (in YAML or by
+    ///   env var) — returns [`ConfigError::ArchiveUrlRequired`].
+    /// * `storage.retention.warm_days` must be strictly greater than
+    ///   `storage.retention.hot_days` — returns
+    ///   [`ConfigError::WarmDaysNotGreaterThanHotDays`].
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let r = &self.storage.retention;
+        if r.cold_action == ColdAction::Archive && r.archive_url.is_none() {
+            return Err(ConfigError::ArchiveUrlRequired);
+        }
+        if r.warm_days <= r.hot_days {
+            return Err(ConfigError::WarmDaysNotGreaterThanHotDays {
+                hot: r.hot_days,
+                warm: r.warm_days,
+            });
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
