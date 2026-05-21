@@ -17,6 +17,14 @@ service PolicyService {
   // BatchCheck pre-warms the policy cache for a set of anticipated actions.
   // Called at agent startup or when entering a new task context.
   rpc BatchCheck(BatchCheckRequest) returns (BatchCheckResponse);
+
+  // OpControlStream is the gateway → SDK push channel for op-lifecycle
+  // signals (pause / resume / terminate). The SDK opens the stream once
+  // per agent process at startup; the gateway pushes one OpControlMessage
+  // per OpsRegistry transition matching the subscriber's agent_id. See
+  // AAASM-1653 (PR-D of AAASM-1422); SDK-side consumers ship in PR-E
+  // (Python), PR-F (Node), and PR-G (Go).
+  rpc OpControlStream(OpControlSubscribeRequest) returns (stream OpControlMessage);
 }
 
 // ── Check ─────────────────────────────────────────────────────────────────────
@@ -139,4 +147,45 @@ message BatchCheckRequest {
 // BatchCheckResponse returns one verdict per submitted request, in order.
 message BatchCheckResponse {
   repeated CheckActionResponse responses = 1;
+}
+
+// ── Op control (AAASM-1422 PR-D) ──────────────────────────────────────────────
+
+// OpControlSubscribeRequest is the unary half of OpControlStream — the SDK
+// opens the stream keyed by its own agent id; the gateway sends only the
+// messages whose op_id belongs to that agent.
+message OpControlSubscribeRequest {
+  // Composite identity of the subscribing agent. Matches the agent_id on
+  // its CheckActionRequests so the gateway can filter the broadcast.
+  assembly.common.v1.AgentId agent_id = 1;
+}
+
+// OpControlSignal classifies the lifecycle action the gateway is pushing to
+// the SDK. Mirrors the OpsRegistry transitions in aa-gateway/src/ops/mod.rs.
+enum OpControlSignal {
+  // Default — never wired; treated as a malformed message by the SDK.
+  OP_CONTROL_SIGNAL_UNSPECIFIED = 0;
+  // Operator paused the op via POST /api/v1/ops/{id}/pause. SDK should
+  // cooperatively yield at the next interruption point and block on resume.
+  OP_CONTROL_SIGNAL_PAUSE       = 1;
+  // Operator resumed the op via POST /api/v1/ops/{id}/resume. SDK unblocks.
+  OP_CONTROL_SIGNAL_RESUME      = 2;
+  // Operator (or policy deny) terminated the op. SDK fast-fails the in-flight
+  // action with an OpTerminatedError.
+  OP_CONTROL_SIGNAL_TERMINATE   = 3;
+}
+
+// OpControlMessage is one push from the gateway over the OpControlStream.
+// The SDK routes by op_id; sequence is a monotonic counter the SDK uses
+// for at-least-once delivery dedup if the channel reconnects.
+message OpControlMessage {
+  // Stable identifier of the op — "{trace_id}:{span_id}", same form the
+  // dashboard uses to key live-ops rows.
+  string          op_id    = 1;
+  // The lifecycle signal to apply.
+  OpControlSignal signal   = 2;
+  // Per-publisher monotonic sequence number. Restarts at 0 each gateway
+  // boot; SDK consumers should treat it as advisory, not as a global
+  // ordering guarantee across publishers.
+  uint64          sequence = 3;
 }

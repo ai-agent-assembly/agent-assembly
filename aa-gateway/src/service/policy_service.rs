@@ -1,8 +1,11 @@
 //! `PolicyService` tonic trait implementation wiring gRPC RPCs to `PolicyEngine`.
 
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
+
+use tokio_stream::Stream;
 
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tonic::{Request, Response, Status};
@@ -11,7 +14,10 @@ use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
 use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage, Redaction};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
-use aa_proto::assembly::policy::v1::{BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse};
+use aa_proto::assembly::policy::v1::{
+    BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
+    OpControlSubscribeRequest,
+};
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
@@ -21,7 +27,7 @@ use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
-use crate::ops::OpsRegistry;
+use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
@@ -50,6 +56,12 @@ pub struct PolicyServiceImpl {
     /// matching the pre-1422 behaviour expected by unit tests that
     /// construct the service directly.
     ops_registry: Option<Arc<OpsRegistry>>,
+    /// Optional broadcast publisher for op-control signals (AAASM-1653).
+    /// When set, the `op_control_stream` RPC subscribes here and forwards
+    /// every envelope matching the subscriber's agent_id. `None` rejects
+    /// new subscriptions with `Unavailable`. PR-H will pair this with
+    /// `OpsRegistry` transition call sites that drive `publish()`.
+    ops_publisher: Option<SharedOpControlPublisher>,
 }
 
 impl PolicyServiceImpl {
@@ -78,6 +90,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -106,6 +119,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -136,6 +150,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -171,6 +186,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -212,6 +228,20 @@ impl PolicyServiceImpl {
     /// `OpStateChanged` emission are deferred to PR-H.
     pub fn with_ops_registry(mut self, registry: Arc<OpsRegistry>) -> Self {
         self.ops_registry = Some(registry);
+        self
+    }
+
+    /// Attach an [`OpControlPublisher`] for the SDK return-channel (AAASM-1653).
+    ///
+    /// When present, [`PolicyService::op_control_stream`] subscribes to the
+    /// publisher and forwards every envelope whose `agent_id` matches the
+    /// subscriber's `OpControlSubscribeRequest.agent_id`. Without a
+    /// publisher attached, subscription requests are rejected with
+    /// `Status::unavailable("op control channel not configured")`.
+    ///
+    /// [`OpControlPublisher`]: crate::ops::OpControlPublisher
+    pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
+        self.ops_publisher = Some(publisher);
         self
     }
 
@@ -823,5 +853,66 @@ impl PolicyService for PolicyServiceImpl {
         }
 
         Ok(Response::new(BatchCheckResponse { responses }))
+    }
+
+    type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+    /// AAASM-1653: gateway → SDK push channel for op-lifecycle signals.
+    ///
+    /// Subscribes the caller to the configured [`OpControlPublisher`] and
+    /// forwards every envelope whose `agent_id` matches the request's
+    /// `agent_id`. The stream stays open until either the client cancels
+    /// (`Closed` from the broadcast receiver) or the publisher is dropped.
+    ///
+    /// Lagged subscribers (those that fall behind the broadcast capacity)
+    /// skip the missed envelopes and continue — the SDK reconciles via
+    /// the next steady-state transition rather than replaying history.
+    ///
+    /// Returns `Status::unavailable` when no publisher is attached to the
+    /// service (tests / partial wiring), and `Status::invalid_argument`
+    /// when the request omits `agent_id`.
+    async fn op_control_stream(
+        &self,
+        request: Request<OpControlSubscribeRequest>,
+    ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+        let req = request.into_inner();
+        let Some(agent_id) = req.agent_id else {
+            return Err(Status::invalid_argument("agent_id is required"));
+        };
+        let Some(publisher) = self.ops_publisher.clone() else {
+            return Err(Status::unavailable("op control channel not configured"));
+        };
+
+        let target_agent_id = agent_id.agent_id.clone();
+        let target_team_id = agent_id.team_id.clone();
+        let target_org_id = agent_id.org_id.clone();
+        let mut rx = publisher.subscribe();
+
+        let stream = async_stream::stream! {
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) => {
+                        // Match on the composite id triple to avoid cross-org
+                        // / cross-team agent_id collisions.
+                        if envelope.agent_id.agent_id != target_agent_id
+                            || envelope.agent_id.team_id != target_team_id
+                            || envelope.agent_id.org_id != target_org_id
+                        {
+                            continue;
+                        }
+                        yield Ok(envelope.message);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, agent_id = %target_agent_id, "OpControlStream subscriber lagged");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
