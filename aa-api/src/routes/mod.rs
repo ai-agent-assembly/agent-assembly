@@ -78,7 +78,10 @@ pub fn v1_router() -> Router {
         .route("/alerts/silence", post(alerts::silence_alert))
         // Alert-rule CRUD (AAASM-1386). Literal "rules" segment must
         // also come BEFORE /alerts/{id} so it isn't captured as an id.
-        .route("/alerts/rules", get(alert_rules::list_rules))
+        .route(
+            "/alerts/rules",
+            get(alert_rules::list_rules).post(alert_rules::create_rule),
+        )
         .route("/alerts/rules/{id}", get(alert_rules::get_rule))
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
