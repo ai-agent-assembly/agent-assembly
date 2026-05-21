@@ -40,3 +40,4 @@ pub use health::{HealthStatus, RowCounts, StorageHealth};
 pub use metric::{Metric, MetricPoint, MetricQuery};
 pub use policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
+pub use sqlite::{SqliteBackend, SqliteConfig};

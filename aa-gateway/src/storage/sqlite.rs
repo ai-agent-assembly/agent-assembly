@@ -22,7 +22,6 @@ use super::error::{StorageError, StorageResult};
 /// independently of E18 S-H (AAASM-1582), which will introduce the full
 /// gateway storage-config parser. S-H may later move or extend this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // wired into `SqliteBackend::open` in a follow-up commit
 pub struct SqliteConfig {
     /// Filesystem path to the SQLite database file. A leading `~` is
     /// expanded to the current user's home directory. Parent directories
