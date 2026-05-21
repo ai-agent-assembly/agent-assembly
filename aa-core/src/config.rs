@@ -677,10 +677,11 @@ impl GatewayConfig {
     /// * `mode: Local` → `storage.backend = Sqlite`
     /// * `mode: Remote` → `storage.backend = Postgres`
     ///
-    /// No-op when [`StorageConfig::backend_explicit`] is `true` — an
-    /// operator's explicit choice always wins, including the odd-but-
-    /// valid `mode: remote` + `storage.backend: sqlite` combo (an
-    /// in-memory test runner pointed at the remote API surface).
+    /// No-op when the operator explicitly set `storage.backend` in
+    /// YAML or via `AAASM_STORAGE_BACKEND` — their choice always wins,
+    /// including the odd-but-valid `mode: remote` + `storage.backend:
+    /// sqlite` combo (an in-memory test runner pointed at the remote
+    /// API surface).
     pub fn resolve_storage_backend(&mut self) {
         if self.storage.backend_explicit {
             return;
