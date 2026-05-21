@@ -150,7 +150,6 @@ impl SqliteBackend {
 
 /// Encode an [`AgentId`] for storage as a TEXT column (canonical UUID
 /// hyphenated string).
-#[allow(dead_code)] // first consumer arrives in append_audit_event
 fn agent_id_to_text(id: &AgentId) -> String {
     uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
 }
@@ -201,8 +200,33 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &
 /// `todo!("AAASM-…")` so the workspace compiles.
 #[async_trait]
 impl StorageBackend for SqliteBackend {
-    async fn append_audit_event(&self, _event: &AuditEvent) -> StorageResult<()> {
-        todo!("AAASM-1704: append_audit_event")
+    async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
+        let payload_text = match event.payload.as_ref() {
+            Some(value) => Some(
+                serde_json::to_string(value)
+                    .map_err(|e| StorageError::QueryFailed(format!("payload serialize: {e}")))?,
+            ),
+            None => None,
+        };
+        sqlx::query(
+            "INSERT INTO audit_events \
+             (ts, event_id, agent_id, team_id, action, decision, dry_run, shadow_decision, matched_rule_id, payload) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(event.ts.to_rfc3339())
+        .bind(event.event_id.to_string())
+        .bind(agent_id_to_text(&event.agent_id))
+        .bind(event.team_id.clone())
+        .bind(&event.action)
+        .bind(&event.decision)
+        .bind(i64::from(event.dry_run))
+        .bind(event.shadow_decision.clone())
+        .bind(event.matched_rule_id.clone())
+        .bind(payload_text)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
     async fn query_audit_events(&self, _filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
