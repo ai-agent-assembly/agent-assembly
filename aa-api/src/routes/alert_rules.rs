@@ -45,3 +45,17 @@ pub struct AlertRuleRequest {
 
 /// Wire shape for response bodies — identical to [`AlertRule`].
 pub type AlertRuleResponse = AlertRule;
+
+/// Query parameters for `GET /alerts/rules`.
+///
+/// Only the `enabled` filter is exposed today — the dashboard's
+/// `useAlertRulesQuery` (AAASM-1075) consumes the unpaged bare-array
+/// response and does its own client-side filtering. A paginated
+/// envelope can be added later without breaking the wire if the rule
+/// count grows.
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
+pub struct ListRulesParams {
+    /// Filter by the rule's `enabled` flag. Omit to return every rule.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
