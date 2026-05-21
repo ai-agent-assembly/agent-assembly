@@ -35,6 +35,13 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// `AAASM_STORAGE_BACKEND` was set to something other than `sqlite`
+    /// or `postgres`.
+    #[error("invalid AAASM_STORAGE_BACKEND value: '{raw}' (expected 'sqlite' or 'postgres')")]
+    InvalidStorageBackend {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
