@@ -661,12 +661,81 @@ impl StorageBackend for SqliteBackend {
         Ok(())
     }
 
-    async fn apply_retention(&self, _policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
-        todo!("AAASM-1721: apply_retention")
+    async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+        if matches!(policy.cold_action, super::ColdAction::Archive) {
+            tracing::warn!(
+                archive_url = ?policy.archive_url,
+                "archive cold_action not supported on SQLite backend — falling back to drop"
+            );
+        }
+        let now = chrono::Utc::now();
+        let cold_threshold = now - chrono::Duration::days(i64::from(policy.hot_days + policy.warm_days));
+        let hot_threshold = now - chrono::Duration::days(i64::from(policy.hot_days));
+
+        let cold_ts = cold_threshold.to_rfc3339();
+        let dropped_rows: u64 = if policy.dry_run {
+            let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE ts < ?")
+                .bind(&cold_ts)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            u64::try_from(count).unwrap_or(0)
+        } else {
+            let result = sqlx::query("DELETE FROM audit_events WHERE ts < ?")
+                .bind(&cold_ts)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::RetentionError(e.to_string()))?;
+            result.rows_affected()
+        };
+
+        let (hot_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE ts >= ?")
+            .bind(hot_threshold.to_rfc3339())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(RetentionStats {
+            hot_rows: u64::try_from(hot_count).unwrap_or(0),
+            compressed_rows: 0,
+            archived_rows: 0,
+            dropped_rows,
+            freed_bytes: 0,
+            ran_at: chrono::Utc::now(),
+        })
     }
 
     async fn healthcheck(&self) -> StorageResult<StorageHealth> {
-        todo!("AAASM-1721: healthcheck")
+        let start = std::time::Instant::now();
+        // Liveness probe.
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+
+        async fn count_rows(pool: &SqlitePool, table: &str) -> StorageResult<u64> {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            let (count,): (i64,) = sqlx::query_as(&sql)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            Ok(u64::try_from(count).unwrap_or(0))
+        }
+
+        let row_counts = super::health::RowCounts {
+            audit_events: count_rows(&self.pool, "audit_events").await?,
+            agents: count_rows(&self.pool, "agent_registry").await?,
+            policy_versions: count_rows(&self.pool, "policy_versions").await?,
+        };
+
+        let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+
+        Ok(StorageHealth {
+            status: super::health::HealthStatus::Ok,
+            backend: "sqlite",
+            latency_ms,
+            row_counts,
+        })
     }
 }
 
