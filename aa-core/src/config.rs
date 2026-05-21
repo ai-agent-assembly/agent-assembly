@@ -187,6 +187,19 @@ impl GatewayConfig {
             Err(err) => Err(ConfigError::Io(err)),
         }
     }
+
+    /// Load `GatewayConfig` from the user's `~/.aasm/config.yaml`.
+    ///
+    /// Equivalent to `load_from_path(dirs::home_dir() / ".aasm/config.yaml")`.
+    /// Falls back to `Self::default()` when the file is absent or the
+    /// home directory cannot be resolved (e.g. `$HOME` unset in a
+    /// systemd unit without `User=`).
+    pub fn load_default_path() -> Result<Self, ConfigError> {
+        let Some(home) = dirs::home_dir() else {
+            return Ok(Self::default());
+        };
+        Self::load_from_path(home.join(".aasm").join("config.yaml"))
+    }
 }
 
 #[cfg(test)]
