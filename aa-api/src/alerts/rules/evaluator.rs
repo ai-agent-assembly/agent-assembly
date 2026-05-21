@@ -87,7 +87,6 @@ pub fn evaluate_once<S: MetricSource + ?Sized>(
 /// tests use much shorter) and calls [`evaluate_once`] on every tick.
 ///
 /// Cancel the returned [`JoinHandle`] to stop the loop.
-#[allow(dead_code)]
 pub fn spawn_rule_evaluator<S>(
     rules: Arc<dyn AlertRuleStore>,
     metrics: Arc<S>,
