@@ -1052,4 +1052,31 @@ agent:
         cfg.storage.retention.archive_url = Some("s3://aasm-archive/".into());
         cfg.validate().expect("archive + url must validate");
     }
+
+    #[test]
+    fn validate_warm_days_must_be_greater_than_hot_days() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.hot_days = 60;
+        cfg.storage.retention.warm_days = 30; // < hot_days
+        let err = cfg.validate().expect_err("warm_days <= hot_days must fail");
+        assert!(matches!(
+            err,
+            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 60, warm: 30 }
+        ));
+        assert_eq!(format!("{err}"), "warm_days (30) must be greater than hot_days (60)",);
+    }
+
+    #[test]
+    fn validate_warm_days_equal_to_hot_days_also_fails() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.hot_days = 30;
+        cfg.storage.retention.warm_days = 30; // == hot_days
+        let err = cfg
+            .validate()
+            .expect_err("warm_days == hot_days must fail (strict inequality)");
+        assert!(matches!(
+            err,
+            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 30, warm: 30 }
+        ));
+    }
 }
