@@ -32,6 +32,20 @@ pub struct RetentionConfig {
 }
 
 impl RetentionConfig {
+    /// Reject configurations that are internally inconsistent at startup
+    /// (fail-fast preferred over a silent surprise at the first cron tick).
+    ///
+    /// # Errors
+    ///
+    /// - [`RetentionConfigError::MissingArchiveUrl`] when `cold_action`
+    ///   is [`ColdAction::Archive`] but `archive_url` is `None`.
+    pub fn validate(&self) -> Result<(), RetentionConfigError> {
+        if self.cold_action == ColdAction::Archive && self.archive_url.is_none() {
+            return Err(RetentionConfigError::MissingArchiveUrl);
+        }
+        Ok(())
+    }
+
     /// Build the [`RetentionPolicy`] descriptor the backend's
     /// `apply_retention` expects.
     pub fn to_policy(&self) -> RetentionPolicy {
