@@ -18,6 +18,7 @@ pub mod message_router;
 pub mod ops;
 pub mod policy;
 pub mod registry;
+pub mod routes;
 pub mod server;
 pub mod service;
 pub mod simulation;
