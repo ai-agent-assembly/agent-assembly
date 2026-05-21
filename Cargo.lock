@@ -103,6 +103,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "criterion",
+ "dirs",
  "serde",
  "serde_json",
  "serde_yaml",

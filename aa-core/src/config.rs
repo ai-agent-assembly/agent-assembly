@@ -8,6 +8,23 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Errors that can occur while loading or parsing a `GatewayConfig`.
+///
+/// All variants carry enough context to be surfaced verbatim to an
+/// operator running `aasm start`; `Display` implementations come
+/// from `thiserror` so they format cleanly into log lines and CLI
+/// stderr.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// Failed to read the YAML config file (permission denied, or
+    /// other filesystem error other than "file not found").
+    #[error("failed to read config file: {0}")]
+    Io(#[from] std::io::Error),
+    /// The YAML payload could not be deserialised into a `GatewayConfig`.
+    #[error("failed to parse config YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+}
+
 /// Which deployment topology the gateway should boot into.
 ///
 /// Selected at startup from a combination of YAML config, environment
@@ -127,6 +144,95 @@ impl Default for AgentConnectConfig {
     }
 }
 
+/// Top-level gateway configuration loaded at startup.
+///
+/// Composes the four sub-configs and a [`DeploymentMode`] flag. All
+/// fields use `#[serde(default)]` so a minimal YAML — even an empty
+/// document — deserialises into the documented defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct GatewayConfig {
+    /// Which topology to boot — local-dev or remote control-plane.
+    pub mode: DeploymentMode,
+    /// Settings for `mode = Local`.
+    pub local: LocalModeConfig,
+    /// Settings for `mode = Remote`.
+    pub remote: RemoteModeConfig,
+    /// Settings the SDK FFI shim reads to dial the gateway.
+    pub agent: AgentConnectConfig,
+}
+
+#[cfg(feature = "serde")]
+impl GatewayConfig {
+    /// Parse a `GatewayConfig` from a YAML string.
+    ///
+    /// Missing fields fall back to their documented defaults thanks to
+    /// the type-level `#[serde(default)]` attribute, so an empty
+    /// document (`""` or `"{}"`) deserialises to `Self::default()`.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
+        Ok(serde_yaml::from_str(yaml)?)
+    }
+
+    /// Load a `GatewayConfig` from a YAML file on disk.
+    ///
+    /// A `NotFound` error returns `Self::default()` so missing
+    /// `~/.aasm/config.yaml` does not break startup. Any other I/O
+    /// error (permission denied, malformed YAML, etc.) propagates
+    /// as `ConfigError`.
+    pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ConfigError> {
+        match std::fs::read_to_string(path) {
+            Ok(yaml) => Self::from_yaml_str(&yaml),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(ConfigError::Io(err)),
+        }
+    }
+
+    /// Load `GatewayConfig` from the user's `~/.aasm/config.yaml`.
+    ///
+    /// Equivalent to `load_from_path(dirs::home_dir() / ".aasm/config.yaml")`.
+    /// Falls back to `Self::default()` when the file is absent or the
+    /// home directory cannot be resolved (e.g. `$HOME` unset in a
+    /// systemd unit without `User=`).
+    pub fn load_default_path() -> Result<Self, ConfigError> {
+        let Some(home) = dirs::home_dir() else {
+            return Ok(Self::default());
+        };
+        Self::load_from_path(home.join(".aasm").join("config.yaml"))
+    }
+}
+
+impl GatewayConfig {
+    /// Expand a leading `~` in every path field to the user's home directory.
+    ///
+    /// Touches `local.storage_path` and both `remote.tls` paths.
+    /// A no-op when the home directory cannot be resolved or when
+    /// no field starts with `~`. Idempotent — calling twice produces
+    /// the same result as calling once.
+    pub fn expand_paths(&mut self) {
+        if let Some(home) = dirs::home_dir() {
+            self.expand_paths_in(&home);
+        }
+    }
+
+    /// Same as [`expand_paths`](Self::expand_paths) but takes an explicit home
+    /// directory — used by tests so the assertion is independent of `$HOME`.
+    pub(crate) fn expand_paths_in(&mut self, home: &std::path::Path) {
+        self.local.storage_path = expand_tilde(&self.local.storage_path, home);
+        if let Some(tls) = &mut self.remote.tls {
+            tls.cert_file = expand_tilde(&tls.cert_file, home);
+            tls.key_file = expand_tilde(&tls.key_file, home);
+        }
+    }
+}
+
+fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(stripped) => home.join(stripped),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +321,118 @@ api_key: "secret"
         let cfg: AgentConnectConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.gateway_url, "https://cp.company.internal:7391");
         assert_eq!(cfg.api_key.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn gateway_config_default_uses_local_mode_and_documented_defaults() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.mode, DeploymentMode::Local);
+        assert_eq!(cfg.local.port, 7391);
+        assert_eq!(cfg.remote.listen_addr, SocketAddr::from(([0, 0, 0, 0], 7391)));
+        assert_eq!(cfg.agent.gateway_url, "http://localhost:7391");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_from_yaml_str_parses_full_epic_example() {
+        let yaml = r#"
+mode: remote
+local:
+  port: 8080
+  dashboard: false
+  storage_path: ~/.aasm/dev.db
+remote:
+  listen_addr: "127.0.0.1:7391"
+  tls:
+    cert_file: /etc/aasm/tls.crt
+    key_file: /etc/aasm/tls.key
+  database_url: "postgres://aasm@db.internal/aasm"
+  redis_url: "redis://redis.internal:6379"
+agent:
+  gateway_url: "https://cp.company.internal:7391"
+  api_key: "secret"
+"#;
+        let cfg = GatewayConfig::from_yaml_str(yaml).expect("valid YAML should parse");
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+        assert_eq!(cfg.local.port, 8080);
+        assert!(!cfg.local.dashboard);
+        assert_eq!(cfg.remote.listen_addr, SocketAddr::from(([127, 0, 0, 1], 7391)));
+        let tls = cfg.remote.tls.expect("tls present");
+        assert_eq!(tls.cert_file, PathBuf::from("/etc/aasm/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/etc/aasm/tls.key"));
+        assert_eq!(
+            cfg.remote.database_url.as_deref(),
+            Some("postgres://aasm@db.internal/aasm")
+        );
+        assert_eq!(cfg.agent.api_key.as_deref(), Some("secret"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_from_yaml_str_empty_doc_returns_default() {
+        let cfg = GatewayConfig::from_yaml_str("{}").unwrap();
+        assert_eq!(cfg, GatewayConfig::default());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_load_from_missing_path_returns_default() {
+        let missing = std::env::temp_dir().join("aasm-config-does-not-exist-AAASM-1691.yaml");
+        // Make sure the test pre-condition holds even if a stale file lingers.
+        let _ = std::fs::remove_file(&missing);
+        let cfg = GatewayConfig::load_from_path(&missing).expect("missing file should not error");
+        assert_eq!(cfg, GatewayConfig::default());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_load_from_existing_path_parses_yaml() {
+        let tmp_dir = std::env::temp_dir().join("aasm-config-AAASM-1691");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("config.yaml");
+        std::fs::write(&path, "mode: remote\n").unwrap();
+        let cfg = GatewayConfig::load_from_path(&path).expect("existing file should parse");
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_storage_path() {
+        let mut cfg = GatewayConfig::default();
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.local.storage_path, PathBuf::from("/srv/dev/bryant/.aasm/local.db"));
+    }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_tls_paths() {
+        let mut cfg = GatewayConfig::default();
+        cfg.remote.tls = Some(TlsConfig {
+            cert_file: PathBuf::from("~/secrets/tls.crt"),
+            key_file: PathBuf::from("~/secrets/tls.key"),
+        });
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        let tls = cfg.remote.tls.unwrap();
+        assert_eq!(tls.cert_file, PathBuf::from("/srv/dev/bryant/secrets/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/srv/dev/bryant/secrets/tls.key"));
+    }
+
+    #[test]
+    fn expand_paths_in_is_idempotent() {
+        let mut cfg = GatewayConfig::default();
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        let after_first = cfg.local.storage_path.clone();
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.local.storage_path, after_first, "second call must be a no-op");
+    }
+
+    #[test]
+    fn expand_paths_in_leaves_absolute_paths_alone() {
+        let mut cfg = GatewayConfig::default();
+        cfg.local.storage_path = PathBuf::from("/var/lib/aasm.db");
+        cfg.expand_paths_in(&PathBuf::from("/srv/dev/bryant"));
+        assert_eq!(cfg.local.storage_path, PathBuf::from("/var/lib/aasm.db"));
     }
 }
