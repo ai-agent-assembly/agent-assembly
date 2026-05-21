@@ -10,7 +10,7 @@
 //!
 //! Spec reference: lines 7140–7155 (local dev mode storage stack).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Local SQLite backend configuration.
 ///
@@ -24,4 +24,19 @@ pub struct SqliteConfig {
     /// expanded to the current user's home directory. Parent directories
     /// are created on first open.
     pub path: PathBuf,
+}
+
+/// Expand a leading `~` in `path` to the current user's home directory.
+///
+/// When `path` does not start with `~`, it is returned unchanged. When the
+/// home directory cannot be determined, the original path is returned
+/// (mirroring most CLI tools' behaviour rather than failing).
+#[allow(dead_code)] // consumed by `SqliteBackend::open` in a follow-up commit
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    path.to_path_buf()
 }
