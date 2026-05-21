@@ -544,4 +544,27 @@ agent:
         assert!(msg.contains("AA_MODE"), "message should name the var: {msg}");
         assert!(msg.contains("foobar"), "message should include the value: {msg}");
     }
+
+    #[test]
+    fn apply_env_overrides_port_updates_local_and_remote() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AAASM_GATEWAY_PORT", "8080")]))
+            .unwrap();
+        assert_eq!(cfg.local.port, 8080);
+        assert_eq!(cfg.remote.listen_addr.port(), 8080);
+        // The bind address (only the port should change) keeps 0.0.0.0.
+        assert_eq!(cfg.remote.listen_addr.ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn apply_env_overrides_port_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_GATEWAY_PORT", "not-a-number")]))
+            .expect_err("non-numeric port must return Err");
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidPort { ref raw } if raw == "not-a-number"));
+        assert!(msg.contains("AAASM_GATEWAY_PORT"));
+        assert!(msg.contains("not-a-number"));
+    }
 }
