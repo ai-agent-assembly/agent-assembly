@@ -135,3 +135,48 @@ pub enum TlsError {
     #[error("failed to parse TLS cert as PEM x509: {0}")]
     CertParse(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use rcgen::{CertificateParams, KeyPair};
+    use tempfile::TempDir;
+    use time::{Duration as TimeDuration, OffsetDateTime};
+
+    use super::*;
+
+    /// Generate a self-signed cert with custom validity offsets (in days
+    /// from `now`). Returns the PEM bytes for cert and key.
+    fn issue_cert_with_validity(not_before_days: i64, not_after_days: i64) -> (Vec<u8>, Vec<u8>) {
+        let now = OffsetDateTime::now_utc();
+        let mut params = CertificateParams::new(vec!["test.example".to_string()]).expect("params");
+        params.not_before = now + TimeDuration::days(not_before_days);
+        params.not_after = now + TimeDuration::days(not_after_days);
+
+        let key_pair = KeyPair::generate().expect("key_pair");
+        let cert = params.self_signed(&key_pair).expect("self-signed");
+        (cert.pem().into_bytes(), key_pair.serialize_pem().into_bytes())
+    }
+
+    /// Write cert + key PEM bytes into a temp dir, returning a [`TlsConfig`]
+    /// pointing at the written paths. The `TempDir` is returned so the caller
+    /// can keep it alive for the duration of the test (Drop deletes the files).
+    fn write_pair(cert_pem: &[u8], key_pem: &[u8]) -> (TempDir, TlsConfig) {
+        let dir = TempDir::new().expect("tempdir");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        fs::write(&cert_path, cert_pem).expect("write cert");
+        fs::write(&key_path, key_pem).expect("write key");
+        let cfg = TlsConfig {
+            cert_file: cert_path,
+            key_file: key_path,
+        };
+        (dir, cfg)
+    }
+
+    #[test]
+    fn returns_ok_for_fresh_year_long_cert() {
+        let (cert, key) = issue_cert_with_validity(-1, 365);
+        let (_dir, cfg) = write_pair(&cert, &key);
+        assert_eq!(validate(&cfg).expect("validate"), TlsValidation::Ok);
+    }
+}
