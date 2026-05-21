@@ -6,12 +6,12 @@
 //! shows up only when the first client tries to connect.
 
 use std::fs;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa_core::config::TlsConfig;
 use thiserror::Error;
+use x509_parser::pem::Pem;
 
 /// Outcome of a successful [`validate`] call — the cert parsed, but
 /// classification distinguishes "fine" from soft warnings about its
@@ -69,14 +69,13 @@ pub fn validate(cfg: &TlsConfig) -> Result<TlsValidation, TlsError> {
     // parsing happens in axum-server::tls_rustls when ST-3 binds.
     let _key_bytes = read_file(&cfg.key_file)?;
 
-    let mut reader = BufReader::new(cert_bytes.as_slice());
-    let leaf_der = rustls_pemfile::certs(&mut reader)
+    let leaf_pem = Pem::iter_from_buffer(&cert_bytes)
         .next()
-        .ok_or_else(|| TlsError::CertParse("no certificate found in PEM".to_string()))?
+        .ok_or_else(|| TlsError::CertParse("no PEM block in cert file".to_string()))?
         .map_err(|e| TlsError::CertParse(format!("pem decode: {e}")))?;
-
-    let (_, x509) =
-        x509_parser::parse_x509_certificate(&leaf_der).map_err(|e| TlsError::CertParse(format!("x509 decode: {e}")))?;
+    let x509 = leaf_pem
+        .parse_x509()
+        .map_err(|e| TlsError::CertParse(format!("x509 decode: {e}")))?;
 
     let not_after_secs = x509.validity().not_after.timestamp();
     let now_secs = SystemTime::now()
