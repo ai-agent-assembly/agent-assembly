@@ -59,6 +59,28 @@ mode: remote
     assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
 }
 
+/// AC #3 — `AAASM_DATABASE_URL` env var overrides
+/// `storage.postgres.database_url`.
+#[test]
+fn aaasm_database_url_overrides_storage_postgres() {
+    let yaml = r#"
+storage:
+  postgres:
+    database_url: "postgres://yaml-default/aasm"
+"#;
+    let mut cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
+    assert_eq!(
+        cfg.storage.postgres.database_url.as_deref(),
+        Some("postgres://yaml-default/aasm"),
+    );
+    let _guard = ScopedEnv::set("AAASM_DATABASE_URL", "postgres://env-override/aasm");
+    cfg.apply_env_overrides().expect("env overrides must apply");
+    assert_eq!(
+        cfg.storage.postgres.database_url.as_deref(),
+        Some("postgres://env-override/aasm"),
+    );
+}
+
 /// Tiny RAII guard for env-var manipulation in the AC tests.
 ///
 /// `apply_env_overrides()` reads from `std::env::var`, which is
