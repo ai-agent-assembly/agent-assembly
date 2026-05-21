@@ -26,6 +26,7 @@ test-utils = []
 [dev-dependencies]
 criterion  = { version = "0.8", features = ["html_reports"] }
 serde_json = "1"
+serde_yaml = "0.9"
 
 [[bench]]
 name    = "scanner_bench"
