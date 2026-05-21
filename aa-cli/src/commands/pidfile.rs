@@ -63,6 +63,20 @@ pub fn read_pid(path: &Path) -> Result<Option<u32>, PidFileError> {
     })
 }
 
+/// Check whether `pid` refers to a process that is currently alive.
+///
+/// Implemented via the Unix idiom `kill(pid, 0)`: signal `0` performs
+/// no delivery but still runs the kernel's permission and existence
+/// checks. Returns `false` for any failure (process gone, permission
+/// denied, invalid PID) — callers treat liveness as a single bit.
+pub fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: `kill` with signal 0 is signal-safe and side-effect free;
+    // it returns 0 if the process exists and the caller has permission
+    // to signal it, -1 otherwise. No memory is dereferenced.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0
+}
+
 /// Remove the PID file at `path`. Idempotent — a missing file is
 /// not an error.
 ///
