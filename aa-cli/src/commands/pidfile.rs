@@ -62,3 +62,17 @@ pub fn read_pid(path: &Path) -> Result<Option<u32>, PidFileError> {
         raw: trimmed.to_string(),
     })
 }
+
+/// Remove the PID file at `path`. Idempotent — a missing file is
+/// not an error.
+///
+/// Called by `aasm stop` after the gateway has terminated. Returns
+/// any non-`NotFound` filesystem error verbatim so the operator
+/// sees permission issues rather than a silently-stuck PID file.
+pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
