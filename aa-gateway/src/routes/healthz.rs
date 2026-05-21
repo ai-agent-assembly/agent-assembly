@@ -74,3 +74,23 @@ pub async fn healthz(Extension(state): Extension<HealthzState>) -> Json<HealthzB
         uptime_secs: state.started_at.elapsed().as_secs(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_serialises_to_documented_shape() {
+        let body = HealthzBody {
+            mode: "remote".into(),
+            version: "0.0.1".into(),
+            storage: "memory".into(),
+            uptime_secs: 7,
+        };
+        let json = serde_json::to_value(&body).expect("HealthzBody must serialise");
+        assert_eq!(json["mode"], "remote");
+        assert_eq!(json["version"], "0.0.1");
+        assert_eq!(json["storage"], "memory");
+        assert_eq!(json["uptime_secs"], 7);
+    }
+}
