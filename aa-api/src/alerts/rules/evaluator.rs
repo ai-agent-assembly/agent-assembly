@@ -6,8 +6,12 @@
 //! metrics is deferred per the Story AC — those metric variants return
 //! `None` here and are silently skipped by the evaluator.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use aa_core::AgentId;
 use aa_gateway::budget::types::BudgetAlert;
+use tokio::task::JoinHandle;
 
 use crate::alerts::rules::store::AlertRuleStore;
 use crate::alerts::rules::types::{AlertRule, RuleMetric, RuleOperator};
@@ -25,7 +29,6 @@ pub trait MetricSource: Send + Sync {
 /// `run_server` so the evaluator's plumbing is exercised end-to-end
 /// without claiming MVP scope covers the anomaly/approval-age/violation
 /// hookups (those are explicit follow-ups in the Story AC).
-#[allow(dead_code)]
 pub struct NullMetricSource;
 
 impl MetricSource for NullMetricSource {
@@ -48,7 +51,6 @@ pub fn evaluate(rule: &AlertRule, value: f64) -> bool {
 /// Run one evaluation pass over every enabled rule, recording an alert
 /// into `alerts` when the condition holds. Returns the number of
 /// alerts recorded by this pass.
-#[allow(dead_code)]
 pub fn evaluate_once<S: MetricSource + ?Sized>(
     rules: &dyn AlertRuleStore,
     metrics: &S,
@@ -78,6 +80,31 @@ pub fn evaluate_once<S: MetricSource + ?Sized>(
         }
     }
     fired
+}
+
+/// Spawn the evaluator on a background tokio task. The loop ticks at
+/// `tick_period` (chosen by the caller — production uses 60 seconds;
+/// tests use much shorter) and calls [`evaluate_once`] on every tick.
+///
+/// Cancel the returned [`JoinHandle`] to stop the loop.
+#[allow(dead_code)]
+pub fn spawn_rule_evaluator<S>(
+    rules: Arc<dyn AlertRuleStore>,
+    metrics: Arc<S>,
+    alerts: Arc<dyn AlertStore>,
+    tick_period: Duration,
+) -> JoinHandle<()>
+where
+    S: MetricSource + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tick_period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            evaluate_once(rules.as_ref(), metrics.as_ref(), alerts.as_ref());
+        }
+    })
 }
 
 #[cfg(test)]
