@@ -24,6 +24,7 @@ pub mod pidfile;
 pub mod policy;
 pub mod proxy;
 pub mod run;
+pub mod start;
 pub mod status;
 pub mod tools;
 pub mod topology;
