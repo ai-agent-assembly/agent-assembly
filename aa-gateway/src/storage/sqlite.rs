@@ -463,20 +463,132 @@ impl StorageBackend for SqliteBackend {
         Ok(())
     }
 
-    async fn save_policy(&self, _doc: PolicyDocument) -> StorageResult<PolicyVersion> {
-        todo!("AAASM-1712: save_policy")
+    async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+        let document_text = std::str::from_utf8(&doc.bytes)
+            .map_err(|e| StorageError::QueryFailed(format!("document bytes not UTF-8: {e}")))?
+            .to_owned();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let (next_version,): (i64,) =
+            sqlx::query_as("SELECT COALESCE(MAX(version), 0) + 1 FROM policy_versions WHERE name = ?")
+                .bind(&doc.name)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryFailed(format!("compute next version: {e}")))?;
+
+        let created_at = chrono::Utc::now();
+        sqlx::query(
+            "INSERT INTO policy_versions (name, version, document, created_at, is_active) \
+             VALUES (?, ?, ?, ?, 0)",
+        )
+        .bind(&doc.name)
+        .bind(next_version)
+        .bind(&document_text)
+        .bind(created_at.to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                StorageError::Conflict(format!("{}@{next_version}", doc.name))
+            }
+            other => StorageError::QueryFailed(other.to_string()),
+        })?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
+
+        let version =
+            u32::try_from(next_version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+        Ok(PolicyVersion {
+            meta: PolicyMeta {
+                name: doc.name.clone(),
+                version,
+                created_at,
+                is_active: false,
+            },
+            document: doc,
+        })
     }
 
-    async fn get_active_policy(&self, _name: &str) -> StorageResult<Option<PolicyDocument>> {
-        todo!("AAASM-1712: get_active_policy")
+    async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT document FROM policy_versions WHERE name = ? AND is_active = 1 LIMIT 1")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(row.map(|(document,)| PolicyDocument {
+            name: name.to_owned(),
+            bytes: document.into_bytes(),
+        }))
     }
 
-    async fn list_policy_versions(&self, _name: &str) -> StorageResult<Vec<PolicyMeta>> {
-        todo!("AAASM-1712: list_policy_versions")
+    async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
+        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+            "SELECT version, created_at, is_active FROM policy_versions \
+             WHERE name = ? ORDER BY version DESC",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.into_iter()
+            .map(|(version, created_at, is_active)| {
+                let version =
+                    u32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .map_err(|e| StorageError::QueryFailed(format!("created_at parse: {e}")))?
+                    .with_timezone(&chrono::Utc);
+                Ok(PolicyMeta {
+                    name: name.to_owned(),
+                    version,
+                    created_at,
+                    is_active: is_active != 0,
+                })
+            })
+            .collect()
     }
 
-    async fn rollback_policy(&self, _name: &str, _version: u32) -> StorageResult<()> {
-        todo!("AAASM-1712: rollback_policy")
+    async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
+        let version_i = i64::from(version);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM policy_versions WHERE name = ? AND version = ?")
+            .bind(name)
+            .bind(version_i)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(format!("{name}@{version}")));
+        }
+
+        sqlx::query("UPDATE policy_versions SET is_active = 0 WHERE name = ? AND is_active = 1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        sqlx::query("UPDATE policy_versions SET is_active = 1 WHERE name = ? AND version = ?")
+            .bind(name)
+            .bind(version_i)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
+        Ok(())
     }
 
     async fn record_metric(&self, _m: Metric) -> StorageResult<()> {
