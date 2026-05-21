@@ -1016,4 +1016,89 @@ mod tests {
             .expect_err("second delete must report NotFound");
         assert!(matches!(err, StorageError::NotFound(_)));
     }
+
+    fn policy_doc(name: &str, body: &str) -> PolicyDocument {
+        PolicyDocument {
+            name: name.to_owned(),
+            bytes: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_save_assigns_monotonic_versions_and_lists_desc() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let v1 = backend
+            .save_policy(policy_doc("guard", "rules: v1"))
+            .await
+            .expect("save v1");
+        let v2 = backend
+            .save_policy(policy_doc("guard", "rules: v2"))
+            .await
+            .expect("save v2");
+        assert_eq!(v1.meta.version, 1);
+        assert_eq!(v2.meta.version, 2);
+        assert!(!v1.meta.is_active, "save must not auto-activate");
+        assert!(!v2.meta.is_active);
+
+        let listed = backend.list_policy_versions("guard").await.expect("list versions");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].version, 2, "list must be DESC");
+        assert_eq!(listed[1].version, 1);
+    }
+
+    #[tokio::test]
+    async fn policy_get_active_is_none_until_rollback_activates() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        backend
+            .save_policy(policy_doc("guard", "rules: v1"))
+            .await
+            .expect("save v1");
+        assert!(
+            backend.get_active_policy("guard").await.expect("get_active").is_none(),
+            "fresh save must not activate the row"
+        );
+        backend.rollback_policy("guard", 1).await.expect("activate v1");
+        let active = backend
+            .get_active_policy("guard")
+            .await
+            .expect("get_active")
+            .expect("present");
+        assert_eq!(active.name, "guard");
+        assert_eq!(active.bytes, b"rules: v1");
+    }
+
+    #[tokio::test]
+    async fn policy_rollback_enforces_single_active_per_name() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        backend
+            .save_policy(policy_doc("guard", "rules: v1"))
+            .await
+            .expect("save");
+        backend
+            .save_policy(policy_doc("guard", "rules: v2"))
+            .await
+            .expect("save");
+
+        // Activate v2 then v1; only v1 should remain active.
+        backend.rollback_policy("guard", 2).await.expect("activate v2");
+        backend.rollback_policy("guard", 1).await.expect("activate v1");
+        let listed = backend.list_policy_versions("guard").await.expect("list");
+        let active: Vec<_> = listed.iter().filter(|m| m.is_active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].version, 1);
+    }
+
+    #[tokio::test]
+    async fn policy_rollback_missing_returns_not_found() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let err = backend
+            .rollback_policy("guard", 99)
+            .await
+            .expect_err("rollback of missing version must fail");
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
 }
