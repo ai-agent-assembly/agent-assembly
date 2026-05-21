@@ -2,14 +2,46 @@
 //!
 //! This module ships in stages across Epic-18 Story S-G:
 //!
-//! - First commit (this one): the [`RedisConfig`] value type that drives the
-//!   feature flag.
-//! - Subsequent sub-tasks: cache key derivation, the `PolicyCacheLike` trait,
-//!   the `Disabled` baseline, and the Redis-backed implementation.
+//! - First commit: the [`RedisConfig`] value type and the OFF default posture.
+//! - Second commit: content-addressed cache key derivation.
+//! - This commit: the [`PolicyCacheLike`] trait + [`PolicyCache`] enum,
+//!   shipped with the `Disabled` no-op variant only.
+//! - Final commit: the Redis-backed variant of [`PolicyCache`].
 //!
 //! The cache is **off by default** — the gateway should always be runnable
 //! without a Redis process. Production deployments opt in by setting
 //! `storage.redis.enabled = true` and providing a reachable URL.
+
+use async_trait::async_trait;
+
+use super::policy::PolicyDocument;
+
+/// Behaviour every policy cache implementation must provide.
+///
+/// The trait is defined for two reasons:
+///
+/// 1. Production callers depend on the trait, not the [`PolicyCache`] enum,
+///    so unit tests can substitute a stub backed by a `HashMap` (used
+///    extensively in Epic-18 S-G sub-task 4).
+/// 2. The `Disabled` and `Redis` variants share the same surface — keeping
+///    the implementation symmetric makes adding more variants cheap.
+#[async_trait]
+pub trait PolicyCacheLike: Send + Sync {
+    /// Return the currently cached policy for `name`, if any.
+    async fn get(&self, name: &str) -> Option<PolicyDocument>;
+
+    /// Replace the cached entry for `doc.name`. Best-effort — callers must
+    /// fall through to the authoritative store on cache miss either way.
+    async fn set(&self, doc: &PolicyDocument);
+
+    /// Drop every cached version of `name`. Used immediately after a policy
+    /// update so subsequent `get` calls cannot serve a stale entry.
+    async fn invalidate(&self, name: &str);
+
+    /// Whether the cache is actively backed by a remote store, as opposed to
+    /// the no-op `Disabled` posture.
+    fn is_enabled(&self) -> bool;
+}
 
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
