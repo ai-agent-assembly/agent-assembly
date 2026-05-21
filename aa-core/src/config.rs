@@ -360,6 +360,29 @@ pub enum StorageBackendType {
     Postgres,
 }
 
+/// Durable-persistence configuration for the gateway (Epic 18).
+///
+/// Composes the per-engine knobs (`sqlite`, `postgres`, `redis`) with
+/// retention-lifecycle parameters and a `backend` selector. Empty YAML
+/// hydrates straight to `Self::default()` thanks to `#[serde(default)]`
+/// on the struct itself; missing nested sections use each sub-config's
+/// own `Default`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct StorageConfig {
+    /// Which `StorageBackend` to instantiate at startup.
+    pub backend: StorageBackendType,
+    /// SQLite-specific settings (`backend = Sqlite`).
+    pub sqlite: SqliteConfig,
+    /// Postgres-specific settings (`backend = Postgres`).
+    pub postgres: PostgresConfig,
+    /// Optional Redis cache (`enabled = false` by default).
+    pub redis: RedisConfig,
+    /// Hot / warm / cold audit-event lifecycle policy.
+    pub retention: RetentionConfig,
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
