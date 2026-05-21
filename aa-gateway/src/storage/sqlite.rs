@@ -791,4 +791,117 @@ mod tests {
             .expect("query scoped");
         assert_eq!(scoped, scoped_rows.len() as u64);
     }
+
+    fn sample_agent(seed: u8, team: &str, org: &str, name: &str) -> AgentRecord {
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert("name".to_owned(), name.to_owned());
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-05-21T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        AgentRecord {
+            agent_id: AgentId::from_bytes([seed; 16]),
+            team_id: Some(team.to_owned()),
+            org_id: Some(org.to_owned()),
+            metadata,
+            registered_at: ts,
+            last_seen_at: ts,
+            enforcement_mode: "enforce".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_upsert_is_idempotent_and_updates_existing_row() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let mut rec = sample_agent(7, "team-x", "org-1", "Alpha");
+        backend.upsert_agent(rec.clone()).await.expect("first upsert");
+
+        // Update last_seen_at and re-upsert; row count must stay at 1
+        // and the new last_seen_at must be visible.
+        let later = chrono::DateTime::parse_from_rfc3339("2026-05-21T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        rec.last_seen_at = later;
+        backend.upsert_agent(rec.clone()).await.expect("second upsert");
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_registry")
+            .fetch_one(backend.pool())
+            .await
+            .expect("count");
+        assert_eq!(count, 1, "upsert should not duplicate the row");
+
+        let fetched = backend.get_agent(&rec.agent_id).await.expect("get").expect("present");
+        assert_eq!(fetched.last_seen_at, later);
+    }
+
+    #[tokio::test]
+    async fn agent_get_returns_none_for_unknown_id() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let missing = AgentId::from_bytes([0xff; 16]);
+        assert!(backend.get_agent(&missing).await.expect("get").is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_list_filters_by_team_org_and_name_substring() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        for rec in [
+            sample_agent(1, "team-x", "org-1", "Alpha"),
+            sample_agent(2, "team-x", "org-2", "Bravo"),
+            sample_agent(3, "team-y", "org-1", "Alpha-prime"),
+        ] {
+            backend.upsert_agent(rec).await.expect("seed");
+        }
+
+        let team_x = backend
+            .list_agents(AgentFilter {
+                team_id: Some("team-x".into()),
+                ..AgentFilter::default()
+            })
+            .await
+            .expect("by team");
+        assert_eq!(team_x.len(), 2);
+
+        let org_1 = backend
+            .list_agents(AgentFilter {
+                org_id: Some("org-1".into()),
+                ..AgentFilter::default()
+            })
+            .await
+            .expect("by org");
+        assert_eq!(org_1.len(), 2);
+
+        let named_alpha = backend
+            .list_agents(AgentFilter {
+                name_contains: Some("Alpha".into()),
+                ..AgentFilter::default()
+            })
+            .await
+            .expect("by name substring");
+        assert_eq!(named_alpha.len(), 2);
+        assert!(named_alpha
+            .iter()
+            .all(|r| r.metadata.get("name").unwrap().contains("Alpha")));
+    }
+
+    #[tokio::test]
+    async fn agent_delete_removes_row_and_second_delete_returns_not_found() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let rec = sample_agent(9, "team-x", "org-1", "Bravo");
+        backend.upsert_agent(rec.clone()).await.expect("seed");
+
+        backend.delete_agent(&rec.agent_id).await.expect("first delete");
+        assert!(
+            backend.get_agent(&rec.agent_id).await.expect("get").is_none(),
+            "row should be removed"
+        );
+
+        let err = backend
+            .delete_agent(&rec.agent_id)
+            .await
+            .expect_err("second delete must report NotFound");
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
 }
