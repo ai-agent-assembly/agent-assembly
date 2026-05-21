@@ -543,7 +543,7 @@ impl GatewayConfig {
             self.storage.postgres.database_url = Some(url);
         }
         if let Some(url) = get_env("AAASM_REDIS_URL") {
-            self.remote.redis_url = Some(url);
+            self.storage.redis.url = Some(url);
         }
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
@@ -835,11 +835,13 @@ agent:
     }
 
     #[test]
-    fn apply_env_overrides_legacy_redis_url_still_sets_remote_field() {
+    fn apply_env_overrides_redis_url_targets_storage_redis() {
         let mut cfg = GatewayConfig::default();
         cfg.apply_env_overrides_with(env(&[("AAASM_REDIS_URL", "redis://redis:6379")]))
             .unwrap();
-        assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
+        assert_eq!(cfg.storage.redis.url.as_deref(), Some("redis://redis:6379"));
+        // Legacy remote.redis_url is untouched (removed in E18 S-I).
+        assert!(cfg.remote.redis_url.is_none());
     }
 
     #[test]
