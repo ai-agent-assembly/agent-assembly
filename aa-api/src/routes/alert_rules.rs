@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use axum::extract::Query;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
@@ -23,6 +23,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::alerts::rules::types::AlertRule;
+use crate::error::ProblemDetail;
 use crate::state::AppState;
 
 /// Wire shape for POST / PUT request bodies.
@@ -90,4 +91,35 @@ pub async fn list_rules(
     // between fetches.
     rules.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     (StatusCode::OK, Json(rules))
+}
+
+/// Build the 404 ProblemDetail returned by `get_rule`, `update_rule`,
+/// and `delete_rule` when the id is unknown — centralised so the
+/// error_code stays consistent.
+fn not_found(id: &str) -> ProblemDetail {
+    ProblemDetail::from_status(StatusCode::NOT_FOUND)
+        .with_detail(format!("rule not found: {id}"))
+        .with_error_code("rule_not_found")
+}
+
+/// Fetch a single alert rule by id.
+///
+/// Returns the full [`AlertRule`] record, or `rule_not_found` (404)
+/// when `id` is unknown.
+#[utoipa::path(
+    get,
+    path = "/api/v1/alerts/rules/{id}",
+    params(("id" = String, Path, description = "Rule id assigned by the server")),
+    responses(
+        (status = 200, description = "Rule detail", body = AlertRuleResponse),
+        (status = 404, description = "rule_not_found")
+    ),
+    tag = "alert-rules"
+)]
+pub async fn get_rule(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
+    let rule = state.alert_rule_store.get(&id).ok_or_else(|| not_found(&id))?;
+    Ok((StatusCode::OK, Json(rule)))
 }
