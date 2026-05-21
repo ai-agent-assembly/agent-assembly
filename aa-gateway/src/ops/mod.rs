@@ -17,6 +17,10 @@
 //! `OpsError::InvalidTransition`. See
 //! `docs/src/operations/ops-registry-architecture.md` for the full diagram.
 
+pub mod publisher;
+
+pub use publisher::{OpControlEnvelope, OpControlPublisher, SharedOpControlPublisher};
+
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
