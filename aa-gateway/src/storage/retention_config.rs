@@ -73,3 +73,19 @@ impl Default for RetentionConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_uses_compliance_friendly_30_90_drop_3am() {
+        let cfg = RetentionConfig::default();
+        assert_eq!(cfg.schedule, "0 3 * * *");
+        assert_eq!(cfg.hot_days, 30);
+        assert_eq!(cfg.warm_days, 90);
+        assert_eq!(cfg.cold_action, ColdAction::Drop);
+        assert_eq!(cfg.archive_url, None);
+        assert!(!cfg.dry_run);
+    }
+}
