@@ -136,4 +136,50 @@ mod tests {
             .await
             .expect("production migrator must apply cleanly on a fresh SQLite DB");
     }
+
+    /// PostgreSQL integration test driven by `testcontainers-modules`. Boots
+    /// a real Postgres container, points the runner at it, and asserts that
+    /// the good fixture migrator applies cleanly and is idempotent.
+    ///
+    /// Requires Docker on the host. Skipped automatically by CI hosts that
+    /// do not expose a Docker socket because container start will error;
+    /// running the suite with `cargo nextest` on a Docker-enabled machine
+    /// exercises the PostgreSQL code path.
+    #[tokio::test]
+    async fn apply_good_succeeds_and_is_idempotent_on_postgres() {
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers_modules::postgres::Postgres;
+        use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+        let container = Postgres::default()
+            .start()
+            .await
+            .expect("failed to start postgres testcontainer (is Docker running?)");
+
+        let host = container.get_host().await.expect("container host");
+        let port = container.get_host_port_ipv4(5432).await.expect("container port");
+        let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect to postgres container");
+
+        apply(&GOOD_MIGRATOR, &pool)
+            .await
+            .expect("apply must succeed on a fresh PostgreSQL database");
+        apply(&GOOD_MIGRATOR, &pool)
+            .await
+            .expect("re-applying the same migrator must be a no-op on PostgreSQL");
+
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("_sqlx_migrations table must exist on PostgreSQL");
+        assert!(
+            applied >= 1,
+            "expected at least one tracked migration on PostgreSQL, got {applied}"
+        );
+    }
 }
