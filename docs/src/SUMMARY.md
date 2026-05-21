@@ -38,3 +38,8 @@
 
 - [Baseline](benchmarks/BASELINE.md)
 - [Policy Check p99](benchmarks/policy-check-p99.md)
+
+# Architecture Decision Records
+
+- [Index](adr/README.md)
+  - [0001 — Storage Architecture](adr/0001-storage-architecture.md)
