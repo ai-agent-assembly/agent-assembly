@@ -5,6 +5,8 @@
 //! other story in the Epic depends on these types to decide whether
 //! the gateway should boot in local-dev or remote-control-plane mode.
 
+use std::path::PathBuf;
+
 /// Which deployment topology the gateway should boot into.
 ///
 /// Selected at startup from a combination of YAML config, environment
@@ -27,6 +29,33 @@ pub enum DeploymentMode {
     /// Agents on multiple machines all register against one gateway.
     /// PostgreSQL storage, TLS required for production.
     Remote,
+}
+
+/// Configuration for the in-process **local-dev** control plane.
+///
+/// All fields default to the zero-config developer values documented
+/// in the Epic 17 spec. `storage_path` is stored raw; `~` is expanded
+/// later by `GatewayConfig::expand_paths()` (added in AAASM-1691).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct LocalModeConfig {
+    /// TCP port the local gateway listens on. Default: `7391`.
+    pub port: u16,
+    /// Whether to serve the dashboard SPA at the same address. Default: `true`.
+    pub dashboard: bool,
+    /// SQLite database path. Default: `~/.aasm/local.db` (un-expanded).
+    pub storage_path: PathBuf,
+}
+
+impl Default for LocalModeConfig {
+    fn default() -> Self {
+        Self {
+            port: 7391,
+            dashboard: true,
+            storage_path: PathBuf::from("~/.aasm/local.db"),
+        }
+    }
 }
 
 #[cfg(test)]
