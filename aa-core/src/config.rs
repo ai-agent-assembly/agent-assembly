@@ -245,6 +245,34 @@ fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
     }
 }
 
+impl GatewayConfig {
+    /// Apply the documented `AA_MODE` / `AAASM_*` environment variables
+    /// on top of `self`, overriding any fields they set.
+    ///
+    /// Returns `ConfigError::InvalidMode` / `ConfigError::InvalidPort`
+    /// when an env var has been set to a value that cannot be parsed.
+    pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
+        self.apply_env_overrides_with(|key| std::env::var(key).ok())
+    }
+
+    /// Same as [`apply_env_overrides`](Self::apply_env_overrides) but reads env
+    /// vars through the supplied closure. Used by tests to inject a mock
+    /// environment without touching process-global state.
+    pub(crate) fn apply_env_overrides_with<F>(&mut self, get_env: F) -> Result<(), ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        if let Some(raw) = get_env("AA_MODE") {
+            self.mode = match raw.as_str() {
+                "local" => DeploymentMode::Local,
+                "remote" => DeploymentMode::Remote,
+                _ => return Err(ConfigError::InvalidMode { raw }),
+            };
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
