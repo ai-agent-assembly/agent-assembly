@@ -109,5 +109,13 @@ mod tests {
             let v2 = policy_cache_key("default", b"version-2-body");
             assert_ne!(v1, v2, "content-addressing must shift the key");
         }
+
+        #[test]
+        fn name_namespaces_the_key() {
+            let same_bytes: &[u8] = b"shared-bytes";
+            let a = policy_cache_key("default", same_bytes);
+            let b = policy_cache_key("legacy", same_bytes);
+            assert_ne!(a, b, "different names must produce different keys");
+        }
     }
 }
