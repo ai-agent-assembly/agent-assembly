@@ -8,6 +8,7 @@
 
 use std::time::Instant;
 
+use axum::{Extension, Json};
 use serde::Serialize;
 
 /// Process-wide state required by [`healthz`] to compute its response.
@@ -57,4 +58,19 @@ pub struct HealthzBody {
     pub storage: String,
     /// Seconds elapsed since the gateway became ready to serve traffic.
     pub uptime_secs: u64,
+}
+
+/// `GET /healthz` — process-liveness probe.
+///
+/// Always returns `200 OK` with [`HealthzBody`] as long as the gateway
+/// process is responding to HTTP. A 200 here does **not** imply the
+/// database or any downstream subsystem is healthy — `/api/v1/admin/status`
+/// reports the deeper readiness signal (delivered by AAASM-1474).
+pub async fn healthz(Extension(state): Extension<HealthzState>) -> Json<HealthzBody> {
+    Json(HealthzBody {
+        mode: state.mode.to_string(),
+        version: state.version.to_string(),
+        storage: state.storage.to_string(),
+        uptime_secs: state.started_at.elapsed().as_secs(),
+    })
 }
