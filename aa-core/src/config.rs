@@ -87,4 +87,12 @@ mod tests {
         let result: Result<DeploymentMode, _> = serde_yaml::from_str("foobar");
         assert!(result.is_err(), "unknown variant should fail to deserialize");
     }
+
+    #[test]
+    fn local_mode_config_default_matches_spec() {
+        let cfg = LocalModeConfig::default();
+        assert_eq!(cfg.port, 7391);
+        assert!(cfg.dashboard);
+        assert_eq!(cfg.storage_path, PathBuf::from("~/.aasm/local.db"));
+    }
 }
