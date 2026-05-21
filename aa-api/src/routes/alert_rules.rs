@@ -22,7 +22,7 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use crate::alerts::rules::types::AlertRule;
+use crate::alerts::rules::types::{AlertRule, RuleMetric, RuleOperator, RuleSeverity};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -64,6 +64,76 @@ pub struct ListRulesParams {
     /// Filter by the rule's `enabled` flag. Omit to return every rule.
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+impl AlertRuleRequest {
+    /// Convert the wire request into a domain [`AlertRule`] with empty
+    /// id / timestamps — the store overwrites them.
+    ///
+    /// `dead_code` is allowed transiently — the first consumer
+    /// (`create_rule`) lands in the next commit and removes this
+    /// attribute.
+    #[allow(dead_code)]
+    fn into_alert_rule(self) -> Result<AlertRule, ProblemDetail> {
+        let metric = parse_metric(&self.metric)?;
+        let operator = parse_operator(&self.operator)?;
+        let severity = parse_severity(&self.severity)?;
+        Ok(AlertRule {
+            id: String::new(),
+            name: self.name,
+            description: self.description,
+            metric,
+            operator,
+            threshold: self.threshold,
+            evaluation_window_seconds: self.evaluation_window_seconds,
+            severity,
+            destination_ids: self.destination_ids,
+            dedup_window_seconds: self.dedup_window_seconds,
+            suppression_labels: self.suppression_labels,
+            enabled: self.enabled,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+    }
+}
+
+#[allow(dead_code)]
+fn parse_metric(s: &str) -> Result<RuleMetric, ProblemDetail> {
+    match s {
+        "budget_spent_pct" => Ok(RuleMetric::BudgetSpentPct),
+        "anomaly_score" => Ok(RuleMetric::AnomalyScore),
+        "approval_pending_age" => Ok(RuleMetric::ApprovalPendingAge),
+        "policy_violation_count" => Ok(RuleMetric::PolicyViolationCount),
+        other => Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail(format!("unknown metric: {other}"))
+            .with_error_code("invalid_metric")),
+    }
+}
+
+#[allow(dead_code)]
+fn parse_operator(s: &str) -> Result<RuleOperator, ProblemDetail> {
+    match s {
+        ">" => Ok(RuleOperator::Gt),
+        ">=" => Ok(RuleOperator::Gte),
+        "<" => Ok(RuleOperator::Lt),
+        "=" => Ok(RuleOperator::Eq),
+        other => Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail(format!("unknown operator: {other}"))
+            .with_error_code("invalid_operator")),
+    }
+}
+
+#[allow(dead_code)]
+fn parse_severity(s: &str) -> Result<RuleSeverity, ProblemDetail> {
+    match s {
+        "CRITICAL" => Ok(RuleSeverity::Critical),
+        "HIGH" => Ok(RuleSeverity::High),
+        "MEDIUM" => Ok(RuleSeverity::Medium),
+        "LOW" => Ok(RuleSeverity::Low),
+        other => Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail(format!("unknown severity: {other}"))
+            .with_error_code("invalid_severity")),
+    }
 }
 
 /// List alert rules.
