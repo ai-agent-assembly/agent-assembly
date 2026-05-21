@@ -126,3 +126,14 @@ async fn full_crud_round_trip() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "rule_not_found");
 }
+
+#[tokio::test]
+async fn create_with_unknown_metric_returns_invalid_metric() {
+    let app = common::test_app();
+    let mut body = valid_rule_body();
+    body["metric"] = json!("not_a_real_metric");
+    let response = app.oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "invalid_metric");
+}
