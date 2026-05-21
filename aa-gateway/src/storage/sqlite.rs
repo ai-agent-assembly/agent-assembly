@@ -12,9 +12,18 @@
 
 use std::path::{Path, PathBuf};
 
+use aa_core::identity::AgentId;
+use async_trait::async_trait;
 use sqlx::SqlitePool;
 
+use super::agent::{AgentFilter, AgentRecord};
+use super::audit::{AuditEvent, AuditFilter};
+use super::backend::StorageBackend;
 use super::error::{StorageError, StorageResult};
+use super::health::StorageHealth;
+use super::metric::{Metric, MetricPoint, MetricQuery};
+use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
+use super::retention::{RetentionPolicy, RetentionStats};
 
 /// SQL DDL applied by [`SqliteBackend::migrate`] on every gateway start.
 ///
@@ -137,19 +146,66 @@ impl SqliteBackend {
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
 
-    /// Apply the [`SCHEMA`] DDL to the open database.
-    ///
-    /// Idempotent: each statement uses `IF NOT EXISTS`, so re-running on
-    /// an already-migrated database is a no-op. Intended to be invoked
-    /// once at gateway startup before the runtime issues any trait-level
-    /// reads or writes.
-    ///
-    /// # Errors
-    ///
-    /// - [`StorageError::MigrationFailed`] if any DDL statement is
-    ///   rejected by the backend.
-    pub async fn migrate(&self) -> StorageResult<()> {
+/// Trait wiring. Concrete method bodies for each slice land in their own
+/// Epic-18 S-B sub-task; until then the unimplemented slices return
+/// `todo!("AAASM-…")` so the workspace compiles.
+#[async_trait]
+impl StorageBackend for SqliteBackend {
+    async fn append_audit_event(&self, _event: &AuditEvent) -> StorageResult<()> {
+        todo!("AAASM-1704: append_audit_event")
+    }
+
+    async fn query_audit_events(&self, _filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
+        todo!("AAASM-1704: query_audit_events")
+    }
+
+    async fn count_audit_events(&self, _filter: AuditFilter) -> StorageResult<u64> {
+        todo!("AAASM-1704: count_audit_events")
+    }
+
+    async fn upsert_agent(&self, _record: AgentRecord) -> StorageResult<()> {
+        todo!("AAASM-1708: upsert_agent")
+    }
+
+    async fn get_agent(&self, _id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        todo!("AAASM-1708: get_agent")
+    }
+
+    async fn list_agents(&self, _filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+        todo!("AAASM-1708: list_agents")
+    }
+
+    async fn delete_agent(&self, _id: &AgentId) -> StorageResult<()> {
+        todo!("AAASM-1708: delete_agent")
+    }
+
+    async fn save_policy(&self, _doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+        todo!("AAASM-1712: save_policy")
+    }
+
+    async fn get_active_policy(&self, _name: &str) -> StorageResult<Option<PolicyDocument>> {
+        todo!("AAASM-1712: get_active_policy")
+    }
+
+    async fn list_policy_versions(&self, _name: &str) -> StorageResult<Vec<PolicyMeta>> {
+        todo!("AAASM-1712: list_policy_versions")
+    }
+
+    async fn rollback_policy(&self, _name: &str, _version: u32) -> StorageResult<()> {
+        todo!("AAASM-1712: rollback_policy")
+    }
+
+    async fn record_metric(&self, _m: Metric) -> StorageResult<()> {
+        todo!("AAASM-1714: record_metric")
+    }
+
+    async fn query_metrics(&self, _q: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+        todo!("AAASM-1714: query_metrics")
+    }
+
+    async fn migrate(&self) -> StorageResult<()> {
         for stmt in SCHEMA {
             sqlx::query(stmt)
                 .execute(&self.pool)
@@ -157,6 +213,14 @@ impl SqliteBackend {
                 .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
         }
         Ok(())
+    }
+
+    async fn apply_retention(&self, _policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+        todo!("AAASM-1721: apply_retention")
+    }
+
+    async fn healthcheck(&self) -> StorageResult<StorageHealth> {
+        todo!("AAASM-1721: healthcheck")
     }
 }
 
