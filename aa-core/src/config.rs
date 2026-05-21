@@ -173,6 +173,20 @@ impl GatewayConfig {
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
         Ok(serde_yaml::from_str(yaml)?)
     }
+
+    /// Load a `GatewayConfig` from a YAML file on disk.
+    ///
+    /// A `NotFound` error returns `Self::default()` so missing
+    /// `~/.aasm/config.yaml` does not break startup. Any other I/O
+    /// error (permission denied, malformed YAML, etc.) propagates
+    /// as `ConfigError`.
+    pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self, ConfigError> {
+        match std::fs::read_to_string(path) {
+            Ok(yaml) => Self::from_yaml_str(&yaml),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(ConfigError::Io(err)),
+        }
+    }
 }
 
 #[cfg(test)]
