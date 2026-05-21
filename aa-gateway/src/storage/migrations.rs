@@ -124,4 +124,16 @@ mod tests {
             "expected StorageError::MigrationFailed, got: {err:?}"
         );
     }
+
+    /// Smoke-tests the public `run_migrations` wrapper against the
+    /// production `./migrations` directory using a fresh SQLite pool.
+    /// Guards against regressions where the embedded migration files
+    /// become invalid SQLite SQL.
+    #[tokio::test]
+    async fn run_migrations_against_production_dir_succeeds_on_sqlite() {
+        let pool = fresh_sqlite_pool().await;
+        run_migrations(&pool)
+            .await
+            .expect("production migrator must apply cleanly on a fresh SQLite DB");
+    }
 }
