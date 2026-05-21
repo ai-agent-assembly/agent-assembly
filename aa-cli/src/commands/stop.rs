@@ -155,4 +155,32 @@ mod tests {
         // checks without actually delivering a signal.
         assert!(send_signal(self_pid, 0));
     }
+
+    #[test]
+    fn run_kills_real_child_and_removes_pid_file() {
+        // Spawn a long-running child the test process owns. SIGTERM
+        // will kill it; the child stays as a zombie in our process
+        // table until `child.wait()` reaps it, so `is_pid_alive`
+        // reports `true` throughout `run_with_pid_file` and the path
+        // escalates through SIGKILL + the 2 s drain window. That's
+        // fine for the AC — we only assert on the PID file cleanup
+        // and the returned exit code; child reaping happens last.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("system `sleep` should be available");
+        let pid = child.id();
+        super::super::pidfile::write_pid(&pid_file, pid).unwrap();
+
+        // Short timeout keeps the test under a few seconds.
+        let exit = run_with_pid_file(StopArgs { timeout: 1 }, &pid_file);
+        assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
+        assert!(!pid_file.exists(), "pid file should be removed");
+
+        // Reap the (now-signaled) child so it doesn't linger.
+        let _ = child.wait();
+    }
 }
