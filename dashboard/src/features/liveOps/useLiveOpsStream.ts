@@ -7,6 +7,7 @@ type GovernanceEvent = components['schemas']['GovernanceEvent']
 type ViolationPayload = components['schemas']['ViolationPayload']
 type ViolationAuditPayload = Extract<ViolationPayload, { kind: 'audit' }>
 type WireCallStackNode = components['schemas']['CallStackNode']
+type OpsChangePayload = components['schemas']['OpsChangePayload']
 
 const CALL_STACK_KINDS: readonly CallStackNodeKind[] = ['llm', 'tool', 'result'] as const
 
@@ -80,6 +81,34 @@ function isAuditPayload(p: unknown): p is ViolationAuditPayload {
   return typeof p === 'object' && p !== null && (p as { kind?: unknown }).kind === 'audit'
 }
 
+function isOpsChangePayload(p: unknown): p is OpsChangePayload {
+  if (typeof p !== 'object' || p === null) return false
+  const obj = p as Record<string, unknown>
+  return typeof obj.op_id === 'string' && typeof obj.state === 'string'
+}
+
+/**
+ * Translate the gateway-side `OpState` wire vocabulary (`pending` /
+ * `running` / `paused` / `completing` / `terminated`) into the
+ * dashboard's `OperationStatus` vocabulary, where the operator-paused
+ * state is rendered as `blocked` (a historical naming choice from the
+ * pre-AAASM-1422 4-state model retained for backward compatibility
+ * with violation-event status fields).
+ */
+function opStateToStatus(state: string): OperationStatus {
+  switch (state) {
+    case 'paused':
+      return 'blocked'
+    case 'pending':
+    case 'running':
+    case 'completing':
+    case 'terminated':
+      return state
+    default:
+      return 'running'
+  }
+}
+
 function coerceStatus(raw: string | null | undefined): OperationStatus {
   if (raw && (OPERATION_STATUSES as readonly string[]).includes(raw)) {
     return raw as OperationStatus
@@ -88,24 +117,45 @@ function coerceStatus(raw: string | null | undefined): OperationStatus {
 }
 
 function mapEvent(event: GovernanceEvent): LiveOperation | null {
-  if (event.event_type !== 'violation') return null
-  const audit = isAuditPayload(event.payload) ? event.payload : null
-  const callStack = mapCallStack(audit?.call_stack)
-  return {
-    id: String(event.id),
-    agent: event.agent_id,
-    team: audit?.team ?? undefined,
-    opType: audit?.op_type ?? 'unknown',
-    resource: audit?.resource ?? '',
-    status: coerceStatus(audit?.status),
-    startedAt: event.timestamp,
-    latencyMs: audit?.latency_ms ?? 0,
-    ...(callStack ? { callStack } : {}),
+  if (event.event_type === 'violation') {
+    const audit = isAuditPayload(event.payload) ? event.payload : null
+    const callStack = mapCallStack(audit?.call_stack)
+    return {
+      id: String(event.id),
+      agent: event.agent_id,
+      team: audit?.team ?? undefined,
+      opType: audit?.op_type ?? 'unknown',
+      resource: audit?.resource ?? '',
+      status: coerceStatus(audit?.status),
+      startedAt: event.timestamp,
+      latencyMs: audit?.latency_ms ?? 0,
+      ...(callStack ? { callStack } : {}),
+    }
   }
+  if (event.event_type === 'ops_change') {
+    if (!isOpsChangePayload(event.payload)) return null
+    // The op_id (`"{trace_id}:{span_id}"`) is the stable identifier
+    // across the op's lifetime — keying the row map by it lets the
+    // dashboard merge successive transitions into one row instead of
+    // stacking new rows. Resource/opType are not carried on the
+    // ops_change payload by design (they live on the originating
+    // violation event); the row will inherit them from any matching
+    // earlier violation event via the merge logic below.
+    return {
+      id: event.payload.op_id,
+      agent: event.agent_id,
+      opType: 'unknown',
+      resource: '',
+      status: opStateToStatus(event.payload.state),
+      startedAt: event.payload.updated_at,
+      latencyMs: 0,
+    }
+  }
+  return null
 }
 
 // Re-export for direct unit testing of the mapper.
-export const __test__ = { mapEvent }
+export const __test__ = { mapEvent, opStateToStatus }
 
 /**
  * Subscribe to the gateway WebSocket and project violation events into a
