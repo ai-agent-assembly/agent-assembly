@@ -214,6 +214,37 @@ impl Default for RetentionConfig {
     }
 }
 
+/// TimescaleDB-specific knobs for the production Postgres backend.
+///
+/// When `enabled = true` the gateway creates `audit_events` and
+/// `metrics` as TimescaleDB hypertables on startup and installs the
+/// configured compression policy. The two interval fields are
+/// passed through to TimescaleDB verbatim — they accept any Postgres
+/// `INTERVAL` literal (e.g. `"7 days"`, `"12 hours"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TimescaleConfig {
+    /// Whether to enable the TimescaleDB extension on the connected
+    /// Postgres instance. Setting `false` falls back to plain Postgres
+    /// (no hypertables, no compression policy).
+    pub enabled: bool,
+    /// Hypertable time-chunk interval. Default: `"7 days"`.
+    pub chunk_interval: String,
+    /// Age at which chunks are auto-compressed. Default: `"30 days"`.
+    pub compression_policy: String,
+}
+
+impl Default for TimescaleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            chunk_interval: String::from("7 days"),
+            compression_policy: String::from("30 days"),
+        }
+    }
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
