@@ -97,6 +97,23 @@ storage:
     );
 }
 
+/// AC #5 — `cold_action: archive` without `archive_url` is a startup
+/// error with the documented message.
+#[test]
+fn cold_action_archive_without_url_fails_validation() {
+    let yaml = r#"
+storage:
+  retention:
+    cold_action: archive
+"#;
+    let cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
+    let err = cfg
+        .validate()
+        .expect_err("cold_action = archive without archive_url must fail");
+    assert!(matches!(err, ConfigError::ArchiveUrlRequired));
+    assert_eq!(format!("{err}"), "archive_url is required when cold_action is archive",);
+}
+
 /// Tiny RAII guard for env-var manipulation in the AC tests.
 ///
 /// `apply_env_overrides()` reads from `std::env::var`, which is
