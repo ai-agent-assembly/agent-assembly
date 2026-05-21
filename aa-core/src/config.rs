@@ -1151,4 +1151,29 @@ agent:
         cfg.resolve_storage_backend();
         assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
     }
+
+    #[test]
+    fn resolve_storage_backend_defaults_to_postgres_in_remote_mode() {
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Remote,
+            ..GatewayConfig::default()
+        };
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+    }
+
+    #[test]
+    fn resolve_storage_backend_respects_explicit_choice() {
+        // Operator pinned sqlite in remote mode (e.g. in-process test
+        // runner pointed at the remote API surface) — resolver must
+        // leave it alone.
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Remote,
+            ..GatewayConfig::default()
+        };
+        cfg.storage.backend = StorageBackendType::Sqlite;
+        cfg.storage.backend_explicit = true;
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
+    }
 }
