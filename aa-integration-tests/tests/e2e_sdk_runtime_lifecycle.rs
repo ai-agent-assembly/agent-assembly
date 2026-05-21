@@ -203,12 +203,16 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
         eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
         return;
     };
+    // Empty-but-writable HOME so `go run .` can populate its build
+    // cache (`$HOME/.cache/go-build`) without inheriting aasm-on-PATH
+    // via HOME-relative lookups in the spawned probe.
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
     let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("find")
         .current_dir(probe_go_dir())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn go run");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -241,12 +245,16 @@ fn go_init_assembly_returns_err_when_missing() {
         eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
         return;
     };
+    // Empty-but-writable HOME so `go run .` can populate its build
+    // cache (`$HOME/.cache/go-build`) without inheriting aasm-on-PATH
+    // via HOME-relative lookups in the spawned probe.
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
     let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("init")
         .current_dir(probe_go_dir())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn go run");
     let stderr = String::from_utf8_lossy(&out.stderr);
