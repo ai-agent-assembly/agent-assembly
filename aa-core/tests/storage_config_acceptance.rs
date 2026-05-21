@@ -59,6 +59,22 @@ mode: remote
     assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
 }
 
+/// AC #4 — `~` in SQLite path expanded to the actual home directory
+/// at parse time (well, at expand_paths() time).
+#[test]
+fn tilde_in_sqlite_path_expanded_to_home() {
+    let yaml = r#"
+storage:
+  sqlite:
+    path: ~/.aasm/local.db
+"#;
+    let mut cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
+    assert_eq!(cfg.storage.sqlite.path, PathBuf::from("~/.aasm/local.db"));
+    cfg.expand_paths();
+    let home = dirs::home_dir().expect("$HOME must be set on CI runners and dev boxes");
+    assert_eq!(cfg.storage.sqlite.path, home.join(".aasm/local.db"));
+}
+
 /// AC #3 — `AAASM_DATABASE_URL` env var overrides
 /// `storage.postgres.database_url`.
 #[test]
