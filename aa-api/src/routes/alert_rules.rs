@@ -240,3 +240,36 @@ pub async fn get_rule(
     let rule = state.alert_rule_store.get(&id).ok_or_else(|| not_found(&id))?;
     Ok((StatusCode::OK, Json(rule)))
 }
+
+/// Replace an alert rule.
+///
+/// Same validation as `POST`. The store preserves the existing `id`
+/// and `created_at` while bumping `updated_at`. Returns the updated
+/// record, or `rule_not_found` (404) when `id` is unknown.
+#[utoipa::path(
+    put,
+    path = "/api/v1/alerts/rules/{id}",
+    params(("id" = String, Path, description = "Rule id assigned by the server")),
+    request_body = AlertRuleRequest,
+    responses(
+        (status = 200, description = "Updated rule", body = AlertRuleResponse),
+        (status = 400, description = "Validation failure"),
+        (status = 404, description = "rule_not_found"),
+        (status = 409, description = "rule_name_conflict")
+    ),
+    tag = "alert-rules"
+)]
+pub async fn update_rule(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AlertRuleRequest>,
+) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
+    let rule = body.into_alert_rule()?;
+    rule.validate(state.destination_registry.as_ref())
+        .map_err(validation_error_to_problem)?;
+    let updated = state
+        .alert_rule_store
+        .update(&id, rule)
+        .map_err(store_error_to_problem)?;
+    Ok((StatusCode::OK, Json(updated)))
+}
