@@ -3,10 +3,10 @@
 mod common;
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use serde_json::json;
+use tower::ServiceExt;
 
-#[allow(dead_code)]
 fn valid_rule_body() -> serde_json::Value {
     json!({
         "name": "Budget > 90%",
@@ -22,13 +22,11 @@ fn valid_rule_body() -> serde_json::Value {
     })
 }
 
-#[allow(dead_code)]
 async fn read_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
-#[allow(dead_code)]
 fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -38,7 +36,6 @@ fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
-#[allow(dead_code)]
 fn put(uri: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("PUT")
@@ -48,7 +45,6 @@ fn put(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
-#[allow(dead_code)]
 fn delete(uri: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
@@ -57,7 +53,76 @@ fn delete(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-#[allow(dead_code)]
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn full_crud_round_trip() {
+    let app = common::test_app();
+
+    // POST → 201 + assigned id/timestamps
+    let response = app
+        .clone()
+        .oneshot(post("/api/v1/alerts/rules", valid_rule_body()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = read_json(response).await;
+    let id = created["id"].as_str().expect("id assigned").to_string();
+    assert!(!id.is_empty());
+    assert!(!created["createdAt"].as_str().unwrap().is_empty());
+    let original_created_at = created["createdAt"].as_str().unwrap().to_string();
+
+    // GET list contains the rule (bare array, matching dashboard hooks
+    // from AAASM-1075)
+    let response = app.clone().oneshot(get("/api/v1/alerts/rules")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let list = read_json(response).await;
+    let arr = list.as_array().expect("list response must be a JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], id);
+
+    // GET by id → 200
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/alerts/rules/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // PUT → 200 with bumped updatedAt + preserved createdAt
+    // sleep a tick so updatedAt is observably different
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let mut updated_body = valid_rule_body();
+    updated_body["threshold"] = json!(95);
+    let response = app
+        .clone()
+        .oneshot(put(&format!("/api/v1/alerts/rules/{id}"), updated_body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = read_json(response).await;
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["createdAt"], original_created_at);
+    assert_ne!(updated["updatedAt"], original_created_at);
+    assert_eq!(updated["threshold"], 95.0);
+
+    // DELETE → 204
+    let response = app
+        .clone()
+        .oneshot(delete(&format!("/api/v1/alerts/rules/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // GET after delete → 404
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/alerts/rules/{id}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "rule_not_found");
 }
