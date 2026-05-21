@@ -94,3 +94,38 @@ pub enum LocalModeError {
     #[error("shutdown signal handler installation failed: {0}")]
     Signal(#[source] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AAASM-1576 AC #4: `/healthz` must return exactly
+    /// `{"mode":"local","storage":"sqlite","version":"<v>"}` —
+    /// no extra fields, no extra whitespace, lowercase values,
+    /// and the keys in the documented order.
+    #[test]
+    fn healthz_response_serialises_to_documented_shape() {
+        let resp = HealthzResponse {
+            mode: "local".to_string(),
+            storage: "sqlite".to_string(),
+            version: "0.0.1".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("serde_json::to_string");
+        assert_eq!(json, r#"{"mode":"local","storage":"sqlite","version":"0.0.1"}"#);
+    }
+
+    /// The probe path in AAASM-1715 re-parses `/healthz` responses as
+    /// `HealthzResponse`; round-tripping the documented shape must
+    /// recover the exact same struct.
+    #[test]
+    fn healthz_response_round_trips_through_serde() {
+        let original = HealthzResponse {
+            mode: "local".to_string(),
+            storage: "sqlite".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialise");
+        let parsed: HealthzResponse = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(parsed, original);
+    }
+}
