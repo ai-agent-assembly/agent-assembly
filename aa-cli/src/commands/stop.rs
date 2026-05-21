@@ -57,7 +57,6 @@ pub fn wait_for_exit(pid: u32, deadline: std::time::Duration) -> bool {
 /// `aasm start` sees a clean slate.
 pub fn run(args: StopArgs) -> std::process::ExitCode {
     use std::process::ExitCode;
-
     let pid_file = match super::pidfile::pid_file_path() {
         Ok(p) => p,
         Err(e) => {
@@ -65,8 +64,15 @@ pub fn run(args: StopArgs) -> std::process::ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    run_with_pid_file(args, &pid_file)
+}
 
-    let pid = match super::pidfile::read_pid(&pid_file) {
+/// Same as [`run`] but with an injectable PID-file path so unit
+/// tests can drive the full flow against a temp directory.
+pub fn run_with_pid_file(args: StopArgs, pid_file: &std::path::Path) -> std::process::ExitCode {
+    use std::process::ExitCode;
+
+    let pid = match super::pidfile::read_pid(pid_file) {
         Ok(Some(p)) => p,
         Ok(None) => {
             println!("No gateway running.");
@@ -80,7 +86,7 @@ pub fn run(args: StopArgs) -> std::process::ExitCode {
 
     if !super::pidfile::is_pid_alive(pid) {
         // Stale PID — clean up the file and exit silently.
-        let _ = super::pidfile::remove_pid(&pid_file);
+        let _ = super::pidfile::remove_pid(pid_file);
         println!("No gateway running (stale pid file removed).");
         return ExitCode::SUCCESS;
     }
@@ -104,7 +110,7 @@ pub fn run(args: StopArgs) -> std::process::ExitCode {
         let _ = wait_for_exit(pid, std::time::Duration::from_secs(2));
     }
 
-    let _ = super::pidfile::remove_pid(&pid_file);
+    let _ = super::pidfile::remove_pid(pid_file);
     println!("Gateway stopped (PID {pid}).");
     ExitCode::SUCCESS
 }
