@@ -8,6 +8,8 @@
 
 use std::time::Instant;
 
+use serde::Serialize;
+
 /// Process-wide state required by [`healthz`] to compute its response.
 ///
 /// Constructed once at gateway startup and threaded into Axum as an
@@ -38,4 +40,21 @@ impl HealthzState {
             started_at: Instant::now(),
         }
     }
+}
+
+/// JSON body returned by `GET /healthz`.
+///
+/// Field names are stable wire contract — load balancers, the `aasm
+/// status` CLI, and the dashboard parse this shape. Do not rename
+/// without a coordinated client update.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct HealthzBody {
+    /// Deployment mode label: `"local"` or `"remote"`.
+    pub mode: String,
+    /// Gateway crate version.
+    pub version: String,
+    /// Storage backend label.
+    pub storage: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
 }
