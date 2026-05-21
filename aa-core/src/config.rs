@@ -395,4 +395,44 @@ agent:
         assert_eq!(cfg.mode, DeploymentMode::Remote);
         std::fs::remove_file(&path).ok();
     }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_storage_path() {
+        let mut cfg = GatewayConfig::default();
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.local.storage_path, PathBuf::from("/srv/dev/bryant/.aasm/local.db"));
+    }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_tls_paths() {
+        let mut cfg = GatewayConfig::default();
+        cfg.remote.tls = Some(TlsConfig {
+            cert_file: PathBuf::from("~/secrets/tls.crt"),
+            key_file: PathBuf::from("~/secrets/tls.key"),
+        });
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        let tls = cfg.remote.tls.unwrap();
+        assert_eq!(tls.cert_file, PathBuf::from("/srv/dev/bryant/secrets/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/srv/dev/bryant/secrets/tls.key"));
+    }
+
+    #[test]
+    fn expand_paths_in_is_idempotent() {
+        let mut cfg = GatewayConfig::default();
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        let after_first = cfg.local.storage_path.clone();
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.local.storage_path, after_first, "second call must be a no-op");
+    }
+
+    #[test]
+    fn expand_paths_in_leaves_absolute_paths_alone() {
+        let mut cfg = GatewayConfig::default();
+        cfg.local.storage_path = PathBuf::from("/var/lib/aasm.db");
+        cfg.expand_paths_in(&PathBuf::from("/srv/dev/bryant"));
+        assert_eq!(cfg.local.storage_path, PathBuf::from("/var/lib/aasm.db"));
+    }
 }
