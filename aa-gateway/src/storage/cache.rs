@@ -89,6 +89,22 @@ impl Default for PolicyCache {
     }
 }
 
+impl PolicyCache {
+    /// Build a cache handle from `config`. When `config.enabled` is `false`
+    /// (the default), this returns [`PolicyCache::Disabled`] without
+    /// touching Redis. The `enabled = true` branch lands in Epic-18 S-G
+    /// sub-task 4.
+    pub fn from_config(config: &RedisConfig) -> Self {
+        if !config.enabled {
+            return Self::Disabled;
+        }
+        // TODO(AAASM-1716, S-G sub-task 4): attempt the Redis connection.
+        // Until then, treat enabled-but-unimplemented as Disabled so the
+        // gateway never tries to talk to a non-existent backend.
+        Self::Disabled
+    }
+}
+
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
 /// All four fields are filled in by the storage config layer (Epic-18 S-H);
