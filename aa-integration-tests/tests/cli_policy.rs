@@ -292,7 +292,7 @@ async fn policy_simulate_without_required_policy_flag_returns_error() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn policy_simulate_live_mode_exits_non_zero() {
+async fn policy_simulate_live_mode_returns_not_yet_supported() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let policy = CliFixture::fixture_path("policies/allow_all.yaml");
 
@@ -301,16 +301,15 @@ async fn policy_simulate_live_mode_exits_non_zero() {
         .args(["policy", "simulate", "--policy", policy.to_str().unwrap(), "--live"])
         .output()
         .expect("aasm policy simulate --live should execute");
-    // The handler-level error message "live simulation is not yet
-    // supported (requires AAASM-73)" is unreachable today because
-    // `policy simulate` panics on a clap arg-lookup mismatch — the
-    // subcommand's `--output <PathBuf>` flag collides with the global
-    // `--output <OutputFormat>` flag. Tracked as a separate bug;
-    // until it's fixed the only observable property is non-zero exit.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "--live should fail; stdout:\n{}",
+        "--live should fail; stdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&out.stdout),
+    );
+    assert!(
+        stderr.contains("live simulation is not yet supported"),
+        "stderr should explain --live is unimplemented; got:\n{stderr}",
     );
 }
 
