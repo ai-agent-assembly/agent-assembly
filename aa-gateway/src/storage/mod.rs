@@ -30,6 +30,7 @@ pub mod health;
 pub mod metric;
 pub mod policy;
 pub mod retention;
+pub mod sqlite;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
