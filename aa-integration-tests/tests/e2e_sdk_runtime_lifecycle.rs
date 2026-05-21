@@ -213,6 +213,12 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
         .current_dir(probe_go_dir())
         .env("PATH", tmp.path())
         .env("HOME", fake_home.path())
+        // probe_go is a fixture with a `replace` directive at a local
+        // path and no committed go.sum — `-mod=mod` lets `go run`
+        // populate the missing go.sum entries on the fly instead of
+        // failing with "missing go.sum entry". `GOFLAGS` is inherited
+        // by the spawned compile.
+        .env("GOFLAGS", "-mod=mod")
         .output()
         .expect("spawn go run");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -255,6 +261,12 @@ fn go_init_assembly_returns_err_when_missing() {
         .current_dir(probe_go_dir())
         .env("PATH", EMPTY_PATH_DIR)
         .env("HOME", fake_home.path())
+        // probe_go is a fixture with a `replace` directive at a local
+        // path and no committed go.sum — `-mod=mod` lets `go run`
+        // populate the missing go.sum entries on the fly instead of
+        // failing with "missing go.sum entry". `GOFLAGS` is inherited
+        // by the spawned compile.
+        .env("GOFLAGS", "-mod=mod")
         .output()
         .expect("spawn go run");
     let stderr = String::from_utf8_lossy(&out.stderr);
