@@ -90,3 +90,20 @@ pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
         Err(e) => Err(e.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_file_path_lives_under_aasm_directory() {
+        let path = pid_file_path().expect("home dir resolves in tests");
+        // Don't assert against a literal absolute path — `$HOME` differs
+        // per machine. Just confirm the structure: `.../.aasm/gateway.pid`.
+        assert!(
+            path.ends_with(".aasm/gateway.pid"),
+            "expected suffix `.aasm/gateway.pid`, got {}",
+            path.display()
+        );
+    }
+}
