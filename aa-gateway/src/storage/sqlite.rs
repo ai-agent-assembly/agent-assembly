@@ -155,14 +155,76 @@ fn agent_id_to_text(id: &AgentId) -> String {
 }
 
 /// Decode an `agent_id` TEXT column value back into an [`AgentId`].
-#[allow(dead_code)] // first consumer arrives in query_audit_events
 fn agent_id_from_text(s: &str) -> StorageResult<AgentId> {
     let uuid = uuid::Uuid::parse_str(s).map_err(|e| StorageError::QueryFailed(format!("invalid agent_id {s}: {e}")))?;
     Ok(AgentId::from_bytes(*uuid.as_bytes()))
 }
 
+/// Decode a single `audit_events` row into an [`AuditEvent`].
+///
+/// Maps TEXT timestamps back to `DateTime<Utc>` and TEXT JSON payloads
+/// back to `serde_json::Value`. Any malformed column produces
+/// [`StorageError::QueryFailed`] with the column name.
+fn row_to_audit_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AuditEvent> {
+    use sqlx::Row;
+
+    let ts_text: String = row
+        .try_get("ts")
+        .map_err(|e| StorageError::QueryFailed(format!("ts column: {e}")))?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&ts_text)
+        .map_err(|e| StorageError::QueryFailed(format!("ts parse: {e}")))?
+        .with_timezone(&chrono::Utc);
+
+    let event_id_text: String = row
+        .try_get("event_id")
+        .map_err(|e| StorageError::QueryFailed(format!("event_id column: {e}")))?;
+    let event_id =
+        uuid::Uuid::parse_str(&event_id_text).map_err(|e| StorageError::QueryFailed(format!("event_id parse: {e}")))?;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    let dry_run: i64 = row
+        .try_get("dry_run")
+        .map_err(|e| StorageError::QueryFailed(format!("dry_run column: {e}")))?;
+
+    let payload_text: Option<String> = row
+        .try_get("payload")
+        .map_err(|e| StorageError::QueryFailed(format!("payload column: {e}")))?;
+    let payload = payload_text
+        .map(|t| {
+            serde_json::from_str::<serde_json::Value>(&t)
+                .map_err(|e| StorageError::QueryFailed(format!("payload parse: {e}")))
+        })
+        .transpose()?;
+
+    Ok(AuditEvent {
+        ts,
+        event_id,
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        action: row
+            .try_get("action")
+            .map_err(|e| StorageError::QueryFailed(format!("action column: {e}")))?,
+        decision: row
+            .try_get("decision")
+            .map_err(|e| StorageError::QueryFailed(format!("decision column: {e}")))?,
+        dry_run: dry_run != 0,
+        shadow_decision: row
+            .try_get("shadow_decision")
+            .map_err(|e| StorageError::QueryFailed(format!("shadow_decision column: {e}")))?,
+        matched_rule_id: row
+            .try_get("matched_rule_id")
+            .map_err(|e| StorageError::QueryFailed(format!("matched_rule_id column: {e}")))?,
+        payload,
+    })
+}
+
 /// Push the audit-event WHERE clause derived from `filter` into `qb`.
-#[allow(dead_code)] // first consumer arrives in query_audit_events
 ///
 /// Adds clauses for `agent_id`, `team_id`, `from`/`to` (`ts >=` / `ts <`),
 /// and `dry_run_only`. Pushes nothing when `filter` is empty, leaving the
@@ -229,12 +291,36 @@ impl StorageBackend for SqliteBackend {
         Ok(())
     }
 
-    async fn query_audit_events(&self, _filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
-        todo!("AAASM-1704: query_audit_events")
+    async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT ts, event_id, agent_id, team_id, action, decision, dry_run, \
+             shadow_decision, matched_rule_id, payload FROM audit_events",
+        );
+        push_audit_where(&mut qb, &filter);
+        qb.push(" ORDER BY ts DESC");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+            if let Some(offset) = filter.offset {
+                qb.push(" OFFSET ").push_bind(i64::from(offset));
+            }
+        }
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.iter().map(row_to_audit_event).collect()
     }
 
-    async fn count_audit_events(&self, _filter: AuditFilter) -> StorageResult<u64> {
-        todo!("AAASM-1704: count_audit_events")
+    async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM audit_events");
+        push_audit_where(&mut qb, &filter);
+        let (count,): (i64,) = qb
+            .build_query_as()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        u64::try_from(count).map_err(|e| StorageError::QueryFailed(format!("count overflow: {e}")))
     }
 
     async fn upsert_agent(&self, _record: AgentRecord) -> StorageResult<()> {
