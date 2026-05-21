@@ -88,14 +88,12 @@ jobs:
             version: "3.12-slim"
             dockerfile: docker/Dockerfile.python-3.12-slim
             smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          - lang: python
-            version: "3.11-slim"
-            dockerfile: docker/Dockerfile.python-3.11-slim
-            smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          - lang: python
-            version: "3.10-slim"
-            dockerfile: docker/Dockerfile.python-3.10-slim
-            smoke_run: "python -c \"from agent_assembly import init_assembly\""
+          # Python 3.10 / 3.11 are intentionally absent here — see AAASM-1682.
+          # python-sdk's pyproject.toml declares `requires-python = ">=3.12,<4.0"`,
+          # so pip refuses to install `agent-assembly` on these older runtimes.
+          # The Dockerfiles ship in-tree (no CI cost) and the matrix entries will
+          # return once AAASM-1682 lands (either by relaxing the SDK's
+          # requires-python floor, or by formally dropping 3.10/3.11 from scope).
           # Node 20 / 22 / 24 are all intentionally absent here. Re-enabled
           # by AAASM-1660 (node 20) / AAASM-1661 (node 22) / AAASM-1503
           # (node 24) once AAASM-1203 publishes `@agent-assembly/sdk` to
