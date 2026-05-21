@@ -70,6 +70,30 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_expiry_restores_prior_status() {
+    use aa_api::alerts::silence_watcher;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    // 1 s silence — must be in the past by the time we tick().
+    let resp = post_silence(state.clone(), json!({ "alert_id": alert_id, "duration_seconds": 1 })).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(state.alert_store.get_by_id(&alert_id).unwrap().status, "suppressed");
+
+    // Skip clock — drive the watcher with a future `now` past expires_at.
+    // No real sleep, fully deterministic.
+    let future = Utc::now() + ChronoDuration::seconds(5);
+    let expired = silence_watcher::tick(state.silence_store.as_ref(), state.alert_store.as_ref(), future);
+    assert_eq!(expired, 1, "watcher must drain the expired silence");
+
+    let restored = state.alert_store.get_by_id(&alert_id).unwrap();
+    assert_eq!(restored.status, "unresolved", "alert must be restored to prior_status");
+    assert!(restored.prior_status.is_none(), "prior_status must be cleared");
+}
+
+#[tokio::test]
 async fn silence_409_alert_already_silenced() {
     let state = common::test_state();
     let alert_id = seed_alert(&state);
