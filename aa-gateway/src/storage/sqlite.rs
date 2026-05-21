@@ -188,6 +188,16 @@ mod tests {
         assert_eq!(expand_tilde(relative), PathBuf::from("data/db.sqlite"));
     }
 
+    /// Open a SqliteBackend against a fresh tempdir.
+    async fn open_temp_backend() -> (TempDir, SqliteBackend) {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path })
+            .await
+            .expect("open should succeed");
+        (tmp, backend)
+    }
+
     #[tokio::test]
     async fn open_creates_parent_dir_and_enables_wal() {
         let tmp = TempDir::new().expect("tempdir");
@@ -206,5 +216,35 @@ mod tests {
             .await
             .expect("journal_mode probe");
         assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
+    }
+
+    #[tokio::test]
+    async fn migrate_creates_all_expected_tables_and_indexes() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate should succeed");
+
+        let names: Vec<(String, String)> = sqlx::query_as(
+            "SELECT type, name FROM sqlite_master \
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(backend.pool())
+        .await
+        .expect("sqlite_master probe");
+
+        let actual: std::collections::BTreeSet<(String, String)> = names.into_iter().collect();
+        let expected: std::collections::BTreeSet<(String, String)> = [
+            ("table", "audit_events"),
+            ("table", "agent_registry"),
+            ("table", "policy_versions"),
+            ("table", "metrics"),
+            ("index", "idx_audit_agent"),
+            ("index", "idx_audit_ts"),
+        ]
+        .into_iter()
+        .map(|(t, n)| (t.to_owned(), n.to_owned()))
+        .collect();
+        for entry in &expected {
+            assert!(actual.contains(entry), "missing schema entry: {entry:?}");
+        }
     }
 }
