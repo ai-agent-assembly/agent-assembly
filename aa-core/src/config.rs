@@ -512,4 +512,36 @@ agent:
         cfg.expand_paths_in(&PathBuf::from("/srv/dev/bryant"));
         assert_eq!(cfg.local.storage_path, PathBuf::from("/var/lib/aasm.db"));
     }
+
+    /// Helper for env-override tests — builds a closure backed by a
+    /// `HashMap`. Keeps test bodies short without bumping into the
+    /// borrow checker when mapping `&[(&str, &str)]` over `&str` keys.
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |key| map.get(key).cloned()
+    }
+
+    #[test]
+    fn apply_env_overrides_aa_mode_remote_promotes_mode() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AA_MODE", "remote")])).unwrap();
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+    }
+
+    #[test]
+    fn apply_env_overrides_aa_mode_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AA_MODE", "foobar")]))
+            .expect_err("invalid value must return Err");
+        // The message must include both the env-var name and the bad value
+        // so operators can grep startup logs.
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidMode { ref raw } if raw == "foobar"));
+        assert!(msg.contains("AA_MODE"), "message should name the var: {msg}");
+        assert!(msg.contains("foobar"), "message should include the value: {msg}");
+    }
 }
