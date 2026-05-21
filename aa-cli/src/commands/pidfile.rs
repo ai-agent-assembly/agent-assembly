@@ -106,4 +106,14 @@ mod tests {
             path.display()
         );
     }
+
+    #[test]
+    fn write_pid_creates_missing_parent_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let nested = tmp.path().join("layer-a").join("layer-b").join("gateway.pid");
+        // Parent directories do not exist yet.
+        assert!(!nested.parent().unwrap().exists());
+        write_pid(&nested, 42).expect("write_pid should mkdir -p the parent");
+        assert!(nested.exists(), "pid file should exist after write_pid");
+    }
 }
