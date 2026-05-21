@@ -35,7 +35,7 @@ plan for the IPC protocol and SDK enforcement.
 | **Ingestion entry point** | `OpsRegistry::ingest(op_id) -> OpRecord` keyed by `{trace_id}:{span_id}`, idempotent | Called from `PolicyServiceImpl::check_action` *before* policy evaluation so the op appears in `Pending` state even if the policy decision takes time. |
 | **Allow transition** | `OpsRegistry::allow(op_id)`: `Pending → Running` | Called from `PolicyServiceImpl::check_action` after an `Allow` decision. |
 | **Complete transition** | `OpsRegistry::complete(op_id)`: `Running → Completing` | Drained-out terminal state; entries stay readable briefly so the dashboard can render the completion before they're swept. |
-| **Sweep policy (out of scope for PR-A)** | TBD in PR-H | Today the registry grows monotonically. Sweep / TTL is a follow-up. |
+| **Sweep policy** | Background tokio task on the registry drops `Completing` + `Terminated` entries older than **60 s**. Tick **every 10 s**. Configurable via `spawn_sweep_task_with(registry, tick, ttl_seconds)`. (AAASM-1657 PR-H) | Bounds registry memory while giving the dashboard ~10 s of grace to render the terminal state before it disappears. |
 
 ## 3 — Data model
 

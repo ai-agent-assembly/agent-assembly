@@ -67,6 +67,10 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
         std::time::Duration::from_secs(60),
     );
 
+    // Spawn background task to sweep terminal entries from the ops registry
+    // (AAASM-1657 PR-H). Default: tick every 10s, drop entries older than 60s.
+    let _ops_sweep_handle = aa_gateway::ops::spawn_sweep_task(state.ops_registry.clone());
+
     let app = build_app(state);
 
     let listener = TcpListener::bind(config.bind_addr).await?;

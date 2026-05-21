@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::error::ProblemDetail;
+use crate::events::OpsChangeBroadcast;
+use crate::models::ws_payloads::OpsChangePayload;
 use crate::ops::{OpRecord, OpsError};
 use crate::state::AppState;
 
@@ -40,6 +42,29 @@ fn lifecycle_ok(record: OpRecord, action: &'static str) -> impl IntoResponse {
             accepted_at: record.updated_at,
         }),
     )
+}
+
+/// AAASM-1657 PR-H: emit an `ops_change` WS event so the dashboard's
+/// `useLiveOpsStream` hook can clear the optimistic override and update
+/// the row in place. Looks up the owning `agent_id` from the registry
+/// (recorded by `OpsRegistry::ingest_with_agent` in the policy-service
+/// path); falls back to an empty string for ops registered without one
+/// (e.g. the legacy `POST /api/v1/ops` register path).
+fn emit_ops_change(state: &AppState, record: &OpRecord) {
+    let agent_id = state
+        .ops_registry
+        .agent_for(&record.op_id)
+        .map(|a| a.agent_id)
+        .unwrap_or_default();
+    let payload = OpsChangePayload {
+        op_id: record.op_id.clone(),
+        state: record.state,
+        updated_at: record.updated_at.clone(),
+    };
+    let _ = state
+        .events
+        .ops_change_sender()
+        .send(OpsChangeBroadcast { agent_id, payload });
 }
 
 fn ops_error_to_problem(err: OpsError) -> ProblemDetail {
@@ -86,11 +111,9 @@ pub async fn pause_op(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
-    state
-        .ops_registry
-        .pause(&op_id)
-        .map(|record| lifecycle_ok(record, "pause"))
-        .map_err(ops_error_to_problem)
+    let record = state.ops_registry.pause(&op_id).map_err(ops_error_to_problem)?;
+    emit_ops_change(&state, &record);
+    Ok(lifecycle_ok(record, "pause"))
 }
 
 /// `POST /api/v1/ops/{id}/resume` — transition a paused operation back to running.
@@ -118,11 +141,9 @@ pub async fn resume_op(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
-    state
-        .ops_registry
-        .resume(&op_id)
-        .map(|record| lifecycle_ok(record, "resume"))
-        .map_err(ops_error_to_problem)
+    let record = state.ops_registry.resume(&op_id).map_err(ops_error_to_problem)?;
+    emit_ops_change(&state, &record);
+    Ok(lifecycle_ok(record, "resume"))
 }
 
 /// `POST /api/v1/ops/{id}/terminate` — terminate a running or paused operation.
@@ -150,11 +171,9 @@ pub async fn terminate_op(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
-    state
-        .ops_registry
-        .terminate(&op_id)
-        .map(|record| lifecycle_ok(record, "terminate"))
-        .map_err(ops_error_to_problem)
+    let record = state.ops_registry.terminate(&op_id).map_err(ops_error_to_problem)?;
+    emit_ops_change(&state, &record);
+    Ok(lifecycle_ok(record, "terminate"))
 }
 
 /// `GET /api/v1/ops` — list all registered in-flight operations.

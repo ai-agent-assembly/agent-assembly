@@ -747,7 +747,16 @@ impl PolicyServiceImpl {
             return None;
         }
         let op_id = format!("{}:{}", req.trace_id, req.span_id);
-        registry.ingest(op_id.clone());
+        // AAASM-1657: thread the agent_id through to the registry so the
+        // operator-driven transitions (pause/resume/terminate) can route
+        // their OpControlSignal to the right SDK subscriber. Falls back
+        // to the agent-less `ingest` if the request omits the field
+        // (defensive — engine would reject anyway).
+        if let Some(agent_id) = req.agent_id.clone() {
+            registry.ingest_with_agent(op_id.clone(), agent_id);
+        } else {
+            registry.ingest(op_id.clone());
+        }
         Some(op_id)
     }
 
@@ -763,6 +772,18 @@ impl PolicyServiceImpl {
         };
         if let Err(err) = registry.allow(op_id) {
             tracing::trace!(op_id = %op_id, ?err, "ops_registry.allow no-op");
+        }
+    }
+
+    /// AAASM-1657: transition `Pending → Terminated` for an op the engine
+    /// just denied. Mirrors [`allow_op`] semantics — `NotFound` and
+    /// `InvalidTransition` are logged but not propagated.
+    fn terminate_op(&self, op_id: &str) {
+        let Some(registry) = self.ops_registry.as_ref() else {
+            return;
+        };
+        if let Err(err) = registry.terminate(op_id) {
+            tracing::trace!(op_id = %op_id, ?err, "ops_registry.terminate no-op");
         }
     }
 }
@@ -800,11 +821,16 @@ impl PolicyService for PolicyServiceImpl {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
 
-        // AAASM-1422: transition Pending → Running on Allow so the registry
-        // reflects the final policy decision. Deny path is deferred to PR-H.
+        // AAASM-1422 / AAASM-1657: transition the registry op to match the
+        // final policy decision. Allow → Running, Deny → Terminated.
+        // RequiresApproval is handled by the approval queue path above and
+        // leaves the op in Pending until the operator decides.
         if let Some(op_id) = ops_op_id.as_deref() {
-            if response.decision == aa_proto::assembly::common::v1::Decision::Allow as i32 {
+            let decision = response.decision;
+            if decision == aa_proto::assembly::common::v1::Decision::Allow as i32 {
                 self.allow_op(op_id);
+            } else if decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+                self.terminate_op(op_id);
             }
         }
 
