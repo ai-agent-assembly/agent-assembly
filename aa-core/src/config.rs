@@ -144,6 +144,25 @@ impl Default for AgentConnectConfig {
     }
 }
 
+/// Top-level gateway configuration loaded at startup.
+///
+/// Composes the four sub-configs and a [`DeploymentMode`] flag. All
+/// fields use `#[serde(default)]` so a minimal YAML — even an empty
+/// document — deserialises into the documented defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct GatewayConfig {
+    /// Which topology to boot — local-dev or remote control-plane.
+    pub mode: DeploymentMode,
+    /// Settings for `mode = Local`.
+    pub local: LocalModeConfig,
+    /// Settings for `mode = Remote`.
+    pub remote: RemoteModeConfig,
+    /// Settings the SDK FFI shim reads to dial the gateway.
+    pub agent: AgentConnectConfig,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
