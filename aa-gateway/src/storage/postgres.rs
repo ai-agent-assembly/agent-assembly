@@ -48,3 +48,24 @@ impl PostgresBackend {
         Ok(Self { pool })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_rejects_missing_database_url() {
+        let config = PostgresConfig::default();
+        let result = PostgresBackend::connect(&config).await;
+        match result {
+            Err(StorageError::ConnectionFailed(msg)) => {
+                assert!(
+                    msg.contains("AAASM_DATABASE_URL"),
+                    "missing-URL error must mention AAASM_DATABASE_URL, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected ConnectionFailed, got {other:?}"),
+            Ok(_) => panic!("expected error when database_url is None"),
+        }
+    }
+}
