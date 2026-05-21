@@ -70,6 +70,22 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_400_reason_too_long() {
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    let long_reason = "x".repeat(501); // 1 over the 500-char cap
+    let resp = post_silence(
+        state,
+        json!({ "alert_id": alert_id, "duration_seconds": 3600, "reason": long_reason }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["detail"].as_str().unwrap_or("").starts_with("reason_too_long:"));
+}
+
+#[tokio::test]
 async fn silence_400_invalid_duration_too_large() {
     let state = common::test_state();
     let alert_id = seed_alert(&state);
