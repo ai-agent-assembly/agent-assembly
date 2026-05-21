@@ -219,4 +219,13 @@ mod tests {
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert_eq!(addr.port(), 7391);
     }
+
+    #[test]
+    fn format_started_banner_contains_mode_address_and_pid() {
+        let banner = format_started_banner(ModeArg::Local, 7391, 12_345);
+        assert!(banner.contains("✓ Agent Assembly gateway started"));
+        assert!(banner.contains("Mode:    local"));
+        assert!(banner.contains("Address: http://localhost:7391"));
+        assert!(banner.contains("PID:     12345"));
+    }
 }
