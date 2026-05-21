@@ -32,3 +32,17 @@ impl Default for PostgresConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_spec() {
+        let cfg = PostgresConfig::default();
+        assert_eq!(cfg.database_url, None);
+        assert_eq!(cfg.max_connections, 20);
+        assert_eq!(cfg.min_connections, 2);
+        assert_eq!(cfg.connect_timeout_secs, 10);
+    }
+}
