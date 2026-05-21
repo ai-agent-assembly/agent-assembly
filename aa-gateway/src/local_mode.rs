@@ -10,7 +10,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use axum::{routing::get, Extension, Router};
 use tokio::sync::oneshot;
+
+use crate::routes::healthz::{healthz, HealthzState};
 
 /// Handle returned by `start_local()` once the local control plane is up.
 ///
@@ -71,4 +74,19 @@ pub enum LocalModeError {
     /// Installing the SIGTERM / SIGINT handler failed (Unix only).
     #[error("shutdown signal handler installation failed: {0}")]
     Signal(#[source] std::io::Error),
+}
+
+/// Build the local-mode Axum router skeleton.
+///
+/// Mounts only `/healthz` for now via [`crate::routes::healthz::healthz`];
+/// later sub-tasks (dashboard SPA in AAASM-1580, API routes wired by
+/// AAASM-1731) merge into this same router.
+///
+/// The `Extension(HealthzState::new("local", "sqlite"))` layer supplies
+/// the labels the shared `/healthz` handler reads, so the response body
+/// carries `mode: "local"` and `storage: "sqlite"` per AAASM-1576 AC #4.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) fn router() -> Router {
+    let state = HealthzState::new("local", "sqlite");
+    Router::new().route("/healthz", get(healthz)).layer(Extension(state))
 }
