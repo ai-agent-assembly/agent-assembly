@@ -70,6 +70,8 @@ pub enum Commands {
     Topology(topology::TopologyArgs),
     /// Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing.
     Proxy(proxy::ProxyArgs),
+    /// Start the locally-managed Agent Assembly gateway process.
+    Start(start::StartArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -93,5 +95,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Tools(args) => tools::dispatch(args),
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
         Commands::Proxy(args) => proxy::dispatch(args),
+        Commands::Start(args) => start::run(args),
     }
 }
