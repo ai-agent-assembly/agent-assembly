@@ -145,4 +145,14 @@ mod tests {
             other => panic!("expected Parse error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn remove_pid_is_idempotent_when_file_is_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        // First call against a missing file must succeed silently.
+        remove_pid(&pid_file).expect("first call should be a no-op");
+        // Calling again is still fine.
+        remove_pid(&pid_file).expect("second call should also be a no-op");
+    }
 }
