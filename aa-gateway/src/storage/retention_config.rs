@@ -90,6 +90,31 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_default_config() {
+        assert!(RetentionConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_archive_action_without_url() {
+        let cfg = RetentionConfig {
+            cold_action: ColdAction::Archive,
+            archive_url: None,
+            ..RetentionConfig::default()
+        };
+        assert_eq!(cfg.validate(), Err(RetentionConfigError::MissingArchiveUrl));
+    }
+
+    #[test]
+    fn validate_accepts_archive_action_with_url() {
+        let cfg = RetentionConfig {
+            cold_action: ColdAction::Archive,
+            archive_url: Some("s3://example/path/".to_string()),
+            ..RetentionConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
     fn to_policy_forwards_all_runtime_fields() {
         let cfg = RetentionConfig {
             schedule: "0 4 * * *".to_string(),
