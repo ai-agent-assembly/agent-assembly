@@ -169,6 +169,17 @@ pub fn policy_invalidation_pattern(name: &str) -> String {
     format!("policy:{name}:*")
 }
 
+/// Direct Redis key under which the currently-active cached document for
+/// `name` lives.
+///
+/// The active-key scheme uses `policy:{name}` (no hash suffix) so `get`,
+/// `set`, and `invalidate` all operate on a single, deterministic key. The
+/// content-hash helpers above remain available as building blocks for any
+/// future multi-version cache scheme.
+pub fn active_policy_key(name: &str) -> String {
+    format!("policy:{name}")
+}
+
 /// Redis-backed policy cache.
 ///
 /// Only available with the `redis-cache` Cargo feature. The struct holds a
@@ -214,9 +225,15 @@ impl RedisPolicyCache {
 #[cfg(feature = "redis-cache")]
 #[async_trait]
 impl PolicyCacheLike for RedisPolicyCache {
-    async fn get(&self, _name: &str) -> Option<PolicyDocument> {
-        // Filled in by the next commit (SCAN+GET).
-        None
+    async fn get(&self, name: &str) -> Option<PolicyDocument> {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(name);
+        let bytes: redis::RedisResult<Option<Vec<u8>>> = conn.get(&key).await;
+        bytes.ok().flatten().map(|b| PolicyDocument {
+            name: name.into(),
+            bytes: b,
+        })
     }
 
     async fn set(&self, _doc: &PolicyDocument) {
