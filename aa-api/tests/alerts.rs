@@ -2,6 +2,10 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+
+use aa_api::alerts::detail::{RoutingLogEntry, RuleSnapshot};
+use aa_api::alerts::{DedupOutcome, RuleAlertSeed};
 use aa_core::AgentId;
 use aa_gateway::budget::types::BudgetAlert;
 use axum::body::Body;
@@ -341,6 +345,160 @@ async fn resolve_alert_is_idempotent_on_second_call() {
     assert_eq!(
         second_json["updated_at"], first_updated_at,
         "second resolve must not bump updated_at",
+    );
+}
+
+// ============================================================================
+// AAASM-1385 — rich alert detail + dedup integration tests (AAASM-1629)
+// ============================================================================
+
+fn test_rule_seed() -> RuleAlertSeed {
+    RuleAlertSeed {
+        agent_id: Some(AgentId::from_bytes([0x77; 16])),
+        team_id: Some("team-platform".to_string()),
+        rule_id: "rule-budget-90".to_string(),
+        rule_name: "Budget threshold > 90%".to_string(),
+        rule_snapshot: RuleSnapshot {
+            metric: "budget_spent_pct".to_string(),
+            operator: ">".to_string(),
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: "CRITICAL".to_string(),
+            dedup_window_seconds: 600,
+            suppression_labels: BTreeMap::new(),
+        },
+        destination_ids: vec!["slack-ops".to_string()],
+        event_payload: serde_json::json!({ "metric_value": 92.3 }),
+        routing_log: vec![RoutingLogEntry {
+            destination_id: "slack-ops".to_string(),
+            delivered_at: "2026-05-20T09:00:01Z".to_string(),
+            status: "ok".to_string(),
+        }],
+    }
+}
+
+async fn get_alert_json(app: axum::Router, id: &str) -> serde_json::Value {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/alerts/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn get_alert_returns_rich_detail_for_rule_alert() {
+    let state = common::test_state();
+    let id = state.alert_store.record_rule_alert(&test_rule_seed());
+
+    let app = aa_api::server::build_app(state);
+    let json = get_alert_json(app, &id).await;
+
+    assert_eq!(json["id"], id.to_string());
+    assert_eq!(json["rule_id"], "rule-budget-90");
+    assert_eq!(json["rule_name"], "Budget threshold > 90%");
+    assert_eq!(json["rule_snapshot"]["metric"], "budget_spent_pct");
+    assert_eq!(json["rule_snapshot"]["dedup_window_seconds"], 600);
+    assert_eq!(json["category"], "rule");
+    assert_eq!(json["destination_ids"][0], "slack-ops");
+    assert_eq!(json["event_payload"]["metric_value"], 92.3);
+    assert_eq!(json["routing_log"][0]["destination_id"], "slack-ops");
+    assert_eq!(json["dedup_occurrence_count"], 1);
+}
+
+#[tokio::test]
+async fn get_alert_returns_null_rule_context_for_budget_alert() {
+    let state = common::test_state();
+    let id = state.alert_store.record(&BudgetAlert {
+        agent_id: AgentId::from_bytes([0x88; 16]),
+        team_id: None,
+        threshold_pct: 95,
+        spent_usd: 9.5,
+        limit_usd: 10.0,
+    });
+
+    let app = aa_api::server::build_app(state);
+    let json = get_alert_json(app, &id).await;
+
+    assert!(json["rule_id"].is_null(), "rule_id must be null for budget alerts");
+    assert!(
+        json["rule_snapshot"].is_null(),
+        "rule_snapshot must be null for budget alerts"
+    );
+    assert_eq!(json["destination_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(json["routing_log"].as_array().unwrap().len(), 0);
+    assert!(json["event_payload"].is_null());
+    assert_eq!(json["dedup_occurrence_count"], 1);
+    assert!(json["dedup_window_expires_at"].is_null());
+    assert_eq!(json["category"], "budget");
+}
+
+#[tokio::test]
+async fn dedup_refire_within_window_increments_count_and_does_not_reroute() {
+    let state = common::test_state();
+    let seed = test_rule_seed();
+
+    let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T09:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let (id, first_outcome) = state.alert_store.dedup_or_record_rule_alert(&seed, now);
+    assert_eq!(first_outcome, DedupOutcome::Created);
+
+    // Re-fire 5 minutes later — still inside the 600-second window.
+    let later = now + chrono::Duration::seconds(300);
+    let (id2, second_outcome) = state.alert_store.dedup_or_record_rule_alert(&seed, later);
+    assert_eq!(id2, id, "dedup must absorb into the existing alert");
+    assert_eq!(
+        second_outcome,
+        DedupOutcome::Deduped {
+            existing_id: id.clone()
+        }
+    );
+
+    let app = aa_api::server::build_app(state);
+    let json = get_alert_json(app, &id).await;
+
+    assert_eq!(json["dedup_occurrence_count"], 2);
+    assert_eq!(
+        json["routing_log"].as_array().unwrap().len(),
+        seed.routing_log.len(),
+        "dedup must NOT append to routing_log",
+    );
+}
+
+#[tokio::test]
+async fn dedup_refire_after_window_creates_new_alert_with_fresh_routing() {
+    let state = common::test_state();
+    let seed = test_rule_seed();
+
+    let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T09:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let (first_id, _) = state.alert_store.dedup_or_record_rule_alert(&seed, now);
+
+    // Re-fire 700 seconds later — past the 600-second window.
+    let later = now + chrono::Duration::seconds(700);
+    let (second_id, outcome) = state.alert_store.dedup_or_record_rule_alert(&seed, later);
+    assert_eq!(outcome, DedupOutcome::Created);
+    assert_ne!(second_id, first_id, "post-expiry re-fire must allocate a new id");
+
+    let app = aa_api::server::build_app(state);
+    let json = get_alert_json(app, &second_id).await;
+
+    assert_eq!(json["dedup_occurrence_count"], 1);
+    assert!(
+        json["dedup_window_expires_at"].is_string(),
+        "fresh window must populate dedup_window_expires_at",
+    );
+    assert!(
+        !json["routing_log"].as_array().unwrap().is_empty(),
+        "fresh fire must carry routing_log seeded by the rule engine",
     );
 }
 
