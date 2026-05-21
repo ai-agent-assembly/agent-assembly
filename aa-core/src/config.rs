@@ -49,6 +49,16 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// A retention env var (`AAASM_RETENTION_HOT_DAYS`,
+    /// `AAASM_RETENTION_WARM_DAYS`, …) was not a non-negative integer.
+    #[error("invalid {var} value: '{raw}' (expected non-negative integer)")]
+    InvalidUnsignedInt {
+        /// The env-var name, surfaced verbatim in the message so an
+        /// operator scanning startup logs can `grep` for the variable.
+        var: &'static str,
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
