@@ -202,6 +202,32 @@ impl GatewayConfig {
     }
 }
 
+impl GatewayConfig {
+    /// Expand a leading `~` in every path field to the user's home directory.
+    ///
+    /// Touches `local.storage_path` and both `remote.tls` paths.
+    /// A no-op when the home directory cannot be resolved or when
+    /// no field starts with `~`. Idempotent — calling twice produces
+    /// the same result as calling once.
+    pub fn expand_paths(&mut self) {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        self.local.storage_path = expand_tilde(&self.local.storage_path, &home);
+        if let Some(tls) = &mut self.remote.tls {
+            tls.cert_file = expand_tilde(&tls.cert_file, &home);
+            tls.key_file = expand_tilde(&tls.key_file, &home);
+        }
+    }
+}
+
+fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(stripped) => home.join(stripped),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
