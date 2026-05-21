@@ -9,6 +9,29 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+/// Outcome of a successful [`validate`] call — the cert parsed, but
+/// classification distinguishes "fine" from soft warnings about its
+/// remaining lifetime.
+///
+/// The caller decides whether `ExpiringSoon` and `Expired` produce
+/// log lines or hard startup errors; this type only reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsValidation {
+    /// Cert parsed and is not within 30 days of expiry.
+    Ok,
+    /// Cert parsed but expires within 30 days. Operator should rotate.
+    ExpiringSoon {
+        /// Whole days remaining until `notAfter`.
+        days_until_expiry: i64,
+    },
+    /// Cert parsed but `notAfter` is already in the past. The gateway
+    /// can still start, but new TLS clients will reject the chain.
+    Expired {
+        /// Whole days since `notAfter`.
+        expired_days_ago: i64,
+    },
+}
+
 /// Hard failures that should stop gateway startup in remote-mode TLS.
 ///
 /// The variant carries enough context (paths, parse messages) for the
