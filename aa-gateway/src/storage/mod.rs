@@ -4,5 +4,7 @@
 //! [AAASM-1694](https://lightning-dust-mite.atlassian.net/browse/AAASM-1694).
 
 pub mod error;
+pub mod health;
 
 pub use error::{StorageError, StorageResult};
+pub use health::{HealthStatus, RowCounts, StorageHealth};
