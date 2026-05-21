@@ -14,12 +14,13 @@ chrono       = { version = "0.4", default-features = false, features = ["clock"]
 dirs         = { version = "6", optional = true }
 serde        = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 serde_json   = { version = "1", optional = true }
+serde_yaml   = { version = "0.9", optional = true }
 sha2         = { version = "0.11", default-features = false, optional = true }
 thiserror    = { version = "2", optional = true }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "serde?/std"]
+std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
 alloc      = ["dep:sha2"]
 serde      = ["dep:serde"]
 test-utils = []
@@ -27,7 +28,6 @@ test-utils = []
 [dev-dependencies]
 criterion  = { version = "0.8", features = ["html_reports"] }
 serde_json = "1"
-serde_yaml = "0.9"
 
 [[bench]]
 name    = "scanner_bench"
