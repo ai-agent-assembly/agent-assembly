@@ -133,4 +133,16 @@ mod tests {
         write_pid(&pid_file, 13_579).unwrap();
         assert_eq!(read_pid(&pid_file).unwrap(), Some(13_579));
     }
+
+    #[test]
+    fn read_pid_returns_parse_error_on_garbage_contents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        std::fs::write(&pid_file, "not-a-pid\n").unwrap();
+        let err = read_pid(&pid_file).unwrap_err();
+        match err {
+            PidFileError::Parse { raw } => assert_eq!(raw, "not-a-pid"),
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
 }
