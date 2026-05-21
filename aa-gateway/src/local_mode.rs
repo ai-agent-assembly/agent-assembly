@@ -10,7 +10,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 /// Handle returned by `start_local()` once the local control plane is up.
@@ -30,27 +29,6 @@ pub struct LocalGatewayHandle {
     /// One-shot channel that signals the Axum server task to begin
     /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
     pub(crate) shutdown_tx: oneshot::Sender<()>,
-}
-
-/// JSON payload returned by `GET /healthz` in local mode.
-///
-/// Documented response shape from AAASM-1576 AC #4:
-///
-/// ```json
-/// {"mode":"local","storage":"sqlite","version":"0.0.1"}
-/// ```
-///
-/// `Deserialize` is derived so the pre-flight probe in AAASM-1715 can
-/// re-parse the response and reject other servers that happen to be
-/// listening on the same port but speak a different protocol.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthzResponse {
-    /// Always `"local"` when produced by this module.
-    pub mode: String,
-    /// Storage backend label — `"sqlite"` for local mode.
-    pub storage: String,
-    /// Gateway binary version (set from `CARGO_PKG_VERSION` at compile time).
-    pub version: String,
 }
 
 /// Errors that can occur while booting the local-mode control plane.
@@ -93,39 +71,4 @@ pub enum LocalModeError {
     /// Installing the SIGTERM / SIGINT handler failed (Unix only).
     #[error("shutdown signal handler installation failed: {0}")]
     Signal(#[source] std::io::Error),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// AAASM-1576 AC #4: `/healthz` must return exactly
-    /// `{"mode":"local","storage":"sqlite","version":"<v>"}` —
-    /// no extra fields, no extra whitespace, lowercase values,
-    /// and the keys in the documented order.
-    #[test]
-    fn healthz_response_serialises_to_documented_shape() {
-        let resp = HealthzResponse {
-            mode: "local".to_string(),
-            storage: "sqlite".to_string(),
-            version: "0.0.1".to_string(),
-        };
-        let json = serde_json::to_string(&resp).expect("serde_json::to_string");
-        assert_eq!(json, r#"{"mode":"local","storage":"sqlite","version":"0.0.1"}"#);
-    }
-
-    /// The probe path in AAASM-1715 re-parses `/healthz` responses as
-    /// `HealthzResponse`; round-tripping the documented shape must
-    /// recover the exact same struct.
-    #[test]
-    fn healthz_response_round_trips_through_serde() {
-        let original = HealthzResponse {
-            mode: "local".to_string(),
-            storage: "sqlite".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-        let json = serde_json::to_string(&original).expect("serialise");
-        let parsed: HealthzResponse = serde_json::from_str(&json).expect("deserialise");
-        assert_eq!(parsed, original);
-    }
 }
