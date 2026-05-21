@@ -88,4 +88,22 @@ mod tests {
         assert_eq!(cfg.archive_url, None);
         assert!(!cfg.dry_run);
     }
+
+    #[test]
+    fn to_policy_forwards_all_runtime_fields() {
+        let cfg = RetentionConfig {
+            schedule: "0 4 * * *".to_string(),
+            hot_days: 7,
+            warm_days: 30,
+            cold_action: ColdAction::Archive,
+            archive_url: Some("s3://bucket/aasm/".to_string()),
+            dry_run: true,
+        };
+        let policy = cfg.to_policy();
+        assert_eq!(policy.hot_days, 7);
+        assert_eq!(policy.warm_days, 30);
+        assert_eq!(policy.cold_action, ColdAction::Archive);
+        assert_eq!(policy.archive_url.as_deref(), Some("s3://bucket/aasm/"));
+        assert!(policy.dry_run);
+    }
 }
