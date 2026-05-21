@@ -5,6 +5,7 @@
 //! other story in the Epic depends on these types to decide whether
 //! the gateway should boot in local-dev or remote-control-plane mode.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 /// Which deployment topology the gateway should boot into.
@@ -70,6 +71,36 @@ pub struct TlsConfig {
     pub cert_file: PathBuf,
     /// PEM-encoded private key matching `cert_file`.
     pub key_file: PathBuf,
+}
+
+/// Configuration for the network-reachable **remote** control plane.
+///
+/// Defaults bind to `0.0.0.0:7391` with no TLS and no database —
+/// production callers must explicitly configure `tls` and
+/// `database_url` before serving real traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RemoteModeConfig {
+    /// Address the gateway binds to. Default: `0.0.0.0:7391`.
+    pub listen_addr: SocketAddr,
+    /// TLS cert / key paths. `None` disables TLS (development only).
+    pub tls: Option<TlsConfig>,
+    /// PostgreSQL connection URL. `None` falls back to in-memory storage.
+    pub database_url: Option<String>,
+    /// Optional Redis URL used by the rate-limit and pub/sub subsystems.
+    pub redis_url: Option<String>,
+}
+
+impl Default for RemoteModeConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: SocketAddr::from(([0, 0, 0, 0], 7391)),
+            tls: None,
+            database_url: None,
+            redis_url: None,
+        }
+    }
 }
 
 #[cfg(test)]
