@@ -594,6 +594,9 @@ impl GatewayConfig {
                 "postgres" => StorageBackendType::Postgres,
                 _ => return Err(ConfigError::InvalidStorageBackend { raw }),
             };
+            // An explicit env-var choice counts as "set by operator" —
+            // resolve_storage_backend must not overwrite it.
+            self.storage.backend_explicit = true;
         }
         if let Some(url) = get_env("AAASM_DATABASE_URL") {
             self.storage.postgres.database_url = Some(url);
@@ -662,6 +665,28 @@ impl GatewayConfig {
             });
         }
         Ok(())
+    }
+}
+
+impl GatewayConfig {
+    /// Infer `storage.backend` from `mode` when it was not explicitly
+    /// set in YAML or via the `AAASM_STORAGE_BACKEND` env var.
+    ///
+    /// * `mode: Local` → `storage.backend = Sqlite`
+    /// * `mode: Remote` → `storage.backend = Postgres`
+    ///
+    /// No-op when [`StorageConfig::backend_explicit`] is `true` — an
+    /// operator's explicit choice always wins, including the odd-but-
+    /// valid `mode: remote` + `storage.backend: sqlite` combo (an
+    /// in-memory test runner pointed at the remote API surface).
+    pub fn resolve_storage_backend(&mut self) {
+        if self.storage.backend_explicit {
+            return;
+        }
+        self.storage.backend = match self.mode {
+            DeploymentMode::Local => StorageBackendType::Sqlite,
+            DeploymentMode::Remote => StorageBackendType::Postgres,
+        };
     }
 }
 
