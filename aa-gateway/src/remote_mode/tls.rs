@@ -179,4 +179,23 @@ mod tests {
         let (_dir, cfg) = write_pair(&cert, &key);
         assert_eq!(validate(&cfg).expect("validate"), TlsValidation::Ok);
     }
+
+    #[test]
+    fn flags_expiring_soon_within_30_days() {
+        let (cert, key) = issue_cert_with_validity(-1, 10);
+        let (_dir, cfg) = write_pair(&cert, &key);
+        let result = validate(&cfg).expect("validate");
+        match result {
+            TlsValidation::ExpiringSoon { days_until_expiry } => {
+                // Allow a one-day slack on each side — UTC midnight rollover
+                // between cert issue and validate() could shift the bucket
+                // by one full day on a slow CI runner.
+                assert!(
+                    (9..=10).contains(&days_until_expiry),
+                    "expected days_until_expiry in 9..=10, got {days_until_expiry}"
+                );
+            }
+            other => panic!("expected ExpiringSoon, got {other:?}"),
+        }
+    }
 }
