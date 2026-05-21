@@ -62,3 +62,30 @@ where
 {
     apply(&MIGRATOR, conn).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+
+    /// Fixture migrator containing a single cross-database-compatible
+    /// `CREATE TABLE` statement.
+    static GOOD_MIGRATOR: Migrator = sqlx::migrate!("./src/storage/test_fixtures/migrations/good");
+
+    async fn fresh_sqlite_pool() -> SqlitePool {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite in-memory pool")
+    }
+
+    #[tokio::test]
+    async fn apply_good_succeeds_on_fresh_sqlite() {
+        let pool = fresh_sqlite_pool().await;
+        apply(&GOOD_MIGRATOR, &pool)
+            .await
+            .expect("apply must succeed on a fresh SQLite database");
+    }
+}
