@@ -26,6 +26,7 @@ pub mod proxy;
 pub mod run;
 pub mod start;
 pub mod status;
+pub mod stop;
 pub mod tools;
 pub mod topology;
 pub mod trace;
