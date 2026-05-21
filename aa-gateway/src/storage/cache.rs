@@ -82,6 +82,13 @@ impl PolicyCacheLike for PolicyCache {
     }
 }
 
+impl Default for PolicyCache {
+    /// Disabled — the safe posture when no Redis is configured.
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
 /// All four fields are filled in by the storage config layer (Epic-18 S-H);
