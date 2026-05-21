@@ -96,7 +96,12 @@ fn python_binary_in_path_returns_resolved_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
-    let out = Command::new("python3")
+    let Some(py_bin) = resolve_in_path("python3") else {
+        eprintln!("skip python_binary_in_path: `python3` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&py_bin)
         .arg("-c")
         .arg(
             "from agent_assembly.runtime import find_aasm_binary; \
@@ -104,7 +109,7 @@ fn python_binary_in_path_returns_resolved_path() {
         )
         .env("PYTHONPATH", python_sdk_path())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn python3");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -129,12 +134,17 @@ fn python_init_assembly_raises_runtime_error_when_missing() {
         );
         return;
     }
-    let out = Command::new("python3")
+    let Some(py_bin) = resolve_in_path("python3") else {
+        eprintln!("skip python_init_assembly_raises_…: `python3` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&py_bin)
         .arg("-c")
         .arg("from agent_assembly.runtime import init_assembly; init_assembly()")
         .env("PYTHONPATH", python_sdk_path())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn python3");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -305,12 +315,17 @@ fn node_binary_in_path_returns_resolved_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
-    let out = Command::new("node")
+    let Some(node_bin) = resolve_in_path("node") else {
+        eprintln!("skip node_binary_in_path: `node` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&node_bin)
         .arg(probe_node_fixture())
         .arg("find")
         .env("NODE_SDK_PATH", node_sdk_path())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn node");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -335,12 +350,17 @@ fn node_init_assembly_throws_when_missing() {
         );
         return;
     }
-    let out = Command::new("node")
+    let Some(node_bin) = resolve_in_path("node") else {
+        eprintln!("skip node_init_assembly_throws_…: `node` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&node_bin)
         .arg(probe_node_fixture())
         .arg("init")
         .env("NODE_SDK_PATH", node_sdk_path())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn node");
     let stderr = String::from_utf8_lossy(&out.stderr);
