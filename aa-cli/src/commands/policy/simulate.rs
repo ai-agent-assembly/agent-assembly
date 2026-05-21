@@ -29,8 +29,11 @@ pub struct SimulateArgs {
     pub duration: Option<String>,
 
     /// Path to write the simulation report JSON.
+    ///
+    /// Named `--output-file` (not `--output`) to avoid collision with the
+    /// top-level global `--output <OutputFormat>` flag.
     #[arg(long)]
-    pub output: Option<PathBuf>,
+    pub output_file: Option<PathBuf>,
 }
 
 /// Execute the simulate command.
@@ -74,8 +77,8 @@ pub fn run(args: SimulateArgs) -> ExitCode {
 
     let report = sim_engine.run(replay.events());
 
-    // Write report to file if --output is provided.
-    if let Some(ref output_path) = args.output {
+    // Write report to file if --output-file is provided.
+    if let Some(ref output_path) = args.output_file {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(output_path, &json) {
@@ -138,7 +141,7 @@ mod tests {
             against: None,
             live: false,
             duration: None,
-            output: None,
+            output_file: None,
         };
         assert_eq!(run(args), ExitCode::FAILURE);
     }
@@ -150,7 +153,7 @@ mod tests {
             against: None,
             live: false,
             duration: None,
-            output: None,
+            output_file: None,
         };
         assert_eq!(run(args), ExitCode::FAILURE);
     }
@@ -183,7 +186,7 @@ spec:
             against: None,
             live: false,
             duration: None,
-            output: None,
+            output_file: None,
         };
         assert_eq!(run(args), ExitCode::FAILURE);
     }
@@ -215,7 +218,7 @@ spec:
             against: None,
             live: true,
             duration: Some("30s".to_string()),
-            output: None,
+            output_file: None,
         };
         assert_eq!(run(args), ExitCode::FAILURE);
     }
