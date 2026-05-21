@@ -139,5 +139,11 @@ mod tests {
                 "hex segment must be ascii hex: {hex:?}"
             );
         }
+
+        #[test]
+        fn invalidation_pattern_matches_every_version() {
+            assert_eq!(policy_invalidation_pattern("default"), "policy:default:*");
+            assert_eq!(policy_invalidation_pattern("legacy"), "policy:legacy:*");
+        }
     }
 }
