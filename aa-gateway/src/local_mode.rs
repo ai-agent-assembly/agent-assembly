@@ -90,3 +90,51 @@ pub(crate) fn router() -> Router {
     let state = HealthzState::new("local", "sqlite");
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// AAASM-1576 AC #4, driven through the router built by `router()`:
+    /// `GET /healthz` returns 200 with `application/json` content-type and
+    /// a body whose `mode`, `storage`, and `version` fields carry the
+    /// local-mode labels. The `uptime_secs` field is asserted to be
+    /// present (guards against a regression that would drop the field
+    /// from `HealthzBody`).
+    #[tokio::test]
+    async fn router_serves_healthz_with_local_mode_json() {
+        let app = router();
+        let request = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            ctype.starts_with("application/json"),
+            "expected application/json, got {ctype}"
+        );
+
+        let bytes = to_bytes(response.into_body(), 8 * 1024).await.expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        assert_eq!(body["mode"], "local", "mode label");
+        assert_eq!(body["storage"], "sqlite", "storage label");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"), "crate version");
+        assert!(
+            body["uptime_secs"].is_u64(),
+            "uptime_secs must be present and a u64; got {body}",
+        );
+    }
+}
