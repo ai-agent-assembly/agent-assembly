@@ -1,6 +1,6 @@
 //! Runtime configuration for the retention background task.
 
-use super::retention::ColdAction;
+use super::retention::{ColdAction, RetentionPolicy};
 
 /// Operator-configurable retention engine settings parsed from the
 /// `storage.retention` section of the gateway YAML (Story S-H wires the
@@ -21,6 +21,20 @@ pub struct RetentionConfig {
     pub archive_url: Option<String>,
     /// When true, log the work that would be performed without taking action.
     pub dry_run: bool,
+}
+
+impl RetentionConfig {
+    /// Build the [`RetentionPolicy`] descriptor the backend's
+    /// `apply_retention` expects.
+    pub fn to_policy(&self) -> RetentionPolicy {
+        RetentionPolicy {
+            hot_days: self.hot_days,
+            warm_days: self.warm_days,
+            cold_action: self.cold_action,
+            archive_url: self.archive_url.clone(),
+            dry_run: self.dry_run,
+        }
+    }
 }
 
 impl Default for RetentionConfig {
