@@ -187,3 +187,33 @@ async fn create_with_duplicate_name_returns_rule_name_conflict() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "rule_name_conflict");
 }
+
+#[tokio::test]
+async fn list_filters_by_enabled_query() {
+    let app = common::test_app();
+
+    let mut a = valid_rule_body();
+    a["name"] = json!("on");
+    app.clone().oneshot(post("/api/v1/alerts/rules", a)).await.unwrap();
+
+    let mut b = valid_rule_body();
+    b["name"] = json!("off");
+    b["enabled"] = json!(false);
+    app.clone().oneshot(post("/api/v1/alerts/rules", b)).await.unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/v1/alerts/rules?enabled=true"))
+        .await
+        .unwrap();
+    let list = read_json(response).await;
+    let arr = list.as_array().expect("list response must be a JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "on");
+
+    let response = app.oneshot(get("/api/v1/alerts/rules?enabled=false")).await.unwrap();
+    let list = read_json(response).await;
+    let arr = list.as_array().expect("list response must be a JSON array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["name"], "off");
+}
