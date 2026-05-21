@@ -174,6 +174,46 @@ pub enum ColdAction {
     Archive,
 }
 
+/// Hot / warm / cold audit-event lifecycle parameters.
+///
+/// Defaults align with the SOC 2 / ISO 27001 reference window from the
+/// Epic 18 spec: 30 days fully indexed (hot), 90 days
+/// compressed-but-queryable (warm), then `cold_action` decides. The
+/// `schedule` is a UTC cron expression — default `0 3 * * *` runs the
+/// retention sweep at 03:00 UTC daily.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RetentionConfig {
+    /// Days of hot-tier retention — rows are kept fully indexed.
+    pub hot_days: u32,
+    /// Days of warm-tier retention before `cold_action` kicks in.
+    pub warm_days: u32,
+    /// What to do with rows past the warm tier.
+    pub cold_action: ColdAction,
+    /// Required when `cold_action = Archive`; ignored otherwise.
+    pub archive_url: Option<String>,
+    /// UTC cron expression for the retention sweep job.
+    pub schedule: String,
+    /// When `true`, the retention task logs what it *would* do without
+    /// touching any data — used by operators to validate new policies
+    /// before turning them on.
+    pub dry_run: bool,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            hot_days: 30,
+            warm_days: 90,
+            cold_action: ColdAction::Drop,
+            archive_url: None,
+            schedule: String::from("0 3 * * *"),
+            dry_run: false,
+        }
+    }
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
