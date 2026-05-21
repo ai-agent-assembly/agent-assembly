@@ -4,9 +4,9 @@
 //! durability at the configured path (default `~/.aasm/local.db`). Data
 //! survives gateway restarts.
 //!
-//! Concrete trait methods land in subsequent Epic-18 S-B sub-tasks; this
-//! sub-module currently exposes only the configuration value type and the
-//! [`SqliteBackend`] constructor / connection-pool plumbing.
+//! Implements every [`StorageBackend`](super::backend::StorageBackend) trait
+//! method against a WAL-mode SQLite file: audit events, agent registry,
+//! policy versions, metrics, retention, and health probes.
 //!
 //! Spec reference: lines 7140–7155 (local dev mode storage stack).
 
@@ -662,7 +662,7 @@ impl StorageBackend for SqliteBackend {
     }
 
     async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
-        if matches!(policy.cold_action, super::ColdAction::Archive) {
+        if matches!(policy.cold_action, crate::storage::ColdAction::Archive) {
             tracing::warn!(
                 archive_url = ?policy.archive_url,
                 "archive cold_action not supported on SQLite backend — falling back to drop"
@@ -1315,5 +1315,128 @@ mod tests {
             .expect("query with bucket");
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].value, 42.0);
+    }
+
+    fn seed_dated_event(seed: u8, days_ago: i64) -> AuditEvent {
+        AuditEvent {
+            ts: chrono::Utc::now() - chrono::Duration::days(days_ago),
+            event_id: uuid::Uuid::from_u128(u128::from(seed)),
+            agent_id: AgentId::from_bytes([seed; 16]),
+            team_id: None,
+            action: "tool_call".into(),
+            decision: "allow".into(),
+            dry_run: false,
+            shadow_decision: None,
+            matched_rule_id: None,
+            payload: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retention_deletes_rows_older_than_cold_threshold() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        // Seed events at day 0 (fresh), 100 days ago (hot+warm), 365 days ago (cold).
+        for (seed, days) in [(1, 0), (2, 100), (3, 365)] {
+            backend
+                .append_audit_event(&seed_dated_event(seed, days))
+                .await
+                .expect("seed");
+        }
+
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 60,
+                cold_action: crate::storage::ColdAction::Drop,
+                archive_url: None,
+                dry_run: false,
+            })
+            .await
+            .expect("retention");
+        // hot+warm = 90d. Both 100d and 365d entries pass the cold threshold.
+        assert_eq!(stats.dropped_rows, 2);
+        assert_eq!(stats.compressed_rows, 0, "SQLite has no compression");
+
+        let remaining = backend.count_audit_events(AuditFilter::default()).await.expect("count");
+        assert_eq!(remaining, 1, "only the fresh row should survive");
+    }
+
+    #[tokio::test]
+    async fn retention_dry_run_reports_drop_count_without_deleting() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        for (seed, days) in [(1, 0), (2, 200)] {
+            backend
+                .append_audit_event(&seed_dated_event(seed, days))
+                .await
+                .expect("seed");
+        }
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 60,
+                cold_action: crate::storage::ColdAction::Drop,
+                archive_url: None,
+                dry_run: true,
+            })
+            .await
+            .expect("retention dry_run");
+        assert_eq!(stats.dropped_rows, 1);
+
+        let remaining = backend.count_audit_events(AuditFilter::default()).await.expect("count");
+        assert_eq!(remaining, 2, "dry_run must not delete any rows");
+    }
+
+    #[tokio::test]
+    async fn retention_archive_falls_back_to_drop_with_warn() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        backend
+            .append_audit_event(&seed_dated_event(7, 200))
+            .await
+            .expect("seed");
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 60,
+                cold_action: crate::storage::ColdAction::Archive,
+                archive_url: Some("s3://bucket/aasm".into()),
+                dry_run: false,
+            })
+            .await
+            .expect("retention");
+        // Archive collapses to drop on SQLite — row must be gone.
+        assert_eq!(stats.dropped_rows, 1);
+        assert_eq!(stats.archived_rows, 0);
+        let remaining = backend.count_audit_events(AuditFilter::default()).await.expect("count");
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn healthcheck_reports_ok_and_correct_row_counts() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+
+        // Seed one row in each top-level table covered by RowCounts.
+        backend
+            .append_audit_event(&seed_dated_event(1, 0))
+            .await
+            .expect("append");
+        backend
+            .upsert_agent(sample_agent(2, "team-x", "org-1", "Alpha"))
+            .await
+            .expect("upsert");
+        backend
+            .save_policy(policy_doc("guard", "rules: v1"))
+            .await
+            .expect("save");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        assert!(matches!(health.status, crate::storage::HealthStatus::Ok));
+        assert_eq!(health.backend, "sqlite");
+        assert_eq!(health.row_counts.audit_events, 1);
+        assert_eq!(health.row_counts.agents, 1);
+        assert_eq!(health.row_counts.policy_versions, 1);
     }
 }
