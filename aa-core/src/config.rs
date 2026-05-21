@@ -23,6 +23,18 @@ pub enum ConfigError {
     /// The YAML payload could not be deserialised into a `GatewayConfig`.
     #[error("failed to parse config YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    /// `AA_MODE` was set to something other than `local` or `remote`.
+    #[error("invalid AA_MODE value: '{raw}' (expected 'local' or 'remote')")]
+    InvalidMode {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
+    /// `AAASM_GATEWAY_PORT` was not a valid `u16`.
+    #[error("invalid AAASM_GATEWAY_PORT value: '{raw}' (expected u16)")]
+    InvalidPort {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
@@ -200,6 +212,18 @@ impl GatewayConfig {
         };
         Self::load_from_path(home.join(".aasm").join("config.yaml"))
     }
+
+    /// One-shot loader for `aasm start` and the gateway bootstrap path:
+    /// read `~/.aasm/config.yaml`, expand `~` in path fields, then apply
+    /// the `AA_MODE` / `AAASM_*` env-var overrides.
+    ///
+    /// Returns the same `ConfigError` variants as the underlying steps.
+    pub fn load() -> Result<Self, ConfigError> {
+        let mut cfg = Self::load_default_path()?;
+        cfg.expand_paths();
+        cfg.apply_env_overrides()?;
+        Ok(cfg)
+    }
 }
 
 impl GatewayConfig {
@@ -230,6 +254,59 @@ fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(stripped) => home.join(stripped),
         Err(_) => path.to_path_buf(),
+    }
+}
+
+impl GatewayConfig {
+    /// Apply the documented `AA_MODE` / `AAASM_*` environment variables
+    /// on top of `self`, overriding any fields they set.
+    ///
+    /// Returns `ConfigError::InvalidMode` / `ConfigError::InvalidPort`
+    /// when an env var has been set to a value that cannot be parsed.
+    pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
+        self.apply_env_overrides_with(|key| std::env::var(key).ok())
+    }
+
+    /// Same as [`apply_env_overrides`](Self::apply_env_overrides) but reads env
+    /// vars through the supplied closure. Used by tests to inject a mock
+    /// environment without touching process-global state.
+    pub(crate) fn apply_env_overrides_with<F>(&mut self, get_env: F) -> Result<(), ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        if let Some(raw) = get_env("AA_MODE") {
+            self.mode = match raw.as_str() {
+                "local" => DeploymentMode::Local,
+                "remote" => DeploymentMode::Remote,
+                _ => return Err(ConfigError::InvalidMode { raw }),
+            };
+        }
+        if let Some(raw) = get_env("AAASM_GATEWAY_PORT") {
+            let port: u16 = raw.parse().map_err(|_| ConfigError::InvalidPort { raw: raw.clone() })?;
+            self.local.port = port;
+            self.remote.listen_addr.set_port(port);
+        }
+        if let Some(url) = get_env("AAASM_DATABASE_URL") {
+            self.remote.database_url = Some(url);
+        }
+        if let Some(url) = get_env("AAASM_REDIS_URL") {
+            self.remote.redis_url = Some(url);
+        }
+        let cert = get_env("AAASM_TLS_CERT");
+        let key = get_env("AAASM_TLS_KEY");
+        if cert.is_some() || key.is_some() {
+            let tls = self.remote.tls.get_or_insert(TlsConfig {
+                cert_file: PathBuf::new(),
+                key_file: PathBuf::new(),
+            });
+            if let Some(path) = cert {
+                tls.cert_file = PathBuf::from(path);
+            }
+            if let Some(path) = key {
+                tls.key_file = PathBuf::from(path);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -434,5 +511,101 @@ agent:
         cfg.local.storage_path = PathBuf::from("/var/lib/aasm.db");
         cfg.expand_paths_in(&PathBuf::from("/srv/dev/bryant"));
         assert_eq!(cfg.local.storage_path, PathBuf::from("/var/lib/aasm.db"));
+    }
+
+    /// Helper for env-override tests — builds a closure backed by a
+    /// `HashMap`. Keeps test bodies short without bumping into the
+    /// borrow checker when mapping `&[(&str, &str)]` over `&str` keys.
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |key| map.get(key).cloned()
+    }
+
+    #[test]
+    fn apply_env_overrides_aa_mode_remote_promotes_mode() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AA_MODE", "remote")])).unwrap();
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+    }
+
+    #[test]
+    fn apply_env_overrides_aa_mode_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AA_MODE", "foobar")]))
+            .expect_err("invalid value must return Err");
+        // The message must include both the env-var name and the bad value
+        // so operators can grep startup logs.
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidMode { ref raw } if raw == "foobar"));
+        assert!(msg.contains("AA_MODE"), "message should name the var: {msg}");
+        assert!(msg.contains("foobar"), "message should include the value: {msg}");
+    }
+
+    #[test]
+    fn apply_env_overrides_port_updates_local_and_remote() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AAASM_GATEWAY_PORT", "8080")]))
+            .unwrap();
+        assert_eq!(cfg.local.port, 8080);
+        assert_eq!(cfg.remote.listen_addr.port(), 8080);
+        // The bind address (only the port should change) keeps 0.0.0.0.
+        assert_eq!(cfg.remote.listen_addr.ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn apply_env_overrides_port_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_GATEWAY_PORT", "not-a-number")]))
+            .expect_err("non-numeric port must return Err");
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidPort { ref raw } if raw == "not-a-number"));
+        assert!(msg.contains("AAASM_GATEWAY_PORT"));
+        assert!(msg.contains("not-a-number"));
+    }
+
+    #[test]
+    fn apply_env_overrides_database_and_redis_urls() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_DATABASE_URL", "postgres://aasm@db/aasm"),
+            ("AAASM_REDIS_URL", "redis://redis:6379"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://aasm@db/aasm"));
+        assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
+    }
+
+    #[test]
+    fn apply_env_overrides_tls_creates_config_when_yaml_omitted_it() {
+        let mut cfg = GatewayConfig::default();
+        assert!(cfg.remote.tls.is_none(), "precondition: TLS off by default");
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_TLS_CERT", "/etc/aasm/tls.crt"),
+            ("AAASM_TLS_KEY", "/etc/aasm/tls.key"),
+        ]))
+        .unwrap();
+        let tls = cfg.remote.tls.expect("TLS env vars must create TlsConfig");
+        assert_eq!(tls.cert_file, PathBuf::from("/etc/aasm/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/etc/aasm/tls.key"));
+    }
+
+    #[test]
+    fn apply_env_overrides_tls_patches_existing_config_asymmetrically() {
+        let mut cfg = GatewayConfig::default();
+        cfg.remote.tls = Some(TlsConfig {
+            cert_file: PathBuf::from("/old/tls.crt"),
+            key_file: PathBuf::from("/old/tls.key"),
+        });
+        // Only AAASM_TLS_CERT set — key should keep its old path.
+        cfg.apply_env_overrides_with(env(&[("AAASM_TLS_CERT", "/new/tls.crt")]))
+            .unwrap();
+        let tls = cfg.remote.tls.expect("tls preserved");
+        assert_eq!(tls.cert_file, PathBuf::from("/new/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/old/tls.key"), "key untouched");
     }
 }
