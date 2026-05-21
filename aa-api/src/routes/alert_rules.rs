@@ -12,3 +12,31 @@
 //!
 //! Error responses follow the Story's table and use the `error_code`
 //! field on [`ProblemDetail`] for stable machine-readable codes.
+
+use std::collections::HashMap;
+
+use serde::Deserialize;
+use utoipa::ToSchema;
+
+/// Wire shape for POST / PUT request bodies.
+///
+/// Mirrors the Story's JSON example. Enum-shaped fields are accepted as
+/// strings so the handler can map unknown values onto the spec's
+/// `invalid_metric` error code rather than relying on serde's default
+/// 422 rejection.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertRuleRequest {
+    pub name: String,
+    pub description: String,
+    pub metric: String,
+    pub operator: String,
+    pub threshold: f64,
+    pub evaluation_window_seconds: u32,
+    pub severity: String,
+    pub destination_ids: Vec<String>,
+    pub dedup_window_seconds: u32,
+    #[serde(default)]
+    pub suppression_labels: HashMap<String, String>,
+    pub enabled: bool,
+}
