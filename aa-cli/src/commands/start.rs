@@ -201,3 +201,15 @@ pub fn run(args: StartArgs) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_listen_addr_local_binds_loopback() {
+        let addr = resolve_listen_addr(ModeArg::Local, 7391);
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(addr.port(), 7391);
+    }
+}
