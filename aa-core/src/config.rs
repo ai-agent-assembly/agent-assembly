@@ -58,6 +58,20 @@ impl Default for LocalModeConfig {
     }
 }
 
+/// TLS material for the remote control plane listener.
+///
+/// `None` on `RemoteModeConfig::tls` disables TLS (development only).
+/// Production deployments must supply both files; paths are stored raw
+/// and expanded by `GatewayConfig::expand_paths()` (AAASM-1691).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct TlsConfig {
+    /// PEM-encoded certificate chain.
+    pub cert_file: PathBuf,
+    /// PEM-encoded private key matching `cert_file`.
+    pub key_file: PathBuf,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
