@@ -78,4 +78,14 @@ mod tests {
         drop(listener);
         assert!(!probe_tcp(addr, Duration::from_millis(200)));
     }
+
+    #[test]
+    fn wait_for_ready_returns_ok_when_listener_is_already_up() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // 500ms budget is far more than enough; we expect the first
+        // probe to succeed immediately.
+        wait_for_ready(addr, Duration::from_millis(500), Duration::from_millis(50))
+            .expect("wait_for_ready should succeed when listener is up");
+    }
 }
