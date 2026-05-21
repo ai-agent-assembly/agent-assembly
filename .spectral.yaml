@@ -1,2 +1,12 @@
 extends:
   - spectral:oas
+rules:
+  # Spectral 6.16's `duplicated-entry-in-enum` rule walks `$..[?(@.enum)]`
+  # via nimma and crashes with "Cannot read properties of null (reading
+  # 'enum')" against our `openapi: 3.1.0` spec — utoipa emits the
+  # type-array nullable form (`type: [string, "null"]`) for any
+  # `Option<T>`, and nimma's compiled JSONPath treats the `type` array as
+  # a candidate node and dereferences `.enum` on a null. Disable the rule
+  # until Spectral ships a 3.1-aware traversal; utoipa never emits
+  # duplicate enum entries anyway.
+  duplicated-entry-in-enum: off
