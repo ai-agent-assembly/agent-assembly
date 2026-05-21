@@ -24,7 +24,6 @@ use super::error::{StorageError, StorageResult};
 /// follow their owning table.
 ///
 /// Mirrors the SQLite schema documented under Story AAASM-1584 (Epic 18 S-B).
-#[allow(dead_code)] // consumed by `SqliteBackend::migrate` in a follow-up commit
 const SCHEMA: &[&str] = &[
     // audit_events — composite (ts, event_id) primary key with agent + ts indexes.
     "CREATE TABLE IF NOT EXISTS audit_events (
@@ -92,7 +91,6 @@ pub struct SqliteConfig {
 /// struct currently exposes only the [`SqliteBackend::open`] constructor
 /// and an internal connection-pool handle.
 pub struct SqliteBackend {
-    #[allow(dead_code)] // first writers land in S-B.2 (migrate)
     pool: SqlitePool,
 }
 
@@ -135,9 +133,30 @@ impl SqliteBackend {
 
     /// Borrow the connection pool. Crate-internal helper for trait-impl
     /// sub-modules that land in subsequent S-B sub-tasks.
-    #[allow(dead_code)] // first consumer arrives in S-B.2
+    #[allow(dead_code)] // first non-test consumer arrives with the trait impl methods
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Apply the [`SCHEMA`] DDL to the open database.
+    ///
+    /// Idempotent: each statement uses `IF NOT EXISTS`, so re-running on
+    /// an already-migrated database is a no-op. Intended to be invoked
+    /// once at gateway startup before the runtime issues any trait-level
+    /// reads or writes.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::MigrationFailed`] if any DDL statement is
+    ///   rejected by the backend.
+    pub async fn migrate(&self) -> StorageResult<()> {
+        for stmt in SCHEMA {
+            sqlx::query(stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
