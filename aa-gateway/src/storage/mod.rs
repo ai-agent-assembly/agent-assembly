@@ -29,6 +29,8 @@ pub mod error;
 pub mod health;
 pub mod metric;
 pub mod policy;
+pub mod postgres;
+pub mod postgres_config;
 pub mod retention;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
@@ -38,4 +40,6 @@ pub use error::{StorageError, StorageResult};
 pub use health::{HealthStatus, RowCounts, StorageHealth};
 pub use metric::{Metric, MetricPoint, MetricQuery};
 pub use policy::{PolicyDocument, PolicyMeta, PolicyVersion};
+pub use postgres::PostgresBackend;
+pub use postgres_config::PostgresConfig;
 pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
