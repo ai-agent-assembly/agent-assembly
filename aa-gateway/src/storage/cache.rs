@@ -1,18 +1,18 @@
 //! Optional Redis-backed policy cache for the gateway.
 //!
-//! This module ships in stages across Epic-18 Story S-G:
-//!
-//! - First commit: the [`RedisConfig`] value type and the OFF default posture.
-//! - Second commit: content-addressed cache key derivation.
-//! - This commit: the [`PolicyCacheLike`] trait + [`PolicyCache`] enum,
-//!   shipped with the `Disabled` no-op variant only.
-//! - Final commit: the Redis-backed variant of [`PolicyCache`].
+//! The cache ships under the `redis-cache` Cargo feature. With the feature
+//! off the gateway still compiles and runs against [`PolicyCache::Disabled`],
+//! a no-op implementation that lets the rest of the codebase write
+//! cache-aware code unconditionally.
 //!
 //! The cache is **off by default** — the gateway should always be runnable
 //! without a Redis process. Production deployments opt in by setting
 //! `storage.redis.enabled = true` and providing a reachable URL.
 
 use async_trait::async_trait;
+
+#[cfg(feature = "redis-cache")]
+use redis::aio::ConnectionManager;
 
 use super::policy::PolicyDocument;
 
@@ -165,6 +165,18 @@ pub fn policy_cache_key(name: &str, bytes: &[u8]) -> String {
 /// previous content hash.
 pub fn policy_invalidation_pattern(name: &str) -> String {
     format!("policy:{name}:*")
+}
+
+/// Redis-backed policy cache.
+///
+/// Only available with the `redis-cache` Cargo feature. The struct holds a
+/// cloneable [`ConnectionManager`] (the redis-rs multiplexed handle) and the
+/// per-entry TTL pulled from [`RedisConfig::policy_cache_ttl_secs`].
+#[cfg(feature = "redis-cache")]
+#[allow(dead_code)] // fields consumed by `connect` + `PolicyCacheLike` impls in the next commits
+pub struct RedisPolicyCache {
+    conn: ConnectionManager,
+    ttl_secs: u64,
 }
 
 #[cfg(test)]
