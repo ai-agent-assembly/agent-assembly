@@ -95,4 +95,17 @@ mod tests {
         assert!(cfg.dashboard);
         assert_eq!(cfg.storage_path, PathBuf::from("~/.aasm/local.db"));
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn local_mode_config_yaml_overrides_port_keeps_other_defaults() {
+        let cfg: LocalModeConfig = serde_yaml::from_str("port: 8080").unwrap();
+        assert_eq!(cfg.port, 8080);
+        assert!(cfg.dashboard, "dashboard should fall back to default");
+        assert_eq!(
+            cfg.storage_path,
+            PathBuf::from("~/.aasm/local.db"),
+            "storage_path should fall back to default"
+        );
+    }
 }
