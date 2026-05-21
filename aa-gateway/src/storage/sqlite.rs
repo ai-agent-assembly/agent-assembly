@@ -16,6 +16,63 @@ use sqlx::SqlitePool;
 
 use super::error::{StorageError, StorageResult};
 
+/// SQL DDL applied by [`SqliteBackend::migrate`] on every gateway start.
+///
+/// Each statement is `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
+/// EXISTS`, so the slice is safe to apply against either a fresh file or
+/// an already-migrated one. Statements run in declaration order; indexes
+/// follow their owning table.
+///
+/// Mirrors the SQLite schema documented under Story AAASM-1584 (Epic 18 S-B).
+#[allow(dead_code)] // consumed by `SqliteBackend::migrate` in a follow-up commit
+const SCHEMA: &[&str] = &[
+    // audit_events — composite (ts, event_id) primary key with agent + ts indexes.
+    "CREATE TABLE IF NOT EXISTS audit_events (
+        ts              TEXT NOT NULL,
+        event_id        TEXT NOT NULL,
+        agent_id        TEXT NOT NULL,
+        team_id         TEXT,
+        action          TEXT NOT NULL,
+        decision        TEXT NOT NULL,
+        dry_run         INTEGER NOT NULL DEFAULT 0,
+        shadow_decision TEXT,
+        matched_rule_id TEXT,
+        payload         TEXT,
+        PRIMARY KEY (ts, event_id)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_events(agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)",
+    // agent_registry — durable identity / config slice of the registry.
+    "CREATE TABLE IF NOT EXISTS agent_registry (
+        agent_id          TEXT PRIMARY KEY,
+        team_id           TEXT,
+        org_id            TEXT,
+        metadata          TEXT NOT NULL DEFAULT '{}',
+        registered_at     TEXT NOT NULL,
+        last_seen_at      TEXT NOT NULL,
+        enforcement_mode  TEXT NOT NULL DEFAULT 'enforce'
+    )",
+    // policy_versions — versioned policy documents with at most one active
+    // version per name (enforced at the application layer).
+    "CREATE TABLE IF NOT EXISTS policy_versions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        version     INTEGER NOT NULL,
+        document    TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        is_active   INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(name, version)
+    )",
+    // metrics — time-series sample stream; no index in SQLite mode.
+    "CREATE TABLE IF NOT EXISTS metrics (
+        ts        TEXT NOT NULL,
+        agent_id  TEXT NOT NULL,
+        metric    TEXT NOT NULL,
+        value     REAL NOT NULL,
+        labels    TEXT NOT NULL DEFAULT '{}'
+    )",
+];
+
 /// Local SQLite backend configuration.
 ///
 /// Defined here as a minimal type so this Story (E18 S-B) can land
