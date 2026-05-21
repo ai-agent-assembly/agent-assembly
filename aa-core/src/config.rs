@@ -103,6 +103,30 @@ impl Default for RemoteModeConfig {
     }
 }
 
+/// Agent-side connection settings (used by the SDK FFI shims, not the gateway).
+///
+/// `gateway_url` is the address the SDK calls into. `api_key` is the
+/// optional bearer token surface for authenticated SaaS deployments;
+/// in local mode it is typically `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct AgentConnectConfig {
+    /// Where the SDK connects. Default: `http://localhost:7391`.
+    pub gateway_url: String,
+    /// Optional API key for authenticated control planes.
+    pub api_key: Option<String>,
+}
+
+impl Default for AgentConnectConfig {
+    fn default() -> Self {
+        Self {
+            gateway_url: String::from("http://localhost:7391"),
+            api_key: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
