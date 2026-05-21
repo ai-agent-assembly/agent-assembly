@@ -25,6 +25,12 @@ vi.mock('../features/liveOps/useLiveOpsStream', () => ({
   useLiveOpsStream: vi.fn(),
 }))
 
+vi.mock('../features/liveOps/actions', () => ({
+  pauseOp: vi.fn().mockResolvedValue(undefined),
+  resumeOp: vi.fn().mockResolvedValue(undefined),
+  terminateOp: vi.fn().mockResolvedValue(undefined),
+}))
+
 const AGENTS = [
   {
     id: 'support-agent',
@@ -172,6 +178,43 @@ describe('LiveOpsPage', () => {
     await user.click(screen.getByTestId('auto-scroll-flush'))
     expect(screen.queryByTestId('auto-scroll-flush')).toBeNull()
     expect(screen.getAllByTestId('op-row')).toHaveLength(2)
+  })
+
+  // ── AAASM-1652: 5-state model + override auto-clear ────────────────────
+
+  it('exposes all 5 lifecycle states in the status filter (incl. Terminated)', () => {
+    renderWithProviders(<LiveOpsPage />)
+    const statusFilter = screen.getByTestId('filter-status') as HTMLSelectElement
+    const labels = Array.from(statusFilter.options).map((o) => o.text)
+    expect(labels).toContain('Running')
+    expect(labels).toContain('Pending')
+    expect(labels).toContain('Blocked')
+    expect(labels).toContain('Completing')
+    expect(labels).toContain('Terminated')
+  })
+
+  it('clears terminate override when stream reports status=terminated', async () => {
+    const user = userEvent.setup()
+    mockStream({ ops: [makeOp('op-1', { status: 'running' })] })
+    const { rerender } = renderWithProviders(<LiveOpsPage />)
+
+    // Open the row-action kebab menu, click Terminate, then confirm the dialog.
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-terminate'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    // Optimistic override shows immediately.
+    expect(screen.getByTestId('op-row-override')).toHaveTextContent('terminating')
+
+    // Stream now reports the op as terminated; the override must auto-clear
+    // (under the pre-1422 model `terminating` only cleared on `completing`).
+    mockStream({ ops: [makeOp('op-1', { status: 'terminated' })] })
+    rerender(
+      <ToastProvider>
+        <LiveOpsPage />
+      </ToastProvider>,
+    )
+    expect(screen.queryByTestId('op-row-override')).toBeNull()
   })
 
   it('toggling auto-scroll back on clears the frozen snapshot', async () => {

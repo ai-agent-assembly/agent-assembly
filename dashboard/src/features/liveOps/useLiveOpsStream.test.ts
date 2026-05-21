@@ -361,6 +361,112 @@ describe('useLiveOpsStream', () => {
     expect(MockWebSocket.instances).toHaveLength(4)
   })
 
+  // ── AAASM-1652: ops_change event handling ──────────────────────────────
+
+  const OPS_CHANGE_EVENT = {
+    id: 100,
+    agent_id: 'support-agent',
+    event_type: 'ops_change',
+    timestamp: '2026-05-21T10:00:00Z',
+    payload: {
+      op_id: 'trace-abc:span-1',
+      state: 'running',
+      updated_at: '2026-05-21T10:00:00Z',
+    },
+  }
+
+  it('subscribes to both violation and ops_change events in the WS URL', () => {
+    renderHook(() => useLiveOpsStream(opts))
+    expect(MockWebSocket.instances[0].url).toContain('types=violation,ops_change')
+  })
+
+  it('maps ops_change events into LiveOperation rows keyed by op_id', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
+    })
+    expect(result.current.ops).toHaveLength(1)
+    expect(result.current.ops[0]).toMatchObject({
+      id: 'trace-abc:span-1',
+      agent: 'support-agent',
+      status: 'running',
+      startedAt: '2026-05-21T10:00:00Z',
+    })
+  })
+
+  it('merges successive ops_change events for the same op_id into one row', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
+      MockWebSocket.instances[0].emit({
+        ...OPS_CHANGE_EVENT,
+        id: 101,
+        payload: {
+          ...OPS_CHANGE_EVENT.payload,
+          state: 'paused',
+          updated_at: '2026-05-21T10:00:05Z',
+        },
+      })
+    })
+    expect(result.current.ops).toHaveLength(1)
+    expect(result.current.ops[0]).toMatchObject({
+      id: 'trace-abc:span-1',
+      status: 'blocked', // paused → blocked translation
+      startedAt: '2026-05-21T10:00:05Z',
+    })
+  })
+
+  it('translates gateway OpState values to dashboard OperationStatus', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    const states: Array<{ state: string; expected: string }> = [
+      { state: 'pending', expected: 'pending' },
+      { state: 'running', expected: 'running' },
+      { state: 'paused', expected: 'blocked' },
+      { state: 'completing', expected: 'completing' },
+      { state: 'terminated', expected: 'terminated' },
+    ]
+    act(() => {
+      MockWebSocket.instances[0].open()
+      states.forEach((s, i) => {
+        MockWebSocket.instances[0].emit({
+          ...OPS_CHANGE_EVENT,
+          id: 200 + i,
+          payload: { ...OPS_CHANGE_EVENT.payload, op_id: `t:${i}`, state: s.state },
+        })
+      })
+    })
+    const byId = new Map(result.current.ops.map((o) => [o.id, o.status]))
+    states.forEach((s, i) => {
+      expect(byId.get(`t:${i}`)).toBe(s.expected)
+    })
+  })
+
+  it('preserves opType / resource learned from earlier violation event when merging', () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    act(() => {
+      MockWebSocket.instances[0].open()
+      // First a violation event lands the row with rich metadata (it
+      // uses the monotonic id as key — not op_id — but we override the
+      // id to match the op_id so the next ops_change event finds it).
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        id: 'trace-abc:span-1' as unknown as number,
+        payload: { ...VIOLATION_EVENT.payload, status: 'running' },
+      })
+      // Then a transition arrives via ops_change.
+      MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
+    })
+    expect(result.current.ops).toHaveLength(1)
+    expect(result.current.ops[0]).toMatchObject({
+      id: 'trace-abc:span-1',
+      opType: 'tool_call', // from the violation event
+      resource: 'web_search', // from the violation event
+      status: 'running', // from the ops_change event
+    })
+  })
+
   it('successful open resets the backoff counter so the next close starts at initialBackoffMs', () => {
     renderHook(() => useLiveOpsStream(opts))
 

@@ -30,11 +30,18 @@ const OVERRIDE_VERB: Record<OperationOverride, string> = {
  * Returns true when the WS-reported `status` reflects the result the
  * optimistic `intent` was working toward. The override can be cleared
  * once the wire confirms the action took effect.
+ *
+ * `terminating` was historically matched against `completing`, which
+ * was correct under the pre-AAASM-1422 4-state model where there was
+ * no terminal `terminated` state. Now that the gateway emits a real
+ * `terminated` lifecycle state, the override clears on either: the
+ * server may briefly pass through `completing` mid-shutdown before
+ * settling on `terminated`.
  */
 function matchesIntent(status: OperationStatus, intent: OperationOverride): boolean {
   if (intent === 'pausing') return status === 'blocked'
   if (intent === 'resuming') return status === 'running'
-  return status === 'completing'
+  return status === 'completing' || status === 'terminated'
 }
 
 export function LiveOpsPage() {

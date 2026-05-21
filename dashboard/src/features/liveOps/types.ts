@@ -6,13 +6,19 @@
  * four states called out in the parent ticket's filter-bar spec.
  */
 
-export type OperationStatus = 'running' | 'pending' | 'blocked' | 'completing'
+export type OperationStatus =
+  | 'running'
+  | 'pending'
+  | 'blocked'
+  | 'completing'
+  | 'terminated'
 
 export const OPERATION_STATUSES: readonly OperationStatus[] = [
   'running',
   'pending',
   'blocked',
   'completing',
+  'terminated',
 ] as const
 
 /** Step kind inside a live-operation call stack. */

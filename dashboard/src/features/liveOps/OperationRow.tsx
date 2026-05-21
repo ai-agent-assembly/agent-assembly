@@ -24,6 +24,7 @@ const STATUS_LABEL: Record<OperationStatus, string> = {
   pending: 'PENDING',
   blocked: 'BLOCKED',
   completing: 'COMPLETING',
+  terminated: 'TERMINATED',
 }
 
 const OVERRIDE_LABEL: Record<OperationOverride, string> = {
