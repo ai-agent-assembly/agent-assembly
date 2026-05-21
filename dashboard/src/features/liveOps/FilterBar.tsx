@@ -30,6 +30,7 @@ const STATUS_LABEL: Record<OperationStatus, string> = {
   pending: 'Pending',
   blocked: 'Blocked',
   completing: 'Completing',
+  terminated: 'Terminated',
 }
 
 /**
