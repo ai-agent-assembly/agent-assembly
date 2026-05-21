@@ -555,6 +555,12 @@ impl GatewayConfig {
         if let Some(path) = get_env("AAASM_SQLITE_PATH") {
             self.storage.sqlite.path = PathBuf::from(path);
         }
+        if let Some(raw) = get_env("AAASM_RETENTION_HOT_DAYS") {
+            self.storage.retention.hot_days = raw.parse().map_err(|_| ConfigError::InvalidUnsignedInt {
+                var: "AAASM_RETENTION_HOT_DAYS",
+                raw: raw.clone(),
+            })?;
+        }
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
         if cert.is_some() || key.is_some() {
