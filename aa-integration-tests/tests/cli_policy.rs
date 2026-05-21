@@ -314,7 +314,7 @@ async fn policy_simulate_live_mode_returns_not_yet_supported() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn policy_simulate_without_against_or_live_exits_non_zero() {
+async fn policy_simulate_without_against_or_live_returns_error() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let policy = CliFixture::fixture_path("policies/allow_all.yaml");
 
@@ -323,13 +323,14 @@ async fn policy_simulate_without_against_or_live_exits_non_zero() {
         .args(["policy", "simulate", "--policy", policy.to_str().unwrap()])
         .output()
         .expect("aasm policy simulate (no --against) should execute");
-    // Same caveat as `policy_simulate_live_mode_exits_non_zero` — the
-    // user-facing "--against is required" message is hidden by a
-    // pre-existing clap-collision panic. Test only asserts non-zero
-    // exit until that bug is fixed.
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
-        "missing --against (and not --live) should fail; stdout:\n{}",
+        "missing --against (and not --live) should fail; stdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&out.stdout),
+    );
+    assert!(
+        stderr.contains("--against <log-file> is required"),
+        "stderr should explain --against is required; got:\n{stderr}",
     );
 }
