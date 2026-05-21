@@ -15,7 +15,11 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    // Source maps are not served by the embedded `aasm dashboard` server and add
+    // ~3.4 MB to the final aasm binary (include_dir! embeds every file in dist/).
+    // Disable for production builds; dev (`vite`) generates inline sourcemaps via
+    // its own pipeline and is unaffected.
+    sourcemap: false,
   },
   test: {
     environment: 'jsdom',
