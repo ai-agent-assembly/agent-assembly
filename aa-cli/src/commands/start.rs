@@ -71,3 +71,41 @@ pub fn resolve_listen_addr(mode: ModeArg, port: u16) -> SocketAddr {
     };
     SocketAddr::new(ip, port)
 }
+
+/// Human-readable address an operator would type into a browser
+/// for the configured mode + port. For local mode we always show
+/// `http://localhost:{port}` rather than `127.0.0.1:{port}` because
+/// that's what the dashboard URL looks like in the Epic 17 spec.
+fn display_address(mode: ModeArg, port: u16) -> String {
+    match mode {
+        ModeArg::Local => format!("http://localhost:{port}"),
+        ModeArg::Remote => format!("http://0.0.0.0:{port}"),
+    }
+}
+
+/// Format the success banner printed after a background start.
+///
+/// Returned as a `String` (rather than printed directly) so the
+/// format is unit-testable without capturing stdout.
+pub fn format_started_banner(mode: ModeArg, port: u16, pid: u32) -> String {
+    let mode_label = match mode {
+        ModeArg::Local => "local",
+        ModeArg::Remote => "remote",
+    };
+    format!(
+        "✓ Agent Assembly gateway started\n  Mode:    {mode}\n  Address: {addr}\n  PID:     {pid}\n",
+        mode = mode_label,
+        addr = display_address(mode, port),
+        pid = pid,
+    )
+}
+
+/// Format the "already running" message printed when `aasm start`
+/// is called while a gateway is already accepting traffic.
+pub fn format_already_running_message(mode: ModeArg, port: u16, pid: u32) -> String {
+    format!(
+        "Gateway already running at {addr} (PID {pid}). Use 'aasm stop' first.",
+        addr = display_address(mode, port),
+        pid = pid,
+    )
+}
