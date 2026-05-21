@@ -236,8 +236,17 @@ impl PolicyCacheLike for RedisPolicyCache {
         })
     }
 
-    async fn set(&self, _doc: &PolicyDocument) {
-        // Filled in by a following commit (invalidate-then-SETEX).
+    async fn set(&self, doc: &PolicyDocument) {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(&doc.name);
+        // SET with EX (TTL in seconds). Best-effort — driver errors are
+        // logged at debug and otherwise swallowed; callers still see a
+        // consistent view through the authoritative store on cache miss.
+        let result: redis::RedisResult<()> = conn.set_ex(&key, &doc.bytes, self.ttl_secs).await;
+        if let Err(err) = result {
+            tracing::debug!(error = %err, key = %key, "redis policy cache set failed");
+        }
     }
 
     async fn invalidate(&self, _name: &str) {
