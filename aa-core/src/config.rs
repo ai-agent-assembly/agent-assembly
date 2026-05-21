@@ -42,6 +42,13 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// `AAASM_RETENTION_COLD_ACTION` was set to something other than
+    /// `drop` or `archive`.
+    #[error("invalid AAASM_RETENTION_COLD_ACTION value: '{raw}' (expected 'drop' or 'archive')")]
+    InvalidColdAction {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
