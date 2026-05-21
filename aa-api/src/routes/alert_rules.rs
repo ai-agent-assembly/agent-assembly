@@ -70,11 +70,6 @@ pub struct ListRulesParams {
 impl AlertRuleRequest {
     /// Convert the wire request into a domain [`AlertRule`] with empty
     /// id / timestamps — the store overwrites them.
-    ///
-    /// `dead_code` is allowed transiently — the first consumer
-    /// (`create_rule`) lands in the next commit and removes this
-    /// attribute.
-    #[allow(dead_code)]
     fn into_alert_rule(self) -> Result<AlertRule, ProblemDetail> {
         let metric = parse_metric(&self.metric)?;
         let operator = parse_operator(&self.operator)?;
@@ -98,7 +93,6 @@ impl AlertRuleRequest {
     }
 }
 
-#[allow(dead_code)]
 fn parse_metric(s: &str) -> Result<RuleMetric, ProblemDetail> {
     match s {
         "budget_spent_pct" => Ok(RuleMetric::BudgetSpentPct),
@@ -111,7 +105,6 @@ fn parse_metric(s: &str) -> Result<RuleMetric, ProblemDetail> {
     }
 }
 
-#[allow(dead_code)]
 fn parse_operator(s: &str) -> Result<RuleOperator, ProblemDetail> {
     match s {
         ">" => Ok(RuleOperator::Gt),
@@ -128,11 +121,6 @@ fn parse_operator(s: &str) -> Result<RuleOperator, ProblemDetail> {
 /// onto a 400 ProblemDetail, propagating the validation error's stable
 /// `error_code()` (`invalid_name`, `invalid_threshold`,
 /// `invalid_evaluation_window`, `destination_unknown`).
-///
-/// `dead_code` is allowed transiently — the first consumer
-/// (`create_rule`) lands in a following commit and removes this
-/// attribute.
-#[allow(dead_code)]
 fn validation_error_to_problem(err: AlertRuleValidationError) -> ProblemDetail {
     ProblemDetail::from_status(StatusCode::BAD_REQUEST)
         .with_detail(err.to_string())
@@ -143,11 +131,6 @@ fn validation_error_to_problem(err: AlertRuleValidationError) -> ProblemDetail {
 /// right HTTP status — 409 for name conflicts, 404 for unknown ids —
 /// while preserving the store's stable `error_code()`
 /// (`rule_name_conflict` or `rule_not_found`).
-///
-/// `dead_code` is allowed transiently — the first consumer
-/// (`create_rule`) lands in the next commit and removes this
-/// attribute.
-#[allow(dead_code)]
 fn store_error_to_problem(err: AlertRuleStoreError) -> ProblemDetail {
     match &err {
         AlertRuleStoreError::NameConflict { .. } => ProblemDetail::from_status(StatusCode::CONFLICT)
@@ -159,7 +142,6 @@ fn store_error_to_problem(err: AlertRuleStoreError) -> ProblemDetail {
     }
 }
 
-#[allow(dead_code)]
 fn parse_severity(s: &str) -> Result<RuleSeverity, ProblemDetail> {
     match s {
         "CRITICAL" => Ok(RuleSeverity::Critical),
@@ -197,6 +179,35 @@ pub async fn list_rules(
     // between fetches.
     rules.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     (StatusCode::OK, Json(rules))
+}
+
+/// Create a new alert rule.
+///
+/// Validates the request body against the destination registry and the
+/// per-metric range rules, then persists it with a server-assigned id
+/// and RFC 3339 `created_at` / `updated_at` timestamps. Returns the
+/// stored record. Surfaces `invalid_metric`, `invalid_threshold`,
+/// `destination_unknown`, or `rule_name_conflict` on rejection.
+#[utoipa::path(
+    post,
+    path = "/api/v1/alerts/rules",
+    request_body = AlertRuleRequest,
+    responses(
+        (status = 201, description = "Created rule", body = AlertRuleResponse),
+        (status = 400, description = "Validation failure (invalid_metric, invalid_threshold, destination_unknown, ...)"),
+        (status = 409, description = "rule_name_conflict")
+    ),
+    tag = "alert-rules"
+)]
+pub async fn create_rule(
+    Extension(state): Extension<AppState>,
+    Json(body): Json<AlertRuleRequest>,
+) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
+    let rule = body.into_alert_rule()?;
+    rule.validate(state.destination_registry.as_ref())
+        .map_err(validation_error_to_problem)?;
+    let created = state.alert_rule_store.create(rule).map_err(store_error_to_problem)?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 /// Build the 404 ProblemDetail returned by `get_rule`, `update_rule`,
