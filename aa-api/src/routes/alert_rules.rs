@@ -22,6 +22,7 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
+use crate::alerts::rules::store::AlertRuleStoreError;
 use crate::alerts::rules::types::{AlertRule, AlertRuleValidationError, RuleMetric, RuleOperator, RuleSeverity};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
@@ -136,6 +137,26 @@ fn validation_error_to_problem(err: AlertRuleValidationError) -> ProblemDetail {
     ProblemDetail::from_status(StatusCode::BAD_REQUEST)
         .with_detail(err.to_string())
         .with_error_code(err.error_code())
+}
+
+/// Map an `AlertRuleStoreError` onto a ProblemDetail with the
+/// right HTTP status — 409 for name conflicts, 404 for unknown ids —
+/// while preserving the store's stable `error_code()`
+/// (`rule_name_conflict` or `rule_not_found`).
+///
+/// `dead_code` is allowed transiently — the first consumer
+/// (`create_rule`) lands in the next commit and removes this
+/// attribute.
+#[allow(dead_code)]
+fn store_error_to_problem(err: AlertRuleStoreError) -> ProblemDetail {
+    match &err {
+        AlertRuleStoreError::NameConflict { .. } => ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail(err.to_string())
+            .with_error_code(err.error_code()),
+        AlertRuleStoreError::NotFound => ProblemDetail::from_status(StatusCode::NOT_FOUND)
+            .with_detail(err.to_string())
+            .with_error_code(err.error_code()),
+    }
 }
 
 #[allow(dead_code)]
