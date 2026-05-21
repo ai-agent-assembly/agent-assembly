@@ -97,4 +97,15 @@ mod tests {
             .await
             .expect("re-applying the same migrator must be a no-op");
     }
+
+    #[tokio::test]
+    async fn apply_creates_sqlx_migrations_tracking_table_on_sqlite() {
+        let pool = fresh_sqlite_pool().await;
+        apply(&GOOD_MIGRATOR, &pool).await.expect("apply ok");
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("_sqlx_migrations table must exist and be queryable");
+        assert!(applied >= 1, "expected at least one tracked migration, got {applied}");
+    }
 }
