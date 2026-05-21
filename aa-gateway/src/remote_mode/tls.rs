@@ -237,4 +237,16 @@ mod tests {
             other => panic!("expected KeyFileMissing, got {other:?}"),
         }
     }
+
+    #[test]
+    fn errors_when_cert_is_not_pem() {
+        let (_real_cert, key) = issue_cert_with_validity(-1, 365);
+        // Junk bytes that pass existence + read checks but fail PEM parse.
+        let junk = b"this is not a PEM-wrapped X.509 cert".to_vec();
+        let (_dir, cfg) = write_pair(&junk, &key);
+        match validate(&cfg).expect_err("expected error") {
+            TlsError::CertParse(_) => {}
+            other => panic!("expected CertParse, got {other:?}"),
+        }
+    }
 }
