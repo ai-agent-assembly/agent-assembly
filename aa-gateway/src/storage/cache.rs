@@ -175,7 +175,7 @@ pub fn policy_invalidation_pattern(name: &str) -> String {
 /// cloneable [`ConnectionManager`] (the redis-rs multiplexed handle) and the
 /// per-entry TTL pulled from [`RedisConfig::policy_cache_ttl_secs`].
 #[cfg(feature = "redis-cache")]
-#[allow(dead_code)] // `conn` is consumed by the `PolicyCacheLike` impl added next.
+#[allow(dead_code)] // `conn` and `ttl_secs` are wired up by the next get/set commits.
 pub struct RedisPolicyCache {
     conn: ConnectionManager,
     ttl_secs: u64,
@@ -208,6 +208,27 @@ impl RedisPolicyCache {
     #[cfg(test)]
     pub fn ttl_secs(&self) -> u64 {
         self.ttl_secs
+    }
+}
+
+#[cfg(feature = "redis-cache")]
+#[async_trait]
+impl PolicyCacheLike for RedisPolicyCache {
+    async fn get(&self, _name: &str) -> Option<PolicyDocument> {
+        // Filled in by the next commit (SCAN+GET).
+        None
+    }
+
+    async fn set(&self, _doc: &PolicyDocument) {
+        // Filled in by a following commit (invalidate-then-SETEX).
+    }
+
+    async fn invalidate(&self, _name: &str) {
+        // Filled in by a following commit (SCAN+DEL).
+    }
+
+    fn is_enabled(&self) -> bool {
+        true
     }
 }
 
