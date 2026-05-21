@@ -41,6 +41,28 @@ impl Default for RedisConfig {
     }
 }
 
+/// Number of hex characters retained from the SHA-256 digest when building a
+/// cache key. Sixty-four bits of entropy is overkill for collision avoidance
+/// across a single policy namespace and keeps the Redis key short.
+const POLICY_CACHE_HASH_HEX_LEN: usize = 16;
+
+/// Build the Redis key used to store a cached policy document.
+///
+/// The key is content-addressed: changing a single byte of `bytes` changes
+/// the hash slice and therefore the key, so a stale Redis entry can never
+/// serve an outdated policy document. The format is `policy:{name}:{hex}`,
+/// where `hex` is the first 16 hex characters of `sha2::Sha256(bytes)`.
+pub fn policy_cache_key(name: &str, bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(POLICY_CACHE_HASH_HEX_LEN);
+    for byte in digest.iter().take(POLICY_CACHE_HASH_HEX_LEN / 2) {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("policy:{name}:{hex}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
