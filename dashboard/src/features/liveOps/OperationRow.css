@@ -105,6 +105,15 @@
   color: var(--ok);
 }
 
+/* AAASM-1684: terminated is a neutral terminal state — the op is over and
+ * no further action is possible. Uses the muted-text palette so the chip
+ * reads as "informational, archived" rather than red/danger. */
+.op-row__chip--terminated {
+  background: var(--surface-subtle-bg);
+  border-color: var(--surface-card-border);
+  color: var(--text-muted);
+}
+
 .op-row__agent {
   color: var(--ink);
   font-weight: 500;
