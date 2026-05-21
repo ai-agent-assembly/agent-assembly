@@ -54,3 +54,16 @@ pub fn wait_for_ready(addr: SocketAddr, overall_timeout: Duration, poll_interval
         std::thread::sleep(poll_interval);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn probe_tcp_returns_true_against_open_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert!(probe_tcp(addr, Duration::from_millis(200)));
+    }
+}
