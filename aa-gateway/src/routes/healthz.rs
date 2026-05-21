@@ -77,6 +77,8 @@ pub async fn healthz(Extension(state): Extension<HealthzState>) -> Json<HealthzB
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -101,5 +103,30 @@ mod tests {
         assert_eq!(body.mode, "remote");
         assert_eq!(body.storage, "memory");
         assert_eq!(body.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn uptime_secs_is_monotonic_non_negative() {
+        // Build state with a started_at 5 seconds in the past so uptime is
+        // deterministic without needing tokio::time::sleep on the test path.
+        let state = HealthzState {
+            mode: "remote",
+            storage: "memory",
+            version: "0.0.1",
+            started_at: Instant::now() - Duration::from_secs(5),
+        };
+        let Json(first) = healthz(Extension(state.clone())).await;
+        let Json(second) = healthz(Extension(state)).await;
+        assert!(
+            first.uptime_secs >= 5,
+            "expected uptime ≥ 5s after backdating started_at, got {}",
+            first.uptime_secs
+        );
+        assert!(
+            second.uptime_secs >= first.uptime_secs,
+            "uptime must be monotonic non-decreasing: {} -> {}",
+            first.uptime_secs,
+            second.uptime_secs
+        );
     }
 }
