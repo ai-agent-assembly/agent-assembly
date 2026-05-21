@@ -9,13 +9,10 @@
 //! YAML loader; `cargo nextest run -p aa-core --all-features` enables it.
 
 #![cfg(feature = "serde")]
-// Imports below are consumed incrementally by the AC tests; the
-// allow is dropped in the final test commit on this Subtask.
-#![allow(unused_imports)]
 
 use std::path::PathBuf;
 
-use aa_core::config::{ColdAction, ConfigError, DeploymentMode, GatewayConfig, StorageBackendType};
+use aa_core::config::{ConfigError, DeploymentMode, GatewayConfig, StorageBackendType};
 
 /// AC #1 — `storage.backend: sqlite` and `postgres` parse correctly.
 #[test]
@@ -112,6 +109,26 @@ storage:
         .expect_err("cold_action = archive without archive_url must fail");
     assert!(matches!(err, ConfigError::ArchiveUrlRequired));
     assert_eq!(format!("{err}"), "archive_url is required when cold_action is archive",);
+}
+
+/// AC #6 — `warm_days <= hot_days` is a startup error with the
+/// documented message naming both values.
+#[test]
+fn warm_days_less_than_hot_days_fails_validation() {
+    // Use warm = hot to also catch the strict-inequality edge case.
+    let yaml = r#"
+storage:
+  retention:
+    hot_days: 60
+    warm_days: 30
+"#;
+    let cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
+    let err = cfg.validate().expect_err("warm_days < hot_days must fail validation");
+    // The {hot, warm} pair is the precise Story-AC message.
+    assert!(matches!(
+        err,
+        ConfigError::WarmDaysNotGreaterThanHotDays { hot: 60, warm: 30 }
+    ));
 }
 
 /// Tiny RAII guard for env-var manipulation in the AC tests.
