@@ -23,6 +23,18 @@ pub enum ConfigError {
     /// The YAML payload could not be deserialised into a `GatewayConfig`.
     #[error("failed to parse config YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    /// `AA_MODE` was set to something other than `local` or `remote`.
+    #[error("invalid AA_MODE value: '{raw}' (expected 'local' or 'remote')")]
+    InvalidMode {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
+    /// `AAASM_GATEWAY_PORT` was not a valid `u16`.
+    #[error("invalid AAASM_GATEWAY_PORT value: '{raw}' (expected u16)")]
+    InvalidPort {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
