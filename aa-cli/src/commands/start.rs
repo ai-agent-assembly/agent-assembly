@@ -237,4 +237,17 @@ mod tests {
             "Gateway already running at http://localhost:7391 (PID 12345). Use 'aasm stop' first."
         );
     }
+
+    #[test]
+    fn check_already_running_returns_none_when_pid_file_is_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        // No PID file and no listener => not running.
+        assert!(check_already_running(
+            &pid_file,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9),
+            Duration::from_millis(50)
+        )
+        .is_none());
+    }
 }
