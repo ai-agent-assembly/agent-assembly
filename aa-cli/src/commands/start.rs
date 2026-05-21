@@ -250,4 +250,20 @@ mod tests {
         )
         .is_none());
     }
+
+    #[test]
+    fn check_already_running_returns_some_when_pid_is_self_and_port_listens() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        let self_pid = std::process::id();
+        super::super::pidfile::write_pid(&pid_file, self_pid).unwrap();
+
+        // Bind an ephemeral listener to stand in for the gateway port.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let pid = check_already_running(&pid_file, addr, Duration::from_millis(200))
+            .expect("should report running when both pid and listener are live");
+        assert_eq!(pid, self_pid);
+    }
 }
