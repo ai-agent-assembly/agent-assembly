@@ -269,6 +269,11 @@ impl GatewayConfig {
                 _ => return Err(ConfigError::InvalidMode { raw }),
             };
         }
+        if let Some(raw) = get_env("AAASM_GATEWAY_PORT") {
+            let port: u16 = raw.parse().map_err(|_| ConfigError::InvalidPort { raw: raw.clone() })?;
+            self.local.port = port;
+            self.remote.listen_addr.set_port(port);
+        }
         Ok(())
     }
 }
