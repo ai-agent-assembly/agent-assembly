@@ -82,7 +82,10 @@ pub fn v1_router() -> Router {
             "/alerts/rules",
             get(alert_rules::list_rules).post(alert_rules::create_rule),
         )
-        .route("/alerts/rules/{id}", get(alert_rules::get_rule))
+        .route(
+            "/alerts/rules/{id}",
+            get(alert_rules::get_rule).put(alert_rules::update_rule),
+        )
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         // Alert destinations — AAASM-1388
