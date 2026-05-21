@@ -73,6 +73,10 @@ mod tests {
     /// `CREATE TABLE` statement.
     static GOOD_MIGRATOR: Migrator = sqlx::migrate!("./src/storage/test_fixtures/migrations/good");
 
+    /// Fixture migrator with intentionally invalid SQL — exercises the
+    /// runner's failure path.
+    static BAD_MIGRATOR: Migrator = sqlx::migrate!("./src/storage/test_fixtures/migrations/bad");
+
     async fn fresh_sqlite_pool() -> SqlitePool {
         SqlitePoolOptions::new()
             .max_connections(1)
@@ -107,5 +111,17 @@ mod tests {
             .await
             .expect("_sqlx_migrations table must exist and be queryable");
         assert!(applied >= 1, "expected at least one tracked migration, got {applied}");
+    }
+
+    #[tokio::test]
+    async fn apply_bad_returns_migration_failed_on_sqlite() {
+        let pool = fresh_sqlite_pool().await;
+        let err = apply(&BAD_MIGRATOR, &pool)
+            .await
+            .expect_err("apply must fail when a migration file contains invalid SQL");
+        assert!(
+            matches!(err, StorageError::MigrationFailed(_)),
+            "expected StorageError::MigrationFailed, got: {err:?}"
+        );
     }
 }
