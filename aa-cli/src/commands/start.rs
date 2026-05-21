@@ -17,7 +17,8 @@
 //! [`gw_probe`]: super::gw_probe
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Which deployment mode `aasm start` should hand off to.
 ///
@@ -108,4 +109,27 @@ pub fn format_already_running_message(mode: ModeArg, port: u16, pid: u32) -> Str
         addr = display_address(mode, port),
         pid = pid,
     )
+}
+
+/// Check whether a gateway is already running at `addr`.
+///
+/// Both conditions must hold:
+///
+/// 1. The PID file at `pid_file` resolves to a still-alive process.
+/// 2. A TCP probe of `addr` succeeds within `probe_timeout`.
+///
+/// Either condition on its own is ambiguous — a stale PID file
+/// can outlive a crashed gateway, and an open port without a PID
+/// file might belong to a different service. Both together give
+/// the operator a clear "this is our gateway, still running"
+/// signal.
+pub fn check_already_running(pid_file: &Path, addr: SocketAddr, probe_timeout: Duration) -> Option<u32> {
+    let pid = super::pidfile::read_pid(pid_file).ok().flatten()?;
+    if !super::pidfile::is_pid_alive(pid) {
+        return None;
+    }
+    if !super::gw_probe::probe_tcp(addr, probe_timeout) {
+        return None;
+    }
+    Some(pid)
 }
