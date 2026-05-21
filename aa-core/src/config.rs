@@ -1176,4 +1176,13 @@ agent:
         cfg.resolve_storage_backend();
         assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
     }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_storage_sqlite_path() {
+        let mut cfg = GatewayConfig::default();
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("~/.aasm/local.db"));
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("/srv/dev/bryant/.aasm/local.db"),);
+    }
 }
