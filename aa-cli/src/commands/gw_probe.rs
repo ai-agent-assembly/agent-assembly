@@ -66,4 +66,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         assert!(probe_tcp(addr, Duration::from_millis(200)));
     }
+
+    #[test]
+    fn probe_tcp_returns_false_when_nothing_is_listening() {
+        // Grab an ephemeral port and immediately release it. The
+        // kernel won't instantly hand the same port to another
+        // process, so the addr is reliably "nothing listens here"
+        // for the brief moment we probe it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        assert!(!probe_tcp(addr, Duration::from_millis(200)));
+    }
 }
