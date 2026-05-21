@@ -268,5 +268,12 @@ mod tests {
             cache.set(&doc).await;
             cache.invalidate("default").await;
         }
+
+        #[test]
+        fn from_config_default_redis_is_disabled() {
+            let cache = PolicyCache::from_config(&RedisConfig::default());
+            assert!(matches!(cache, PolicyCache::Disabled));
+            assert!(!cache.is_enabled());
+        }
     }
 }
