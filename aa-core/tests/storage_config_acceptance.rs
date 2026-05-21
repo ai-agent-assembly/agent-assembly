@@ -47,6 +47,18 @@ mode: local
     assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
 }
 
+/// AC #2 (continued) — backend defaults to `postgres` in remote mode when not set.
+#[test]
+fn defaults_to_postgres_in_remote_mode_when_unset() {
+    let yaml = r#"
+mode: remote
+"#;
+    let mut cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
+    cfg.resolve_storage_backend();
+    assert_eq!(cfg.mode, DeploymentMode::Remote);
+    assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+}
+
 /// Tiny RAII guard for env-var manipulation in the AC tests.
 ///
 /// `apply_env_overrides()` reads from `std::env::var`, which is
