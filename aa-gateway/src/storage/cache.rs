@@ -40,3 +40,21 @@ impl Default for RedisConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod config {
+        use super::*;
+
+        #[test]
+        fn default_is_off_posture() {
+            let cfg = RedisConfig::default();
+            assert!(!cfg.enabled, "cache must default to OFF");
+            assert!(cfg.url.is_none(), "no URL by default");
+            assert_eq!(cfg.policy_cache_ttl_secs, 30);
+            assert_eq!(cfg.max_connections, 10);
+        }
+    }
+}
