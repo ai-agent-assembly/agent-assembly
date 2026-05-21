@@ -137,3 +137,14 @@ async fn create_with_unknown_metric_returns_invalid_metric() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "invalid_metric");
 }
+
+#[tokio::test]
+async fn create_with_out_of_range_threshold_returns_invalid_threshold() {
+    let app = common::test_app();
+    let mut body = valid_rule_body();
+    body["threshold"] = json!(200);
+    let response = app.oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "invalid_threshold");
+}
