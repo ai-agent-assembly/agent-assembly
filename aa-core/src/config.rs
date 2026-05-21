@@ -561,6 +561,13 @@ impl GatewayConfig {
                 raw: raw.clone(),
             })?;
         }
+        if let Some(raw) = get_env("AAASM_RETENTION_COLD_ACTION") {
+            self.storage.retention.cold_action = match raw.as_str() {
+                "drop" => ColdAction::Drop,
+                "archive" => ColdAction::Archive,
+                _ => return Err(ConfigError::InvalidColdAction { raw }),
+            };
+        }
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
         if cert.is_some() || key.is_some() {
