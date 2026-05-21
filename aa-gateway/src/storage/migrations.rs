@@ -88,4 +88,13 @@ mod tests {
             .await
             .expect("apply must succeed on a fresh SQLite database");
     }
+
+    #[tokio::test]
+    async fn apply_is_idempotent_on_sqlite() {
+        let pool = fresh_sqlite_pool().await;
+        apply(&GOOD_MIGRATOR, &pool).await.expect("first apply ok");
+        apply(&GOOD_MIGRATOR, &pool)
+            .await
+            .expect("re-applying the same migrator must be a no-op");
+    }
 }
