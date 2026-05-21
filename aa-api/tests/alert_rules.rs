@@ -159,3 +159,12 @@ async fn create_with_unknown_destination_returns_destination_unknown() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "destination_unknown");
 }
+
+#[tokio::test]
+async fn get_unknown_id_returns_rule_not_found() {
+    let app = common::test_app();
+    let response = app.oneshot(get("/api/v1/alerts/rules/no-such-id")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "rule_not_found");
+}
