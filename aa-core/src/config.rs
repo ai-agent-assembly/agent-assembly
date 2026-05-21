@@ -480,14 +480,17 @@ impl GatewayConfig {
     }
 
     /// One-shot loader for `aasm start` and the gateway bootstrap path:
-    /// read `~/.aasm/config.yaml`, expand `~` in path fields, then apply
-    /// the `AA_MODE` / `AAASM_*` env-var overrides.
+    /// read `~/.aasm/config.yaml`, expand `~` in path fields, apply the
+    /// `AA_MODE` / `AAASM_*` env-var overrides, and finally
+    /// [`validate`](Self::validate) the result.
     ///
-    /// Returns the same `ConfigError` variants as the underlying steps.
+    /// Returns the same `ConfigError` variants as the underlying steps,
+    /// plus the validation errors from E18 S-H (AAASM-1739).
     pub fn load() -> Result<Self, ConfigError> {
         let mut cfg = Self::load_default_path()?;
         cfg.expand_paths();
         cfg.apply_env_overrides()?;
+        cfg.validate()?;
         Ok(cfg)
     }
 }
