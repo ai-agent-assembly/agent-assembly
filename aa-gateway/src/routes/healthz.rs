@@ -93,4 +93,13 @@ mod tests {
         assert_eq!(json["storage"], "memory");
         assert_eq!(json["uptime_secs"], 7);
     }
+
+    #[tokio::test]
+    async fn handler_returns_documented_body() {
+        let state = HealthzState::new("remote", "memory");
+        let Json(body) = healthz(Extension(state)).await;
+        assert_eq!(body.mode, "remote");
+        assert_eq!(body.storage, "memory");
+        assert_eq!(body.version, env!("CARGO_PKG_VERSION"));
+    }
 }
