@@ -89,7 +89,6 @@ impl SqliteBackend {
 /// When `path` does not start with `~`, it is returned unchanged. When the
 /// home directory cannot be determined, the original path is returned
 /// (mirroring most CLI tools' behaviour rather than failing).
-#[allow(dead_code)] // consumed by `SqliteBackend::open` in a follow-up commit
 fn expand_tilde(path: &Path) -> PathBuf {
     if let Ok(stripped) = path.strip_prefix("~") {
         if let Some(home) = dirs::home_dir() {
@@ -97,4 +96,18 @@ fn expand_tilde(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_leaves_non_tilde_path_unchanged() {
+        let absolute = Path::new("/tmp/sqlite-skeleton/db.sqlite");
+        assert_eq!(expand_tilde(absolute), PathBuf::from(absolute));
+
+        let relative = Path::new("data/db.sqlite");
+        assert_eq!(expand_tilde(relative), PathBuf::from("data/db.sqlite"));
+    }
 }
