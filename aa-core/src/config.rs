@@ -245,6 +245,43 @@ impl Default for TimescaleConfig {
     }
 }
 
+/// Connection pool and TimescaleDB knobs for the production Postgres
+/// `StorageBackend`.
+///
+/// `database_url` is `None` by default so YAML configs without an
+/// explicit URL fall back to the `AAASM_DATABASE_URL` env var (wired
+/// in the env-override Subtask, AAASM-1735). Pool sizing defaults
+/// match the spec's reference values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PostgresConfig {
+    /// PostgreSQL connection URL. Falls back to `AAASM_DATABASE_URL`
+    /// (env-override layer); leaving both unset is a startup error
+    /// when `storage.backend = Postgres`.
+    pub database_url: Option<String>,
+    /// Maximum sqlx connection-pool size. Default: `20`.
+    pub max_connections: u32,
+    /// Minimum sqlx connection-pool size kept warm. Default: `2`.
+    pub min_connections: u32,
+    /// Connection-establishment timeout in seconds. Default: `10`.
+    pub connect_timeout_secs: u64,
+    /// TimescaleDB-specific knobs.
+    pub timescaledb: TimescaleConfig,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            database_url: None,
+            max_connections: 20,
+            min_connections: 2,
+            connect_timeout_secs: 10,
+            timescaledb: TimescaleConfig::default(),
+        }
+    }
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
