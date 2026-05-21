@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sqlx::SqlitePool;
+
 /// Local SQLite backend configuration.
 ///
 /// Defined here as a minimal type so this Story (E18 S-B) can land
@@ -24,6 +26,16 @@ pub struct SqliteConfig {
     /// expanded to the current user's home directory. Parent directories
     /// are created on first open.
     pub path: PathBuf,
+}
+
+/// SQLite-backed implementation of [`StorageBackend`](super::backend::StorageBackend).
+///
+/// Concrete trait methods land in subsequent Epic-18 S-B sub-tasks; this
+/// struct currently exposes only the [`SqliteBackend::open`] constructor
+/// and an internal connection-pool handle.
+#[allow(dead_code)] // `pool` is read by trait-impl sub-tasks that follow
+pub struct SqliteBackend {
+    pool: SqlitePool,
 }
 
 /// Expand a leading `~` in `path` to the current user's home directory.
