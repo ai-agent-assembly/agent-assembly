@@ -70,6 +70,36 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_emits_alert_event_silence_on_bus() {
+    use aa_api::alerts::AlertEvent;
+    use std::time::Duration;
+
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    // Subscribe BEFORE the silence so the Fire event from `seed_alert`
+    // is in the past and the next event we see is the Silence one.
+    let mut rx = state.alert_store.subscribe();
+
+    let resp = post_silence(state.clone(), json!({ "alert_id": alert_id, "duration_seconds": 60 })).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let event = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+        .await
+        .expect("AlertEvent::Silence must arrive within 200 ms")
+        .expect("bus must deliver an event");
+
+    match event {
+        AlertEvent::Silence(stored) => {
+            assert_eq!(stored.id, alert_id, "event carries the suppressed alert id");
+            assert_eq!(stored.status, "suppressed");
+            assert_eq!(stored.prior_status.as_deref(), Some("unresolved"));
+        }
+        other => panic!("expected AlertEvent::Silence, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn silence_expiry_restores_prior_status() {
     use aa_api::alerts::silence_watcher;
     use chrono::{Duration as ChronoDuration, Utc};
