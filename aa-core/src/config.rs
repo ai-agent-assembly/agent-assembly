@@ -1139,4 +1139,16 @@ agent:
             ConfigError::WarmDaysNotGreaterThanHotDays { hot: 30, warm: 30 }
         ));
     }
+
+    #[test]
+    fn resolve_storage_backend_defaults_to_sqlite_in_local_mode() {
+        // Default mode is already Local; backend_explicit stays false
+        // since it's only flipped via YAML peek or AAASM_STORAGE_BACKEND.
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Local,
+            ..GatewayConfig::default()
+        };
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
+    }
 }
