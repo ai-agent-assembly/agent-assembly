@@ -2,6 +2,14 @@
 
 use super::retention::{ColdAction, RetentionPolicy};
 
+/// Reasons a [`RetentionConfig`] can be invalid at startup time.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RetentionConfigError {
+    /// `cold_action == Archive` was set but no `archive_url` was provided.
+    #[error("cold_action=archive requires archive_url to be set")]
+    MissingArchiveUrl,
+}
+
 /// Operator-configurable retention engine settings parsed from the
 /// `storage.retention` section of the gateway YAML (Story S-H wires the
 /// YAML parser; S-F owns the type itself).
