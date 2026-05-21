@@ -163,6 +163,18 @@ pub struct GatewayConfig {
     pub agent: AgentConnectConfig,
 }
 
+#[cfg(feature = "serde")]
+impl GatewayConfig {
+    /// Parse a `GatewayConfig` from a YAML string.
+    ///
+    /// Missing fields fall back to their documented defaults thanks to
+    /// the type-level `#[serde(default)]` attribute, so an empty
+    /// document (`""` or `"{}"`) deserialises to `Self::default()`.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
+        Ok(serde_yaml::from_str(yaml)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
