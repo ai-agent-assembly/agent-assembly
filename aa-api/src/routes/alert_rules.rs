@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
+use crate::alerts::rules::types::AlertRule;
+
 /// Wire shape for POST / PUT request bodies.
 ///
 /// Mirrors the Story's JSON example. Enum-shaped fields are accepted as
@@ -40,3 +42,6 @@ pub struct AlertRuleRequest {
     pub suppression_labels: HashMap<String, String>,
     pub enabled: bool,
 }
+
+/// Wire shape for response bodies — identical to [`AlertRule`].
+pub type AlertRuleResponse = AlertRule;
