@@ -70,6 +70,20 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_404_alert_not_found() {
+    let state = common::test_state();
+    // No alert seeded; use a syntactically valid but unrecorded ULID.
+    let resp = post_silence(
+        state,
+        json!({ "alert_id": "00000000000000000000000000", "duration_seconds": 3600 }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert!(body["detail"].as_str().unwrap_or("").starts_with("alert_not_found:"));
+}
+
+#[tokio::test]
 async fn silence_400_reason_too_long() {
     let state = common::test_state();
     let alert_id = seed_alert(&state);
