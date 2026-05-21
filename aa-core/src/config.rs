@@ -567,4 +567,16 @@ agent:
         assert!(msg.contains("AAASM_GATEWAY_PORT"));
         assert!(msg.contains("not-a-number"));
     }
+
+    #[test]
+    fn apply_env_overrides_database_and_redis_urls() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_DATABASE_URL", "postgres://aasm@db/aasm"),
+            ("AAASM_REDIS_URL", "redis://redis:6379"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://aasm@db/aasm"));
+        assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
+    }
 }
