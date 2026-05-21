@@ -1032,4 +1032,24 @@ agent:
             } if raw == "thirty"
         ));
     }
+
+    #[test]
+    fn validate_archive_without_url_fails_with_documented_message() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.cold_action = ColdAction::Archive;
+        cfg.storage.retention.archive_url = None;
+        let err = cfg
+            .validate()
+            .expect_err("cold_action = Archive without archive_url must fail");
+        assert!(matches!(err, ConfigError::ArchiveUrlRequired));
+        assert_eq!(format!("{err}"), "archive_url is required when cold_action is archive",);
+    }
+
+    #[test]
+    fn validate_archive_with_url_passes() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.cold_action = ColdAction::Archive;
+        cfg.storage.retention.archive_url = Some("s3://aasm-archive/".into());
+        cfg.validate().expect("archive + url must validate");
+    }
 }
