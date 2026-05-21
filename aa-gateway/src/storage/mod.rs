@@ -25,6 +25,7 @@
 pub mod agent;
 pub mod audit;
 pub mod backend;
+pub mod cache;
 pub mod error;
 pub mod health;
 pub mod metric;
