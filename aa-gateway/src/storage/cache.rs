@@ -102,5 +102,12 @@ mod tests {
             let b = policy_cache_key("default", b"version-1-body");
             assert_eq!(a, b);
         }
+
+        #[test]
+        fn changing_bytes_changes_key() {
+            let v1 = policy_cache_key("default", b"version-1-body");
+            let v2 = policy_cache_key("default", b"version-2-body");
+            assert_ne!(v1, v2, "content-addressing must shift the key");
+        }
     }
 }
