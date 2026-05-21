@@ -48,3 +48,63 @@ pub fn wait_for_exit(pid: u32, deadline: std::time::Duration) -> bool {
         std::thread::sleep(poll);
     }
 }
+
+/// Entry point for `aasm stop`.
+///
+/// Resolves the PID file, decides between four terminal states —
+/// no pid file, stale pid file, graceful SIGTERM, escalated SIGKILL —
+/// and always cleans up the PID file before returning so the next
+/// `aasm start` sees a clean slate.
+pub fn run(args: StopArgs) -> std::process::ExitCode {
+    use std::process::ExitCode;
+
+    let pid_file = match super::pidfile::pid_file_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("aasm stop: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let pid = match super::pidfile::read_pid(&pid_file) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            println!("No gateway running.");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("aasm stop: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if !super::pidfile::is_pid_alive(pid) {
+        // Stale PID — clean up the file and exit silently.
+        let _ = super::pidfile::remove_pid(&pid_file);
+        println!("No gateway running (stale pid file removed).");
+        return ExitCode::SUCCESS;
+    }
+
+    let timeout = std::time::Duration::from_secs(args.timeout);
+    if args.timeout > 0 {
+        // Graceful shutdown — SIGTERM, then poll for exit.
+        let _ = send_signal(pid, libc::SIGTERM);
+        if !wait_for_exit(pid, timeout) {
+            eprintln!(
+                "aasm stop: gateway PID {pid} did not exit within {}s; escalating to SIGKILL",
+                args.timeout,
+            );
+            let _ = send_signal(pid, libc::SIGKILL);
+            // Allow a brief window for the kernel to reap the process.
+            let _ = wait_for_exit(pid, std::time::Duration::from_secs(2));
+        }
+    } else {
+        // --timeout 0 → skip graceful shutdown entirely.
+        let _ = send_signal(pid, libc::SIGKILL);
+        let _ = wait_for_exit(pid, std::time::Duration::from_secs(2));
+    }
+
+    let _ = super::pidfile::remove_pid(&pid_file);
+    println!("Gateway stopped (PID {pid}).");
+    ExitCode::SUCCESS
+}
