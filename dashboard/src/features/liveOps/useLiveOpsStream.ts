@@ -211,6 +211,25 @@ export function useLiveOpsStream({
           const op = mapEvent(parsed)
           if (!op) return
           setOps((prev) => {
+            // ops_change events use a stable `op_id` so successive
+            // transitions for the same op merge into one row. If an
+            // existing entry matches, update it in place (preserving
+            // any opType/resource learned from an earlier violation
+            // event); otherwise treat it as a new row at the head.
+            if (parsed.event_type === 'ops_change') {
+              const idx = prev.findIndex((p) => p.id === op.id)
+              if (idx >= 0) {
+                const merged: LiveOperation = {
+                  ...prev[idx]!,
+                  status: op.status,
+                  startedAt: op.startedAt,
+                  agent: op.agent,
+                }
+                const next = prev.slice()
+                next[idx] = merged
+                return next
+              }
+            }
             const next = [op, ...prev]
             return next.length > maxOps ? next.slice(0, maxOps) : next
           })
