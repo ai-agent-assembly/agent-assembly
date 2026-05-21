@@ -98,9 +98,10 @@ tools:
 }
 
 #[tokio::test]
-async fn check_action_deny_leaves_op_pending_until_pr_h() {
-    // Deny path doesn't yet transition the op — that's PR-H. For now we
-    // assert the Pending entry exists; PR-H will assert Terminated here.
+async fn check_action_deny_transitions_op_to_terminated() {
+    // AAASM-1657: Deny now transitions the op Pending → Terminated.
+    // (PR-A originally left the op in Pending and deferred the transition
+    // to PR-H — this test was updated when PR-H landed.)
     let registry = Arc::new(OpsRegistry::new());
     let addr = start_server_with_ops(
         r#"
@@ -123,8 +124,8 @@ tools:
     assert_eq!(resp.decision, Decision::Deny as i32);
     let record = registry
         .get("trace-deny:span-1")
-        .expect("op should still be ingested on Deny — only the transition is deferred");
-    assert_eq!(record.state, OpState::Pending);
+        .expect("op should be ingested on Deny");
+    assert_eq!(record.state, OpState::Terminated);
 }
 
 #[tokio::test]
