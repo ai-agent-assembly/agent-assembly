@@ -22,7 +22,7 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use crate::alerts::rules::types::{AlertRule, RuleMetric, RuleOperator, RuleSeverity};
+use crate::alerts::rules::types::{AlertRule, AlertRuleValidationError, RuleMetric, RuleOperator, RuleSeverity};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -121,6 +121,21 @@ fn parse_operator(s: &str) -> Result<RuleOperator, ProblemDetail> {
             .with_detail(format!("unknown operator: {other}"))
             .with_error_code("invalid_operator")),
     }
+}
+
+/// Map an `AlertRuleValidationError` produced by `AlertRule::validate`
+/// onto a 400 ProblemDetail, propagating the validation error's stable
+/// `error_code()` (`invalid_name`, `invalid_threshold`,
+/// `invalid_evaluation_window`, `destination_unknown`).
+///
+/// `dead_code` is allowed transiently — the first consumer
+/// (`create_rule`) lands in a following commit and removes this
+/// attribute.
+#[allow(dead_code)]
+fn validation_error_to_problem(err: AlertRuleValidationError) -> ProblemDetail {
+    ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+        .with_detail(err.to_string())
+        .with_error_code(err.error_code())
 }
 
 #[allow(dead_code)]
