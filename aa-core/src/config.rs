@@ -400,6 +400,8 @@ pub struct GatewayConfig {
     pub remote: RemoteModeConfig,
     /// Settings the SDK FFI shim reads to dial the gateway.
     pub agent: AgentConnectConfig,
+    /// Durable-persistence configuration (Epic 18 — AAASM-1569).
+    pub storage: StorageConfig,
 }
 
 #[cfg(feature = "serde")]
