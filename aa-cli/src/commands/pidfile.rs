@@ -5,7 +5,7 @@
 //! `~/.aasm/gateway.pid`; tests inject a temp path via the explicit
 //! `&Path` arguments on each operation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Errors that can occur while interacting with the PID file.
 #[derive(Debug, thiserror::Error)]
@@ -31,4 +31,17 @@ pub enum PidFileError {
 pub fn pid_file_path() -> Result<PathBuf, PidFileError> {
     let home = dirs::home_dir().ok_or(PidFileError::NoHomeDir)?;
     Ok(home.join(".aasm").join("gateway.pid"))
+}
+
+/// Write `pid` to `path`, creating parent directories if needed.
+///
+/// Overwrites any existing file. The PID is written as ASCII
+/// decimal with a single trailing newline so the file is editor-
+/// and `cat`-friendly.
+pub fn write_pid(path: &Path, pid: u32) -> Result<(), PidFileError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{pid}\n"))?;
+    Ok(())
 }
