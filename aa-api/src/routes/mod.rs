@@ -3,6 +3,7 @@
 //! All endpoints are nested under `/api/v1/`.
 
 pub mod agents;
+pub mod alert_rules;
 pub mod alerts;
 pub mod approvals;
 pub mod audit;
@@ -75,6 +76,18 @@ pub fn v1_router() -> Router {
         // segment must come BEFORE /alerts/{id} so it isn't captured
         // as an id.
         .route("/alerts/silence", post(alerts::silence_alert))
+        // Alert-rule CRUD (AAASM-1386). Literal "rules" segment must
+        // also come BEFORE /alerts/{id} so it isn't captured as an id.
+        .route(
+            "/alerts/rules",
+            get(alert_rules::list_rules).post(alert_rules::create_rule),
+        )
+        .route(
+            "/alerts/rules/{id}",
+            get(alert_rules::get_rule)
+                .put(alert_rules::update_rule)
+                .delete(alert_rules::delete_rule),
+        )
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         // Alert destinations — AAASM-1388
