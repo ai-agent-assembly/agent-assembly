@@ -509,6 +509,7 @@ impl GatewayConfig {
         let mut cfg = Self::load_default_path()?;
         cfg.expand_paths();
         cfg.apply_env_overrides()?;
+        cfg.resolve_storage_backend();
         cfg.validate()?;
         Ok(cfg)
     }
