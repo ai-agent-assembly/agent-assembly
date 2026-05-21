@@ -257,5 +257,16 @@ mod tests {
             assert!(cache.get("default").await.is_none());
             assert!(cache.get("any-other-name").await.is_none());
         }
+
+        #[tokio::test]
+        async fn set_and_invalidate_do_not_panic() {
+            let cache = PolicyCache::Disabled;
+            let doc = PolicyDocument {
+                name: "default".into(),
+                bytes: b"any-body".to_vec(),
+            };
+            cache.set(&doc).await;
+            cache.invalidate("default").await;
+        }
     }
 }
