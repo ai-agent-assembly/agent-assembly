@@ -418,6 +418,17 @@ pub struct StorageConfig {
     pub redis: RedisConfig,
     /// Hot / warm / cold audit-event lifecycle policy.
     pub retention: RetentionConfig,
+    /// Internal marker — `true` iff `backend` was explicitly set in
+    /// YAML or via the `AAASM_STORAGE_BACKEND` env var. When `false`,
+    /// `GatewayConfig::resolve_storage_backend` infers the value from
+    /// the deployment mode (Local → Sqlite, Remote → Postgres).
+    ///
+    /// Marked `#[serde(skip)]` so it never appears in YAML and never
+    /// shows up in serialized output. Always `false` on
+    /// `Self::default()` and immediately after deserialization;
+    /// `from_yaml_str` patches it via a single-pass YAML peek.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) backend_explicit: bool,
 }
 
 /// Top-level gateway configuration loaded at startup.
@@ -448,8 +459,16 @@ impl GatewayConfig {
     /// Missing fields fall back to their documented defaults thanks to
     /// the type-level `#[serde(default)]` attribute, so an empty
     /// document (`""` or `"{}"`) deserialises to `Self::default()`.
+    ///
+    /// In addition to the structural parse, this peeks at the raw YAML
+    /// to determine whether `storage.backend` was set explicitly — used
+    /// by `resolve_storage_backend` (AAASM-1740) to know when to infer
+    /// the value from the deployment mode rather than overwrite an
+    /// operator-supplied choice.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
-        Ok(serde_yaml::from_str(yaml)?)
+        let mut cfg: Self = serde_yaml::from_str(yaml)?;
+        cfg.storage.backend_explicit = yaml_has_storage_backend(yaml);
+        Ok(cfg)
     }
 
     /// Load a `GatewayConfig` from a YAML file on disk.
@@ -524,6 +543,20 @@ fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
         Ok(stripped) => home.join(stripped),
         Err(_) => path.to_path_buf(),
     }
+}
+
+/// Peek at raw YAML to determine whether `storage.backend` was set
+/// explicitly. Returns `false` for invalid YAML — `from_yaml_str` will
+/// surface that as a `ConfigError::Yaml` further up the call chain.
+#[cfg(feature = "serde")]
+fn yaml_has_storage_backend(yaml: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return false;
+    };
+    value
+        .get("storage")
+        .and_then(|storage| storage.get("backend"))
+        .is_some()
 }
 
 impl GatewayConfig {
