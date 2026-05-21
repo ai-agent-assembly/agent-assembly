@@ -539,6 +539,13 @@ impl GatewayConfig {
             self.local.port = port;
             self.remote.listen_addr.set_port(port);
         }
+        if let Some(raw) = get_env("AAASM_STORAGE_BACKEND") {
+            self.storage.backend = match raw.as_str() {
+                "sqlite" => StorageBackendType::Sqlite,
+                "postgres" => StorageBackendType::Postgres,
+                _ => return Err(ConfigError::InvalidStorageBackend { raw }),
+            };
+        }
         if let Some(url) = get_env("AAASM_DATABASE_URL") {
             self.storage.postgres.database_url = Some(url);
         }
