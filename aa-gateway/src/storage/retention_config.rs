@@ -22,3 +22,18 @@ pub struct RetentionConfig {
     /// When true, log the work that would be performed without taking action.
     pub dry_run: bool,
 }
+
+impl Default for RetentionConfig {
+    /// Compliance-friendly defaults: hot=30d, warm=90d, cold=Drop,
+    /// schedule="0 3 * * *" (3am UTC daily), dry_run=false.
+    fn default() -> Self {
+        Self {
+            schedule: "0 3 * * *".to_string(),
+            hot_days: 30,
+            warm_days: 90,
+            cold_action: ColdAction::Drop,
+            archive_url: None,
+            dry_run: false,
+        }
+    }
+}
