@@ -1,6 +1,6 @@
 // Smoke tests for the refactored ApprovalsPage.
 // Comprehensive feature tests live in src/features/approvals/api.test.tsx.
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
@@ -35,6 +35,23 @@ function Wrapper({ children }: { children: React.ReactNode }) {
       </ToastProvider>
     </QueryClientProvider>
   )
+}
+
+function seededWrapper(approvals: Approval[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData<Approval[]>(['approvals'], approvals)
+  return {
+    client,
+    Wrapper({ children }: { children: React.ReactNode }) {
+      return (
+        <QueryClientProvider client={client}>
+          <ToastProvider>
+            <MemoryRouter>{children}</MemoryRouter>
+          </ToastProvider>
+        </QueryClientProvider>
+      )
+    },
+  }
 }
 
 const MOCK_APPROVAL: Approval = {
@@ -126,5 +143,39 @@ describe('ApprovalsPage', () => {
 
     fireEvent.click(screen.getByTestId('row-checkbox'))
     expect(screen.queryByTestId('approval-detail-row')).not.toBeInTheDocument()
+  })
+
+  it('moves an already-expired row to the Expired section on initial render', async () => {
+    const PAST = new Date(Date.now() - 60_000).toISOString()
+    const expiredApproval: Approval = { ...MOCK_APPROVAL, expires_at: PAST }
+    setupMocks([expiredApproval])
+    const { Wrapper: SeededWrapper, client } = seededWrapper([expiredApproval])
+
+    render(<ApprovalsPage />, { wrapper: SeededWrapper })
+
+    // The shared cache (the production source of truth for the active list)
+    // no longer contains the row; the expired cache holds it instead.
+    await waitFor(() => {
+      const active = client.getQueryData<Approval[]>(['approvals'])
+      expect(active).toEqual([])
+    })
+    expect(client.getQueryData<Approval[]>(['approvals', 'expired'])).toEqual([
+      { ...expiredApproval, status: 'expired' },
+    ])
+
+    // And the section UI reflects the same fact via its count badge.
+    expect(await screen.findByTestId('expired-count-badge')).toHaveTextContent('1')
+  })
+
+  it('reveals the expired row when the section is expanded', async () => {
+    const PAST = new Date(Date.now() - 60_000).toISOString()
+    const expiredApproval: Approval = { ...MOCK_APPROVAL, expires_at: PAST }
+    setupMocks([expiredApproval])
+    const { Wrapper: SeededWrapper } = seededWrapper([expiredApproval])
+
+    render(<ApprovalsPage />, { wrapper: SeededWrapper })
+    const toggle = await screen.findByTestId('expired-toggle')
+    act(() => { fireEvent.click(toggle) })
+    expect(screen.getAllByTestId('expired-row')).toHaveLength(1)
   })
 })
