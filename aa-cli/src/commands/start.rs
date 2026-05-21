@@ -16,6 +16,7 @@
 //! [`pidfile`]: super::pidfile
 //! [`gw_probe`]: super::gw_probe
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 /// Which deployment mode `aasm start` should hand off to.
@@ -54,4 +55,19 @@ pub struct StartArgs {
     /// Disable dashboard serving even in local mode.
     #[arg(long)]
     pub no_dashboard: bool,
+}
+
+/// Resolve the listen address from `mode` + `port`.
+///
+/// * **Local** binds to `127.0.0.1` — strictly loopback, no external
+///   reachability — matching the developer-laptop story in the Epic 17
+///   spec.
+/// * **Remote** binds to `0.0.0.0` so multiple machines can reach the
+///   control plane.
+pub fn resolve_listen_addr(mode: ModeArg, port: u16) -> SocketAddr {
+    let ip = match mode {
+        ModeArg::Local => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        ModeArg::Remote => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+    };
+    SocketAddr::new(ip, port)
 }
