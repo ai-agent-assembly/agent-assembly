@@ -14,6 +14,8 @@ use async_trait::async_trait;
 #[cfg(feature = "redis-cache")]
 use redis::aio::ConnectionManager;
 
+#[cfg(feature = "redis-cache")]
+use super::error::{StorageError, StorageResult};
 use super::policy::PolicyDocument;
 
 /// Behaviour every policy cache implementation must provide.
@@ -173,10 +175,40 @@ pub fn policy_invalidation_pattern(name: &str) -> String {
 /// cloneable [`ConnectionManager`] (the redis-rs multiplexed handle) and the
 /// per-entry TTL pulled from [`RedisConfig::policy_cache_ttl_secs`].
 #[cfg(feature = "redis-cache")]
-#[allow(dead_code)] // fields consumed by `connect` + `PolicyCacheLike` impls in the next commits
+#[allow(dead_code)] // `conn` is consumed by the `PolicyCacheLike` impl added next.
 pub struct RedisPolicyCache {
     conn: ConnectionManager,
     ttl_secs: u64,
+}
+
+#[cfg(feature = "redis-cache")]
+impl RedisPolicyCache {
+    /// Establish a Redis connection from `config` and wrap it in a
+    /// [`ConnectionManager`].
+    ///
+    /// Returns [`StorageError::ConnectionFailed`] when `config.url` is `None`
+    /// or the URL cannot be parsed, and when the connection manager cannot
+    /// complete its initial handshake.
+    pub async fn connect(config: &RedisConfig) -> StorageResult<Self> {
+        let url = config.url.as_deref().ok_or_else(|| {
+            StorageError::ConnectionFailed("storage.redis.url is required when redis.enabled = true".into())
+        })?;
+        let client = redis::Client::open(url).map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+        let conn = client
+            .get_connection_manager()
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+        Ok(Self {
+            conn,
+            ttl_secs: config.policy_cache_ttl_secs,
+        })
+    }
+
+    /// Expose the configured TTL — useful in tests and for debug introspection.
+    #[cfg(test)]
+    pub fn ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
 }
 
 #[cfg(test)]
