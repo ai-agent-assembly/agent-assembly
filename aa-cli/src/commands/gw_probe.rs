@@ -88,4 +88,23 @@ mod tests {
         wait_for_ready(addr, Duration::from_millis(500), Duration::from_millis(50))
             .expect("wait_for_ready should succeed when listener is up");
     }
+
+    #[test]
+    fn wait_for_ready_returns_timeout_when_nothing_listens() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let budget = Duration::from_millis(200);
+        let result = wait_for_ready(addr, budget, Duration::from_millis(50));
+        match result {
+            Err(ProbeError::Timeout { elapsed }) => {
+                assert!(
+                    elapsed >= budget,
+                    "elapsed {elapsed:?} should not be shorter than the budget {budget:?}",
+                );
+            }
+            other => panic!("expected Timeout error, got {other:?}"),
+        }
+    }
 }
