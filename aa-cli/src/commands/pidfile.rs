@@ -155,4 +155,18 @@ mod tests {
         // Calling again is still fine.
         remove_pid(&pid_file).expect("second call should also be a no-op");
     }
+
+    #[test]
+    fn is_pid_alive_recognises_current_process_and_rejects_obvious_dead_pid() {
+        // The test process itself is alive by construction.
+        let self_pid = std::process::id();
+        assert!(is_pid_alive(self_pid), "self PID must be reported alive");
+
+        // PID 0 is reserved by the kernel — `kill(0, 0)` targets the
+        // caller's process group, which is not a real liveness probe
+        // for an arbitrary PID. Use a near-`pid_t::MAX` value instead;
+        // no real process can hold it on modern Unix.
+        let unreachable = (libc::pid_t::MAX as u32).saturating_sub(1);
+        assert!(!is_pid_alive(unreachable), "PID {unreachable} should not be alive");
+    }
 }
