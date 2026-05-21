@@ -78,7 +78,9 @@ pub use capability::{
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
 
 #[cfg(feature = "std")]
-pub use config::{AgentConnectConfig, DeploymentMode, LocalModeConfig, RemoteModeConfig, TlsConfig};
+pub use config::{
+    AgentConnectConfig, ConfigError, DeploymentMode, GatewayConfig, LocalModeConfig, RemoteModeConfig, TlsConfig,
+};
 
 pub use topology::EdgeType;
 #[cfg(all(feature = "std", feature = "test-utils"))]
