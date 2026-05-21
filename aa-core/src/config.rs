@@ -156,6 +156,24 @@ impl Default for AgentConnectConfig {
     }
 }
 
+/// What to do with audit-event rows once they age past the `warm_days`
+/// boundary in [`RetentionConfig`].
+///
+/// `Drop` is the default — operators must explicitly opt into `Archive`
+/// **and** supply an `archive_url` (validation enforced at startup;
+/// tracked under E18 S-H / AAASM-1582).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum ColdAction {
+    /// Permanently delete cold-tier rows once they pass `warm_days`.
+    #[default]
+    Drop,
+    /// Upload cold-tier rows to the operator-configured `archive_url`
+    /// (S3 / GCS / etc.) and remove them from primary storage.
+    Archive,
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
