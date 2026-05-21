@@ -132,4 +132,19 @@ mod tests {
         let exit = run_with_pid_file(StopArgs { timeout: 5 }, &pid_file);
         assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
     }
+
+    #[test]
+    fn run_with_stale_pid_removes_file_and_returns_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        // A near-`pid_t::MAX` value is in nobody's PID space on modern Unix,
+        // mirroring the convention from pidfile's is_pid_alive test.
+        let dead_pid = (libc::pid_t::MAX as u32).saturating_sub(1);
+        super::super::pidfile::write_pid(&pid_file, dead_pid).unwrap();
+        assert!(pid_file.exists());
+
+        let exit = run_with_pid_file(StopArgs { timeout: 5 }, &pid_file);
+        assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
+        assert!(!pid_file.exists(), "stale pid file should be cleaned up");
+    }
 }
