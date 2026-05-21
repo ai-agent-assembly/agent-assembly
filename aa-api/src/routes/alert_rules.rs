@@ -15,10 +15,15 @@
 
 use std::collections::HashMap;
 
+use axum::extract::Query;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{Extension, Json};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::alerts::rules::types::AlertRule;
+use crate::state::AppState;
 
 /// Wire shape for POST / PUT request bodies.
 ///
@@ -58,4 +63,31 @@ pub struct ListRulesParams {
     /// Filter by the rule's `enabled` flag. Omit to return every rule.
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+/// List alert rules.
+///
+/// Returns every persisted [`AlertRule`] as a bare JSON array ordered
+/// by `created_at` then `id` so the dashboard's
+/// `useAlertRulesQuery` (AAASM-1075) can consume the response
+/// directly. Pass `?enabled=true|false` to restrict the response to
+/// the matching subset.
+#[utoipa::path(
+    get,
+    path = "/api/v1/alerts/rules",
+    params(ListRulesParams),
+    responses(
+        (status = 200, description = "Bare array of alert rules", body = Vec<AlertRuleResponse>)
+    ),
+    tag = "alert-rules"
+)]
+pub async fn list_rules(
+    Extension(state): Extension<AppState>,
+    Query(params): Query<ListRulesParams>,
+) -> impl IntoResponse {
+    let mut rules = state.alert_rule_store.list(params.enabled);
+    // Deterministic order so the dashboard table doesn't reshuffle
+    // between fetches.
+    rules.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    (StatusCode::OK, Json(rules))
 }
