@@ -45,6 +45,7 @@ sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", 
 tokio-util   = "0.7"
 parking_lot  = "0.12"
 utoipa       = { version = "5", features = ["axum_extras"] }
+axum         = "0.8"
 
 [dev-dependencies]
 criterion    = { version = "0.8", features = ["async_tokio"] }
