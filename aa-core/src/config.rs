@@ -28,3 +28,13 @@ pub enum DeploymentMode {
     /// PostgreSQL storage, TLS required for production.
     Remote,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_mode_default_is_local() {
+        assert_eq!(DeploymentMode::default(), DeploymentMode::Local);
+    }
+}
