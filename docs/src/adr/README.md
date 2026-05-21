@@ -8,3 +8,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 
 | ADR | Title | Status |
 | --- | --- | --- |
+| [0001](0001-storage-architecture.md) | Storage Architecture — SQLite (local) / PostgreSQL + TimescaleDB (production) | Accepted |
