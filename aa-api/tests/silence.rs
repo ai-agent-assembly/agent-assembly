@@ -68,3 +68,18 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
     assert_eq!(stored.status, "suppressed");
     assert_eq!(stored.prior_status.as_deref(), Some("unresolved"));
 }
+
+#[tokio::test]
+async fn silence_400_invalid_duration_zero() {
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    let resp = post_silence(state, json!({ "alert_id": alert_id, "duration_seconds": 0 })).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body["detail"].as_str().unwrap_or("").starts_with("invalid_duration:"),
+        "detail must carry invalid_duration code, got {:?}",
+        body["detail"]
+    );
+}
