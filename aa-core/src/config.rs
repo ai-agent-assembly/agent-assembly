@@ -926,4 +926,64 @@ agent:
         assert_eq!(s.retention.schedule, "0 3 * * *");
         assert!(!s.retention.dry_run);
     }
+
+    #[test]
+    fn apply_env_overrides_storage_matrix() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_STORAGE_BACKEND", "postgres"),
+            ("AAASM_DATABASE_URL", "postgres://aasm@prod/aasm"),
+            ("AAASM_REDIS_URL", "redis://prod:6379"),
+            ("AAASM_SQLITE_PATH", "/var/lib/aasm.db"),
+            ("AAASM_RETENTION_HOT_DAYS", "7"),
+            ("AAASM_RETENTION_COLD_ACTION", "archive"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+        assert_eq!(
+            cfg.storage.postgres.database_url.as_deref(),
+            Some("postgres://aasm@prod/aasm"),
+        );
+        assert_eq!(cfg.storage.redis.url.as_deref(), Some("redis://prod:6379"));
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("/var/lib/aasm.db"));
+        assert_eq!(cfg.storage.retention.hot_days, 7);
+        assert_eq!(cfg.storage.retention.cold_action, ColdAction::Archive);
+    }
+
+    #[test]
+    fn apply_env_overrides_storage_backend_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_STORAGE_BACKEND", "mysql")]))
+            .expect_err("unsupported backend must return Err");
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidStorageBackend { ref raw } if raw == "mysql"));
+        assert!(msg.contains("AAASM_STORAGE_BACKEND"));
+        assert!(msg.contains("mysql"));
+        assert!(msg.contains("sqlite") && msg.contains("postgres"));
+    }
+
+    #[test]
+    fn apply_env_overrides_cold_action_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_RETENTION_COLD_ACTION", "tombstone")]))
+            .expect_err("unsupported cold_action must return Err");
+        assert!(matches!(err, ConfigError::InvalidColdAction { ref raw } if raw == "tombstone"));
+    }
+
+    #[test]
+    fn apply_env_overrides_retention_hot_days_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_RETENTION_HOT_DAYS", "thirty")]))
+            .expect_err("non-numeric hot_days must return Err");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidUnsignedInt {
+                var: "AAASM_RETENTION_HOT_DAYS",
+                ref raw,
+            } if raw == "thirty"
+        ));
+    }
 }
