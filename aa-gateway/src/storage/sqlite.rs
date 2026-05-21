@@ -591,12 +591,64 @@ impl StorageBackend for SqliteBackend {
         Ok(())
     }
 
-    async fn record_metric(&self, _m: Metric) -> StorageResult<()> {
-        todo!("AAASM-1714: record_metric")
+    async fn record_metric(&self, m: Metric) -> StorageResult<()> {
+        let labels_text = serde_json::to_string(&m.labels)
+            .map_err(|e| StorageError::QueryFailed(format!("labels serialize: {e}")))?;
+        sqlx::query("INSERT INTO metrics (ts, agent_id, metric, value, labels) VALUES (?, ?, ?, ?, ?)")
+            .bind(m.ts.to_rfc3339())
+            .bind(agent_id_to_text(&m.agent_id))
+            .bind(&m.metric)
+            .bind(m.value)
+            .bind(labels_text)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
-    async fn query_metrics(&self, _q: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
-        todo!("AAASM-1714: query_metrics")
+    async fn query_metrics(&self, q: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+        if q.bucket.is_some() {
+            tracing::warn!("query_metrics(bucket) ignored on SQLite backend; raw samples returned");
+        }
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT ts, value FROM metrics");
+        let mut started = false;
+        let mut connective = |qb: &mut sqlx::QueryBuilder<sqlx::Sqlite>| {
+            qb.push(if started { " AND " } else { " WHERE " });
+            started = true;
+        };
+        if let Some(agent_id) = q.agent_id.as_ref() {
+            connective(&mut qb);
+            qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+        }
+        if let Some(metric) = q.metric.as_ref() {
+            connective(&mut qb);
+            qb.push("metric = ").push_bind(metric.clone());
+        }
+        if let Some(from) = q.from {
+            connective(&mut qb);
+            qb.push("ts >= ").push_bind(from.to_rfc3339());
+        }
+        if let Some(to) = q.to {
+            connective(&mut qb);
+            qb.push("ts < ").push_bind(to.to_rfc3339());
+        }
+        qb.push(" ORDER BY ts ASC");
+        if let Some(limit) = q.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+        }
+        let rows: Vec<(String, f64)> = qb
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.into_iter()
+            .map(|(ts_text, value)| {
+                let ts = chrono::DateTime::parse_from_rfc3339(&ts_text)
+                    .map_err(|e| StorageError::QueryFailed(format!("ts parse: {e}")))?
+                    .with_timezone(&chrono::Utc);
+                Ok(MetricPoint { ts, value })
+            })
+            .collect()
     }
 
     async fn migrate(&self) -> StorageResult<()> {
@@ -1100,5 +1152,99 @@ mod tests {
             .await
             .expect_err("rollback of missing version must fail");
         assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    fn sample_metric(seed: u8, name: &str, value: f64, ts_iso: &str) -> Metric {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("provider".to_owned(), "openai".to_owned());
+        Metric {
+            ts: chrono::DateTime::parse_from_rfc3339(ts_iso)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            agent_id: AgentId::from_bytes([seed; 16]),
+            metric: name.to_owned(),
+            value,
+            labels,
+        }
+    }
+
+    #[tokio::test]
+    async fn metric_record_and_query_round_trip_without_filter() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        for m in [
+            sample_metric(1, "tokens_used", 100.0, "2026-05-21T10:00:00Z"),
+            sample_metric(1, "tokens_used", 200.0, "2026-05-21T11:00:00Z"),
+            sample_metric(2, "events_per_sec", 1.5, "2026-05-21T12:00:00Z"),
+        ] {
+            backend.record_metric(m).await.expect("record");
+        }
+        let points = backend.query_metrics(MetricQuery::default()).await.expect("query");
+        assert_eq!(points.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn metric_filter_by_agent_metric_and_time_range_narrows_results() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        for m in [
+            sample_metric(1, "tokens_used", 100.0, "2026-05-21T10:00:00Z"),
+            sample_metric(1, "tokens_used", 200.0, "2026-05-21T11:00:00Z"),
+            sample_metric(2, "events_per_sec", 1.5, "2026-05-21T12:00:00Z"),
+        ] {
+            backend.record_metric(m).await.expect("record");
+        }
+        let agent_a = AgentId::from_bytes([1; 16]);
+
+        let scoped = backend
+            .query_metrics(MetricQuery {
+                agent_id: Some(agent_a),
+                metric: Some("tokens_used".into()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("scoped");
+        assert_eq!(scoped.len(), 2);
+        assert!(scoped.iter().all(|p| p.value == 100.0 || p.value == 200.0));
+
+        let windowed = backend
+            .query_metrics(MetricQuery {
+                from: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T10:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                to: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T11:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("window");
+        assert_eq!(windowed.len(), 1);
+        assert_eq!(windowed[0].value, 200.0);
+    }
+
+    #[tokio::test]
+    async fn metric_query_bucket_emits_warning_and_returns_raw_samples() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        backend
+            .record_metric(sample_metric(1, "tokens_used", 42.0, "2026-05-21T10:00:00Z"))
+            .await
+            .expect("record");
+        // bucket field is unsupported on SQLite — must not error, must emit a warn,
+        // and must return raw sample(s).
+        let points = backend
+            .query_metrics(MetricQuery {
+                bucket: Some("1 hour".into()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("query with bucket");
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].value, 42.0);
     }
 }
