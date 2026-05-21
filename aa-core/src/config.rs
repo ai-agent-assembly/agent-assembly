@@ -341,6 +341,25 @@ impl Default for RedisConfig {
     }
 }
 
+/// Which `StorageBackend` implementation the gateway should boot.
+///
+/// `Sqlite` is the documented default for local-dev mode; `Postgres`
+/// is required for any deployment that needs durability across gateway
+/// restarts at production scale. The actual mode-aware default is
+/// resolved by `GatewayConfig::resolve_storage_backend()` in Subtask
+/// AAASM-1740 — this enum's `Default = Sqlite` only matters when the
+/// resolver path is bypassed (e.g. direct `StorageConfig::default()`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum StorageBackendType {
+    /// Embedded SQLite database — single file, no external service.
+    #[default]
+    Sqlite,
+    /// PostgreSQL — optionally with TimescaleDB for hypertables.
+    Postgres,
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
