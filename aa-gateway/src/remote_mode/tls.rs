@@ -5,8 +5,12 @@
 //! startup error rather than a runtime TLS handshake failure that
 //! shows up only when the first client tries to connect.
 
-use std::path::PathBuf;
+use std::fs;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use aa_core::config::TlsConfig;
 use thiserror::Error;
 
 /// Outcome of a successful [`validate`] call — the cert parsed, but
@@ -30,6 +34,76 @@ pub enum TlsValidation {
         /// Whole days since `notAfter`.
         expired_days_ago: i64,
     },
+}
+
+/// Threshold below which a cert is reported as `ExpiringSoon`.
+const EXPIRING_SOON_DAYS: i64 = 30;
+
+/// Seconds in one day, used to convert between Unix-epoch seconds and
+/// whole-day deltas.
+const SECONDS_PER_DAY: i64 = 86_400;
+
+/// Validate a [`TlsConfig`] before binding the listener.
+///
+/// Steps, in order:
+///
+/// 1. `cert_file` and `key_file` exist on disk.
+/// 2. Both files are readable (open + read into memory).
+/// 3. The cert file decodes as PEM-wrapped X.509.
+/// 4. The leaf cert's `notAfter` is classified — `Ok` /
+///    `ExpiringSoon` (≤ 30 days) / `Expired` (in the past).
+///
+/// Returns `Err(TlsError)` for hard failures the gateway must surface
+/// before binding. Returns `Ok(TlsValidation::*)` when the cert parsed,
+/// leaving log-vs-fail policy for expiry warnings to the caller.
+pub fn validate(cfg: &TlsConfig) -> Result<TlsValidation, TlsError> {
+    if !cfg.cert_file.exists() {
+        return Err(TlsError::CertFileMissing(cfg.cert_file.clone()));
+    }
+    if !cfg.key_file.exists() {
+        return Err(TlsError::KeyFileMissing(cfg.key_file.clone()));
+    }
+
+    let cert_bytes = read_file(&cfg.cert_file)?;
+    // Key file is read purely as a readability check — handshake-time
+    // parsing happens in axum-server::tls_rustls when ST-3 binds.
+    let _key_bytes = read_file(&cfg.key_file)?;
+
+    let mut reader = BufReader::new(cert_bytes.as_slice());
+    let leaf_der = rustls_pemfile::certs(&mut reader)
+        .next()
+        .ok_or_else(|| TlsError::CertParse("no certificate found in PEM".to_string()))?
+        .map_err(|e| TlsError::CertParse(format!("pem decode: {e}")))?;
+
+    let (_, x509) =
+        x509_parser::parse_x509_certificate(&leaf_der).map_err(|e| TlsError::CertParse(format!("x509 decode: {e}")))?;
+
+    let not_after_secs = x509.validity().not_after.timestamp();
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let days_until = (not_after_secs - now_secs) / SECONDS_PER_DAY;
+
+    if days_until < 0 {
+        Ok(TlsValidation::Expired {
+            expired_days_ago: -days_until,
+        })
+    } else if days_until <= EXPIRING_SOON_DAYS {
+        Ok(TlsValidation::ExpiringSoon {
+            days_until_expiry: days_until,
+        })
+    } else {
+        Ok(TlsValidation::Ok)
+    }
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>, TlsError> {
+    fs::read(path).map_err(|source| TlsError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Hard failures that should stop gateway startup in remote-mode TLS.
