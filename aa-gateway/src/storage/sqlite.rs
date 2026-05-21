@@ -257,6 +257,80 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &
     }
 }
 
+/// Decode a single `agent_registry` row into an [`AgentRecord`].
+///
+/// Maps TEXT timestamps back to `DateTime<Utc>` and TEXT JSON metadata
+/// back to a `BTreeMap<String, String>`.
+fn row_to_agent_record(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AgentRecord> {
+    use sqlx::Row;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    let metadata_text: String = row
+        .try_get("metadata")
+        .map_err(|e| StorageError::QueryFailed(format!("metadata column: {e}")))?;
+    let metadata: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&metadata_text).map_err(|e| StorageError::QueryFailed(format!("metadata parse: {e}")))?;
+
+    let registered_at: String = row
+        .try_get("registered_at")
+        .map_err(|e| StorageError::QueryFailed(format!("registered_at column: {e}")))?;
+    let registered_at = chrono::DateTime::parse_from_rfc3339(&registered_at)
+        .map_err(|e| StorageError::QueryFailed(format!("registered_at parse: {e}")))?
+        .with_timezone(&chrono::Utc);
+
+    let last_seen_at: String = row
+        .try_get("last_seen_at")
+        .map_err(|e| StorageError::QueryFailed(format!("last_seen_at column: {e}")))?;
+    let last_seen_at = chrono::DateTime::parse_from_rfc3339(&last_seen_at)
+        .map_err(|e| StorageError::QueryFailed(format!("last_seen_at parse: {e}")))?
+        .with_timezone(&chrono::Utc);
+
+    Ok(AgentRecord {
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        org_id: row
+            .try_get("org_id")
+            .map_err(|e| StorageError::QueryFailed(format!("org_id column: {e}")))?,
+        metadata,
+        registered_at,
+        last_seen_at,
+        enforcement_mode: row
+            .try_get("enforcement_mode")
+            .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode column: {e}")))?,
+    })
+}
+
+/// Push the agent-registry WHERE clause derived from `filter` into `qb`.
+///
+/// Uses SQLite's JSON1 `json_extract` to perform the substring match on
+/// the metadata `name` key. Pushes nothing for an empty filter.
+fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &'q AgentFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(org_id) = filter.org_id.as_ref() {
+        connective(qb);
+        qb.push("org_id = ").push_bind(org_id.clone());
+    }
+    if let Some(name_contains) = filter.name_contains.as_ref() {
+        connective(qb);
+        qb.push("json_extract(metadata, '$.name') LIKE ")
+            .push_bind(format!("%{name_contains}%"));
+    }
+}
+
 /// Trait wiring. Concrete method bodies for each slice land in their own
 /// Epic-18 S-B sub-task; until then the unimplemented slices return
 /// `todo!("AAASM-…")` so the workspace compiles.
@@ -323,20 +397,70 @@ impl StorageBackend for SqliteBackend {
         u64::try_from(count).map_err(|e| StorageError::QueryFailed(format!("count overflow: {e}")))
     }
 
-    async fn upsert_agent(&self, _record: AgentRecord) -> StorageResult<()> {
-        todo!("AAASM-1708: upsert_agent")
+    async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
+        let metadata_text = serde_json::to_string(&record.metadata)
+            .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO agent_registry \
+             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(agent_id_to_text(&record.agent_id))
+        .bind(record.team_id)
+        .bind(record.org_id)
+        .bind(metadata_text)
+        .bind(record.registered_at.to_rfc3339())
+        .bind(record.last_seen_at.to_rfc3339())
+        .bind(record.enforcement_mode)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
     }
 
-    async fn get_agent(&self, _id: &AgentId) -> StorageResult<Option<AgentRecord>> {
-        todo!("AAASM-1708: get_agent")
+    async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        let row = sqlx::query(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode \
+             FROM agent_registry WHERE agent_id = ?",
+        )
+        .bind(agent_id_to_text(id))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        row.as_ref().map(row_to_agent_record).transpose()
     }
 
-    async fn list_agents(&self, _filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
-        todo!("AAASM-1708: list_agents")
+    async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
+             enforcement_mode FROM agent_registry",
+        );
+        push_agent_where(&mut qb, &filter);
+        qb.push(" ORDER BY agent_id");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+            if let Some(offset) = filter.offset {
+                qb.push(" OFFSET ").push_bind(i64::from(offset));
+            }
+        }
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.iter().map(row_to_agent_record).collect()
     }
 
-    async fn delete_agent(&self, _id: &AgentId) -> StorageResult<()> {
-        todo!("AAASM-1708: delete_agent")
+    async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
+        let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = ?")
+            .bind(agent_id_to_text(id))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(agent_id_to_text(id)));
+        }
+        Ok(())
     }
 
     async fn save_policy(&self, _doc: PolicyDocument) -> StorageResult<PolicyVersion> {
