@@ -273,3 +273,29 @@ pub async fn update_rule(
         .map_err(store_error_to_problem)?;
     Ok((StatusCode::OK, Json(updated)))
 }
+
+/// Delete an alert rule.
+///
+/// Returns `204 No Content` on success, or `rule_not_found` (404) when
+/// the id is unknown. Already-fired alerts derived from a deleted rule
+/// keep their snapshot so the alert detail view still works.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/alerts/rules/{id}",
+    params(("id" = String, Path, description = "Rule id assigned by the server")),
+    responses(
+        (status = 204, description = "Rule deleted"),
+        (status = 404, description = "rule_not_found")
+    ),
+    tag = "alert-rules"
+)]
+pub async fn delete_rule(
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ProblemDetail> {
+    if state.alert_rule_store.delete(&id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_found(&id))
+    }
+}
