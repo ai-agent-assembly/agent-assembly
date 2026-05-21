@@ -18,6 +18,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 /// Which deployment mode `aasm start` should hand off to.
@@ -132,4 +133,71 @@ pub fn check_already_running(pid_file: &Path, addr: SocketAddr, probe_timeout: D
         return None;
     }
     Some(pid)
+}
+
+/// Entry point for `aasm start`.
+///
+/// Orchestrates the four steps of a successful start:
+///
+/// 1. Resolve listen address from mode + port.
+/// 2. Bail out early if a gateway is already running at that addr.
+/// 3. Spawn `aa-gateway` (foreground or background, per `--foreground`).
+/// 4. In background mode, write the PID file and wait for the listener
+///    to come up before exiting with the success banner.
+///
+/// Returns `ExitCode::SUCCESS` on a normal start, idempotent
+/// "already running" path, or clean foreground exit. Returns
+/// `ExitCode::FAILURE` if the readiness probe times out or the
+/// spawn itself fails.
+pub fn run(args: StartArgs) -> ExitCode {
+    let addr = resolve_listen_addr(args.mode, args.port);
+    let pid_file = match super::pidfile::pid_file_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("aasm start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(pid) = check_already_running(&pid_file, addr, Duration::from_millis(200)) {
+        println!("{}", format_already_running_message(args.mode, args.port, pid));
+        return ExitCode::SUCCESS;
+    }
+
+    let mut cmd = Command::new("aa-gateway");
+    cmd.arg("--listen").arg(addr.to_string());
+
+    if args.foreground {
+        match cmd.status() {
+            Ok(status) if status.success() => ExitCode::SUCCESS,
+            Ok(_) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("aasm start: failed to exec aa-gateway: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    } else {
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("aasm start: failed to spawn aa-gateway: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let pid = child.id();
+        if let Err(e) = super::pidfile::write_pid(&pid_file, pid) {
+            eprintln!("aasm start: failed to write pid file: {e}");
+            return ExitCode::FAILURE;
+        }
+        match super::gw_probe::wait_for_ready(addr, Duration::from_secs(5), Duration::from_millis(100)) {
+            Ok(()) => {
+                println!("{}", format_started_banner(args.mode, args.port, pid));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("aasm start: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    }
 }
