@@ -59,6 +59,10 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// `storage.retention.cold_action = archive` was selected but no
+    /// `archive_url` was supplied (in YAML or via env var).
+    #[error("archive_url is required when cold_action is archive")]
+    ArchiveUrlRequired,
 }
 
 /// Which deployment topology the gateway should boot into.
