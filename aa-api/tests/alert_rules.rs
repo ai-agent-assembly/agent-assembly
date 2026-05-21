@@ -168,3 +168,22 @@ async fn get_unknown_id_returns_rule_not_found() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "rule_not_found");
 }
+
+#[tokio::test]
+async fn create_with_duplicate_name_returns_rule_name_conflict() {
+    let app = common::test_app();
+    let response = app
+        .clone()
+        .oneshot(post("/api/v1/alerts/rules", valid_rule_body()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = app
+        .oneshot(post("/api/v1/alerts/rules", valid_rule_body()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "rule_name_conflict");
+}
