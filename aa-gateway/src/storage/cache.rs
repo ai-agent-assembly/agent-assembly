@@ -28,3 +28,15 @@ pub struct RedisConfig {
     /// Upper bound on concurrent Redis connections held by the cache.
     pub max_connections: u32,
 }
+
+impl Default for RedisConfig {
+    /// OFF posture: cache disabled, no URL, 30-second TTL, 10-connection ceiling.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: None,
+            policy_cache_ttl_secs: 30,
+            max_connections: 10,
+        }
+    }
+}
