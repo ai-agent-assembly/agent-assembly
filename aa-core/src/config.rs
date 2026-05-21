@@ -532,6 +532,7 @@ impl GatewayConfig {
     /// directory — used by tests so the assertion is independent of `$HOME`.
     pub(crate) fn expand_paths_in(&mut self, home: &std::path::Path) {
         self.local.storage_path = expand_tilde(&self.local.storage_path, home);
+        self.storage.sqlite.path = expand_tilde(&self.storage.sqlite.path, home);
         if let Some(tls) = &mut self.remote.tls {
             tls.cert_file = expand_tilde(&tls.cert_file, home);
             tls.key_file = expand_tilde(&tls.key_file, home);
