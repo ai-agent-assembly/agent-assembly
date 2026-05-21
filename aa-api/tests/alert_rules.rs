@@ -148,3 +148,14 @@ async fn create_with_out_of_range_threshold_returns_invalid_threshold() {
     let problem = read_json(response).await;
     assert_eq!(problem["error_code"], "invalid_threshold");
 }
+
+#[tokio::test]
+async fn create_with_unknown_destination_returns_destination_unknown() {
+    let app = common::test_app();
+    let mut body = valid_rule_body();
+    body["destinationIds"] = json!(["does-not-exist"]);
+    let response = app.oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let problem = read_json(response).await;
+    assert_eq!(problem["error_code"], "destination_unknown");
+}
