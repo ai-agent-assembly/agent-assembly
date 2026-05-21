@@ -63,6 +63,16 @@ pub fn policy_cache_key(name: &str, bytes: &[u8]) -> String {
     format!("policy:{name}:{hex}")
 }
 
+/// Build the Redis `SCAN MATCH` pattern that targets every cached version of
+/// `name`, regardless of content hash.
+///
+/// Used by `PolicyCache::invalidate` (Epic-18 S-G sub-task 4) to evict every
+/// historical entry for a policy in one sweep — there is no need to know the
+/// previous content hash.
+pub fn policy_invalidation_pattern(name: &str) -> String {
+    format!("policy:{name}:*")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
