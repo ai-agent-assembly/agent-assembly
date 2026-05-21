@@ -212,4 +212,11 @@ mod tests {
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(addr.port(), 7391);
     }
+
+    #[test]
+    fn resolve_listen_addr_remote_binds_unspecified() {
+        let addr = resolve_listen_addr(ModeArg::Remote, 7391);
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(addr.port(), 7391);
+    }
 }
