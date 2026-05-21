@@ -17,6 +17,14 @@ service PolicyService {
   // BatchCheck pre-warms the policy cache for a set of anticipated actions.
   // Called at agent startup or when entering a new task context.
   rpc BatchCheck(BatchCheckRequest) returns (BatchCheckResponse);
+
+  // OpControlStream is the gateway → SDK push channel for op-lifecycle
+  // signals (pause / resume / terminate). The SDK opens the stream once
+  // per agent process at startup; the gateway pushes one OpControlMessage
+  // per OpsRegistry transition matching the subscriber's agent_id. See
+  // AAASM-1653 (PR-D of AAASM-1422); SDK-side consumers ship in PR-E
+  // (Python), PR-F (Node), and PR-G (Go).
+  rpc OpControlStream(OpControlSubscribeRequest) returns (stream OpControlMessage);
 }
 
 // ── Check ─────────────────────────────────────────────────────────────────────
