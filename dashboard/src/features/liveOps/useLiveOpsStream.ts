@@ -68,7 +68,7 @@ function buildWsUrl(): string {
   const token =
     typeof localStorage !== 'undefined' ? localStorage.getItem('aa_token') : null
   const query = [
-    'types=violation',
+    'types=violation,ops_change',
     token ? `token=${encodeURIComponent(token)}` : '',
   ]
     .filter(Boolean)
