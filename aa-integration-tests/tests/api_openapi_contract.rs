@@ -45,7 +45,7 @@ fn load_spec() -> Value {
     serde_yaml::from_str(&yaml).expect("openapi/v1.yaml must be valid YAML")
 }
 
-// ── TC-1: spec file loads and has 45 paths ───────────────────────────────────
+// ── TC-1: spec file loads and has 46 paths ───────────────────────────────────
 
 #[test]
 fn openapi_spec_loads_without_errors() {
@@ -60,8 +60,8 @@ fn openapi_spec_loads_without_errors() {
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
     assert_eq!(
-        path_count, 45,
-        "openapi/v1.yaml must declare exactly 45 paths, found {path_count}"
+        path_count, 46,
+        "openapi/v1.yaml must declare exactly 46 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -105,6 +105,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/alerts/destinations",
         "/api/v1/alerts/destinations/{id}",
         "/api/v1/alerts/destinations/{id}/test",
+        "/api/v1/alerts/silence",
         "/api/v1/alerts/ws",
         "/api/v1/alerts/{id}",
         "/api/v1/alerts/{id}/resolve",

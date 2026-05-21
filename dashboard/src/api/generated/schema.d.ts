@@ -316,6 +316,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/silence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/alerts/silence` — silence an active alert for a
+         *     configurable duration (AAASM-1387 / AAASM-1648).
+         * @description Validates the body, flips the target alert's status to
+         *     `"suppressed"` via [`AlertStore::suppress`](crate::alerts::AlertStore::suppress),
+         *     and records a [`SilenceRecord`] in the [`SilenceStore`](crate::alerts::silence_store::SilenceStore).
+         *     The silence-expiry watcher (AAASM-1646) restores the alert when
+         *     `expires_at` is reached.
+         *
+         *     `created_by` is resolved from the authenticated caller
+         *     (`AuthenticatedCaller.key_id`); under `AuthMode::Off` this is the
+         *     bypass principal `"__bypass__"`.
+         *
+         *     ## Errors
+         *
+         *     | Status | Code | Trigger |
+         *     |---|---|---|
+         *     | 400 | `invalid_duration` | `duration_seconds == 0` or `> 604_800` |
+         *     | 400 | `reason_too_long` | `reason.len() > 500` |
+         *     | 404 | `alert_not_found` | `alert_id` is not in `AlertStore` |
+         *     | 409 | `alert_already_silenced` | an active silence exists for `alert_id` |
+         */
+        post: operations["silence_alert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/ws": {
         parameters: {
             query?: never;
@@ -2405,6 +2443,53 @@ export interface components {
             /** @description Optional free-text reason captured at silence creation time. */
             reason?: string | null;
         };
+        /** @description Request body for `POST /api/v1/alerts/silence` (AAASM-1387 / AAASM-1648). */
+        SilenceAlertRequest: {
+            /** @description ULID of the alert to silence. */
+            alert_id: string;
+            /**
+             * Format: int32
+             * @description Duration of the silence window in seconds. Must be > 0 and
+             *     ≤ 604_800 (7 days). Validation lives in the handler and returns
+             *     HTTP 400 `invalid_duration` on violation.
+             */
+            duration_seconds: number;
+            /**
+             * @description Optional free-text note recorded on the silence (max 500 chars).
+             *     Returns HTTP 400 `reason_too_long` when oversize.
+             */
+            reason?: string | null;
+        };
+        /**
+         * @description Response body for `POST /api/v1/alerts/silence` (AAASM-1387). Wire
+         *     shape matches the spec: silence identifier is exposed as `silence_id`
+         *     (the in-memory [`SilenceRecord`] uses `id` internally; the conversion
+         *     renames on the way out).
+         */
+        SilenceResponse: {
+            /** @description ULID of the suppressed alert. */
+            alert_id: string;
+            /**
+             * @description Stable identifier of the principal that created the silence
+             *     (API-key id or JWT subject, per `AuthenticatedCaller.key_id`).
+             */
+            created_by: string;
+            /**
+             * @description ISO 8601 timestamp at which the silence expires; the
+             *     `silence_watcher` (AAASM-1646) restores the alert at or shortly
+             *     after this instant.
+             */
+            expires_at: string;
+            /**
+             * @description Free-text reason captured at silence creation time. Omitted in
+             *     the response when no reason was supplied.
+             */
+            reason?: string | null;
+            /** @description ULID identifier of the silence record. */
+            silence_id: string;
+            /** @description ISO 8601 timestamp at which the silence took effect. */
+            starts_at: string;
+        };
         /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
         SubtreeBurnResponse: {
             /** @description Hex-encoded root agent ID. */
@@ -3424,6 +3509,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectorFailedBody"];
+                };
+            };
+        };
+    };
+    silence_alert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Silence parameters */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SilenceAlertRequest"];
+            };
+        };
+        responses: {
+            /** @description Silence applied */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SilenceResponse"];
+                };
+            };
+            /** @description Invalid request (`invalid_duration` or `reason_too_long`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Alert not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Alert already silenced */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
         };

@@ -3,11 +3,15 @@
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use ulid::Ulid;
 use utoipa::ToSchema;
 
 use crate::alerts::detail::{RoutingLogEntry, RuleSnapshot, Silence};
+use crate::alerts::silence::SilenceRecord;
 use crate::alerts::StoredAlert;
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -172,6 +176,161 @@ pub struct ResolveAlertRequest {
     pub reason: Option<String>,
 }
 
+/// Request body for `POST /api/v1/alerts/silence` (AAASM-1387 / AAASM-1648).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SilenceAlertRequest {
+    /// ULID of the alert to silence.
+    pub alert_id: String,
+    /// Duration of the silence window in seconds. Must be > 0 and
+    /// ≤ 604_800 (7 days). Validation lives in the handler and returns
+    /// HTTP 400 `invalid_duration` on violation.
+    pub duration_seconds: u32,
+    /// Optional free-text note recorded on the silence (max 500 chars).
+    /// Returns HTTP 400 `reason_too_long` when oversize.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Maximum allowed silence duration — 7 days, per AAASM-1387 spec.
+const MAX_SILENCE_DURATION_SECS: u32 = 604_800;
+/// Maximum allowed length of the optional silence `reason` field.
+const MAX_SILENCE_REASON_LEN: usize = 500;
+
+/// Response body for `POST /api/v1/alerts/silence` (AAASM-1387). Wire
+/// shape matches the spec: silence identifier is exposed as `silence_id`
+/// (the in-memory [`SilenceRecord`] uses `id` internally; the conversion
+/// renames on the way out).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SilenceResponse {
+    /// ULID identifier of the silence record.
+    pub silence_id: String,
+    /// ULID of the suppressed alert.
+    pub alert_id: String,
+    /// ISO 8601 timestamp at which the silence took effect.
+    pub starts_at: String,
+    /// ISO 8601 timestamp at which the silence expires; the
+    /// `silence_watcher` (AAASM-1646) restores the alert at or shortly
+    /// after this instant.
+    pub expires_at: String,
+    /// Free-text reason captured at silence creation time. Omitted in
+    /// the response when no reason was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Stable identifier of the principal that created the silence
+    /// (API-key id or JWT subject, per `AuthenticatedCaller.key_id`).
+    pub created_by: String,
+}
+
+impl From<SilenceRecord> for SilenceResponse {
+    fn from(record: SilenceRecord) -> Self {
+        SilenceResponse {
+            silence_id: record.id,
+            alert_id: record.alert_id,
+            starts_at: record.starts_at,
+            expires_at: record.expires_at,
+            reason: record.reason,
+            created_by: record.created_by,
+        }
+    }
+}
+
+/// Validate a [`SilenceAlertRequest`] against the AAASM-1387 spec.
+///
+/// Returns the appropriate RFC 7807 `ProblemDetail` on the first failure:
+/// * `400 invalid_duration` when `duration_seconds` is 0 or exceeds the
+///   7-day cap.
+/// * `400 reason_too_long` when `reason.len() > 500`.
+///
+/// The `detail` field encodes the structured error code as a prefix
+/// (e.g. `"invalid_duration: ..."`). When AAASM-1618 lands its
+/// `error_code` field on `ProblemDetail`, this helper should be updated
+/// to populate it directly.
+fn validate_silence_request(req: &SilenceAlertRequest) -> Result<(), ProblemDetail> {
+    if req.duration_seconds == 0 || req.duration_seconds > MAX_SILENCE_DURATION_SECS {
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+            "invalid_duration: duration_seconds must be greater than 0 and at most {MAX_SILENCE_DURATION_SECS}"
+        )));
+    }
+    if let Some(reason) = req.reason.as_ref() {
+        if reason.len() > MAX_SILENCE_REASON_LEN {
+            return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+                "reason_too_long: reason exceeds {MAX_SILENCE_REASON_LEN} character limit"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod silence_validation_tests {
+    use super::*;
+
+    fn request(duration: u32, reason: Option<&str>) -> SilenceAlertRequest {
+        SilenceAlertRequest {
+            alert_id: "01HX0000000000000000000000".to_string(),
+            duration_seconds: duration,
+            reason: reason.map(String::from),
+        }
+    }
+
+    #[test]
+    fn happy_path_passes() {
+        assert!(validate_silence_request(&request(3600, Some("ack"))).is_ok());
+        assert!(
+            validate_silence_request(&request(1, None)).is_ok(),
+            "1s minimum is allowed"
+        );
+        assert!(
+            validate_silence_request(&request(MAX_SILENCE_DURATION_SECS, None)).is_ok(),
+            "exact 7d boundary is allowed"
+        );
+    }
+
+    #[test]
+    fn zero_duration_is_invalid_duration() {
+        let err = validate_silence_request(&request(0, None)).unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(
+            err.detail.as_deref().unwrap_or("").starts_with("invalid_duration:"),
+            "detail must carry the invalid_duration code: {:?}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn over_seven_days_is_invalid_duration() {
+        let err = validate_silence_request(&request(MAX_SILENCE_DURATION_SECS + 1, None)).unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(err.detail.as_deref().unwrap_or("").starts_with("invalid_duration:"));
+    }
+
+    #[test]
+    fn reason_over_500_chars_is_reason_too_long() {
+        let long = "x".repeat(MAX_SILENCE_REASON_LEN + 1);
+        let err = validate_silence_request(&request(3600, Some(&long))).unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(
+            err.detail.as_deref().unwrap_or("").starts_with("reason_too_long:"),
+            "detail must carry the reason_too_long code: {:?}",
+            err.detail
+        );
+    }
+
+    #[test]
+    fn reason_exactly_500_chars_is_allowed() {
+        let exact = "y".repeat(MAX_SILENCE_REASON_LEN);
+        assert!(validate_silence_request(&request(3600, Some(&exact))).is_ok());
+    }
+
+    #[test]
+    fn duration_check_runs_before_reason_check() {
+        // Both invalid; spec says duration is checked first.
+        let long = "z".repeat(MAX_SILENCE_REASON_LEN + 1);
+        let err = validate_silence_request(&request(0, Some(&long))).unwrap_err();
+        assert!(err.detail.as_deref().unwrap_or("").starts_with("invalid_duration:"));
+    }
+}
+
 /// JSON representation of a governance alert.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AlertResponse {
@@ -296,4 +455,77 @@ pub async fn resolve_alert(
     })?;
 
     Ok((StatusCode::OK, Json(alert_response_from_stored(stored))))
+}
+
+/// `POST /api/v1/alerts/silence` — silence an active alert for a
+/// configurable duration (AAASM-1387 / AAASM-1648).
+///
+/// Validates the body, flips the target alert's status to
+/// `"suppressed"` via [`AlertStore::suppress`](crate::alerts::AlertStore::suppress),
+/// and records a [`SilenceRecord`] in the [`SilenceStore`](crate::alerts::silence_store::SilenceStore).
+/// The silence-expiry watcher (AAASM-1646) restores the alert when
+/// `expires_at` is reached.
+///
+/// `created_by` is resolved from the authenticated caller
+/// (`AuthenticatedCaller.key_id`); under `AuthMode::Off` this is the
+/// bypass principal `"__bypass__"`.
+///
+/// ## Errors
+///
+/// | Status | Code | Trigger |
+/// |---|---|---|
+/// | 400 | `invalid_duration` | `duration_seconds == 0` or `> 604_800` |
+/// | 400 | `reason_too_long` | `reason.len() > 500` |
+/// | 404 | `alert_not_found` | `alert_id` is not in `AlertStore` |
+/// | 409 | `alert_already_silenced` | an active silence exists for `alert_id` |
+#[utoipa::path(
+    post,
+    path = "/api/v1/alerts/silence",
+    request_body(content = SilenceAlertRequest, description = "Silence parameters"),
+    responses(
+        (status = 201, description = "Silence applied", body = SilenceResponse),
+        (status = 400, description = "Invalid request (`invalid_duration` or `reason_too_long`)", body = ProblemDetail),
+        (status = 404, description = "Alert not found", body = ProblemDetail),
+        (status = 409, description = "Alert already silenced", body = ProblemDetail),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "alerts"
+)]
+pub async fn silence_alert(
+    caller: AuthenticatedCaller,
+    Extension(state): Extension<AppState>,
+    Json(req): Json<SilenceAlertRequest>,
+) -> Result<(StatusCode, Json<SilenceResponse>), ProblemDetail> {
+    validate_silence_request(&req)?;
+
+    if state.alert_store.get_by_id(&req.alert_id).is_none() {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("alert_not_found: {}", req.alert_id))
+        );
+    }
+
+    let now = Utc::now();
+    if state.silence_store.get_active_for_alert(&req.alert_id, now).is_some() {
+        return Err(ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail(format!("alert_already_silenced: {}", req.alert_id)));
+    }
+
+    let record = SilenceRecord {
+        id: Ulid::new().to_string(),
+        alert_id: req.alert_id.clone(),
+        starts_at: now.to_rfc3339(),
+        expires_at: (now + chrono::Duration::seconds(i64::from(req.duration_seconds))).to_rfc3339(),
+        reason: req.reason,
+        created_by: caller.key_id,
+    };
+    state.silence_store.insert(record.clone());
+    // suppress() returns None if the alert was already suppressed, but we
+    // checked the SilenceStore above so this should always succeed; tolerate
+    // a race by treating it as the same 409 condition.
+    if state.alert_store.suppress(&req.alert_id).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail(format!("alert_already_silenced: {}", req.alert_id)));
+    }
+
+    Ok((StatusCode::CREATED, Json(SilenceResponse::from(record))))
 }

@@ -593,6 +593,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectorFailedBody'
+  /api/v1/alerts/silence:
+    post:
+      tags:
+      - alerts
+      summary: |-
+        `POST /api/v1/alerts/silence` — silence an active alert for a
+        configurable duration (AAASM-1387 / AAASM-1648).
+      description: |-
+        Validates the body, flips the target alert's status to
+        `"suppressed"` via [`AlertStore::suppress`](crate::alerts::AlertStore::suppress),
+        and records a [`SilenceRecord`] in the [`SilenceStore`](crate::alerts::silence_store::SilenceStore).
+        The silence-expiry watcher (AAASM-1646) restores the alert when
+        `expires_at` is reached.
+
+        `created_by` is resolved from the authenticated caller
+        (`AuthenticatedCaller.key_id`); under `AuthMode::Off` this is the
+        bypass principal `"__bypass__"`.
+
+        ## Errors
+
+        | Status | Code | Trigger |
+        |---|---|---|
+        | 400 | `invalid_duration` | `duration_seconds == 0` or `> 604_800` |
+        | 400 | `reason_too_long` | `reason.len() > 500` |
+        | 404 | `alert_not_found` | `alert_id` is not in `AlertStore` |
+        | 409 | `alert_already_silenced` | an active silence exists for `alert_id` |
+      operationId: silence_alert
+      requestBody:
+        description: Silence parameters
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SilenceAlertRequest'
+        required: true
+      responses:
+        '201':
+          description: Silence applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SilenceResponse'
+        '400':
+          description: Invalid request (`invalid_duration` or `reason_too_long`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '404':
+          description: Alert not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '409':
+          description: Alert already silenced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+      security:
+      - bearer_auth: []
   /api/v1/alerts/ws:
     get:
       tags:
@@ -4134,6 +4195,72 @@ components:
           - string
           - 'null'
           description: Optional free-text reason captured at silence creation time.
+    SilenceAlertRequest:
+      type: object
+      description: Request body for `POST /api/v1/alerts/silence` (AAASM-1387 / AAASM-1648).
+      required:
+      - alert_id
+      - duration_seconds
+      properties:
+        alert_id:
+          type: string
+          description: ULID of the alert to silence.
+        duration_seconds:
+          type: integer
+          format: int32
+          description: |-
+            Duration of the silence window in seconds. Must be > 0 and
+            ≤ 604_800 (7 days). Validation lives in the handler and returns
+            HTTP 400 `invalid_duration` on violation.
+          minimum: 0
+        reason:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Optional free-text note recorded on the silence (max 500 chars).
+            Returns HTTP 400 `reason_too_long` when oversize.
+    SilenceResponse:
+      type: object
+      description: |-
+        Response body for `POST /api/v1/alerts/silence` (AAASM-1387). Wire
+        shape matches the spec: silence identifier is exposed as `silence_id`
+        (the in-memory [`SilenceRecord`] uses `id` internally; the conversion
+        renames on the way out).
+      required:
+      - silence_id
+      - alert_id
+      - starts_at
+      - expires_at
+      - created_by
+      properties:
+        alert_id:
+          type: string
+          description: ULID of the suppressed alert.
+        created_by:
+          type: string
+          description: |-
+            Stable identifier of the principal that created the silence
+            (API-key id or JWT subject, per `AuthenticatedCaller.key_id`).
+        expires_at:
+          type: string
+          description: |-
+            ISO 8601 timestamp at which the silence expires; the
+            `silence_watcher` (AAASM-1646) restores the alert at or shortly
+            after this instant.
+        reason:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Free-text reason captured at silence creation time. Omitted in
+            the response when no reason was supplied.
+        silence_id:
+          type: string
+          description: ULID identifier of the silence record.
+        starts_at:
+          type: string
+          description: ISO 8601 timestamp at which the silence took effect.
     SubtreeBurnResponse:
       type: object
       description: Response for `GET /api/v1/agents/{id}/subtree-burn`.
