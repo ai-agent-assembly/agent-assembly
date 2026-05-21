@@ -56,5 +56,18 @@ mod tests {
             assert_eq!(cfg.policy_cache_ttl_secs, 30);
             assert_eq!(cfg.max_connections, 10);
         }
+
+        #[test]
+        fn explicit_url_is_preserved() {
+            let cfg = RedisConfig {
+                enabled: true,
+                url: Some("redis://10.0.0.5:6379".into()),
+                ..RedisConfig::default()
+            };
+            assert!(cfg.enabled);
+            assert_eq!(cfg.url.as_deref(), Some("redis://10.0.0.5:6379"));
+            assert_eq!(cfg.policy_cache_ttl_secs, 30);
+            assert_eq!(cfg.max_connections, 10);
+        }
     }
 }
