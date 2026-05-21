@@ -147,4 +147,12 @@ mod tests {
         assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
         assert!(!pid_file.exists(), "stale pid file should be cleaned up");
     }
+
+    #[test]
+    fn send_signal_to_self_with_signal_zero_returns_true() {
+        let self_pid = std::process::id();
+        // Signal 0 is the standard probe — runs permission/existence
+        // checks without actually delivering a signal.
+        assert!(send_signal(self_pid, 0));
+    }
 }
