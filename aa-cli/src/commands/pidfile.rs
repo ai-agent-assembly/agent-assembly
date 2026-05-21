@@ -116,4 +116,13 @@ mod tests {
         write_pid(&nested, 42).expect("write_pid should mkdir -p the parent");
         assert!(nested.exists(), "pid file should exist after write_pid");
     }
+
+    #[test]
+    fn read_pid_returns_none_for_missing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let absent = tmp.path().join("gateway.pid");
+        // Sanity-check: the path really does not exist before we probe it.
+        assert!(!absent.exists());
+        assert_eq!(read_pid(&absent).unwrap(), None);
+    }
 }
