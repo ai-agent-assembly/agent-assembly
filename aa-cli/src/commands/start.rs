@@ -228,4 +228,13 @@ mod tests {
         assert!(banner.contains("Address: http://localhost:7391"));
         assert!(banner.contains("PID:     12345"));
     }
+
+    #[test]
+    fn format_already_running_message_matches_story_contract() {
+        let msg = format_already_running_message(ModeArg::Local, 7391, 12_345);
+        assert_eq!(
+            msg,
+            "Gateway already running at http://localhost:7391 (PID 12345). Use 'aasm stop' first."
+        );
+    }
 }
