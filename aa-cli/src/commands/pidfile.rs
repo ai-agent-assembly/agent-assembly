@@ -45,3 +45,20 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), PidFileError> {
     std::fs::write(path, format!("{pid}\n"))?;
     Ok(())
 }
+
+/// Read the PID from `path`.
+///
+/// Returns `Ok(None)` (not `Err`) when the file is absent — that
+/// is the common "no gateway running" case and shouldn't surface
+/// as an error to callers. Garbage contents yield `PidFileError::Parse`.
+pub fn read_pid(path: &Path) -> Result<Option<u32>, PidFileError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let trimmed = raw.trim();
+    trimmed.parse::<u32>().map(Some).map_err(|_| PidFileError::Parse {
+        raw: trimmed.to_string(),
+    })
+}
