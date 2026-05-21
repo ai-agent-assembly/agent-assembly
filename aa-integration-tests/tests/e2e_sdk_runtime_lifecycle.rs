@@ -133,3 +133,79 @@ fn python_init_assembly_raises_runtime_error_when_missing() {
         "INSTALL_HINT missing from stderr:\n{stderr}"
     );
 }
+
+// ── Node.js ───────────────────────────────────────────────────────────────────
+
+fn node_sdk_path() -> PathBuf {
+    sibling_repo("NODE_SDK_PATH", "node-sdk")
+}
+
+/// True when the sibling node-sdk has been built (AAASM-1228 + `pnpm build`).
+fn node_runtime_present() -> bool {
+    node_sdk_path().join("dist/esm/runtime.js").exists()
+}
+
+fn probe_node_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f115/probe_node.mjs")
+}
+
+#[test]
+fn node_binary_in_path_returns_resolved_path() {
+    if !node_runtime_present() {
+        eprintln!(
+            "skip node_binary_in_path: {} has no dist/esm/runtime.js \
+             (AAASM-1228 not merged or pnpm build not run)",
+            node_sdk_path().display()
+        );
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let fake = make_fake_aasm(tmp.path());
+    let out = Command::new("node")
+        .arg(probe_node_fixture())
+        .arg("find")
+        .env("NODE_SDK_PATH", node_sdk_path())
+        .env("PATH", tmp.path())
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn node");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "node probe failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.trim().ends_with("/aasm"),
+        "expected resolved path to end in /aasm, got: {stdout:?}"
+    );
+    let _ = fake;
+}
+
+#[test]
+fn node_init_assembly_throws_when_missing() {
+    if !node_runtime_present() {
+        eprintln!(
+            "skip node_init_assembly_throws_…: {} has no dist/esm/runtime.js",
+            node_sdk_path().display()
+        );
+        return;
+    }
+    let out = Command::new("node")
+        .arg(probe_node_fixture())
+        .arg("init")
+        .env("NODE_SDK_PATH", node_sdk_path())
+        .env("PATH", EMPTY_PATH_DIR)
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn node");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when binary missing; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("agent-assembly runtime not found"),
+        "INSTALL_HINT missing from stderr:\n{stderr}"
+    );
+}
