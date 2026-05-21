@@ -16,8 +16,8 @@ use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops, policies, topology,
-    traces,
+    agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops,
+    policies, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -82,6 +82,11 @@ use crate::routes::{
         destinations::update_destination,
         destinations::delete_destination,
         destinations::test_destination,
+        alert_rules::list_rules,
+        alert_rules::create_rule,
+        alert_rules::get_rule,
+        alert_rules::update_rule,
+        alert_rules::delete_rule,
         crate::ws::alerts_handler::ws_alerts_handler,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
