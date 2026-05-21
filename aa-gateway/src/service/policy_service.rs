@@ -21,7 +21,7 @@ use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
-use crate::ops::OpsRegistry;
+use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
@@ -50,6 +50,12 @@ pub struct PolicyServiceImpl {
     /// matching the pre-1422 behaviour expected by unit tests that
     /// construct the service directly.
     ops_registry: Option<Arc<OpsRegistry>>,
+    /// Optional broadcast publisher for op-control signals (AAASM-1653).
+    /// When set, the `op_control_stream` RPC subscribes here and forwards
+    /// every envelope matching the subscriber's agent_id. `None` rejects
+    /// new subscriptions with `Unavailable`. PR-H will pair this with
+    /// `OpsRegistry` transition call sites that drive `publish()`.
+    ops_publisher: Option<SharedOpControlPublisher>,
 }
 
 impl PolicyServiceImpl {
@@ -78,6 +84,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -106,6 +113,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -136,6 +144,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -171,6 +180,7 @@ impl PolicyServiceImpl {
             last_hash: Mutex::new(initial_hash),
             secret_alert_tx: None,
             ops_registry: None,
+            ops_publisher: None,
         }
     }
 
@@ -212,6 +222,20 @@ impl PolicyServiceImpl {
     /// `OpStateChanged` emission are deferred to PR-H.
     pub fn with_ops_registry(mut self, registry: Arc<OpsRegistry>) -> Self {
         self.ops_registry = Some(registry);
+        self
+    }
+
+    /// Attach an [`OpControlPublisher`] for the SDK return-channel (AAASM-1653).
+    ///
+    /// When present, [`PolicyService::op_control_stream`] subscribes to the
+    /// publisher and forwards every envelope whose `agent_id` matches the
+    /// subscriber's `OpControlSubscribeRequest.agent_id`. Without a
+    /// publisher attached, subscription requests are rejected with
+    /// `Status::unavailable("op control channel not configured")`.
+    ///
+    /// [`OpControlPublisher`]: crate::ops::OpControlPublisher
+    pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
+        self.ops_publisher = Some(publisher);
         self
     }
 
