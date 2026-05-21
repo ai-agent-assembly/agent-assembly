@@ -55,6 +55,33 @@ pub enum PolicyCache {
     Disabled,
 }
 
+#[async_trait]
+impl PolicyCacheLike for PolicyCache {
+    async fn get(&self, _name: &str) -> Option<PolicyDocument> {
+        match self {
+            Self::Disabled => None,
+        }
+    }
+
+    async fn set(&self, _doc: &PolicyDocument) {
+        match self {
+            Self::Disabled => {}
+        }
+    }
+
+    async fn invalidate(&self, _name: &str) {
+        match self {
+            Self::Disabled => {}
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        match self {
+            Self::Disabled => false,
+        }
+    }
+}
+
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
 /// All four fields are filled in by the storage config layer (Epic-18 S-H);
