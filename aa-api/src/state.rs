@@ -17,6 +17,8 @@ use aa_gateway::registry::AgentRegistry;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 
+use crate::alerts::rules::destinations::DestinationRegistry;
+use crate::alerts::rules::store::AlertRuleStore;
 use crate::alerts::silence_store::SilenceStore;
 use crate::alerts::AlertStore;
 use crate::auth::api_key::ApiKeyStore;
@@ -107,4 +109,8 @@ pub struct AppState {
     /// (AAASM-924). 5-minute TTL by default. Shared across requests so
     /// the resolver backend is hit at most once per TTL window per key.
     pub saas_secret_cache: Arc<crate::routes::devtools::secret_cache::SecretCache>,
+    /// Alert-rule CRUD store (AAASM-1386).
+    pub alert_rule_store: Arc<dyn AlertRuleStore>,
+    /// Allow-set of destinations alert rules may target (AAASM-1386).
+    pub destination_registry: Arc<DestinationRegistry>,
 }
