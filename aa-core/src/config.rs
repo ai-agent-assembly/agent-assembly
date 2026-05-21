@@ -308,6 +308,39 @@ impl Default for SqliteConfig {
     }
 }
 
+/// Optional Redis policy / session cache.
+///
+/// `enabled = false` by default — Redis is opt-in. When the operator
+/// measures policy-evaluation latency as a bottleneck they flip
+/// `enabled = true` and the gateway's hot-path policy decisions get
+/// a `policy_cache_ttl_secs` TTL cache in front of PostgreSQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RedisConfig {
+    /// Master switch — when `false`, no Redis dependency is required.
+    pub enabled: bool,
+    /// Redis connection URL. Falls back to `AAASM_REDIS_URL` (env
+    /// override Subtask AAASM-1735); leaving both unset with
+    /// `enabled = true` is a startup error.
+    pub url: Option<String>,
+    /// TTL in seconds for hot-path policy-decision cache entries.
+    pub policy_cache_ttl_secs: u64,
+    /// Maximum Redis connection-pool size. Default: `10`.
+    pub max_connections: u32,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: None,
+            policy_cache_ttl_secs: 30,
+            max_connections: 10,
+        }
+    }
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
