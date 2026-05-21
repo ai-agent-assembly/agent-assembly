@@ -92,4 +92,15 @@ mod tests {
             assert_eq!(cfg.max_connections, 10);
         }
     }
+
+    mod key {
+        use super::*;
+
+        #[test]
+        fn same_inputs_yield_identical_key() {
+            let a = policy_cache_key("default", b"version-1-body");
+            let b = policy_cache_key("default", b"version-1-body");
+            assert_eq!(a, b);
+        }
+    }
 }
