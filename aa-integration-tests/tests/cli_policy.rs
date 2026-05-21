@@ -334,3 +334,53 @@ async fn policy_simulate_without_against_or_live_returns_error() {
         "stderr should explain --against is required; got:\n{stderr}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_simulate_with_output_file_writes_report() {
+    let fixture = CliFixture::start().await.expect("fixture should start");
+    let policy = CliFixture::fixture_path("policies/allow_all.yaml");
+
+    // HistoricalReplay::from_file expects JSONL with {event_type, agent_id, payload}.
+    let scratch = tempfile::tempdir().expect("scratch tempdir");
+    let log_path = scratch.path().join("events.jsonl");
+    std::fs::write(
+        &log_path,
+        r#"{"event_type":"ToolCallIntercepted","agent_id":"a1","payload":"{}"}
+{"event_type":"ToolCallIntercepted","agent_id":"a2","payload":"{}"}
+"#,
+    )
+    .expect("write replay log");
+    let report_path = scratch.path().join("report.json");
+
+    let out = fixture
+        .cmd()
+        .args([
+            "policy",
+            "simulate",
+            "--policy",
+            policy.to_str().unwrap(),
+            "--against",
+            log_path.to_str().unwrap(),
+            "--output-file",
+            report_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("aasm policy simulate --output-file should execute");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "simulate should succeed for allow-all replay; stdout:\n{}\nstderr:\n{stderr}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    assert!(
+        report_path.exists(),
+        "simulate should write report to --output-file at {}",
+        report_path.display(),
+    );
+    let body = std::fs::read_to_string(&report_path).expect("read written report");
+    let parsed: Value = serde_json::from_str(&body).expect("report.json should be valid JSON");
+    assert_eq!(
+        parsed["total_events"], 2,
+        "report should account for both replayed events; got:\n{body}",
+    );
+}
