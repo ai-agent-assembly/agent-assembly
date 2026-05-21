@@ -282,6 +282,32 @@ impl Default for PostgresConfig {
     }
 }
 
+/// Local-mode SQLite `StorageBackend` settings.
+///
+/// `path` is stored raw — the leading `~` is expanded by
+/// `GatewayConfig::expand_paths()` (extension landing in Subtask
+/// AAASM-1740). `journal_mode = "wal"` gives a better concurrent-read
+/// experience for the local dashboard while a developer's gateway is
+/// writing audit events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SqliteConfig {
+    /// SQLite database path. Default: `~/.aasm/local.db` (un-expanded).
+    pub path: PathBuf,
+    /// SQLite `journal_mode` PRAGMA. Default: `"wal"`.
+    pub journal_mode: String,
+}
+
+impl Default for SqliteConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("~/.aasm/local.db"),
+            journal_mode: String::from("wal"),
+        }
+    }
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
