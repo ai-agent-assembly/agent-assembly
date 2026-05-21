@@ -837,4 +837,35 @@ agent:
         assert_eq!(tls.cert_file, PathBuf::from("/new/tls.crt"));
         assert_eq!(tls.key_file, PathBuf::from("/old/tls.key"), "key untouched");
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn empty_yaml_hydrates_storage_defaults() {
+        let cfg = GatewayConfig::from_yaml_str("{}").expect("empty YAML must parse");
+        let s = &cfg.storage;
+        assert_eq!(s.backend, StorageBackendType::Sqlite, "default backend");
+        assert_eq!(
+            s.sqlite.path,
+            PathBuf::from("~/.aasm/local.db"),
+            "sqlite path un-expanded by default",
+        );
+        assert_eq!(s.sqlite.journal_mode, "wal");
+        assert!(s.postgres.database_url.is_none(), "postgres url unset");
+        assert_eq!(s.postgres.max_connections, 20);
+        assert_eq!(s.postgres.min_connections, 2);
+        assert_eq!(s.postgres.connect_timeout_secs, 10);
+        assert!(s.postgres.timescaledb.enabled);
+        assert_eq!(s.postgres.timescaledb.chunk_interval, "7 days");
+        assert_eq!(s.postgres.timescaledb.compression_policy, "30 days");
+        assert!(!s.redis.enabled, "redis opt-in");
+        assert!(s.redis.url.is_none());
+        assert_eq!(s.redis.policy_cache_ttl_secs, 30);
+        assert_eq!(s.redis.max_connections, 10);
+        assert_eq!(s.retention.hot_days, 30);
+        assert_eq!(s.retention.warm_days, 90);
+        assert_eq!(s.retention.cold_action, ColdAction::Drop);
+        assert!(s.retention.archive_url.is_none());
+        assert_eq!(s.retention.schedule, "0 3 * * *");
+        assert!(!s.retention.dry_run);
+    }
 }
