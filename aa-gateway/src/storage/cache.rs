@@ -240,4 +240,15 @@ mod tests {
             assert_eq!(policy_invalidation_pattern("legacy"), "policy:legacy:*");
         }
     }
+
+    mod disabled {
+        use super::*;
+
+        #[test]
+        fn default_is_disabled() {
+            let cache = PolicyCache::default();
+            assert!(matches!(cache, PolicyCache::Disabled));
+            assert!(!cache.is_enabled());
+        }
+    }
 }
