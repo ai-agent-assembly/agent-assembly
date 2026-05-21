@@ -210,13 +210,18 @@ impl GatewayConfig {
     /// no field starts with `~`. Idempotent — calling twice produces
     /// the same result as calling once.
     pub fn expand_paths(&mut self) {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
-        self.local.storage_path = expand_tilde(&self.local.storage_path, &home);
+        if let Some(home) = dirs::home_dir() {
+            self.expand_paths_in(&home);
+        }
+    }
+
+    /// Same as [`expand_paths`](Self::expand_paths) but takes an explicit home
+    /// directory — used by tests so the assertion is independent of `$HOME`.
+    pub(crate) fn expand_paths_in(&mut self, home: &std::path::Path) {
+        self.local.storage_path = expand_tilde(&self.local.storage_path, home);
         if let Some(tls) = &mut self.remote.tls {
-            tls.cert_file = expand_tilde(&tls.cert_file, &home);
-            tls.key_file = expand_tilde(&tls.key_file, &home);
+            tls.cert_file = expand_tilde(&tls.cert_file, home);
+            tls.key_file = expand_tilde(&tls.key_file, home);
         }
     }
 }
