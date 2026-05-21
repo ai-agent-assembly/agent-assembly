@@ -57,6 +57,7 @@ tokio-stream = "0.1"
 insta        = "1"
 tower        = { version = "0.5", features = ["util"] }
 rcgen        = { version = "0.14", features = ["pem"] }
+time         = "0.3"
 
 [[bin]]
 name = "aa-gateway"
