@@ -22,6 +22,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve a binary name (e.g. `"go"`) to its absolute path by walking the
+/// current process's `PATH`. Needed before any `Command::new(name)` call
+/// that also sets `.env("PATH", …)` — on Linux glibc's `posix_spawnp`
+/// uses the *child's* envp `PATH` for the binary lookup, so an
+/// overridden empty PATH makes the spawn itself fail with `NotFound`
+/// even when the parent process can see the binary. Returns `None` when
+/// the binary is missing from the parent's `PATH`.
+fn resolve_in_path(name: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_env)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// `<workspace-parent>/agent-assembly/` — derived from `CARGO_MANIFEST_DIR`.
 fn agent_assembly_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -185,7 +199,11 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let _fake = make_fake_aasm(tmp.path());
-    let out = Command::new("go")
+    let Some(go_bin) = resolve_in_path("go") else {
+        eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
+        return;
+    };
+    let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("find")
         .current_dir(probe_go_dir())
@@ -219,7 +237,11 @@ fn go_init_assembly_returns_err_when_missing() {
         eprintln!("skip go_init_assembly_returns_err_…: go mod edit failed");
         return;
     }
-    let out = Command::new("go")
+    let Some(go_bin) = resolve_in_path("go") else {
+        eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
+        return;
+    };
+    let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("init")
         .current_dir(probe_go_dir())
