@@ -8,6 +8,23 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Errors that can occur while loading or parsing a `GatewayConfig`.
+///
+/// All variants carry enough context to be surfaced verbatim to an
+/// operator running `aasm start`; `Display` implementations come
+/// from `thiserror` so they format cleanly into log lines and CLI
+/// stderr.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// Failed to read the YAML config file (permission denied, or
+    /// other filesystem error other than "file not found").
+    #[error("failed to read config file: {0}")]
+    Io(#[from] std::io::Error),
+    /// The YAML payload could not be deserialised into a `GatewayConfig`.
+    #[error("failed to parse config YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+}
+
 /// Which deployment topology the gateway should boot into.
 ///
 /// Selected at startup from a combination of YAML config, environment
