@@ -63,6 +63,15 @@ pub enum ConfigError {
     /// `archive_url` was supplied (in YAML or via env var).
     #[error("archive_url is required when cold_action is archive")]
     ArchiveUrlRequired,
+    /// `storage.retention.warm_days` was less than or equal to
+    /// `hot_days` — the warm tier must extend past the hot tier.
+    #[error("warm_days ({warm}) must be greater than hot_days ({hot})")]
+    WarmDaysNotGreaterThanHotDays {
+        /// The configured `hot_days` value (for the operator-facing message).
+        hot: u32,
+        /// The configured `warm_days` value.
+        warm: u32,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
