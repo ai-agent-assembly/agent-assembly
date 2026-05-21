@@ -274,6 +274,12 @@ impl GatewayConfig {
             self.local.port = port;
             self.remote.listen_addr.set_port(port);
         }
+        if let Some(url) = get_env("AAASM_DATABASE_URL") {
+            self.remote.database_url = Some(url);
+        }
+        if let Some(url) = get_env("AAASM_REDIS_URL") {
+            self.remote.redis_url = Some(url);
+        }
         Ok(())
     }
 }
