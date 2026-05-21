@@ -212,6 +212,18 @@ impl GatewayConfig {
         };
         Self::load_from_path(home.join(".aasm").join("config.yaml"))
     }
+
+    /// One-shot loader for `aasm start` and the gateway bootstrap path:
+    /// read `~/.aasm/config.yaml`, expand `~` in path fields, then apply
+    /// the `AA_MODE` / `AAASM_*` env-var overrides.
+    ///
+    /// Returns the same `ConfigError` variants as the underlying steps.
+    pub fn load() -> Result<Self, ConfigError> {
+        let mut cfg = Self::load_default_path()?;
+        cfg.expand_paths();
+        cfg.apply_env_overrides()?;
+        Ok(cfg)
+    }
 }
 
 impl GatewayConfig {
