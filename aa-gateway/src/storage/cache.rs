@@ -250,5 +250,12 @@ mod tests {
             assert!(matches!(cache, PolicyCache::Disabled));
             assert!(!cache.is_enabled());
         }
+
+        #[tokio::test]
+        async fn get_always_returns_none() {
+            let cache = PolicyCache::Disabled;
+            assert!(cache.get("default").await.is_none());
+            assert!(cache.get("any-other-name").await.is_none());
+        }
     }
 }
