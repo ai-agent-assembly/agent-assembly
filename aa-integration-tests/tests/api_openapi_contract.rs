@@ -105,6 +105,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/alerts/destinations",
         "/api/v1/alerts/destinations/{id}",
         "/api/v1/alerts/destinations/{id}/test",
+        "/api/v1/alerts/rules",
+        "/api/v1/alerts/rules/{id}",
         "/api/v1/alerts/silence",
         "/api/v1/alerts/ws",
         "/api/v1/alerts/{id}",
