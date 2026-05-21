@@ -70,6 +70,18 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_400_invalid_duration_too_large() {
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    // 604_801 = 1 second over the 7-day cap.
+    let resp = post_silence(state, json!({ "alert_id": alert_id, "duration_seconds": 604_801 })).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["detail"].as_str().unwrap_or("").starts_with("invalid_duration:"));
+}
+
+#[tokio::test]
 async fn silence_400_invalid_duration_zero() {
     let state = common::test_state();
     let alert_id = seed_alert(&state);
