@@ -579,4 +579,33 @@ agent:
         assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://aasm@db/aasm"));
         assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
     }
+
+    #[test]
+    fn apply_env_overrides_tls_creates_config_when_yaml_omitted_it() {
+        let mut cfg = GatewayConfig::default();
+        assert!(cfg.remote.tls.is_none(), "precondition: TLS off by default");
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_TLS_CERT", "/etc/aasm/tls.crt"),
+            ("AAASM_TLS_KEY", "/etc/aasm/tls.key"),
+        ]))
+        .unwrap();
+        let tls = cfg.remote.tls.expect("TLS env vars must create TlsConfig");
+        assert_eq!(tls.cert_file, PathBuf::from("/etc/aasm/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/etc/aasm/tls.key"));
+    }
+
+    #[test]
+    fn apply_env_overrides_tls_patches_existing_config_asymmetrically() {
+        let mut cfg = GatewayConfig::default();
+        cfg.remote.tls = Some(TlsConfig {
+            cert_file: PathBuf::from("/old/tls.crt"),
+            key_file: PathBuf::from("/old/tls.key"),
+        });
+        // Only AAASM_TLS_CERT set — key should keep its old path.
+        cfg.apply_env_overrides_with(env(&[("AAASM_TLS_CERT", "/new/tls.crt")]))
+            .unwrap();
+        let tls = cfg.remote.tls.expect("tls preserved");
+        assert_eq!(tls.cert_file, PathBuf::from("/new/tls.crt"));
+        assert_eq!(tls.key_file, PathBuf::from("/old/tls.key"), "key untouched");
+    }
 }
