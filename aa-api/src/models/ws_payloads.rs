@@ -138,6 +138,39 @@ pub struct BudgetAlertPayload {
     pub limit_usd: f64,
 }
 
+/// Payload for `event_type: "ops_change"` events.
+///
+/// Emitted on every transition of an in-flight operation in the
+/// gateway-side [`aa_gateway::ops::OpsRegistry`] (AAASM-1422 PR-B).
+/// The dashboard's `useLiveOpsStream` hook correlates rows by `op_id`
+/// (composed from `trace_id:span_id`) and updates the matching row in
+/// place, so a `pause` followed by the confirming `paused` event
+/// auto-clears any optimistic override.
+///
+/// Actual emission on registry transitions ships in PR-H. PR-B only
+/// defines the payload shape so PR-C (dashboard rework) and PR-H
+/// (gateway emission) can build against a stable schema in parallel.
+///
+/// Agent attribution travels on the enclosing
+/// [`super::event::GovernanceEvent::agent_id`] — same convention as
+/// `ViolationPayload`, `ApprovalPayload`, and `BudgetAlertPayload`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OpsChangePayload {
+    /// Stable operation identifier — `"{trace_id}:{span_id}"` composed
+    /// in the gateway. The dashboard keys its row map by this value so
+    /// successive `ops_change` events for the same op merge into one
+    /// row instead of stacking.
+    pub op_id: String,
+    /// New lifecycle state after the transition. Mirrors the
+    /// `aa_gateway::ops::OpState` enum (snake_case wire format:
+    /// `pending` / `running` / `paused` / `completing` / `terminated`).
+    #[schema(value_type = String, example = "running")]
+    pub state: aa_gateway::ops::OpState,
+    /// RFC 3339 UTC timestamp of the transition. Same value as the
+    /// matching `OpRecord.updated_at` returned by the registry.
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +324,74 @@ mod tests {
         };
         assert_eq!(op_type, None);
     }
+
+    // ── OpsChangePayload — AAASM-1651 (PR-B of AAASM-1422) ────────────────
+
+    #[test]
+    fn ops_change_payload_serializes_with_snake_case_state() {
+        let payload = OpsChangePayload {
+            op_id: "trace-abc:span-1".into(),
+            state: aa_gateway::ops::OpState::Running,
+            updated_at: "2026-05-20T15:30:00Z".into(),
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["op_id"], "trace-abc:span-1");
+        assert_eq!(json["state"], "running");
+        assert_eq!(json["updated_at"], "2026-05-20T15:30:00Z");
+        // Agent attribution travels on the outer GovernanceEvent, not the payload.
+        assert!(!json.as_object().unwrap().contains_key("agent_id"));
+    }
+
+    #[test]
+    fn ops_change_payload_round_trips_through_serde() {
+        let original = OpsChangePayload {
+            op_id: "t1:s2".into(),
+            state: aa_gateway::ops::OpState::Completing,
+            updated_at: "2026-05-20T16:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: OpsChangePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.op_id, "t1:s2");
+        assert_eq!(decoded.state, aa_gateway::ops::OpState::Completing);
+    }
+
+    #[test]
+    fn ops_change_payload_accepts_all_five_op_states() {
+        // Guards against accidental gating of certain states from the wire.
+        for state in [
+            aa_gateway::ops::OpState::Pending,
+            aa_gateway::ops::OpState::Running,
+            aa_gateway::ops::OpState::Paused,
+            aa_gateway::ops::OpState::Completing,
+            aa_gateway::ops::OpState::Terminated,
+        ] {
+            let payload = OpsChangePayload {
+                op_id: "t:s".into(),
+                state,
+                updated_at: "2026-05-20T00:00:00Z".into(),
+            };
+            let json = serde_json::to_value(&payload).unwrap();
+            assert!(json["state"].is_string(), "state serialised as string for {state:?}");
+        }
+    }
+
+    #[test]
+    fn event_payload_dispatches_ops_change_through_untagged_decode() {
+        // The untagged enum must distinguish OpsChangePayload from sibling
+        // payloads by field shape alone — op_id + state + updated_at is
+        // the unique combination among the four variants.
+        let raw = serde_json::json!({
+            "op_id": "t1:s1",
+            "state": "paused",
+            "updated_at": "2026-05-20T16:00:00Z"
+        });
+        let decoded: EventPayload = serde_json::from_value(raw).unwrap();
+        let EventPayload::OpsChange(p) = decoded else {
+            panic!("expected EventPayload::OpsChange, got {decoded:?}");
+        };
+        assert_eq!(p.op_id, "t1:s1");
+        assert_eq!(p.state, aa_gateway::ops::OpState::Paused);
+    }
 }
 
 /// Discriminated union of all possible `GovernanceEvent.payload` shapes.
@@ -299,6 +400,7 @@ mod tests {
 /// - `"violation"` → [`ViolationPayload`]
 /// - `"approval"` → [`ApprovalPayload`]
 /// - `"budget"` → [`BudgetAlertPayload`]
+/// - `"ops_change"` → [`OpsChangePayload`]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum EventPayload {
@@ -308,4 +410,6 @@ pub enum EventPayload {
     Approval(ApprovalPayload),
     /// Budget threshold alert payload.
     Budget(BudgetAlertPayload),
+    /// In-flight ops registry state-transition payload (AAASM-1422 PR-B).
+    OpsChange(OpsChangePayload),
 }

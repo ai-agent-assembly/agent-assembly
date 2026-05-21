@@ -252,6 +252,7 @@ async fn ws_no_filter_delivers_all_event_types() {
         EventType::Violation => 0,
         EventType::Approval => 1,
         EventType::Budget => 2,
+        EventType::OpsChange => 3,
     });
     assert_eq!(
         received_types,

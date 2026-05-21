@@ -3257,6 +3257,8 @@ components:
         description: Approval request event payload.
       - $ref: '#/components/schemas/BudgetAlertPayload'
         description: Budget threshold alert payload.
+      - $ref: '#/components/schemas/OpsChangePayload'
+        description: In-flight ops registry state-transition payload (AAASM-1422 PR-B).
       description: |-
         Discriminated union of all possible `GovernanceEvent.payload` shapes.
 
@@ -3264,6 +3266,7 @@ components:
         - `"violation"` → [`ViolationPayload`]
         - `"approval"` → [`ApprovalPayload`]
         - `"budget"` → [`BudgetAlertPayload`]
+        - `"ops_change"` → [`OpsChangePayload`]
     EventType:
       type: string
       description: |-
@@ -3275,6 +3278,7 @@ components:
       - violation
       - approval
       - budget
+      - ops_change
     GenerateApiKeyRequest:
       type: object
       required:
@@ -3534,6 +3538,49 @@ components:
       - paused
       - completing
       - terminated
+    OpsChangePayload:
+      type: object
+      description: |-
+        Payload for `event_type: "ops_change"` events.
+
+        Emitted on every transition of an in-flight operation in the
+        gateway-side [`aa_gateway::ops::OpsRegistry`] (AAASM-1422 PR-B).
+        The dashboard's `useLiveOpsStream` hook correlates rows by `op_id`
+        (composed from `trace_id:span_id`) and updates the matching row in
+        place, so a `pause` followed by the confirming `paused` event
+        auto-clears any optimistic override.
+
+        Actual emission on registry transitions ships in PR-H. PR-B only
+        defines the payload shape so PR-C (dashboard rework) and PR-H
+        (gateway emission) can build against a stable schema in parallel.
+
+        Agent attribution travels on the enclosing
+        [`super::event::GovernanceEvent::agent_id`] — same convention as
+        `ViolationPayload`, `ApprovalPayload`, and `BudgetAlertPayload`.
+      required:
+      - op_id
+      - state
+      - updated_at
+      properties:
+        op_id:
+          type: string
+          description: |-
+            Stable operation identifier — `"{trace_id}:{span_id}"` composed
+            in the gateway. The dashboard keys its row map by this value so
+            successive `ops_change` events for the same op merge into one
+            row instead of stacking.
+        state:
+          type: string
+          description: |-
+            New lifecycle state after the transition. Mirrors the
+            `aa_gateway::ops::OpState` enum (snake_case wire format:
+            `pending` / `running` / `paused` / `completing` / `terminated`).
+          example: running
+        updated_at:
+          type: string
+          description: |-
+            RFC 3339 UTC timestamp of the transition. Same value as the
+            matching `OpRecord.updated_at` returned by the registry.
     OverrideRecord:
       type: object
       description: |-

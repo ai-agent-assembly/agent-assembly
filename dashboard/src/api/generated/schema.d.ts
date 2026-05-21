@@ -1872,8 +1872,9 @@ export interface components {
          *     - `"violation"` → [`ViolationPayload`]
          *     - `"approval"` → [`ApprovalPayload`]
          *     - `"budget"` → [`BudgetAlertPayload`]
+         *     - `"ops_change"` → [`OpsChangePayload`]
          */
-        EventPayload: components["schemas"]["ViolationPayload"] | components["schemas"]["ApprovalPayload"] | components["schemas"]["BudgetAlertPayload"];
+        EventPayload: components["schemas"]["ViolationPayload"] | components["schemas"]["ApprovalPayload"] | components["schemas"]["BudgetAlertPayload"] | components["schemas"]["OpsChangePayload"];
         /**
          * @description Classification of governance events for client-side filtering.
          *
@@ -1881,7 +1882,7 @@ export interface components {
          *     query parameter to receive only matching events on the WebSocket.
          * @enum {string}
          */
-        EventType: "violation" | "approval" | "budget";
+        EventType: "violation" | "approval" | "budget" | "ops_change";
         GenerateApiKeyRequest: {
             label: string;
             scopes: components["schemas"]["ApiKeyScopeResponse"][];
@@ -2042,6 +2043,45 @@ export interface components {
          * @enum {string}
          */
         OpState: "pending" | "running" | "paused" | "completing" | "terminated";
+        /**
+         * @description Payload for `event_type: "ops_change"` events.
+         *
+         *     Emitted on every transition of an in-flight operation in the
+         *     gateway-side [`aa_gateway::ops::OpsRegistry`] (AAASM-1422 PR-B).
+         *     The dashboard's `useLiveOpsStream` hook correlates rows by `op_id`
+         *     (composed from `trace_id:span_id`) and updates the matching row in
+         *     place, so a `pause` followed by the confirming `paused` event
+         *     auto-clears any optimistic override.
+         *
+         *     Actual emission on registry transitions ships in PR-H. PR-B only
+         *     defines the payload shape so PR-C (dashboard rework) and PR-H
+         *     (gateway emission) can build against a stable schema in parallel.
+         *
+         *     Agent attribution travels on the enclosing
+         *     [`super::event::GovernanceEvent::agent_id`] — same convention as
+         *     `ViolationPayload`, `ApprovalPayload`, and `BudgetAlertPayload`.
+         */
+        OpsChangePayload: {
+            /**
+             * @description Stable operation identifier — `"{trace_id}:{span_id}"` composed
+             *     in the gateway. The dashboard keys its row map by this value so
+             *     successive `ops_change` events for the same op merge into one
+             *     row instead of stacking.
+             */
+            op_id: string;
+            /**
+             * @description New lifecycle state after the transition. Mirrors the
+             *     `aa_gateway::ops::OpState` enum (snake_case wire format:
+             *     `pending` / `running` / `paused` / `completing` / `terminated`).
+             * @example running
+             */
+            state: string;
+            /**
+             * @description RFC 3339 UTC timestamp of the transition. Same value as the
+             *     matching `OpRecord.updated_at` returned by the registry.
+             */
+            updated_at: string;
+        };
         /**
          * @description A recorded capability override entry returned by
          *     `GET /api/v1/capability/override`.
