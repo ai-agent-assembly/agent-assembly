@@ -37,4 +37,25 @@ mod tests {
     fn deployment_mode_default_is_local() {
         assert_eq!(DeploymentMode::default(), DeploymentMode::Local);
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deployment_mode_yaml_round_trip_local() {
+        let mode: DeploymentMode = serde_yaml::from_str("local").unwrap();
+        assert_eq!(mode, DeploymentMode::Local);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deployment_mode_yaml_round_trip_remote() {
+        let mode: DeploymentMode = serde_yaml::from_str("remote").unwrap();
+        assert_eq!(mode, DeploymentMode::Remote);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deployment_mode_yaml_rejects_unknown_variant() {
+        let result: Result<DeploymentMode, _> = serde_yaml::from_str("foobar");
+        assert!(result.is_err(), "unknown variant should fail to deserialize");
+    }
 }
