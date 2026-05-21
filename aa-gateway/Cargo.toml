@@ -53,6 +53,7 @@ proptest     = "1"
 tempfile     = "3"
 tokio-stream = "0.1"
 insta        = "1"
+tower        = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "aa-gateway"
