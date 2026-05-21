@@ -43,6 +43,7 @@ use crate::routes::{
         (name = "costs", description = "Cost and budget tracking"),
         (name = "alerts", description = "Governance alerts"),
         (name = "alert-destinations", description = "Notification destinations — CRUD + test"),
+        (name = "alert-rules", description = "Alert-rule CRUD (AAASM-1386)"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "alerts-stream", description = "Real-time alert lifecycle WebSocket stream (subprotocol aaasm-alerts-v1) — AAASM-1389"),
