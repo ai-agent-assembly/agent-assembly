@@ -21,6 +21,7 @@ pub mod registry;
 pub mod server;
 pub mod service;
 pub mod simulation;
+pub mod storage;
 
 pub use audit_reader::AuditReader;
 pub use engine::{EvaluationResult, PolicyEngine, PolicyLoadError};
