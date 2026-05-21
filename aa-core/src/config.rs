@@ -373,4 +373,26 @@ agent:
         let cfg = GatewayConfig::from_yaml_str("{}").unwrap();
         assert_eq!(cfg, GatewayConfig::default());
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_load_from_missing_path_returns_default() {
+        let missing = std::env::temp_dir().join("aasm-config-does-not-exist-AAASM-1691.yaml");
+        // Make sure the test pre-condition holds even if a stale file lingers.
+        let _ = std::fs::remove_file(&missing);
+        let cfg = GatewayConfig::load_from_path(&missing).expect("missing file should not error");
+        assert_eq!(cfg, GatewayConfig::default());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn gateway_config_load_from_existing_path_parses_yaml() {
+        let tmp_dir = std::env::temp_dir().join("aasm-config-AAASM-1691");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("config.yaml");
+        std::fs::write(&path, "mode: remote\n").unwrap();
+        let cfg = GatewayConfig::load_from_path(&path).expect("existing file should parse");
+        assert_eq!(cfg.mode, DeploymentMode::Remote);
+        std::fs::remove_file(&path).ok();
+    }
 }
