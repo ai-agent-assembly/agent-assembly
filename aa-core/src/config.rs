@@ -197,4 +197,23 @@ mod tests {
         assert!(cfg.tls.is_none());
         assert!(cfg.redis_url.is_none());
     }
+
+    #[test]
+    fn agent_connect_config_default_points_at_localhost() {
+        let cfg = AgentConnectConfig::default();
+        assert_eq!(cfg.gateway_url, "http://localhost:7391");
+        assert!(cfg.api_key.is_none());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn agent_connect_config_yaml_round_trip() {
+        let yaml = r#"
+gateway_url: "https://cp.company.internal:7391"
+api_key: "secret"
+"#;
+        let cfg: AgentConnectConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.gateway_url, "https://cp.company.internal:7391");
+        assert_eq!(cfg.api_key.as_deref(), Some("secret"));
+    }
 }
