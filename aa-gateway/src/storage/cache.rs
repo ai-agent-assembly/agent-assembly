@@ -43,6 +43,18 @@ pub trait PolicyCacheLike: Send + Sync {
     fn is_enabled(&self) -> bool;
 }
 
+/// Concrete policy-cache value held by the gateway runtime.
+///
+/// The default constructor returns the `Disabled` variant; the `Redis`
+/// variant is only available when the `redis-cache` Cargo feature is on and
+/// will be added in Epic-18 S-G sub-task 4.
+#[non_exhaustive]
+pub enum PolicyCache {
+    /// No-op cache — `get` always returns `None`, `set` and `invalidate`
+    /// are no-ops, `is_enabled` returns `false`.
+    Disabled,
+}
+
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
 /// All four fields are filled in by the storage config layer (Epic-18 S-H);
