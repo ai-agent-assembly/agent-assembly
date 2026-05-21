@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 
 use sqlx::SqlitePool;
 
+use super::error::{StorageError, StorageResult};
+
 /// Local SQLite backend configuration.
 ///
 /// Defined here as a minimal type so this Story (E18 S-B) can land
@@ -33,9 +35,54 @@ pub struct SqliteConfig {
 /// Concrete trait methods land in subsequent Epic-18 S-B sub-tasks; this
 /// struct currently exposes only the [`SqliteBackend::open`] constructor
 /// and an internal connection-pool handle.
-#[allow(dead_code)] // `pool` is read by trait-impl sub-tasks that follow
 pub struct SqliteBackend {
+    #[allow(dead_code)] // first writers land in S-B.2 (migrate)
     pool: SqlitePool,
+}
+
+impl SqliteBackend {
+    /// Open (or create) the SQLite database at the configured path.
+    ///
+    /// On first open this:
+    ///
+    /// 1. Expands a leading `~` in `config.path` to the user's home directory.
+    /// 2. Creates the parent directory if absent.
+    /// 3. Opens a connection pool with `mode=rwc` (read-write, create-if-missing).
+    /// 4. Enables WAL journal mode for better concurrent reads.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::ConnectionFailed`] if the parent directory cannot
+    ///   be created, the pool cannot be opened, or the WAL pragma is rejected.
+    pub async fn open(config: &SqliteConfig) -> StorageResult<Self> {
+        let path = expand_tilde(&config.path);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageError::ConnectionFailed(format!(
+                        "failed to create parent directory {}: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let pool = SqlitePool::connect(&url)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(format!("WAL pragma: {e}")))?;
+        Ok(Self { pool })
+    }
+
+    /// Borrow the connection pool. Crate-internal helper for trait-impl
+    /// sub-modules that land in subsequent S-B sub-tasks.
+    #[allow(dead_code)] // first consumer arrives in S-B.2
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
 }
 
 /// Expand a leading `~` in `path` to the current user's home directory.
