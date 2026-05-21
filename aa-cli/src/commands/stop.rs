@@ -114,3 +114,22 @@ pub fn run_with_pid_file(args: StopArgs, pid_file: &std::path::Path) -> std::pro
     println!("Gateway stopped (PID {pid}).");
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stringify `ExitCode` (which does not impl `PartialEq`) so tests
+    /// can compare against `ExitCode::SUCCESS` / `ExitCode::FAILURE`.
+    fn fmt(code: std::process::ExitCode) -> String {
+        format!("{code:?}")
+    }
+
+    #[test]
+    fn run_with_missing_pid_file_returns_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        let exit = run_with_pid_file(StopArgs { timeout: 5 }, &pid_file);
+        assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
+    }
+}
