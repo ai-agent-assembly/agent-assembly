@@ -10,3 +10,21 @@
 //! The cache is **off by default** — the gateway should always be runnable
 //! without a Redis process. Production deployments opt in by setting
 //! `storage.redis.enabled = true` and providing a reachable URL.
+
+/// Operator-facing knobs for the optional Redis policy cache.
+///
+/// All four fields are filled in by the storage config layer (Epic-18 S-H);
+/// for now the struct lives here so the cache implementation can be developed
+/// independently. The defaults intentionally encode the OFF posture so
+/// callers that do not configure Redis observe no behaviour change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedisConfig {
+    /// Master switch — when `false` no Redis connection is attempted.
+    pub enabled: bool,
+    /// Connection URL (e.g. `redis://host:6379`). Required when `enabled` is `true`.
+    pub url: Option<String>,
+    /// TTL applied to every cached policy entry.
+    pub policy_cache_ttl_secs: u64,
+    /// Upper bound on concurrent Redis connections held by the cache.
+    pub max_connections: u32,
+}
