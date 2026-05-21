@@ -175,6 +175,16 @@ impl OpsRegistry {
         self.ops.get(op_id).map(|r| r.clone())
     }
 
+    /// Look up the owning `agent_id` for an op (AAASM-1657).
+    ///
+    /// Returns `None` for ops registered via the legacy `ingest` or
+    /// `register` paths that didn't carry an agent id. Used by the
+    /// `aa-api` route handlers when emitting `ops_change` WS events so
+    /// the dashboard's per-agent filter can target them correctly.
+    pub fn agent_for(&self, op_id: &str) -> Option<AgentId> {
+        self.agents.get(op_id).map(|a| a.clone())
+    }
+
     /// Return snapshots of all registered ops.
     pub fn list(&self) -> Vec<OpRecord> {
         self.ops.iter().map(|r| r.clone()).collect()

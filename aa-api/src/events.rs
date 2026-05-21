@@ -10,6 +10,23 @@ use aa_runtime::approval::ApprovalRequest;
 use aa_runtime::pipeline::event::PipelineEvent;
 use tokio::sync::broadcast;
 
+use crate::models::ws_payloads::OpsChangePayload;
+
+/// One broadcast envelope on the ops-change channel (AAASM-1657 PR-H).
+///
+/// Carries the agent attribution outside the typed `OpsChangePayload` so
+/// the WS dispatch loop can populate `GovernanceEvent.agent_id` while the
+/// payload body stays consistent with the sibling Violation / Approval /
+/// Budget payloads (which keep agent attribution on the outer event).
+#[derive(Debug, Clone)]
+pub struct OpsChangeBroadcast {
+    /// The agent the transition belongs to. Mirrors
+    /// `GovernanceEvent.agent_id` on the wire.
+    pub agent_id: String,
+    /// The typed payload for the event.
+    pub payload: OpsChangePayload,
+}
+
 /// Default channel capacity for each event broadcast.
 const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
@@ -28,6 +45,12 @@ pub struct EventBroadcast {
     /// Secret-detection alerts emitted when the gateway's credential
     /// scanner produces a non-empty findings list (AAASM-1545).
     secret_tx: broadcast::Sender<SecretAlert>,
+    /// Ops-lifecycle transitions emitted by the registry whenever an
+    /// in-flight op moves between states (AAASM-1657 PR-H). The WS
+    /// dispatch loop converts each envelope into a
+    /// `GovernanceEvent { event_type: OpsChange, ... }` so the dashboard
+    /// can apply its per-op_id row merge and override auto-clear.
+    ops_change_tx: broadcast::Sender<OpsChangeBroadcast>,
 }
 
 impl EventBroadcast {
@@ -38,12 +61,14 @@ impl EventBroadcast {
         let (approval_expiry_tx, _) = broadcast::channel(capacity);
         let (budget_tx, _) = broadcast::channel(capacity);
         let (secret_tx, _) = broadcast::channel(capacity);
+        let (ops_change_tx, _) = broadcast::channel(capacity);
         Self {
             pipeline_tx,
             approval_tx,
             approval_expiry_tx,
             budget_tx,
             secret_tx,
+            ops_change_tx,
         }
     }
 
@@ -99,6 +124,18 @@ impl EventBroadcast {
     /// Get a clone of the secret-detection alert sender (AAASM-1545).
     pub fn secret_sender(&self) -> broadcast::Sender<SecretAlert> {
         self.secret_tx.clone()
+    }
+
+    /// Subscribe to ops-lifecycle transition events (AAASM-1657 PR-H).
+    pub fn subscribe_ops_change(&self) -> broadcast::Receiver<OpsChangeBroadcast> {
+        self.ops_change_tx.subscribe()
+    }
+
+    /// Get a clone of the ops-change event sender (AAASM-1657 PR-H).
+    /// The route handlers in `routes/ops.rs` use this to publish a frame
+    /// after every successful registry transition.
+    pub fn ops_change_sender(&self) -> broadcast::Sender<OpsChangeBroadcast> {
+        self.ops_change_tx.clone()
     }
 }
 
