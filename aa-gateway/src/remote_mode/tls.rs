@@ -198,4 +198,21 @@ mod tests {
             other => panic!("expected ExpiringSoon, got {other:?}"),
         }
     }
+
+    #[test]
+    fn flags_expired_for_past_not_after() {
+        // not_before 100 days ago, not_after 7 days ago.
+        let (cert, key) = issue_cert_with_validity(-100, -7);
+        let (_dir, cfg) = write_pair(&cert, &key);
+        let result = validate(&cfg).expect("validate");
+        match result {
+            TlsValidation::Expired { expired_days_ago } => {
+                assert!(
+                    (6..=7).contains(&expired_days_ago),
+                    "expected expired_days_ago in 6..=7, got {expired_days_ago}"
+                );
+            }
+            other => panic!("expected Expired, got {other:?}"),
+        }
+    }
 }
