@@ -552,6 +552,9 @@ impl GatewayConfig {
         if let Some(url) = get_env("AAASM_REDIS_URL") {
             self.storage.redis.url = Some(url);
         }
+        if let Some(path) = get_env("AAASM_SQLITE_PATH") {
+            self.storage.sqlite.path = PathBuf::from(path);
+        }
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
         if cert.is_some() || key.is_some() {
