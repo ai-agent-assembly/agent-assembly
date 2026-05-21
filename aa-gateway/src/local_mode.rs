@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 /// Handle returned by `start_local()` once the local control plane is up.
@@ -28,4 +29,25 @@ pub struct LocalGatewayHandle {
     /// One-shot channel that signals the Axum server task to begin
     /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
     pub(crate) shutdown_tx: oneshot::Sender<()>,
+}
+
+/// JSON payload returned by `GET /healthz` in local mode.
+///
+/// Documented response shape from AAASM-1576 AC #4:
+///
+/// ```json
+/// {"mode":"local","storage":"sqlite","version":"0.0.1"}
+/// ```
+///
+/// `Deserialize` is derived so the pre-flight probe in AAASM-1715 can
+/// re-parse the response and reject other servers that happen to be
+/// listening on the same port but speak a different protocol.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthzResponse {
+    /// Always `"local"` when produced by this module.
+    pub mode: String,
+    /// Storage backend label — `"sqlite"` for local mode.
+    pub storage: String,
+    /// Gateway binary version (set from `CARGO_PKG_VERSION` at compile time).
+    pub version: String,
 }
