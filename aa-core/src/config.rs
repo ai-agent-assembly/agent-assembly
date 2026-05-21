@@ -153,4 +153,24 @@ mod tests {
             "storage_path should fall back to default"
         );
     }
+
+    #[test]
+    fn remote_mode_config_default_binds_all_interfaces() {
+        let cfg = RemoteModeConfig::default();
+        assert_eq!(cfg.listen_addr, SocketAddr::from(([0, 0, 0, 0], 7391)));
+        assert!(cfg.tls.is_none(), "tls should be opt-in, never on by default");
+        assert!(cfg.database_url.is_none());
+        assert!(cfg.redis_url.is_none());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn remote_mode_config_yaml_overrides_database_keeps_other_defaults() {
+        let yaml = r#"database_url: "postgres://aasm@db.internal/aasm""#;
+        let cfg: RemoteModeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.database_url.as_deref(), Some("postgres://aasm@db.internal/aasm"));
+        assert_eq!(cfg.listen_addr, SocketAddr::from(([0, 0, 0, 0], 7391)));
+        assert!(cfg.tls.is_none());
+        assert!(cfg.redis_url.is_none());
+    }
 }
