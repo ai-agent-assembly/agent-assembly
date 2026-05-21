@@ -5,6 +5,8 @@
 //! `~/.aasm/gateway.pid`; tests inject a temp path via the explicit
 //! `&Path` arguments on each operation.
 
+use std::path::PathBuf;
+
 /// Errors that can occur while interacting with the PID file.
 #[derive(Debug, thiserror::Error)]
 pub enum PidFileError {
@@ -20,4 +22,13 @@ pub enum PidFileError {
     /// `dirs::home_dir()` returned `None` — no resolvable home directory.
     #[error("no home directory could be resolved for the pid file path")]
     NoHomeDir,
+}
+
+/// Default PID file path: `$HOME/.aasm/gateway.pid`.
+///
+/// Returns `PidFileError::NoHomeDir` if `dirs::home_dir()` cannot
+/// resolve a home directory (rare; sandboxed CI environments).
+pub fn pid_file_path() -> Result<PathBuf, PidFileError> {
+    let home = dirs::home_dir().ok_or(PidFileError::NoHomeDir)?;
+    Ok(home.join(".aasm").join("gateway.pid"))
 }
