@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Approval } from './api'
+import { expireApproval } from './useExpiredApprovals'
 import type { components } from '../../api/generated/schema'
 
 type GovernanceEvent = components['schemas']['GovernanceEvent']
@@ -47,6 +48,15 @@ export function useApprovalsStream(): { connected: boolean } {
           const event = JSON.parse(evt.data as string) as GovernanceEvent
           if (event.event_type !== 'approval') return
           const payload = event.payload as ApprovalPayload
+
+          // AAASM-1453 expired event — move the matching row out of the
+          // active list into the Expired section. The dispatcher silently
+          // no-ops when the id isn't in the active cache (stale event).
+          if (payload.status === 'expired') {
+            expireApproval(queryClient, payload.request_id)
+            return
+          }
+
           const incoming: Approval = {
             id: payload.request_id,
             agent_id: event.agent_id,
