@@ -70,6 +70,25 @@ async fn silence_returns_201_and_flips_status_to_suppressed() {
 }
 
 #[tokio::test]
+async fn silence_409_alert_already_silenced() {
+    let state = common::test_state();
+    let alert_id = seed_alert(&state);
+
+    // First silence succeeds.
+    let first = post_silence(state.clone(), json!({ "alert_id": alert_id, "duration_seconds": 3600 })).await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    // Second silence on the same alert while the first is still active.
+    let second = post_silence(state, json!({ "alert_id": alert_id, "duration_seconds": 3600 })).await;
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let body = body_json(second).await;
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("alert_already_silenced:"));
+}
+
+#[tokio::test]
 async fn silence_404_alert_not_found() {
     let state = common::test_state();
     // No alert seeded; use a syntactically valid but unrecorded ULID.
