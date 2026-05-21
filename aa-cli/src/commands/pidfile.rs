@@ -125,4 +125,12 @@ mod tests {
         assert!(!absent.exists());
         assert_eq!(read_pid(&absent).unwrap(), None);
     }
+
+    #[test]
+    fn write_then_read_round_trip_preserves_pid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        write_pid(&pid_file, 13_579).unwrap();
+        assert_eq!(read_pid(&pid_file).unwrap(), Some(13_579));
+    }
 }
