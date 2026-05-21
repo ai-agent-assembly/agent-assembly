@@ -117,5 +117,17 @@ mod tests {
             let b = policy_cache_key("legacy", same_bytes);
             assert_ne!(a, b, "different names must produce different keys");
         }
+
+        #[test]
+        fn hash_slice_is_sixteen_hex_chars() {
+            let key = policy_cache_key("default", b"any-body");
+            // Format is `policy:{name}:{hex}` — slice after the last colon.
+            let hex = key.rsplit(':').next().expect("key has a hex segment");
+            assert_eq!(hex.len(), 16, "expected 16 hex chars, got {hex:?}");
+            assert!(
+                hex.bytes().all(|b| b.is_ascii_hexdigit()),
+                "hex segment must be ascii hex: {hex:?}"
+            );
+        }
     }
 }
