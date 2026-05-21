@@ -487,4 +487,184 @@ mod tests {
         .expect("count probe");
         assert_eq!(count, 6, "exactly 4 tables + 2 indexes expected");
     }
+
+    /// Three audit events with distinct agent_ids, timestamps and flags.
+    /// Shared helper for the AuditFilter / paging / count tests.
+    fn sample_events() -> Vec<AuditEvent> {
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let agent_b = AgentId::from_bytes([2; 16]);
+        vec![
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(1),
+                agent_id: agent_a,
+                team_id: Some("team-x".into()),
+                action: "tool_call".into(),
+                decision: "allow".into(),
+                dry_run: false,
+                shadow_decision: None,
+                matched_rule_id: Some("rule-1".into()),
+                payload: Some(serde_json::json!({"tool": "fetch"})),
+            },
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T11:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(2),
+                agent_id: agent_a,
+                team_id: Some("team-x".into()),
+                action: "policy_decision".into(),
+                decision: "deny".into(),
+                dry_run: true,
+                shadow_decision: Some("allow".into()),
+                matched_rule_id: None,
+                payload: None,
+            },
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(3),
+                agent_id: agent_b,
+                team_id: Some("team-y".into()),
+                action: "tool_call".into(),
+                decision: "allow".into(),
+                dry_run: false,
+                shadow_decision: None,
+                matched_rule_id: Some("rule-2".into()),
+                payload: Some(serde_json::json!({"k": [1, 2, 3]})),
+            },
+        ]
+    }
+
+    async fn migrated_backend_with_samples() -> (TempDir, SqliteBackend, Vec<AuditEvent>) {
+        let (tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let events = sample_events();
+        for ev in &events {
+            backend.append_audit_event(ev).await.expect("append");
+        }
+        (tmp, backend, events)
+    }
+
+    #[tokio::test]
+    async fn audit_round_trip_preserves_all_columns_including_payload() {
+        let (_tmp, backend, events) = migrated_backend_with_samples().await;
+        let mut out = backend.query_audit_events(AuditFilter::default()).await.expect("query");
+        // ORDER BY ts DESC — newest first.
+        out.reverse();
+        assert_eq!(out, events, "all columns + payload must round-trip");
+    }
+
+    #[tokio::test]
+    async fn audit_filter_dimensions_independently_narrow_results() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let agent_b = AgentId::from_bytes([2; 16]);
+
+        let by_a = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("agent filter");
+        assert_eq!(by_a.len(), 2);
+        assert!(by_a.iter().all(|e| e.agent_id == agent_a));
+
+        let by_team_y = backend
+            .query_audit_events(AuditFilter {
+                team_id: Some("team-y".into()),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("team filter");
+        assert_eq!(by_team_y.len(), 1);
+        assert_eq!(by_team_y[0].agent_id, agent_b);
+
+        let only_dry = backend
+            .query_audit_events(AuditFilter {
+                dry_run_only: true,
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("dry_run filter");
+        assert_eq!(only_dry.len(), 1);
+        assert!(only_dry[0].dry_run);
+
+        let in_window = backend
+            .query_audit_events(AuditFilter {
+                from: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T10:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                to: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T11:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("time-range filter");
+        assert_eq!(in_window.len(), 1);
+        assert_eq!(in_window[0].event_id, uuid::Uuid::from_u128(2));
+    }
+
+    #[tokio::test]
+    async fn audit_query_limit_and_offset_produce_disjoint_pages() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+        let first = backend
+            .query_audit_events(AuditFilter {
+                limit: Some(2),
+                offset: Some(0),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("page 1");
+        let second = backend
+            .query_audit_events(AuditFilter {
+                limit: Some(2),
+                offset: Some(2),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("page 2");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        let ids_first: std::collections::HashSet<_> = first.iter().map(|e| e.event_id).collect();
+        let ids_second: std::collections::HashSet<_> = second.iter().map(|e| e.event_id).collect();
+        assert!(ids_first.is_disjoint(&ids_second));
+    }
+
+    #[tokio::test]
+    async fn audit_count_matches_query_result_size() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+
+        let total = backend
+            .count_audit_events(AuditFilter::default())
+            .await
+            .expect("count all");
+        assert_eq!(total, 3);
+
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let scoped = backend
+            .count_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("count scoped");
+        let scoped_rows = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query scoped");
+        assert_eq!(scoped, scoped_rows.len() as u64);
+    }
 }
