@@ -70,19 +70,30 @@ fn ac_4_aa_mode_env_overrides_yaml_mode() {
     assert_eq!(cfg.mode, DeploymentMode::Remote);
 }
 
-/// AC #5 — `AAASM_DATABASE_URL` env var overrides `remote.database_url`.
+/// AC #5 — `AAASM_DATABASE_URL` env var overrides the Postgres URL.
+///
+/// As of E18 S-H (AAASM-1735) the env var targets
+/// `storage.postgres.database_url`; `remote.database_url` is left
+/// untouched and will be removed by the E18 S-I wiring story.
 #[test]
 fn ac_5_aasm_database_url_env_overrides_yaml_value() {
     let yaml = r#"
-remote:
-  database_url: "postgres://yaml-default/aasm"
+storage:
+  postgres:
+    database_url: "postgres://yaml-default/aasm"
 "#;
     let mut cfg = GatewayConfig::from_yaml_str(yaml).unwrap();
-    assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://yaml-default/aasm"));
+    assert_eq!(
+        cfg.storage.postgres.database_url.as_deref(),
+        Some("postgres://yaml-default/aasm"),
+    );
     let restore = ScopedEnv::set("AAASM_DATABASE_URL", "postgres://env-override/aasm");
     cfg.apply_env_overrides().unwrap();
     drop(restore);
-    assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://env-override/aasm"));
+    assert_eq!(
+        cfg.storage.postgres.database_url.as_deref(),
+        Some("postgres://env-override/aasm"),
+    );
 }
 
 /// AC #6 — `~` in `storage_path` expanded to the real home directory.

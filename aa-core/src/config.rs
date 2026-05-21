@@ -540,7 +540,7 @@ impl GatewayConfig {
             self.remote.listen_addr.set_port(port);
         }
         if let Some(url) = get_env("AAASM_DATABASE_URL") {
-            self.remote.database_url = Some(url);
+            self.storage.postgres.database_url = Some(url);
         }
         if let Some(url) = get_env("AAASM_REDIS_URL") {
             self.remote.redis_url = Some(url);
@@ -822,14 +822,23 @@ agent:
     }
 
     #[test]
-    fn apply_env_overrides_database_and_redis_urls() {
+    fn apply_env_overrides_database_url_targets_storage_postgres() {
         let mut cfg = GatewayConfig::default();
-        cfg.apply_env_overrides_with(env(&[
-            ("AAASM_DATABASE_URL", "postgres://aasm@db/aasm"),
-            ("AAASM_REDIS_URL", "redis://redis:6379"),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://aasm@db/aasm"));
+        cfg.apply_env_overrides_with(env(&[("AAASM_DATABASE_URL", "postgres://aasm@db/aasm")]))
+            .unwrap();
+        assert_eq!(
+            cfg.storage.postgres.database_url.as_deref(),
+            Some("postgres://aasm@db/aasm"),
+        );
+        // Legacy remote.database_url is untouched (removed in E18 S-I).
+        assert!(cfg.remote.database_url.is_none());
+    }
+
+    #[test]
+    fn apply_env_overrides_legacy_redis_url_still_sets_remote_field() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AAASM_REDIS_URL", "redis://redis:6379")]))
+            .unwrap();
         assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
     }
 
