@@ -215,4 +215,26 @@ mod tests {
             other => panic!("expected Expired, got {other:?}"),
         }
     }
+
+    #[test]
+    fn errors_when_cert_file_missing() {
+        let (cert, key) = issue_cert_with_validity(-1, 365);
+        let (dir, mut cfg) = write_pair(&cert, &key);
+        cfg.cert_file = dir.path().join("does-not-exist.pem");
+        match validate(&cfg).expect_err("expected error") {
+            TlsError::CertFileMissing(path) => assert_eq!(path, cfg.cert_file),
+            other => panic!("expected CertFileMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn errors_when_key_file_missing() {
+        let (cert, key) = issue_cert_with_validity(-1, 365);
+        let (dir, mut cfg) = write_pair(&cert, &key);
+        cfg.key_file = dir.path().join("missing-key.pem");
+        match validate(&cfg).expect_err("expected error") {
+            TlsError::KeyFileMissing(path) => assert_eq!(path, cfg.key_file),
+            other => panic!("expected KeyFileMissing, got {other:?}"),
+        }
+    }
 }
