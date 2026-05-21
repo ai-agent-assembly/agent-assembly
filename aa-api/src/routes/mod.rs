@@ -84,7 +84,9 @@ pub fn v1_router() -> Router {
         )
         .route(
             "/alerts/rules/{id}",
-            get(alert_rules::get_rule).put(alert_rules::update_rule),
+            get(alert_rules::get_rule)
+                .put(alert_rules::update_rule)
+                .delete(alert_rules::delete_rule),
         )
         .route("/alerts/{id}", get(alerts::get_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
