@@ -20,6 +20,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// `<workspace-parent>/agent-assembly/` — derived from `CARGO_MANIFEST_DIR`.
 fn agent_assembly_root() -> PathBuf {
@@ -57,3 +58,78 @@ fn make_fake_aasm(dir: &Path) -> PathBuf {
 
 /// `$PATH` value that is guaranteed not to contain an `aasm` executable.
 const EMPTY_PATH_DIR: &str = "/var/empty-AAASM-1230-no-aasm";
+
+// ── Python ────────────────────────────────────────────────────────────────────
+
+fn python_sdk_path() -> PathBuf {
+    sibling_repo("PYTHON_SDK_PATH", "python-sdk")
+}
+
+/// True when the sibling python-sdk has the AAASM-1227 runtime module.
+fn python_runtime_present() -> bool {
+    python_sdk_path().join("agent_assembly/runtime.py").exists()
+}
+
+#[test]
+fn python_binary_in_path_returns_resolved_path() {
+    if !python_runtime_present() {
+        eprintln!(
+            "skip python_binary_in_path: {} has no agent_assembly/runtime.py \
+             (AAASM-1227 likely not yet merged)",
+            python_sdk_path().display()
+        );
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let fake = make_fake_aasm(tmp.path());
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "from agent_assembly.runtime import find_aasm_binary; \
+             p = find_aasm_binary(); print(p if p else 'NONE')",
+        )
+        .env("PYTHONPATH", python_sdk_path())
+        .env("PATH", tmp.path())
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn python3");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "python probe failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.trim().ends_with("/aasm"),
+        "expected resolved path to end in /aasm, got: {stdout:?}"
+    );
+    let _ = fake;
+}
+
+#[test]
+fn python_init_assembly_raises_runtime_error_when_missing() {
+    if !python_runtime_present() {
+        eprintln!(
+            "skip python_init_assembly_raises_…: {} has no agent_assembly/runtime.py",
+            python_sdk_path().display()
+        );
+        return;
+    }
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg("from agent_assembly.runtime import init_assembly; init_assembly()")
+        .env("PYTHONPATH", python_sdk_path())
+        .env("PATH", EMPTY_PATH_DIR)
+        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .output()
+        .expect("spawn python3");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when binary missing; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("agent-assembly runtime not found"),
+        "INSTALL_HINT missing from stderr:\n{stderr}"
+    );
+}
