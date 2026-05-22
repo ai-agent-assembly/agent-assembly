@@ -61,7 +61,17 @@ pub fn dispatch(args: StatusArgs, ctx: &ResolvedContext, output: OutputFormat) -
             ExitCode::SUCCESS
         } else {
             let snapshot = fetch::fetch_all(&api_client).await;
-            render::render_all(&snapshot, output);
+            if args.json {
+                match serde_json::to_string_pretty(&snapshot.deployment) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => eprintln!("error serializing deployment overview to JSON: {e}"),
+                }
+            } else {
+                render::render_all(&snapshot, output);
+            }
+            if snapshot.deployment.health == "unreachable" {
+                eprintln!("Error: gateway is not running. Start it with: aasm start");
+            }
             compute_exit_code(&snapshot)
         }
     })
