@@ -26,6 +26,7 @@ pub mod proxy;
 pub mod run;
 pub mod start;
 pub mod status;
+pub mod stop;
 pub mod tools;
 pub mod topology;
 pub mod trace;
@@ -72,6 +73,8 @@ pub enum Commands {
     Proxy(proxy::ProxyArgs),
     /// Start the locally-managed Agent Assembly gateway process.
     Start(start::StartArgs),
+    /// Stop the locally-managed Agent Assembly gateway process.
+    Stop(stop::StopArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -96,5 +99,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
         Commands::Proxy(args) => proxy::dispatch(args),
         Commands::Start(args) => start::run(args),
+        Commands::Stop(args) => stop::run(args),
     }
 }
