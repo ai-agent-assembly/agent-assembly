@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::metric::Metric;
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 
@@ -611,6 +612,34 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
         Ok(())
+    }
+
+    /// Persist a single metric sample.
+    ///
+    /// Native PostgreSQL bindings: `TIMESTAMPTZ` for `ts`, `DOUBLE PRECISION`
+    /// for `value`, JSONB for `labels`. `agent_id` is serialised via
+    /// [`agent_id_to_text`] so the column matches the shape used elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::QueryFailed`] when `labels` cannot be encoded as
+    ///   JSON or the INSERT is rejected.
+    pub async fn record_metric(&self, m: Metric) -> StorageResult<()> {
+        let labels =
+            serde_json::to_value(&m.labels).map_err(|e| StorageError::QueryFailed(format!("labels serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO metrics (ts, agent_id, metric, value, labels) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(m.ts)
+        .bind(agent_id_to_text(&m.agent_id))
+        .bind(&m.metric)
+        .bind(m.value)
+        .bind(labels)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))
     }
 }
 
