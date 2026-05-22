@@ -748,4 +748,29 @@ mod tests {
             "every returned row must belong to {team}",
         );
     }
+
+    #[tokio::test]
+    async fn delete_unknown_returns_not_found() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let missing = fresh_agent_id();
+        let err = backend
+            .delete_agent(&missing)
+            .await
+            .expect_err("delete of unknown id must error");
+
+        match err {
+            StorageError::NotFound(payload) => {
+                assert_eq!(
+                    payload,
+                    agent_id_to_text(&missing),
+                    "NotFound payload should carry the offending TEXT id",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
 }
