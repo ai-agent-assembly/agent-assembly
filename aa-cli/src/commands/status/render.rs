@@ -300,6 +300,28 @@ mod tests {
     }
 
     #[test]
+    fn format_deployment_overview_shows_unreachable_indicator_when_health_is_unreachable() {
+        let overview = DeploymentOverview {
+            mode: "unknown".to_string(),
+            gateway_url: "http://localhost:7391".to_string(),
+            storage_backend: "unknown".to_string(),
+            storage_path: None,
+            database_url_redacted: None,
+            version: String::new(),
+            uptime_secs: 0,
+            health: "unreachable".to_string(),
+        };
+        let rendered = strip_ansi(&format_deployment_overview(&overview));
+        assert!(rendered.contains("  Gateway:   http://localhost:7391\n"));
+        assert!(rendered.contains("  Health:    ✗ unreachable\n"));
+        // The unreachable body collapses — Mode/Storage/Version/Uptime lines are omitted.
+        assert!(!rendered.contains("Mode:"));
+        assert!(!rendered.contains("Storage:"));
+        assert!(!rendered.contains("Version:"));
+        assert!(!rendered.contains("Uptime:"));
+    }
+
+    #[test]
     fn format_deployment_overview_shows_redacted_db_url_for_remote_postgres() {
         let overview = DeploymentOverview {
             mode: "remote".to_string(),
