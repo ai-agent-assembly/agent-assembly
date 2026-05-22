@@ -17,6 +17,7 @@ use sqlx::sqlite::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use crate::dashboard_server::{dashboard_router, find_dashboard_dist};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{SqliteBackend, SqliteConfig, StorageBackend, StorageError};
 
@@ -224,23 +225,31 @@ pub enum LocalModeError {
     },
 }
 
-/// Build the local-mode Axum router skeleton.
+/// Build the local-mode Axum router.
 ///
-/// Mounts `/healthz` (always) via [`crate::routes::healthz::healthz`];
-/// the dashboard SPA mount (AAASM-1580 / E17 S-F) layers onto this in
-/// the next commit, gated on `config.dashboard`. Future API routes
-/// wired by AAASM-1731 merge into the same router.
+/// Always mounts `/healthz` via [`crate::routes::healthz::healthz`].
+/// When `config.dashboard` is `true` and
+/// [`crate::dashboard_server::find_dashboard_dist`] resolves a
+/// `dashboard/dist/` directory, also merges in the dashboard SPA
+/// router from [`crate::dashboard_server::dashboard_router`] so the
+/// gateway serves the React app at `/` and falls back to `index.html`
+/// for client-side routes. `/healthz` is registered before the merge
+/// so the SPA catch-all never eats the API route — AAASM-1580 AC
+/// "API route, not overridden by dashboard handler".
 ///
-/// The `Extension(HealthzState::new("local", "sqlite"))` layer supplies
-/// the labels the shared `/healthz` handler reads, so the response body
-/// carries `mode: "local"` and `storage: "sqlite"` per AAASM-1576 AC #4.
-///
-/// Takes `&LocalModeConfig` rather than being parameterless so the
-/// router can branch on `config.dashboard` (and future config) without
-/// the caller having to pre-build separate routers.
-pub(crate) fn router(_config: &LocalModeConfig) -> Router {
+/// Missing dist when the dashboard is requested is silent in this
+/// commit — the next commit adds the `tracing::warn!` for AAASM-1580
+/// AC "Missing dashboard/dist/ → gateway starts successfully with
+/// warning".
+pub(crate) fn router(config: &LocalModeConfig) -> Router {
     let state = HealthzState::new("local", "sqlite");
-    Router::new().route("/healthz", get(healthz)).layer(Extension(state))
+    let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
+    if config.dashboard {
+        if let Some(dist) = find_dashboard_dist() {
+            app = app.merge(dashboard_router(&dist));
+        }
+    }
+    app
 }
 
 /// Create the parent directory tree for `path` if it does not yet exist.
