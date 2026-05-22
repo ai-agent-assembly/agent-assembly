@@ -1,5 +1,9 @@
 //! Runtime configuration for the retention background task.
 
+use std::str::FromStr;
+
+use cron::Schedule;
+
 use super::retention::{ColdAction, RetentionPolicy};
 
 /// Reasons a [`RetentionConfig`] can be invalid at startup time.
@@ -51,7 +55,26 @@ impl RetentionConfig {
         if self.cold_action == ColdAction::Archive && self.archive_url.is_none() {
             return Err(RetentionConfigError::MissingArchiveUrl);
         }
+        self.parsed_schedule()?;
         Ok(())
+    }
+
+    /// Parse `self.schedule` into a [`cron::Schedule`].
+    ///
+    /// The retention engine's background loop uses the returned schedule to
+    /// compute the next run instant on each tick. Surfaced as a method so
+    /// callers (`RetentionEngine::start`, `RetentionConfig::validate`) share
+    /// one parse path and one error variant.
+    ///
+    /// # Errors
+    ///
+    /// - [`RetentionConfigError::InvalidSchedule`] when the schedule string
+    ///   is not a valid cron expression.
+    pub fn parsed_schedule(&self) -> Result<Schedule, RetentionConfigError> {
+        Schedule::from_str(&self.schedule).map_err(|e| RetentionConfigError::InvalidSchedule {
+            schedule: self.schedule.clone(),
+            reason: e.to_string(),
+        })
     }
 
     /// Build the [`RetentionPolicy`] descriptor the backend's
