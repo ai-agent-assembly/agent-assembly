@@ -16,6 +16,62 @@ use sqlx::SqlitePool;
 
 use super::error::{StorageError, StorageResult};
 
+/// SQL DDL applied by [`SqliteBackend::migrate`] on every gateway start.
+///
+/// Each statement is `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
+/// EXISTS`, so the slice is safe to apply against either a fresh file or
+/// an already-migrated one. Statements run in declaration order; indexes
+/// follow their owning table.
+///
+/// Mirrors the SQLite schema documented under Story AAASM-1584 (Epic 18 S-B).
+const SCHEMA: &[&str] = &[
+    // audit_events — composite (ts, event_id) primary key with agent + ts indexes.
+    "CREATE TABLE IF NOT EXISTS audit_events (
+        ts              TEXT NOT NULL,
+        event_id        TEXT NOT NULL,
+        agent_id        TEXT NOT NULL,
+        team_id         TEXT,
+        action          TEXT NOT NULL,
+        decision        TEXT NOT NULL,
+        dry_run         INTEGER NOT NULL DEFAULT 0,
+        shadow_decision TEXT,
+        matched_rule_id TEXT,
+        payload         TEXT,
+        PRIMARY KEY (ts, event_id)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_events(agent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)",
+    // agent_registry — durable identity / config slice of the registry.
+    "CREATE TABLE IF NOT EXISTS agent_registry (
+        agent_id          TEXT PRIMARY KEY,
+        team_id           TEXT,
+        org_id            TEXT,
+        metadata          TEXT NOT NULL DEFAULT '{}',
+        registered_at     TEXT NOT NULL,
+        last_seen_at      TEXT NOT NULL,
+        enforcement_mode  TEXT NOT NULL DEFAULT 'enforce'
+    )",
+    // policy_versions — versioned policy documents with at most one active
+    // version per name (enforced at the application layer).
+    "CREATE TABLE IF NOT EXISTS policy_versions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        version     INTEGER NOT NULL,
+        document    TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        is_active   INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(name, version)
+    )",
+    // metrics — time-series sample stream; no index in SQLite mode.
+    "CREATE TABLE IF NOT EXISTS metrics (
+        ts        TEXT NOT NULL,
+        agent_id  TEXT NOT NULL,
+        metric    TEXT NOT NULL,
+        value     REAL NOT NULL,
+        labels    TEXT NOT NULL DEFAULT '{}'
+    )",
+];
+
 /// Local SQLite backend configuration.
 ///
 /// Defined here as a minimal type so this Story (E18 S-B) can land
@@ -35,7 +91,6 @@ pub struct SqliteConfig {
 /// struct currently exposes only the [`SqliteBackend::open`] constructor
 /// and an internal connection-pool handle.
 pub struct SqliteBackend {
-    #[allow(dead_code)] // first writers land in S-B.2 (migrate)
     pool: SqlitePool,
 }
 
@@ -78,9 +133,30 @@ impl SqliteBackend {
 
     /// Borrow the connection pool. Crate-internal helper for trait-impl
     /// sub-modules that land in subsequent S-B sub-tasks.
-    #[allow(dead_code)] // first consumer arrives in S-B.2
+    #[allow(dead_code)] // first non-test consumer arrives with the trait impl methods
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Apply the [`SCHEMA`] DDL to the open database.
+    ///
+    /// Idempotent: each statement uses `IF NOT EXISTS`, so re-running on
+    /// an already-migrated database is a no-op. Intended to be invoked
+    /// once at gateway startup before the runtime issues any trait-level
+    /// reads or writes.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::MigrationFailed`] if any DDL statement is
+    ///   rejected by the backend.
+    pub async fn migrate(&self) -> StorageResult<()> {
+        for stmt in SCHEMA {
+            sqlx::query(stmt)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -112,6 +188,16 @@ mod tests {
         assert_eq!(expand_tilde(relative), PathBuf::from("data/db.sqlite"));
     }
 
+    /// Open a SqliteBackend against a fresh tempdir.
+    async fn open_temp_backend() -> (TempDir, SqliteBackend) {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("test.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path })
+            .await
+            .expect("open should succeed");
+        (tmp, backend)
+    }
+
     #[tokio::test]
     async fn open_creates_parent_dir_and_enables_wal() {
         let tmp = TempDir::new().expect("tempdir");
@@ -130,5 +216,53 @@ mod tests {
             .await
             .expect("journal_mode probe");
         assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
+    }
+
+    #[tokio::test]
+    async fn migrate_creates_all_expected_tables_and_indexes() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate should succeed");
+
+        let names: Vec<(String, String)> = sqlx::query_as(
+            "SELECT type, name FROM sqlite_master \
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(backend.pool())
+        .await
+        .expect("sqlite_master probe");
+
+        let actual: std::collections::BTreeSet<(String, String)> = names.into_iter().collect();
+        let expected: std::collections::BTreeSet<(String, String)> = [
+            ("table", "audit_events"),
+            ("table", "agent_registry"),
+            ("table", "policy_versions"),
+            ("table", "metrics"),
+            ("index", "idx_audit_agent"),
+            ("index", "idx_audit_ts"),
+        ]
+        .into_iter()
+        .map(|(t, n)| (t.to_owned(), n.to_owned()))
+        .collect();
+        for entry in &expected {
+            assert!(actual.contains(entry), "missing schema entry: {entry:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent_across_repeated_calls() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("first migrate");
+        backend.migrate().await.expect("second migrate should be a no-op");
+        backend.migrate().await.expect("third migrate should still be a no-op");
+
+        // Schema row count should be unchanged across re-runs.
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_one(backend.pool())
+        .await
+        .expect("count probe");
+        assert_eq!(count, 6, "exactly 4 tables + 2 indexes expected");
     }
 }
