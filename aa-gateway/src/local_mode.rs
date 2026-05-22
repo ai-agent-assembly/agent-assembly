@@ -142,6 +142,47 @@ pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeErr
         })
 }
 
+/// Probe `GET http://127.0.0.1:{port}/healthz` with a 100 ms timeout.
+///
+/// Used as the auto-start idempotency check by `start_local()` (AAASM-1725):
+/// if a previous gateway is already serving on the port, the call short-
+/// circuits and we reuse the existing process rather than failing to bind.
+/// Matches AAASM-1576 AC #2 ("If port 7391 is already in use by a running
+/// AASM gateway, auto-start is skipped").
+///
+/// Returns:
+/// * `true`  — a running gateway responded 200 OK and the body carries a
+///   `HealthzBody`-compatible shape (string `mode`, `version`, `storage`).
+/// * `false` — connection refused, request timeout, non-200 response, or
+///   unexpected body shape. The probe never panics; every error path maps
+///   to `false` so callers can treat it as a boolean.
+///
+/// The body-shape check guards against falsely identifying *foreign*
+/// services that happen to be listening on the port (e.g. a developer
+/// running a different HTTP server on 7391) as a healthy AASM gateway.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) async fn probe_running(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(100))
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client.get(&url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return false;
+    };
+    body.get("mode").and_then(|v| v.as_str()).is_some()
+        && body.get("storage").and_then(|v| v.as_str()).is_some()
+        && body.get("version").and_then(|v| v.as_str()).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +273,94 @@ mod tests {
         assert!(!pool.is_closed(), "open_storage should return an open pool",);
 
         pool.close().await;
+    }
+
+    /// AAASM-1576 AC #2 negative path: when no gateway is listening,
+    /// `probe_running` must return `false` (so `start_local()` proceeds
+    /// with auto-start) — within the documented 100 ms timeout, never
+    /// hanging or panicking.
+    ///
+    /// Pattern: bind a TcpListener to grab a fresh ephemeral port, then
+    /// drop it before probing — the kernel returns ECONNREFUSED on the
+    /// next connect attempt, exercising the connection-refused path.
+    #[tokio::test]
+    async fn probe_running_returns_false_on_connection_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener);
+
+        let start = std::time::Instant::now();
+        let alive = probe_running(port).await;
+        let elapsed = start.elapsed();
+
+        assert!(!alive, "probe must report dead when port is closed");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "probe should fail fast on connection refused; took {elapsed:?}"
+        );
+    }
+
+    /// AAASM-1576 AC #2 positive path: when a real local-mode gateway is
+    /// serving on the port, `probe_running` must return `true` so
+    /// `start_local()` short-circuits and reuses the existing process.
+    ///
+    /// Spins up the actual `router()` (which mounts `routes::healthz`
+    /// with `HealthzState::new("local", "sqlite")`) on an ephemeral
+    /// port via `axum::serve`, then probes it. The server task is
+    /// aborted on the way out to keep the test hermetic.
+    #[tokio::test]
+    async fn probe_running_returns_true_against_local_mode_router() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router()).await;
+        });
+
+        let alive = probe_running(port).await;
+
+        server.abort();
+
+        assert!(alive, "probe must report alive against a real local-mode /healthz");
+    }
+
+    /// AAASM-1576 AC #2 guard: when *some other* HTTP server is
+    /// listening on port 7391 — say a developer's static-asset server
+    /// or a stale process from a different product — `probe_running`
+    /// must return `false`. Otherwise `start_local()` would falsely
+    /// reuse a foreign process and the gateway would silently fail to
+    /// come up.
+    ///
+    /// Spins up a tiny axum router that responds 200 OK with
+    /// `{"foo":"bar"}` (missing every documented `HealthzBody` field)
+    /// and asserts the probe rejects it.
+    #[tokio::test]
+    async fn probe_running_returns_false_on_body_shape_mismatch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        async fn foreign_handler() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({"foo": "bar"}))
+        }
+        let foreign_app = Router::new().route("/healthz", get(foreign_handler));
+
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, foreign_app).await;
+        });
+
+        let alive = probe_running(port).await;
+
+        server.abort();
+
+        assert!(
+            !alive,
+            "probe must reject foreign /healthz responses missing HealthzBody fields"
+        );
     }
 }
