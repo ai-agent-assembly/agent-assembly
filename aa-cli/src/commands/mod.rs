@@ -7,6 +7,7 @@ use clap::Subcommand;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
+pub mod admin;
 pub mod agent;
 pub mod alerts;
 pub mod approvals;
