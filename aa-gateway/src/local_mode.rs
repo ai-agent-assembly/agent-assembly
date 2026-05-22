@@ -188,4 +188,25 @@ mod tests {
             "uptime_secs must be present and a u64; got {body}",
         );
     }
+
+    /// Mirrors the developer's first `aasm start --mode local` —
+    /// `~/.aasm/` does not exist yet, so `ensure_storage_parent`
+    /// must `mkdir -p` the parent tree before the SQLite file can
+    /// be written. Verifies the helper creates nested missing
+    /// directories rather than only the immediate parent.
+    #[test]
+    fn ensure_storage_parent_creates_nested_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nested = tmp.path().join("a/b/c/local.db");
+
+        // Sanity: the nested parent does not exist yet.
+        assert!(!nested.parent().expect("parent").exists());
+
+        ensure_storage_parent(&nested).expect("ensure_storage_parent");
+
+        assert!(
+            nested.parent().expect("parent").is_dir(),
+            "ensure_storage_parent should mkdir -p the parent tree"
+        );
+    }
 }
