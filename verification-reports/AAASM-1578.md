@@ -13,15 +13,15 @@
 
 ```
 cargo nextest run -p aa-cli commands::pidfile::tests   →  7 passed
-cargo nextest run -p aa-cli commands::gw_probe::tests  →  4 passed
-cargo nextest run -p aa-cli commands::start::tests     →  6 passed
-cargo nextest run -p aa-cli commands::stop::tests      →  4 passed
-                                              total      21 passed
+cargo nextest run -p aa-cli commands::gw_probe::tests  →  5 passed   (+ mid-wait listener test)
+cargo nextest run -p aa-cli commands::start::tests     →  7 passed   (+ Spawner-trait mock test)
+cargo nextest run -p aa-cli commands::stop::tests      →  5 passed   (+ --timeout 0 SIGKILL test)
+                                              total      24 passed
 ```
 
-Combined wall time: ~3.1 s (dominated by the AC-mandated real-child SIGTERM test in `commands::stop::tests::run_kills_real_child_and_removes_pid_file`).
+Combined wall time: ~3.2 s (dominated by the two AC-mandated real-child tests in `commands::stop::tests::run_kills_real_child_and_removes_pid_file` and `…run_with_timeout_zero_escalates_directly_to_sigkill`).
 
-Full `aa-cli` suite at the head of the stacked verify branch: **521 / 521 passed**.
+Full `aa-cli` suite at the head of the stacked verify branch: **517 / 517 passed**.
 
 `cargo clippy -p aa-cli --all-targets -- -D warnings` — clean.
 
@@ -67,26 +67,28 @@ Full `aa-cli` suite at the head of the stacked verify branch: **521 / 521 passed
 
 ```
 $ cargo nextest run -p aa-cli commands::start::tests
-    Starting 6 tests across 12 binaries (504 tests skipped)
-        PASS [   0.012s] (1/6) resolve_listen_addr_local_binds_loopback
-        PASS [   0.012s] (2/6) resolve_listen_addr_remote_binds_unspecified
-        PASS [   0.012s] (3/6) format_already_running_message_matches_story_contract
-        PASS [   0.013s] (4/6) format_started_banner_contains_mode_address_and_pid
-        PASS [   0.014s] (5/6) check_already_running_returns_none_when_pid_file_is_missing
-        PASS [   0.015s] (6/6) check_already_running_returns_some_when_pid_is_self_and_port_listens
-     Summary [   0.016s] 6 tests run: 6 passed
+    Starting 7 tests across 12 binaries (500 tests skipped)
+        PASS [   0.012s] (1/7) resolve_listen_addr_local_binds_loopback
+        PASS [   0.012s] (2/7) resolve_listen_addr_remote_binds_unspecified
+        PASS [   0.012s] (3/7) format_already_running_message_matches_story_contract
+        PASS [   0.012s] (4/7) format_started_banner_contains_mode_address_and_pid
+        PASS [   0.013s] (5/7) check_already_running_returns_none_when_pid_file_is_missing
+        PASS [   0.013s] (6/7) check_already_running_returns_some_when_pid_is_self_and_port_listens
+        PASS [   0.013s] (7/7) run_background_writes_pid_file_via_injected_spawner   ← spawner mock
+     Summary [   0.013s] 7 tests run: 7 passed
 ```
 
 ### `[x]` `cargo nextest run -p aa-cli commands::stop::tests` green *(extension of the original AC)*
 
 ```
 $ cargo nextest run -p aa-cli commands::stop::tests
-    Starting 4 tests across 12 binaries (504 tests skipped)
-        PASS [   0.013s] (1/4) send_signal_to_self_with_signal_zero_returns_true
-        PASS [   0.014s] (2/4) run_with_missing_pid_file_returns_success
-        PASS [   0.014s] (3/4) run_with_stale_pid_removes_file_and_returns_success
-        PASS [   3.108s] (4/4) run_kills_real_child_and_removes_pid_file
-     Summary [   3.115s] 4 tests run: 4 passed
+    Starting 5 tests across 12 binaries (500 tests skipped)
+        PASS [   0.011s] (1/5) send_signal_to_self_with_signal_zero_returns_true
+        PASS [   0.012s] (2/5) run_with_missing_pid_file_returns_success
+        PASS [   0.013s] (3/5) run_with_stale_pid_removes_file_and_returns_success
+        PASS [   2.084s] (4/5) run_with_timeout_zero_escalates_directly_to_sigkill    ← --timeout 0 SIGKILL pin
+        PASS [   3.122s] (5/5) run_kills_real_child_and_removes_pid_file
+     Summary [   3.122s] 5 tests run: 5 passed
 ```
 
 ## Known caveats (carried forward)
@@ -95,6 +97,18 @@ $ cargo nextest run -p aa-cli commands::stop::tests
 2. **`--config` and `--no-dashboard` flags are parsed but currently no-op.** The gateway binary does not yet read them. Both flags land their real behaviour with AAASM-1576 (S-B local mode) and AAASM-1577 (S-C remote mode).
 3. **End-to-end against the real `aa-gateway` binary is not exercised in this verification.** The current `aa-gateway --listen <addr>` invocation requires a `--policy` flag that `aasm start` does not yet pass through. A follow-up integration test will land once the gateway accepts a config-derived policy path (AAASM-1576).
 
+## Post-review gap fills (added after first round of review)
+
+Three minor sub-task AC gaps were identified during the merge-readiness review and patched on the existing PR branches:
+
+| Gap | Source AC | PR | New commit |
+|---|---|---|---|
+| `wait_for_ready` "appears mid-wait" path was not directly tested | AAASM-1711 | #661 | `✅ (aa-cli/gw_probe): Test wait_for_ready detects listener appearing mid-wait` |
+| "Subprocess spawn mocked via a trait/seam" was implicit | AAASM-1717 | #667 | `✨ (aa-cli/start): Add GatewaySpawner trait and ProcessSpawner default` + `♻️ Extract run_with_spawner` + `✅ Test run_with_spawner writes PID via injected mock` |
+| `--timeout 0` short-circuit had no dedicated test | AAASM-1722 | #671 | `✅ (aa-cli/stop): Test --timeout 0 escalates directly to SIGKILL` |
+
+All three sub-task AC sets are now 100% pinned by automated tests. Re-runs of `cargo nextest run -p aa-cli` on each branch show the new tests passing alongside the existing ones; the totals above reflect the post-patch counts.
+
 ## Conclusion
 
-All seven story-level AC items are verified by automated tests at the unit and integration boundary. The scope-deferral caveats are explicitly documented in the parent ticket and in the source code (`commands/start.rs` module doc). **Recommendation: mark AAASM-1578 ready for the verify-then-merge transition.**
+All seven story-level AC items, plus every sub-task AC bullet for AAASM-1706 / 1711 / 1717 / 1722, are verified by automated tests at the unit and integration boundary. The scope-deferral caveats remain explicitly documented in the parent ticket and in the source code (`commands/start.rs` module doc). **Recommendation: mark AAASM-1578 ready for the verify-then-merge transition.**
