@@ -2220,6 +2220,19 @@ mod tests {
     // ── enforcement-mode resolution (AAASM-1557) ─────────────────────────────
 
     #[test]
+    fn resolve_isolates_two_agents_under_the_same_policy() {
+        // AAASM-1557 AC: two agents share a policy, one registers in Observe,
+        // the other inherits the policy default (Enforce) — each must resolve
+        // to its own mode independently. Regression guard for any future
+        // refactor that accidentally shares state across resolve() calls.
+        let policy = aa_core::EnforcementMode::Enforce; // trusted-team policy
+        let trusted_agent = resolve_enforcement_mode(None, policy);
+        let experimental_agent = resolve_enforcement_mode(Some(aa_core::EnforcementMode::Observe), policy);
+        assert_eq!(trusted_agent, aa_core::EnforcementMode::Enforce);
+        assert_eq!(experimental_agent, aa_core::EnforcementMode::Observe);
+    }
+
+    #[test]
     fn resolve_prefers_agent_override_over_policy_default() {
         // Per-agent override is the whole point of this subtask — it must
         // win over the policy-level default. Covers all four override values
