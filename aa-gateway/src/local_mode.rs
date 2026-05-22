@@ -274,4 +274,31 @@ mod tests {
 
         pool.close().await;
     }
+
+    /// AAASM-1576 AC #2 negative path: when no gateway is listening,
+    /// `probe_running` must return `false` (so `start_local()` proceeds
+    /// with auto-start) — within the documented 100 ms timeout, never
+    /// hanging or panicking.
+    ///
+    /// Pattern: bind a TcpListener to grab a fresh ephemeral port, then
+    /// drop it before probing — the kernel returns ECONNREFUSED on the
+    /// next connect attempt, exercising the connection-refused path.
+    #[tokio::test]
+    async fn probe_running_returns_false_on_connection_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener);
+
+        let start = std::time::Instant::now();
+        let alive = probe_running(port).await;
+        let elapsed = start.elapsed();
+
+        assert!(!alive, "probe must report dead when port is closed");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "probe should fail fast on connection refused; took {elapsed:?}"
+        );
+    }
 }
