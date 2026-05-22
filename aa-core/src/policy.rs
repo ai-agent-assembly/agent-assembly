@@ -329,6 +329,23 @@ mod tests {
         assert_eq!(EnforcementMode::default(), EnforcementMode::Enforce);
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn enforcement_mode_serde_snake_case_round_trip() {
+        // The wire / YAML representation must use lowercase tokens — operators
+        // type `enforcement_mode: observe`, not `Observe`.
+        for (mode, expected) in [
+            (EnforcementMode::Enforce, "\"enforce\""),
+            (EnforcementMode::Observe, "\"observe\""),
+            (EnforcementMode::Disabled, "\"disabled\""),
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, expected, "{mode:?} must serialise as {expected}");
+            let back: EnforcementMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, mode, "{expected} must deserialise back to {mode:?}");
+        }
+    }
+
     #[test]
     #[cfg(feature = "alloc")]
     fn policy_rule_field_access_clone_eq() {
