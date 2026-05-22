@@ -80,6 +80,22 @@ pub struct ShadowEvent {
     pub reason: String,
 }
 
+/// Resolve the effective enforcement mode for a given agent + policy document.
+///
+/// Lookup order (first match wins):
+///
+/// 1. The agent's per-record override (set via `RegisterRequest.enforcement_mode`).
+/// 2. The policy document's `enforcement_mode` field.
+///
+/// Both inputs are `Copy` so this is a cheap pure function callable from the
+/// `CheckAction` hot path without locks or allocations.
+pub fn resolve_enforcement_mode(
+    agent_override: Option<aa_core::EnforcementMode>,
+    policy_default: aa_core::EnforcementMode,
+) -> aa_core::EnforcementMode {
+    agent_override.unwrap_or(policy_default)
+}
+
 /// Transform an [`EvaluationResult`] according to the active enforcement mode.
 ///
 /// In `Enforce` mode: returns the input unchanged with `None` shadow event.
