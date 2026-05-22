@@ -1506,4 +1506,54 @@ mod tests {
             "dry_run must not delete any rows; recent-past event must still be present",
         );
     }
+
+    #[tokio::test]
+    async fn apply_retention_drop_removes_old_rows() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        // ts = Y2K places the event well behind the chosen cutoff but well
+        // ahead of any policy the dry_run test uses (NOW), so parallel runs
+        // of the two tests do not delete each other's seeds.
+        let y2k = chrono::DateTime::from_timestamp(946_684_800, 0).expect("Y2K fits in chrono range");
+        backend
+            .append_audit_event(&ancient_event(agent_id, y2k))
+            .await
+            .expect("seed Y2K event");
+
+        // hot_days + warm_days = 10 years → cutoff ≈ 2016. Y2K (2000) is past
+        // that cutoff; recent-past events seeded by other tests are not.
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 1825,
+                warm_days: 1825,
+                cold_action: ColdAction::Drop,
+                archive_url: None,
+                dry_run: false,
+            })
+            .await
+            .expect("apply_retention drop");
+
+        assert!(
+            stats.dropped_rows >= 1,
+            "Drop should report at least our Y2K event as dropped, got {}",
+            stats.dropped_rows,
+        );
+
+        let remaining = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+        assert!(
+            remaining.is_empty(),
+            "Y2K event must be gone after Drop, got {} row(s)",
+            remaining.len(),
+        );
+    }
 }
