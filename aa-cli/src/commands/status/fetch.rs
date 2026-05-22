@@ -4,9 +4,50 @@ use chrono::Utc;
 
 use super::client::StatusClient;
 use super::models::{
-    AgentResponse, AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, CostResponse, HealthResponse,
-    RuntimeHealth, StatusSnapshot,
+    redact_database_url, AgentResponse, AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, CostResponse,
+    DeploymentOverview, HealthResponse, HealthzResponse, RuntimeHealth, StatusSnapshot,
 };
+
+/// Compose the deployment-overview display model from a `/healthz` response.
+///
+/// `gateway_url` is propagated verbatim — it is the base URL the CLI was
+/// configured to reach (typically the user's `--gateway` flag or default
+/// `http://localhost:7391`).
+///
+/// When `healthz` is `None` (the gateway did not respond), the overview is
+/// populated with `health = "unreachable"` and `mode` / `storage_backend` set
+/// to `"unknown"`. `gateway_url` is still surfaced so the operator can see
+/// what address was probed.
+///
+/// When `healthz` is `Some`, the wire response is mapped 1-to-1 with the
+/// exception of `database_url`, which is run through [`redact_database_url`]
+/// before being assigned to `database_url_redacted`. The raw wire value never
+/// reaches the display layer.
+#[allow(dead_code)]
+pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzResponse>) -> DeploymentOverview {
+    match healthz {
+        Some(h) => DeploymentOverview {
+            mode: h.mode,
+            gateway_url: gateway_url.to_string(),
+            storage_backend: h.storage,
+            storage_path: h.storage_path,
+            database_url_redacted: h.database_url.as_deref().map(redact_database_url),
+            version: h.version,
+            uptime_secs: h.uptime_secs,
+            health: "ok".to_string(),
+        },
+        None => DeploymentOverview {
+            mode: "unknown".to_string(),
+            gateway_url: gateway_url.to_string(),
+            storage_backend: "unknown".to_string(),
+            storage_path: None,
+            database_url_redacted: None,
+            version: String::new(),
+            uptime_secs: 0,
+            health: "unreachable".to_string(),
+        },
+    }
+}
 
 /// Convert a health API response into a display-ready `RuntimeHealth`.
 pub fn build_runtime_health(resp: Option<HealthResponse>) -> RuntimeHealth {
