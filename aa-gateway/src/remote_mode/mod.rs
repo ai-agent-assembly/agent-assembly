@@ -16,4 +16,4 @@ pub mod server;
 pub mod tls;
 
 pub use error::GatewayError;
-pub use server::router;
+pub use server::{router, start_remote, start_remote_with_handle};
