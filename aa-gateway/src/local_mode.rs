@@ -492,4 +492,59 @@ mod tests {
             "probe must reject foreign /healthz responses missing HealthzBody fields"
         );
     }
+
+    /// Build a `LocalModeConfig` pointing at a fresh tempdir SQLite path
+    /// and a free ephemeral port. Used by every `start_local` test so
+    /// none of them collide on port 7391 or pollute `~/.aasm/`.
+    async fn test_config_with_ephemeral_port() -> (LocalModeConfig, tempfile::TempDir, u16) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Grab a free port by binding then dropping the listener.
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = probe_listener.local_addr().expect("local_addr").port();
+        drop(probe_listener);
+
+        let config = LocalModeConfig {
+            port,
+            dashboard: false,
+            storage_path: tmp.path().join("local.db"),
+        };
+        (config, tmp, port)
+    }
+
+    /// AAASM-1576 AC #1 + AC #6 end-to-end:
+    /// `start_local()` binds `127.0.0.1:<port>` (never `0.0.0.0`) and
+    /// `/healthz` responds with the documented local-mode JSON.
+    #[tokio::test]
+    async fn start_local_binds_127_0_0_1_and_serves_healthz() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        // AC #6 — bound address is the v4 loopback, not 0.0.0.0.
+        assert_eq!(
+            handle.local_addr.ip(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            "start_local must bind 127.0.0.1, never 0.0.0.0"
+        );
+        assert_eq!(handle.local_addr.port(), port);
+
+        // AC #1 — /healthz reachable with the documented body.
+        let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+            .await
+            .expect("GET /healthz")
+            .json::<serde_json::Value>()
+            .await
+            .expect("parse json");
+        assert_eq!(body["mode"], "local");
+        assert_eq!(body["storage"], "sqlite");
+
+        // Tear down — the spawned axum task lives until the runtime shuts it
+        // down at the end of the test. Signal it explicitly via the handle.
+        let _ = handle.shutdown_tx.send(());
+    }
 }
