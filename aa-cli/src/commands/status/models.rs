@@ -20,6 +20,44 @@ pub struct HealthResponse {
     pub pipeline_lag_ms: u64,
 }
 
+/// Redact the password component of a database connection URL.
+///
+/// Replaces the password segment of the userinfo portion of an authority-bearing
+/// URL with `***`. Used by the `aasm status` deployment overview so a postgres
+/// `database_url` can be displayed without leaking the credential.
+///
+/// Returns the input unchanged when:
+/// * the input is not a `scheme://...` URL,
+/// * the authority contains no `user:pass@` userinfo, or
+/// * the userinfo contains a username only (no `:password`).
+///
+/// The split point between userinfo and host is the rightmost `@` inside the
+/// authority — tolerating an `@` inside the password is intentional, since
+/// well-formed URLs percent-encode any such occurrence.
+pub fn redact_database_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|i| authority_start + i)
+        .unwrap_or(url.len());
+    let authority = &url[authority_start..authority_end];
+
+    let Some(at_idx) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let userinfo = &authority[..at_idx];
+    let Some(colon_idx) = userinfo.find(':') else {
+        return url.to_string();
+    };
+
+    let user = &userinfo[..colon_idx];
+    let host_and_rest = &url[authority_start + at_idx..];
+    format!("{}://{}:***{}", &url[..scheme_end], user, host_and_rest)
+}
+
 /// API response from `GET /healthz` — the lightweight gateway liveness probe.
 ///
 /// Mirrors the wire contract published by `aa-gateway::routes::healthz::HealthzBody`
