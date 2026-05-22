@@ -7,6 +7,7 @@ use clap::Subcommand;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
+pub mod admin;
 pub mod agent;
 pub mod alerts;
 pub mod approvals;
@@ -35,6 +36,8 @@ pub mod version;
 /// Top-level subcommands for the `aasm` CLI.
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Gateway administrative operations.
+    Admin(admin::AdminArgs),
     /// Manage monitored agent processes.
     Agent(agent::AgentArgs),
     /// Manage governance alerts.
@@ -80,6 +83,7 @@ pub enum Commands {
 /// Dispatch the parsed CLI command to the appropriate handler.
 pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     match cmd {
+        Commands::Admin(args) => admin::dispatch(args),
         Commands::Agent(args) => agent::dispatch(args, ctx, output),
         Commands::Alerts(args) => alerts::dispatch(args, ctx, output),
         Commands::Audit(args) => audit::dispatch(args, ctx, output),
