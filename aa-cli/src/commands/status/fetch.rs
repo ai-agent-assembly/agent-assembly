@@ -220,6 +220,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_deployment_overview_marks_health_unreachable_when_healthz_absent() {
+        let overview = build_deployment_overview("http://localhost:7391", None);
+        assert_eq!(overview.gateway_url, "http://localhost:7391");
+        assert_eq!(overview.health, "unreachable");
+        assert_eq!(overview.mode, "unknown");
+        assert_eq!(overview.storage_backend, "unknown");
+        assert!(overview.storage_path.is_none());
+        assert!(overview.database_url_redacted.is_none());
+        assert_eq!(overview.uptime_secs, 0);
+        assert!(overview.version.is_empty());
+    }
+
+    #[test]
     fn build_deployment_overview_redacts_database_url_for_remote_postgres() {
         let healthz = HealthzResponse {
             mode: "remote".to_string(),
