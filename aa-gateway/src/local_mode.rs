@@ -31,7 +31,6 @@ use crate::routes::healthz::{healthz, HealthzState};
 ///
 /// The handle is intentionally **not** `Clone` — only one caller can
 /// own the shutdown trigger at a time.
-#[allow(dead_code)] // server_task/pool/pid_path consumed by shutdown() in the next commit
 pub struct LocalGatewayHandle {
     /// Address the local gateway is actually bound to. In normal
     /// operation this is `127.0.0.1:{config.port}`; in tests that pass
@@ -50,6 +49,53 @@ pub struct LocalGatewayHandle {
     /// PID-file path to remove on shutdown. `None` on the shell-handle
     /// path (no PID was written for that branch).
     pub(crate) pid_path: Option<PathBuf>,
+}
+
+impl LocalGatewayHandle {
+    /// Drain the running gateway and clean up.
+    ///
+    /// Consumes the handle in this order:
+    /// 1. Signal `shutdown_tx` so `axum::serve`'s `with_graceful_shutdown`
+    ///    future resolves — the server stops accepting new connections
+    ///    and finishes in-flight requests.
+    /// 2. Await `server_task` so we don't return until the server has
+    ///    fully exited (AAASM-1576 AC #8 expects the server to stop
+    ///    accepting connections by the time `shutdown()` returns).
+    /// 3. Remove the PID file (best-effort — `aasm stop` may have
+    ///    already removed it; an error here doesn't fail the shutdown).
+    /// 4. `pool.close().await` so SQLite shuts cleanly and any cached
+    ///    statements are released.
+    ///
+    /// On the shell-handle path (probe short-circuit in `start_local`),
+    /// every Option is `None` and `shutdown()` is effectively a no-op —
+    /// the running gateway lives in a different process and we don't
+    /// own its lifecycle.
+    ///
+    /// Called by `run_until_shutdown()` (next commits) after a
+    /// SIGTERM/SIGINT signal fires. Tests call it directly to avoid
+    /// having to signal the test process.
+    pub async fn shutdown(self) -> Result<(), LocalModeError> {
+        // 1. Signal the server. send() returns Err if the receiver was
+        //    dropped (shell-handle path) — that's expected, ignore.
+        let _ = self.shutdown_tx.send(());
+
+        // 2. Wait for the spawned task to exit.
+        if let Some(task) = self.server_task {
+            let _ = task.await;
+        }
+
+        // 3. Remove the PID file.
+        if let Some(pid_path) = self.pid_path {
+            let _ = std::fs::remove_file(pid_path);
+        }
+
+        // 4. Close the SqlitePool.
+        if let Some(pool) = self.pool {
+            pool.close().await;
+        }
+
+        Ok(())
+    }
 }
 
 /// Errors that can occur while booting the local-mode control plane.
