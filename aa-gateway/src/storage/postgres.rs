@@ -12,7 +12,7 @@ use aa_core::identity::AgentId;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use super::agent::AgentRecord;
+use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
 use super::postgres_config::PostgresConfig;
@@ -147,6 +147,32 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
     if filter.dry_run_only {
         connective(qb);
         qb.push("dry_run = TRUE");
+    }
+}
+
+/// Push the agent-registry WHERE clause derived from `filter` into `qb`.
+///
+/// PostgreSQL JSONB exposes object lookups via `metadata->>'name'`, so the
+/// `name_contains` filter does a parameterised LIKE against that key. SQLite
+/// uses `json_extract(metadata, '$.name')` for the same effect.
+fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter: &'q AgentFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(org_id) = filter.org_id.as_ref() {
+        connective(qb);
+        qb.push("org_id = ").push_bind(org_id.clone());
+    }
+    if let Some(name_contains) = filter.name_contains.as_ref() {
+        connective(qb);
+        qb.push("metadata->>'name' LIKE ")
+            .push_bind(format!("%{name_contains}%"));
     }
 }
 
@@ -340,6 +366,32 @@ impl PostgresBackend {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         row.as_ref().map(row_to_agent_record).transpose()
+    }
+
+    /// Return all agent records matching `filter`, ordered by `agent_id`.
+    ///
+    /// `filter.limit` and `filter.offset` translate to PostgreSQL
+    /// `LIMIT`/`OFFSET` bound as `i64`. `name_contains` performs a
+    /// substring search against the `metadata.name` JSONB key.
+    pub async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
+             enforcement_mode FROM agent_registry",
+        );
+        push_agent_where(&mut qb, &filter);
+        qb.push(" ORDER BY agent_id");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+            if let Some(offset) = filter.offset {
+                qb.push(" OFFSET ").push_bind(i64::from(offset));
+            }
+        }
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.iter().map(row_to_agent_record).collect()
     }
 }
 
