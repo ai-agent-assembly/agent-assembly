@@ -135,6 +135,39 @@ pub fn check_already_running(pid_file: &Path, addr: SocketAddr, probe_timeout: D
     Some(pid)
 }
 
+/// Strategy used by [`run`] to start the `aa-gateway` subprocess.
+///
+/// Production code uses [`ProcessSpawner`], which shells out to the
+/// real `aa-gateway` binary. Tests inject a mock so the run flow can
+/// be driven end-to-end without spawning a real child — the AC bullet
+/// "subprocess spawn mocked via a trait/seam".
+pub trait GatewaySpawner {
+    /// Detach a gateway process listening on `addr` and return its PID.
+    fn spawn_background(&self, addr: SocketAddr) -> std::io::Result<u32>;
+    /// Run a gateway process in the foreground; block until it exits.
+    fn exec_foreground(&self, addr: SocketAddr) -> std::io::Result<std::process::ExitStatus>;
+}
+
+/// Default [`GatewaySpawner`] that invokes the real `aa-gateway` binary.
+pub struct ProcessSpawner;
+
+impl GatewaySpawner for ProcessSpawner {
+    fn spawn_background(&self, addr: SocketAddr) -> std::io::Result<u32> {
+        let child = Command::new("aa-gateway")
+            .arg("--listen")
+            .arg(addr.to_string())
+            .spawn()?;
+        Ok(child.id())
+    }
+
+    fn exec_foreground(&self, addr: SocketAddr) -> std::io::Result<std::process::ExitStatus> {
+        Command::new("aa-gateway")
+            .arg("--listen")
+            .arg(addr.to_string())
+            .status()
+    }
+}
+
 /// Entry point for `aasm start`.
 ///
 /// Orchestrates the four steps of a successful start:
