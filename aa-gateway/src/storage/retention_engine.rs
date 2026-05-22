@@ -433,4 +433,24 @@ mod tests {
 
         assert_eq!(engine.current_config(), new_config);
     }
+
+    #[tokio::test]
+    async fn hot_reload_is_visible_to_subsequent_run_once() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend.clone(), RetentionConfig::default());
+
+        let new_config = RetentionConfig {
+            hot_days: 7,
+            warm_days: 14,
+            dry_run: true,
+            ..RetentionConfig::default()
+        };
+        engine.hot_reload(new_config.clone()).expect("valid config must swap");
+        engine.run_once().await.expect("run_once should succeed");
+
+        let captured = backend
+            .captured_policy()
+            .expect("apply_retention should have been called");
+        assert_eq!(captured, new_config.to_policy());
+    }
 }
