@@ -556,6 +556,62 @@ impl PostgresBackend {
             })
             .collect()
     }
+
+    /// Mark `version` of `name` as the active version.
+    ///
+    /// Runs the existence check and both UPDATEs inside one transaction so
+    /// no caller can ever observe two active versions for the same name.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::NotFound`] when `(name, version)` does not exist.
+    ///   Payload is formatted `"<name>@<version>"` to mirror the SQLite
+    ///   backend.
+    /// - [`StorageError::QueryFailed`] on driver / transaction failure.
+    pub async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
+        let version_i =
+            i32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM policy_versions WHERE name = $1 AND version = $2")
+            .bind(name)
+            .bind(version_i)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(format!("{name}@{version}")));
+        }
+
+        sqlx::query(
+            "UPDATE policy_versions SET is_active = FALSE \
+             WHERE name = $1 AND is_active = TRUE",
+        )
+        .bind(name)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        sqlx::query(
+            "UPDATE policy_versions SET is_active = TRUE \
+             WHERE name = $1 AND version = $2",
+        )
+        .bind(name)
+        .bind(version_i)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
