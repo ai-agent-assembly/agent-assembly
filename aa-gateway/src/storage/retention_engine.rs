@@ -144,7 +144,6 @@ mod tests {
             self.captured.lock().unwrap().last().cloned()
         }
 
-        #[allow(dead_code)] // read by the cron-loop test landing in the next commit
         fn call_count(&self) -> usize {
             self.call_count.load(Ordering::SeqCst)
         }
@@ -272,6 +271,31 @@ mod tests {
 
         let err = engine.run_once().await.expect_err("backend error must surface");
         assert!(matches!(err, StorageError::RetentionError(ref msg) if msg.contains("S3 archive timeout")));
+    }
+
+    #[tokio::test]
+    async fn start_fires_run_once_on_short_schedule_and_stops_on_cancellation() {
+        // "* * * * * *" — every second
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let config = RetentionConfig {
+            schedule: "* * * * * *".to_string(),
+            ..RetentionConfig::default()
+        };
+        let engine = Arc::new(RetentionEngine::new(backend.clone(), config));
+        let shutdown = CancellationToken::new();
+
+        let handle = engine.start(shutdown.clone()).expect("valid schedule must spawn");
+
+        // Two seconds should yield at least one tick on a "* * * * * *" schedule.
+        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+        shutdown.cancel();
+        handle.await.expect("background task must finish cleanly on shutdown");
+
+        let calls = backend.call_count();
+        assert!(
+            calls >= 1,
+            "cron loop should have fired apply_retention at least once in 2s, got {calls}"
+        );
     }
 
     #[tokio::test]
