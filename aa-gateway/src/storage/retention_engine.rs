@@ -474,4 +474,12 @@ mod tests {
             "active config must be untouched after a rejected hot_reload"
         );
     }
+
+    #[tokio::test]
+    async fn last_run_stats_is_none_before_first_run_once() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        assert!(engine.last_run_stats().is_none());
+    }
 }
