@@ -65,23 +65,30 @@ mod tests {
     use super::*;
     use crate::storage::{
         AgentFilter, AgentRecord, AuditEvent, AuditFilter, ColdAction, Metric, MetricPoint, MetricQuery,
-        PolicyDocument, PolicyMeta, PolicyVersion, RetentionPolicy, StorageHealth,
+        PolicyDocument, PolicyMeta, PolicyVersion, RetentionPolicy, StorageError, StorageHealth,
     };
     use aa_core::identity::AgentId;
 
     /// `StorageBackend` test double that records the
-    /// [`RetentionPolicy`] handed to `apply_retention` and returns canned
-    /// [`RetentionStats`]. Every other trait method is unreachable in this
-    /// module's tests and panics if called.
+    /// [`RetentionPolicy`] handed to `apply_retention` and returns either
+    /// canned [`RetentionStats`] or a configured error. Every other trait
+    /// method is unreachable in this module's tests and panics if called.
     struct FakeBackend {
-        canned: RetentionStats,
+        outcome: Mutex<Option<StorageResult<RetentionStats>>>,
         captured: Mutex<Option<RetentionPolicy>>,
     }
 
     impl FakeBackend {
         fn new(canned: RetentionStats) -> Self {
             Self {
-                canned,
+                outcome: Mutex::new(Some(Ok(canned))),
+                captured: Mutex::new(None),
+            }
+        }
+
+        fn failing(error: StorageError) -> Self {
+            Self {
+                outcome: Mutex::new(Some(Err(error))),
                 captured: Mutex::new(None),
             }
         }
@@ -95,7 +102,11 @@ mod tests {
     impl StorageBackend for FakeBackend {
         async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
             *self.captured.lock().unwrap() = Some(policy.clone());
-            Ok(self.canned.clone())
+            self.outcome
+                .lock()
+                .unwrap()
+                .take()
+                .expect("FakeBackend::apply_retention fired more than once in a single test")
         }
         async fn append_audit_event(&self, _: &AuditEvent) -> StorageResult<()> {
             unreachable!()
@@ -203,5 +214,16 @@ mod tests {
         let stats = engine.run_once().await.expect("run_once should succeed");
 
         assert_eq!(stats, canned);
+    }
+
+    #[tokio::test]
+    async fn run_once_surfaces_backend_error() {
+        let backend = Arc::new(FakeBackend::failing(StorageError::RetentionError(
+            "simulated S3 archive timeout".to_string(),
+        )));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        let err = engine.run_once().await.expect_err("backend error must surface");
+        assert!(matches!(err, StorageError::RetentionError(ref msg) if msg.contains("S3 archive timeout")));
     }
 }
