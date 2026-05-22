@@ -275,6 +275,7 @@ fn load_policy() -> PolicyDocument {
         version: 1,
         name: "default".into(),
         rules: Vec::<PolicyRule>::new(),
+        enforcement_mode: aa_core::EnforcementMode::default(),
     }
 }
 

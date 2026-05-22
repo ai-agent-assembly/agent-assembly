@@ -1650,6 +1650,7 @@ mod tests {
             version: 1,
             name: "stub".to_string(),
             rules: vec![],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         };
         // PolicyEngine now also exposes an inherent `load_policy` that
         // returns a `PolicyId` (AAASM-951). Use fully-qualified syntax so
@@ -1668,6 +1669,7 @@ mod tests {
             version: 1,
             name: "stub".to_string(),
             rules: vec![],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         };
         let result = engine.validate_policy(&stub);
         assert_eq!(result, Err(vec![aa_core::PolicyError::InvalidDocument]));

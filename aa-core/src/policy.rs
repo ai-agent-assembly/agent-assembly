@@ -125,6 +125,11 @@ pub struct PolicyDocument {
     pub name: alloc::string::String,
     /// Ordered list of rules evaluated top-to-bottom.
     pub rules: alloc::vec::Vec<PolicyRule>,
+    /// Enforcement posture for this policy. Defaults to `Enforce` when the
+    /// field is absent from the source document, preserving pre-feature
+    /// behavior for all existing policies.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub enforcement_mode: EnforcementMode,
 }
 
 /// The outcome of a `PolicyEvaluator::evaluate` call.
@@ -341,6 +346,7 @@ mod tests {
                 action_pattern: alloc::string::String::from("*"),
                 decision: PolicyDecision::Allow,
             }],
+            enforcement_mode: EnforcementMode::default(),
         };
         let cloned = doc.clone();
         assert_eq!(doc, cloned);

@@ -89,6 +89,7 @@ async fn generate_managed_settings_returns_valid_json_with_auto_approve_false() 
         version: 1,
         name: "test-policy".into(),
         rules: vec![],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -109,6 +110,7 @@ async fn generate_managed_settings_deny_terminal_exec_yields_empty_allowlist() {
             action_pattern: "terminal_exec".into(),
             decision: aa_core::PolicyDecision::Deny,
         }],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -132,6 +134,7 @@ async fn generate_managed_settings_allow_terminal_command_adds_to_allowlist() {
             action_pattern: "terminal_exec:git".into(),
             decision: aa_core::PolicyDecision::Allow,
         }],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -153,6 +156,7 @@ async fn generate_managed_settings_mcp_tool_deny_adds_to_disabled_servers() {
             action_pattern: "mcp_tool:github".into(),
             decision: aa_core::PolicyDecision::Deny,
         }],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");

@@ -135,7 +135,7 @@ fn find_sandbox_override(policy: &PolicyDocument) -> Option<CodexSandboxMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::policy::{PolicyDecision, PolicyDocument, PolicyRule};
+    use aa_core::policy::{EnforcementMode, PolicyDecision, PolicyDocument, PolicyRule};
 
     fn make_policy(rules: Vec<(&str, PolicyDecision)>) -> PolicyDocument {
         PolicyDocument {
@@ -148,6 +148,7 @@ mod tests {
                     decision: dec,
                 })
                 .collect(),
+            enforcement_mode: EnforcementMode::default(),
         }
     }
 
