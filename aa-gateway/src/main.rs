@@ -18,9 +18,12 @@ enum Mode {
     /// Existing gRPC + policy server entry — default for backwards
     /// compatibility while AAASM-1577 and AAASM-1576 land.
     LegacyGrpc,
-    /// Local Dev Mode (AAASM-1576 / E17 S-B). Bootstrap is not yet
-    /// wired — selecting this mode exits with a clear error pointing
-    /// at the tracking Sub-task.
+    /// Local Dev Mode (AAASM-1576 / E17 S-B). Loads
+    /// [`aa_core::config::GatewayConfig`] (env-var overrides applied),
+    /// boots the lightweight in-process control plane via
+    /// [`aa_gateway::local_mode::start_local`], and blocks on
+    /// [`aa_gateway::local_mode::run_until_shutdown`] until SIGTERM /
+    /// SIGINT triggers graceful drain.
     Local,
     /// Remote Control-Plane Mode (AAASM-1577 / E17 S-C). Drives the
     /// `aa_gateway::remote_mode::start_remote` entrypoint.
@@ -85,9 +88,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match mode {
         Mode::LegacyGrpc => run_legacy_grpc(cli).await,
-        Mode::Local => Err("Local Dev Mode bootstrap (E17 S-B / AAASM-1576) is not yet implemented".into()),
+        Mode::Local => run_local().await,
         Mode::Remote => run_remote().await,
     }
+}
+
+/// Local Dev Mode entry: load `GatewayConfig` (YAML + env overrides),
+/// boot the lightweight in-process control plane via
+/// [`aa_gateway::local_mode::start_local`], and block on
+/// [`aa_gateway::local_mode::run_until_shutdown`] until SIGTERM /
+/// SIGINT triggers graceful drain.
+///
+/// Honours the `AA_MODE=local` / `AAASM_GATEWAY_PORT=...` env-var
+/// surface from AAASM-1575 — the loaded `LocalModeConfig` already
+/// reflects those overrides by the time we hit `start_local`.
+async fn run_local() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = aa_core::config::GatewayConfig::load()?;
+    let handle = aa_gateway::local_mode::start_local(&cfg.local).await?;
+    aa_gateway::local_mode::run_until_shutdown(handle).await?;
+    Ok(())
 }
 
 /// Existing gRPC + policy serving path. Preserves the pre-Epic-17
