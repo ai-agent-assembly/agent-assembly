@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 
@@ -166,6 +167,50 @@ fn policy_document_bytes(value: serde_json::Value) -> Vec<u8> {
         }
     }
     serde_json::to_vec(&value).expect("serialising a parsed JSON value never fails")
+}
+
+/// Map a [`MetricQuery::bucket`] string into the corresponding
+/// PostgreSQL `date_trunc` unit. Returns
+/// [`StorageError::QueryFailed`] for any unsupported value so the
+/// query never gets near the database with a typo.
+fn metric_bucket_unit(raw: &str) -> StorageResult<&'static str> {
+    match raw.trim() {
+        "1 second" => Ok("second"),
+        "1 minute" => Ok("minute"),
+        "1 hour" => Ok("hour"),
+        "1 day" => Ok("day"),
+        other => Err(StorageError::QueryFailed(format!(
+            "unsupported metric bucket interval: {other:?} (supported: \"1 second\", \"1 minute\", \"1 hour\", \"1 day\")"
+        ))),
+    }
+}
+
+/// Push the metric WHERE clause derived from `query` into `qb`.
+///
+/// Adds clauses for `agent_id`, `metric`, `from` / `to` (`ts >=` / `ts <`).
+/// Pushes nothing when no field is set.
+fn push_metric_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, query: &'q MetricQuery) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(agent_id) = query.agent_id.as_ref() {
+        connective(qb);
+        qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+    }
+    if let Some(metric) = query.metric.as_ref() {
+        connective(qb);
+        qb.push("metric = ").push_bind(metric.clone());
+    }
+    if let Some(from) = query.from {
+        connective(qb);
+        qb.push("ts >= ").push_bind(from);
+    }
+    if let Some(to) = query.to {
+        connective(qb);
+        qb.push("ts < ").push_bind(to);
+    }
 }
 
 /// Push the agent-registry WHERE clause derived from `filter` into `qb`.
@@ -611,6 +656,91 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
         Ok(())
+    }
+
+    /// Persist a single metric sample.
+    ///
+    /// Native PostgreSQL bindings: `TIMESTAMPTZ` for `ts`, `DOUBLE PRECISION`
+    /// for `value`, JSONB for `labels`. `agent_id` is serialised via
+    /// [`agent_id_to_text`] so the column matches the shape used elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::QueryFailed`] when `labels` cannot be encoded as
+    ///   JSON or the INSERT is rejected.
+    pub async fn record_metric(&self, m: Metric) -> StorageResult<()> {
+        let labels =
+            serde_json::to_value(&m.labels).map_err(|e| StorageError::QueryFailed(format!("labels serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO metrics (ts, agent_id, metric, value, labels) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(m.ts)
+        .bind(agent_id_to_text(&m.agent_id))
+        .bind(&m.metric)
+        .bind(m.value)
+        .bind(labels)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    /// Return metric points matching `query`, ordered by timestamp ascending.
+    ///
+    /// When `query.bucket` is set, rows are aggregated via
+    /// `date_trunc(<unit>, ts)` + `AVG(value)` grouped by the truncated
+    /// timestamp. Supported bucket strings are validated by
+    /// [`metric_bucket_unit`] before any SQL hits the wire, so a typo
+    /// surfaces as [`StorageError::QueryFailed`] rather than a confusing
+    /// driver error.
+    ///
+    /// When `query.bucket` is `None`, raw `(ts, value)` rows are returned.
+    /// `query.limit` translates to `LIMIT $N` (bound as `i64`).
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::QueryFailed`] for an unsupported bucket string or
+    ///   any driver failure.
+    pub async fn query_metrics(&self, query: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+        let bucket_unit = query.bucket.as_deref().map(metric_bucket_unit).transpose()?;
+
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+        if let Some(unit) = bucket_unit {
+            // `unit` came from a validated allow-list, never user input
+            qb.push("date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) AS bucket_ts, AVG(value) AS value FROM metrics");
+        } else {
+            qb.push("ts, value FROM metrics");
+        }
+
+        push_metric_where(&mut qb, &query);
+
+        if let Some(unit) = bucket_unit {
+            // Reference the full expression instead of the column alias
+            // `bucket_ts` — and avoid the raw `metrics.ts` column — so the
+            // aggregation actually collapses rows sharing the same truncated
+            // timestamp.
+            qb.push(" GROUP BY date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) ORDER BY date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) ASC");
+        } else {
+            qb.push(" ORDER BY ts ASC");
+        }
+        if let Some(limit) = query.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+        }
+
+        let rows: Vec<(chrono::DateTime<chrono::Utc>, f64)> = qb
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(ts, value)| MetricPoint { ts, value }).collect())
     }
 }
 
@@ -1084,6 +1214,125 @@ mod tests {
                 );
             }
             other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// Mint a fresh metric name so each test scopes its inserts and
+    /// assertions to its own slice of the shared `metrics` table.
+    fn fresh_metric_name() -> String {
+        format!("metric-{}", uuid::Uuid::new_v4())
+    }
+
+    fn sample_metric(agent_id: AgentId, metric: &str, ts: chrono::DateTime<chrono::Utc>, value: f64) -> Metric {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("region".to_string(), "us-west".to_string());
+        Metric {
+            ts,
+            agent_id,
+            metric: metric.to_owned(),
+            value,
+            labels,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_metric_then_query_round_trip() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let metric_name = fresh_metric_name();
+        let ts = now_micros();
+        backend
+            .record_metric(sample_metric(agent_id, &metric_name, ts, 42.5))
+            .await
+            .expect("record_metric");
+
+        let points = backend
+            .query_metrics(MetricQuery {
+                agent_id: Some(agent_id),
+                metric: Some(metric_name.clone()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("query_metrics");
+
+        assert_eq!(points.len(), 1, "expected the single sample we just inserted");
+        assert_eq!(points[0].ts, ts);
+        assert_eq!(points[0].value, 42.5);
+    }
+
+    #[tokio::test]
+    async fn query_metrics_with_bucket_aggregates() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let metric_name = fresh_metric_name();
+        // Three samples within the same minute — date_trunc('minute') collapses
+        // them into a single bucketed point with the averaged value. Aligning
+        // to a minute boundary makes the test timing-deterministic regardless
+        // of when in the wall-clock minute it runs.
+        let now = chrono::Utc::now();
+        let base = chrono::DateTime::from_timestamp(now.timestamp() / 60 * 60, 0)
+            .expect("minute-aligned timestamp fits in chrono range");
+        for (offset_secs, value) in [(0i64, 10.0_f64), (10, 20.0), (20, 30.0)] {
+            let ts = base + chrono::Duration::seconds(offset_secs);
+            backend
+                .record_metric(sample_metric(agent_id, &metric_name, ts, value))
+                .await
+                .expect("record");
+        }
+
+        let points = backend
+            .query_metrics(MetricQuery {
+                agent_id: Some(agent_id),
+                metric: Some(metric_name.clone()),
+                bucket: Some("1 minute".to_string()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("query_metrics");
+
+        assert_eq!(
+            points.len(),
+            1,
+            "three samples in the same minute must collapse to one bucket"
+        );
+        assert!(
+            (points[0].value - 20.0).abs() < 1e-9,
+            "averaged value should be (10 + 20 + 30) / 3 = 20.0, got {}",
+            points[0].value,
+        );
+    }
+
+    #[tokio::test]
+    async fn query_metrics_unsupported_bucket_unit_returns_query_failed() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let err = backend
+            .query_metrics(MetricQuery {
+                bucket: Some("5 microseconds".to_string()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect_err("unsupported bucket must error");
+
+        match err {
+            StorageError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("unsupported metric bucket"),
+                    "error must explain the rejection, got: {msg}",
+                );
+            }
+            other => panic!("expected QueryFailed, got {other:?}"),
         }
     }
 }

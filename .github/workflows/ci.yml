@@ -225,7 +225,9 @@ jobs:
           # sustained_load_p99_under_5ms, all_layers_run_independently, and
           # auth_rate_limit_resets_after_window are timing-sensitive tests that
           # fail under llvm-cov instrumentation overhead — skipped in coverage
-          # runs only.
+          # runs only. The `handle_shutdown_*` local_mode tests (AAASM-1728) join
+          # the same allow-list: they spawn an axum server + reqwest client and
+          # assert sub-500 ms shutdown, which wedges under llvm-cov's 2-5× overhead.
           #
           # The `ebpf_*` tests in aa-integration-tests/tests/e2e_ebpf.rs are the
           # AAASM-1520 Layer 3 suite: they require nightly + bpf-linker + the
@@ -236,7 +238,8 @@ jobs:
           cargo llvm-cov --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
             -- --skip sustained_load_p99_under_5ms --skip all_layers_run_independently \
-               --skip auth_rate_limit_resets_after_window --skip ebpf_
+               --skip auth_rate_limit_resets_after_window --skip ebpf_ \
+               --skip handle_shutdown_
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --codecov --output-path codecov.xml
       - name: Upload to Codecov
