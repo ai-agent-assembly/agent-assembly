@@ -69,6 +69,14 @@ pub fn format_deployment_overview(overview: &DeploymentOverview) -> String {
     out
 }
 
+/// Print the deployment-overview header block to stdout.
+///
+/// Thin wrapper around [`format_deployment_overview`] so the function used by
+/// `render_all` mirrors the other `render_*` section helpers.
+pub fn render_deployment_overview(overview: &DeploymentOverview) {
+    println!("{}", format_deployment_overview(overview));
+}
+
 /// Render the Runtime Health section to stdout.
 pub fn render_runtime_health(health: &RuntimeHealth) {
     println!("RUNTIME HEALTH");
