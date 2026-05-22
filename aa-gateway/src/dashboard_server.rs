@@ -18,19 +18,24 @@ use tower_http::services::{ServeDir, ServeFile};
 /// `dist_path`.
 ///
 /// File requests resolve against `dist_path` directly; anything
-/// `ServeDir` cannot find falls through to `dist_path/index.html` so
-/// client-side React Router paths like `/agents/abc` reach the SPA
-/// instead of returning 404. The `ServeDir` is registered as the
-/// router's `fallback_service` so it only handles requests that did
-/// not match a concrete route — a parent router can therefore
-/// `.merge()` this in alongside `/healthz` and future `/api/v1/*`
-/// routes without the SPA catch-all eating them.
+/// `ServeDir` cannot find falls through to `ServeDir::fallback` —
+/// `ServeFile(index.html)` — so client-side React Router paths like
+/// `/agents/abc` reach the SPA shell with a real **200 OK** instead of
+/// a 404. `fallback` is used here rather than `not_found_service`
+/// because the latter preserves the original `404` status alongside
+/// the substituted body, which is the wrong UX for SPA routing.
+///
+/// The `ServeDir` is registered as the router's `fallback_service` so
+/// it only handles requests that did not match a concrete route — a
+/// parent router can therefore `.merge()` this in alongside
+/// `/healthz` and future `/api/v1/*` routes without the SPA catch-all
+/// eating them.
 ///
 /// Consumer: `local_mode::router()` mounts this in the next sub-task
 /// (AAASM-1844) when `LocalModeConfig.dashboard == true`.
 pub fn dashboard_router(dist_path: &Path) -> Router {
     let index_html = dist_path.join("index.html");
-    let serve_dir = ServeDir::new(dist_path).not_found_service(ServeFile::new(index_html));
+    let serve_dir = ServeDir::new(dist_path).fallback(ServeFile::new(index_html));
     Router::new().fallback_service(serve_dir)
 }
 
