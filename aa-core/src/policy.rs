@@ -329,6 +329,19 @@ mod tests {
         assert_eq!(EnforcementMode::default(), EnforcementMode::Enforce);
     }
 
+    #[test]
+    fn enforcement_mode_from_proto_i32_round_trips_known_values() {
+        // The proto reserves 0 for UNSPECIFIED — it must NOT silently coerce
+        // to Enforce here; only valid 1/2/3 produce Some(_). Server-side
+        // resolution is responsible for picking a default for unspecified.
+        assert_eq!(EnforcementMode::from_proto_i32(1), Some(EnforcementMode::Enforce));
+        assert_eq!(EnforcementMode::from_proto_i32(2), Some(EnforcementMode::Observe));
+        assert_eq!(EnforcementMode::from_proto_i32(3), Some(EnforcementMode::Disabled));
+        assert_eq!(EnforcementMode::from_proto_i32(0), None);
+        assert_eq!(EnforcementMode::from_proto_i32(-1), None);
+        assert_eq!(EnforcementMode::from_proto_i32(99), None);
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn enforcement_mode_serde_snake_case_round_trip() {
