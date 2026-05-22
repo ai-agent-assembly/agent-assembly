@@ -19,6 +19,14 @@ pub struct StatusArgs {
     /// Auto-refresh the status display every 5 seconds.
     #[arg(long)]
     pub watch: bool,
+
+    /// Print only the deployment-overview header as machine-readable JSON.
+    ///
+    /// Intended for scripting and CI integrations — the documented shape is
+    /// the JSON contract published in the AAASM-1579 story description.
+    /// Distinct from `--output json`, which serialises the full status snapshot.
+    #[arg(long)]
+    pub json: bool,
 }
 
 use models::StatusSnapshot;
