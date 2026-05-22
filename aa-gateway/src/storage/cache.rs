@@ -496,5 +496,13 @@ mod tests {
             assert_eq!(fetched.bytes, b"v1-body".to_vec());
             assert!(cache.is_enabled());
         }
+
+        #[tokio::test]
+        async fn invalidate_evicts_entry() {
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            cache.invalidate("default").await;
+            assert!(cache.get("default").await.is_none());
+        }
     }
 }
