@@ -710,17 +710,26 @@ impl PostgresBackend {
             // `unit` came from a validated allow-list, never user input
             qb.push("date_trunc('");
             qb.push(unit);
-            qb.push("', ts) AS ts, AVG(value) AS value FROM metrics");
+            qb.push("', ts) AS bucket_ts, AVG(value) AS value FROM metrics");
         } else {
             qb.push("ts, value FROM metrics");
         }
 
         push_metric_where(&mut qb, &query);
 
-        if bucket_unit.is_some() {
-            qb.push(" GROUP BY ts");
+        if let Some(unit) = bucket_unit {
+            // Reference the full expression instead of the column alias
+            // `bucket_ts` — and avoid the raw `metrics.ts` column — so the
+            // aggregation actually collapses rows sharing the same truncated
+            // timestamp.
+            qb.push(" GROUP BY date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) ORDER BY date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) ASC");
+        } else {
+            qb.push(" ORDER BY ts ASC");
         }
-        qb.push(" ORDER BY ts ASC");
         if let Some(limit) = query.limit {
             qb.push(" LIMIT ").push_bind(i64::from(limit));
         }
