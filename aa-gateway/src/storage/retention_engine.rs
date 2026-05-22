@@ -7,10 +7,14 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
 use super::backend::StorageBackend;
 use super::error::StorageResult;
 use super::retention::RetentionStats;
-use super::retention_config::RetentionConfig;
+use super::retention_config::{RetentionConfig, RetentionConfigError};
 
 /// Owns the periodic retention task lifecycle.
 pub struct RetentionEngine {
@@ -52,6 +56,44 @@ impl RetentionEngine {
             "retention run complete",
         );
         Ok(stats)
+    }
+
+    /// Spawn the background retention task. Returns a [`JoinHandle`] for
+    /// the spawned tokio task.
+    ///
+    /// The task loops until `shutdown` is cancelled: on each iteration it
+    /// waits until the next scheduled instant, invokes
+    /// [`run_once`](Self::run_once), logs any error and continues (one
+    /// transient failure does not kill the loop).
+    ///
+    /// # Errors
+    ///
+    /// - [`RetentionConfigError::InvalidSchedule`] when the configured
+    ///   cron expression cannot be parsed. The task is not spawned in
+    ///   this case — fail-fast at startup rather than panic at the first
+    ///   tick.
+    pub fn start(self: Arc<Self>, shutdown: CancellationToken) -> Result<JoinHandle<()>, RetentionConfigError> {
+        let schedule = self.config.parsed_schedule()?;
+        Ok(tokio::spawn(async move {
+            loop {
+                let Some(next) = schedule.upcoming(Utc).next() else {
+                    tracing::warn!("retention schedule has no future occurrences, exiting loop");
+                    return;
+                };
+                let delay = (next - Utc::now()).to_std().unwrap_or_default();
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {
+                        if let Err(e) = self.run_once().await {
+                            tracing::error!(error = %e, "retention run failed; loop continues");
+                        }
+                    }
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("retention engine shutdown requested, exiting loop");
+                        return;
+                    }
+                }
+            }
+        }))
     }
 }
 
