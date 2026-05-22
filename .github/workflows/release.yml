@@ -221,3 +221,21 @@ jobs:
           sed -i "/aasm-aarch64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM}\"|}" Formula/aasm.rb
           sed -i "/aasm-x86_64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_INTEL}\"|}" Formula/aasm.rb
           git -C . diff -- Formula/aasm.rb || true
+
+      - name: Open tap PR via peter-evans/create-pull-request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          path: tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          branch: bot/aasm-${{ steps.version.outputs.version }}
+          base: master
+          delete-branch: true
+          commit-message: "🤖 (formula): Update aasm to ${{ steps.version.outputs.version }}"
+          title: "🤖 (formula): aasm ${{ steps.version.outputs.version }}"
+          body: |
+            Auto-update from agent-assembly release `${{ github.ref_name }}`.
+
+            Bumps `version` and refreshes the four per-platform `sha256` values in
+            `Formula/aasm.rb` from the `SHA256SUMS` published with the release.
+
+            Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
