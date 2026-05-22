@@ -248,8 +248,14 @@ impl PolicyCacheLike for RedisPolicyCache {
         }
     }
 
-    async fn invalidate(&self, _name: &str) {
-        // Filled in by a following commit (SCAN+DEL).
+    async fn invalidate(&self, name: &str) {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(name);
+        let result: redis::RedisResult<()> = conn.del(&key).await;
+        if let Err(err) = result {
+            tracing::debug!(error = %err, key = %key, "redis policy cache invalidate failed");
+        }
     }
 
     fn is_enabled(&self) -> bool {
