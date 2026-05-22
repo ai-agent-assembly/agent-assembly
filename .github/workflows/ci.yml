@@ -129,6 +129,24 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      # AAASM-1741: postgres for the env-gated storage::postgres::tests
+      # in aa-gateway. Tests skip cleanly when AAASM_DATABASE_URL is unset
+      # (any non-CI environment); CI exports it on the Run tests step so
+      # the suite actually exercises the PostgresBackend.
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: aasm
+          POSTGRES_PASSWORD: aasm
+          POSTGRES_DB: aasm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v6
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
@@ -173,6 +191,7 @@ jobs:
         # as of 2026-05; the prior 500ms ceiling was set when p99 was ~270ms).
         env:
           AA_BENCH_SLA_P99_MS: "5000"
+          AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
         run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf
 
   coverage:
