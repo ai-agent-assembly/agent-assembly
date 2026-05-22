@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use chrono::Utc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +20,11 @@ use super::retention_config::{RetentionConfig, RetentionConfigError};
 /// Owns the periodic retention task lifecycle.
 pub struct RetentionEngine {
     backend: Arc<dyn StorageBackend>,
-    config: RetentionConfig,
+    /// Active retention configuration. Held behind an [`ArcSwap`] so the
+    /// admin REST API (Story S-K) can hot-reload thresholds at runtime
+    /// without restarting the gateway, while concurrent `run_once` calls
+    /// see a stable snapshot for the duration of one pass.
+    config: Arc<ArcSwap<RetentionConfig>>,
 }
 
 impl RetentionEngine {
@@ -27,7 +32,10 @@ impl RetentionEngine {
     /// [`apply_retention`](StorageBackend::apply_retention) on `backend`
     /// using the policy derived from `config`.
     pub fn new(backend: Arc<dyn StorageBackend>, config: RetentionConfig) -> Self {
-        Self { backend, config }
+        Self {
+            backend,
+            config: Arc::new(ArcSwap::from_pointee(config)),
+        }
     }
 
     /// Run one retention pass: build the [`RetentionPolicy`](super::RetentionPolicy)
@@ -43,7 +51,7 @@ impl RetentionEngine {
     /// Surfaces any [`StorageError`](super::StorageError) returned by
     /// [`apply_retention`](StorageBackend::apply_retention).
     pub async fn run_once(&self) -> StorageResult<RetentionStats> {
-        let policy = self.config.to_policy();
+        let policy = self.config.load().to_policy();
         let stats = self.backend.apply_retention(&policy).await?;
         tracing::info!(
             dry_run = policy.dry_run,
@@ -73,7 +81,7 @@ impl RetentionEngine {
     ///   this case — fail-fast at startup rather than panic at the first
     ///   tick.
     pub fn start(self: Arc<Self>, shutdown: CancellationToken) -> Result<JoinHandle<()>, RetentionConfigError> {
-        let schedule = self.config.parsed_schedule()?;
+        let schedule = self.config.load().parsed_schedule()?;
         Ok(tokio::spawn(async move {
             loop {
                 let Some(next) = schedule.upcoming(Utc).next() else {
