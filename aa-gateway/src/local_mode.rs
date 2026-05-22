@@ -20,21 +20,36 @@ use crate::routes::healthz::{healthz, HealthzState};
 
 /// Handle returned by `start_local()` once the local control plane is up.
 ///
-/// Holds the bound socket address (useful in tests that bind to port `0`
-/// to pick a free port) and the one-shot sender that drives the graceful
-/// shutdown path installed in AAASM-1728.
+/// Holds the bound socket address, the one-shot sender that drives the
+/// graceful shutdown path, and the resources `shutdown()` (AAASM-1728)
+/// will clean up: the spawned server task, the `SqlitePool` to close,
+/// and the PID-file path to remove.
+///
+/// The trailing three fields are `Option` because the **shell-handle**
+/// path (probe short-circuit in `start_local`) has nothing to clean up
+/// — the running process is owned by a different `start_local` invocation.
 ///
 /// The handle is intentionally **not** `Clone` — only one caller can
 /// own the shutdown trigger at a time.
-#[allow(dead_code)] // consumed by start_local() / run_until_shutdown — AAASM-1725, AAASM-1728
+#[allow(dead_code)] // server_task/pool/pid_path consumed by shutdown() in the next commit
 pub struct LocalGatewayHandle {
     /// Address the local gateway is actually bound to. In normal
     /// operation this is `127.0.0.1:{config.port}`; in tests that pass
     /// port `0`, the resolved ephemeral port lives here.
     pub local_addr: SocketAddr,
     /// One-shot channel that signals the Axum server task to begin
-    /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
+    /// graceful shutdown. Hooked up by AAASM-1728's `shutdown()`.
     pub(crate) shutdown_tx: oneshot::Sender<()>,
+    /// `JoinHandle` of the spawned `axum::serve` task. `shutdown()`
+    /// awaits this after signalling `shutdown_tx` so the server has
+    /// fully drained before we close the pool. `None` on the shell-
+    /// handle path (probe short-circuit).
+    pub(crate) server_task: Option<tokio::task::JoinHandle<()>>,
+    /// SQLite pool to close on shutdown. `None` on the shell-handle path.
+    pub(crate) pool: Option<SqlitePool>,
+    /// PID-file path to remove on shutdown. `None` on the shell-handle
+    /// path (no PID was written for that branch).
+    pub(crate) pid_path: Option<PathBuf>,
 }
 
 /// Errors that can occur while booting the local-mode control plane.
@@ -265,12 +280,15 @@ pub(crate) async fn start_local_with_pid_path(
         return Ok(LocalGatewayHandle {
             local_addr: addr,
             shutdown_tx,
+            server_task: None,
+            pool: None,
+            pid_path: None,
         });
     }
 
-    // 2. Storage (AAASM-1710). The pool is moved into the spawned task
-    //    so it's dropped when the server exits — AAASM-1728 will replace
-    //    the drop with an explicit `pool.close().await`.
+    // 2. Storage (AAASM-1710). The pool now lives on the handle so
+    //    `LocalGatewayHandle::shutdown()` (next commit) can close it
+    //    explicitly with `pool.close().await` rather than relying on Drop.
     let pool = open_storage(&config.storage_path).await?;
 
     // 3. Bind 127.0.0.1:port (AC #6 — explicit Ipv4Addr::LOCALHOST,
@@ -295,20 +313,23 @@ pub(crate) async fn start_local_with_pid_path(
 
     // 6. Serve. The shutdown_rx side stays in the spawned task; the
     //    handle keeps shutdown_tx for AAASM-1728's signal handler.
+    //    The `JoinHandle` lives on the handle so `shutdown()` can await
+    //    the task's completion after signalling shutdown_tx.
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         let _ = axum::serve(listener, router())
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
             })
             .await;
-        // Drop pool here — AAASM-1728 will replace with pool.close().await.
-        drop(pool);
     });
 
     Ok(LocalGatewayHandle {
         local_addr,
         shutdown_tx,
+        server_task: Some(server_task),
+        pool: Some(pool),
+        pid_path: Some(pid_path.to_path_buf()),
     })
 }
 
