@@ -204,3 +204,20 @@ jobs:
           repository: AI-agent-assembly/homebrew-agent-assembly
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
+
+      - name: Rewrite Formula/aasm.rb with new version + shas
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DARWIN_ARM: ${{ steps.shas.outputs.darwin_arm }}
+          DARWIN_INTEL: ${{ steps.shas.outputs.darwin_intel }}
+          LINUX_ARM: ${{ steps.shas.outputs.linux_arm }}
+          LINUX_INTEL: ${{ steps.shas.outputs.linux_intel }}
+        run: |
+          cd tap
+          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/aasm.rb
+          sed -i "/aasm-aarch64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_ARM}\"|}" Formula/aasm.rb
+          sed -i "/aasm-x86_64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_INTEL}\"|}" Formula/aasm.rb
+          sed -i "/aasm-aarch64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM}\"|}" Formula/aasm.rb
+          sed -i "/aasm-x86_64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_INTEL}\"|}" Formula/aasm.rb
+          git -C . diff -- Formula/aasm.rb || true
