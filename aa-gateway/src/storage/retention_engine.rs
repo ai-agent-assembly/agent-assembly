@@ -299,6 +299,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_loop_survives_failed_run_once() {
+        let backend = Arc::new(FakeBackend::failing("intermittent backend failure"));
+        let config = RetentionConfig {
+            schedule: "* * * * * *".to_string(),
+            ..RetentionConfig::default()
+        };
+        let engine = Arc::new(RetentionEngine::new(backend.clone(), config));
+        let shutdown = CancellationToken::new();
+
+        let handle = engine.start(shutdown.clone()).expect("valid schedule must spawn");
+
+        // Three seconds — long enough for at least two failed run_once calls
+        // if the loop correctly continues past the first error.
+        tokio::time::sleep(std::time::Duration::from_millis(3_100)).await;
+        shutdown.cancel();
+        handle.await.expect("background task must finish cleanly on shutdown");
+
+        let calls = backend.call_count();
+        assert!(
+            calls >= 2,
+            "loop must keep ticking after a failed run_once, got {calls} call(s)"
+        );
+    }
+
+    #[tokio::test]
     async fn start_rejects_invalid_schedule_before_spawning() {
         let backend = Arc::new(FakeBackend::new(canned_stats()));
         let config = RetentionConfig {
