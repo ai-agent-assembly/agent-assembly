@@ -55,6 +55,9 @@ pub enum PolicyCache {
     /// No-op cache — `get` always returns `None`, `set` and `invalidate`
     /// are no-ops, `is_enabled` returns `false`.
     Disabled,
+    /// Redis-backed cache. Only available with the `redis-cache` feature.
+    #[cfg(feature = "redis-cache")]
+    Redis(RedisPolicyCache),
 }
 
 #[async_trait]
@@ -62,24 +65,32 @@ impl PolicyCacheLike for PolicyCache {
     async fn get(&self, _name: &str) -> Option<PolicyDocument> {
         match self {
             Self::Disabled => None,
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.get(_name).await,
         }
     }
 
     async fn set(&self, _doc: &PolicyDocument) {
         match self {
             Self::Disabled => {}
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.set(_doc).await,
         }
     }
 
     async fn invalidate(&self, _name: &str) {
         match self {
             Self::Disabled => {}
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.invalidate(_name).await,
         }
     }
 
     fn is_enabled(&self) -> bool {
         match self {
             Self::Disabled => false,
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(_) => true,
         }
     }
 }
