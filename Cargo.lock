@@ -103,8 +103,10 @@ dependencies = [
  "cfg-if",
  "chrono",
  "criterion",
+ "dirs",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.11.0",
  "thiserror 2.0.18",
 ]
@@ -264,6 +266,7 @@ dependencies = [
  "arc-swap",
  "async-stream",
  "async-trait",
+ "axum",
  "chrono",
  "chrono-tz",
  "clap",
@@ -279,6 +282,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "proptest",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "rust_decimal",
@@ -291,14 +295,17 @@ dependencies = [
  "strsim",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "utoipa",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -5668,6 +5675,7 @@ checksum = "ee6798b1838b6a0f69c007c133b8df5866302197e404e8b6ee8ed3e3a5e68dc6"
 dependencies = [
  "base64",
  "bytes",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -5746,6 +5754,7 @@ dependencies = [
  "bitflags 2.11.1",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.10.7",
  "dotenvy",
@@ -5788,6 +5797,7 @@ dependencies = [
  "base64",
  "bitflags 2.11.1",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -5823,6 +5833,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "futures-channel",
  "futures-core",

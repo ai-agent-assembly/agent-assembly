@@ -29,6 +29,8 @@ pub mod approval;
 pub mod audit;
 #[cfg(feature = "alloc")]
 pub mod capability;
+#[cfg(feature = "std")]
+pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
@@ -74,6 +76,11 @@ pub use capability::{
 
 #[cfg(feature = "std")]
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
+
+#[cfg(feature = "std")]
+pub use config::{
+    AgentConnectConfig, ConfigError, DeploymentMode, GatewayConfig, LocalModeConfig, RemoteModeConfig, TlsConfig,
+};
 
 pub use topology::EdgeType;
 #[cfg(all(feature = "std", feature = "test-utils"))]

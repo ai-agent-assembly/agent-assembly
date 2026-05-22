@@ -22,6 +22,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve a binary name (e.g. `"go"`) to its absolute path by walking the
+/// current process's `PATH`. Needed before any `Command::new(name)` call
+/// that also sets `.env("PATH", …)` — on Linux glibc's `posix_spawnp`
+/// uses the *child's* envp `PATH` for the binary lookup, so an
+/// overridden empty PATH makes the spawn itself fail with `NotFound`
+/// even when the parent process can see the binary. Returns `None` when
+/// the binary is missing from the parent's `PATH`.
+fn resolve_in_path(name: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_env)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// `<workspace-parent>/agent-assembly/` — derived from `CARGO_MANIFEST_DIR`.
 fn agent_assembly_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -82,7 +96,12 @@ fn python_binary_in_path_returns_resolved_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
-    let out = Command::new("python3")
+    let Some(py_bin) = resolve_in_path("python3") else {
+        eprintln!("skip python_binary_in_path: `python3` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&py_bin)
         .arg("-c")
         .arg(
             "from agent_assembly.runtime import find_aasm_binary; \
@@ -90,7 +109,7 @@ fn python_binary_in_path_returns_resolved_path() {
         )
         .env("PYTHONPATH", python_sdk_path())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn python3");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -115,12 +134,17 @@ fn python_init_assembly_raises_runtime_error_when_missing() {
         );
         return;
     }
-    let out = Command::new("python3")
+    let Some(py_bin) = resolve_in_path("python3") else {
+        eprintln!("skip python_init_assembly_raises_…: `python3` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&py_bin)
         .arg("-c")
         .arg("from agent_assembly.runtime import init_assembly; init_assembly()")
         .env("PYTHONPATH", python_sdk_path())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn python3");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -185,12 +209,26 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let _fake = make_fake_aasm(tmp.path());
-    let out = Command::new("go")
+    let Some(go_bin) = resolve_in_path("go") else {
+        eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
+        return;
+    };
+    // Empty-but-writable HOME so `go run .` can populate its build
+    // cache (`$HOME/.cache/go-build`) without inheriting aasm-on-PATH
+    // via HOME-relative lookups in the spawned probe.
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("find")
         .current_dir(probe_go_dir())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
+        // probe_go is a fixture with a `replace` directive at a local
+        // path and no committed go.sum — `-mod=mod` lets `go run`
+        // populate the missing go.sum entries on the fly instead of
+        // failing with "missing go.sum entry". `GOFLAGS` is inherited
+        // by the spawned compile.
+        .env("GOFLAGS", "-mod=mod")
         .output()
         .expect("spawn go run");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -219,12 +257,26 @@ fn go_init_assembly_returns_err_when_missing() {
         eprintln!("skip go_init_assembly_returns_err_…: go mod edit failed");
         return;
     }
-    let out = Command::new("go")
+    let Some(go_bin) = resolve_in_path("go") else {
+        eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
+        return;
+    };
+    // Empty-but-writable HOME so `go run .` can populate its build
+    // cache (`$HOME/.cache/go-build`) without inheriting aasm-on-PATH
+    // via HOME-relative lookups in the spawned probe.
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&go_bin)
         .args(["run", "."])
         .arg("init")
         .current_dir(probe_go_dir())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
+        // probe_go is a fixture with a `replace` directive at a local
+        // path and no committed go.sum — `-mod=mod` lets `go run`
+        // populate the missing go.sum entries on the fly instead of
+        // failing with "missing go.sum entry". `GOFLAGS` is inherited
+        // by the spawned compile.
+        .env("GOFLAGS", "-mod=mod")
         .output()
         .expect("spawn go run");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -263,12 +315,17 @@ fn node_binary_in_path_returns_resolved_path() {
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
-    let out = Command::new("node")
+    let Some(node_bin) = resolve_in_path("node") else {
+        eprintln!("skip node_binary_in_path: `node` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&node_bin)
         .arg(probe_node_fixture())
         .arg("find")
         .env("NODE_SDK_PATH", node_sdk_path())
         .env("PATH", tmp.path())
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn node");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -293,12 +350,17 @@ fn node_init_assembly_throws_when_missing() {
         );
         return;
     }
-    let out = Command::new("node")
+    let Some(node_bin) = resolve_in_path("node") else {
+        eprintln!("skip node_init_assembly_throws_…: `node` not on $PATH");
+        return;
+    };
+    let fake_home = tempfile::tempdir().expect("create fake HOME");
+    let out = Command::new(&node_bin)
         .arg(probe_node_fixture())
         .arg("init")
         .env("NODE_SDK_PATH", node_sdk_path())
         .env("PATH", EMPTY_PATH_DIR)
-        .env("HOME", "/var/empty-AAASM-1230-fake-home")
+        .env("HOME", fake_home.path())
         .output()
         .expect("spawn node");
     let stderr = String::from_utf8_lossy(&out.stderr);

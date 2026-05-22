@@ -41,10 +41,12 @@ strsim       = "0.11"
 humantime    = "2"
 ahash        = "0.8"
 metrics      = "0.24"
-sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid"] }
+sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "macros", "migrate", "uuid", "chrono"] }
 tokio-util   = "0.7"
 parking_lot  = "0.12"
 utoipa       = { version = "5", features = ["axum_extras"] }
+axum         = "0.8"
+x509-parser  = "0.18"
 
 [dev-dependencies]
 criterion    = { version = "0.8", features = ["async_tokio"] }
@@ -52,6 +54,9 @@ proptest     = "1"
 tempfile     = "3"
 tokio-stream = "0.1"
 insta        = "1"
+tower        = { version = "0.5", features = ["util"] }
+rcgen        = { version = "0.14", features = ["pem"] }
+time         = "0.3"
 
 [[bin]]
 name = "aa-gateway"

@@ -19,6 +19,7 @@ pub mod dashboard;
 pub mod gateway;
 pub mod logs;
 pub mod permissions;
+pub mod pidfile;
 pub mod policy;
 pub mod proxy;
 pub mod run;

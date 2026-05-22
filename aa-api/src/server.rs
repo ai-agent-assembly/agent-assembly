@@ -56,6 +56,21 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
         state.alert_store.clone(),
     );
 
+    // Spawn the MVP alert-rule evaluator (AAASM-1386). The NullMetricSource
+    // returns None for every metric, so the loop is a no-op against today's
+    // wiring — production-grade hooks for budget / anomaly / approval-age /
+    // policy-violation metrics are tracked as follow-ups in the Story.
+    let _rule_evaluator_handle = crate::alerts::rules::evaluator::spawn_rule_evaluator(
+        state.alert_rule_store.clone(),
+        std::sync::Arc::new(crate::alerts::rules::evaluator::NullMetricSource),
+        state.alert_store.clone(),
+        std::time::Duration::from_secs(60),
+    );
+
+    // Spawn background task to sweep terminal entries from the ops registry
+    // (AAASM-1657 PR-H). Default: tick every 10s, drop entries older than 60s.
+    let _ops_sweep_handle = aa_gateway::ops::spawn_sweep_task(state.ops_registry.clone());
+
     let app = build_app(state);
 
     let listener = TcpListener::bind(config.bind_addr).await?;

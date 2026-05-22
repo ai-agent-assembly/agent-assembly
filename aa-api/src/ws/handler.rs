@@ -5,6 +5,8 @@ use std::time::Duration;
 use crate::auth::AuthenticatedCaller;
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, CallStackNode, EventPayload, ViolationPayload};
 use crate::models::{EventType, GovernanceEvent};
+// AAASM-1657 PR-H: the ops-change channel reuses the typed OpsChangePayload
+// shipped in PR-B (AAASM-1651).
 use crate::state::AppState;
 use crate::ws::params::WsQueryParams;
 use axum::body::Bytes;
@@ -91,6 +93,7 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     let mut approval_rx = state.events.subscribe_approvals();
     let mut approval_expiry_rx = state.events.subscribe_approval_expirations();
     let mut budget_rx = state.events.subscribe_budget();
+    let mut ops_change_rx = state.events.subscribe_ops_change();
 
     let live_sender = sender.clone();
     let ping_sender = sender.clone();
@@ -194,6 +197,20 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
                         build_budget_alert_payload(&budget_ev),
                     ))
                     .unwrap_or_default(),
+                    timestamp: chrono::Utc::now(),
+                })
+            }
+            Ok(ops_ev) = ops_change_rx.recv() => {
+                // AAASM-1657 PR-H: forward operator-driven ops registry
+                // transitions to the dashboard so it can clear optimistic
+                // overrides and update the row in place by op_id.
+                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(GovernanceEvent {
+                    id,
+                    event_type: EventType::OpsChange,
+                    agent_id: ops_ev.agent_id,
+                    payload: serde_json::to_value(EventPayload::OpsChange(ops_ev.payload))
+                        .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 })
             }

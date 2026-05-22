@@ -16,8 +16,8 @@ use crate::models::event_type::EventType;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops, policies, topology,
-    traces,
+    agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops,
+    policies, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -43,6 +43,7 @@ use crate::routes::{
         (name = "costs", description = "Cost and budget tracking"),
         (name = "alerts", description = "Governance alerts"),
         (name = "alert-destinations", description = "Notification destinations — CRUD + test"),
+        (name = "alert-rules", description = "Alert-rule CRUD (AAASM-1386)"),
         (name = "auth", description = "Authentication and token issuance"),
         (name = "events", description = "Real-time event streaming via WebSocket"),
         (name = "alerts-stream", description = "Real-time alert lifecycle WebSocket stream (subprotocol aaasm-alerts-v1) — AAASM-1389"),
@@ -82,6 +83,11 @@ use crate::routes::{
         destinations::update_destination,
         destinations::delete_destination,
         destinations::test_destination,
+        alert_rules::list_rules,
+        alert_rules::create_rule,
+        alert_rules::get_rule,
+        alert_rules::update_rule,
+        alert_rules::delete_rule,
         crate::ws::alerts_handler::ws_alerts_handler,
         auth::issue_token,
         crate::ws::handler::ws_events_handler,
@@ -148,6 +154,11 @@ use crate::routes::{
         destinations::ConnectorFailedBody,
         crate::destinations::types::DestinationKind,
         crate::destinations::types::DestinationConfig,
+        alert_rules::AlertRuleRequest,
+        crate::alerts::rules::types::AlertRule,
+        crate::alerts::rules::types::RuleMetric,
+        crate::alerts::rules::types::RuleOperator,
+        crate::alerts::rules::types::RuleSeverity,
         AlertWsFrame,
         crate::alerts::detail::RuleSnapshot,
         crate::alerts::detail::RoutingLogEntry,

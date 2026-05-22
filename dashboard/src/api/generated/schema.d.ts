@@ -316,6 +316,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/alerts/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List alert rules.
+         * @description Returns every persisted [`AlertRule`] as a bare JSON array ordered
+         *     by `created_at` then `id` so the dashboard's
+         *     `useAlertRulesQuery` (AAASM-1075) can consume the response
+         *     directly. Pass `?enabled=true|false` to restrict the response to
+         *     the matching subset.
+         */
+        get: operations["list_rules"];
+        put?: never;
+        /**
+         * Create a new alert rule.
+         * @description Validates the request body against the destination registry and the
+         *     per-metric range rules, then persists it with a server-assigned id
+         *     and RFC 3339 `created_at` / `updated_at` timestamps. Returns the
+         *     stored record. Surfaces `invalid_metric`, `invalid_threshold`,
+         *     `destination_unknown`, or `rule_name_conflict` on rejection.
+         */
+        post: operations["create_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch a single alert rule by id.
+         * @description Returns the full [`AlertRule`] record, or `rule_not_found` (404)
+         *     when `id` is unknown.
+         */
+        get: operations["get_rule"];
+        /**
+         * Replace an alert rule.
+         * @description Same validation as `POST`. The store preserves the existing `id`
+         *     and `created_at` while bumping `updated_at`. Returns the updated
+         *     record, or `rule_not_found` (404) when `id` is unknown.
+         */
+        put: operations["update_rule"];
+        post?: never;
+        /**
+         * Delete an alert rule.
+         * @description Returns `204 No Content` on success, or `rule_not_found` (404) when
+         *     the id is unknown. Already-fired alerts derived from a deleted rule
+         *     keep their snapshot so the alert detail view still works.
+         */
+        delete: operations["delete_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/silence": {
         parameters: {
             query?: never;
@@ -1440,6 +1505,93 @@ export interface components {
             updated_at?: string | null;
         };
         /**
+         * @description A persisted alert rule. Same shape is used for request bodies on
+         *     POST / PUT and for response bodies on GET, matching the Story
+         *     description verbatim.
+         *
+         *     `id`, `created_at`, and `updated_at` are server-assigned; clients
+         *     must omit them on POST (the in-memory store will populate them) and
+         *     the store will overwrite them on PUT to preserve `id` + `created_at`
+         *     and bump `updated_at`.
+         */
+        AlertRule: {
+            /** @description RFC 3339 timestamp when the rule was first created. */
+            createdAt: string;
+            /**
+             * Format: int32
+             * @description Window in seconds during which repeat firings are deduplicated.
+             */
+            dedupWindowSeconds: number;
+            /** @description Free-form description displayed in the dashboard rule list. */
+            description: string;
+            /**
+             * @description Destinations the alert is routed to. Non-empty; each id must
+             *     exist in the destination registry.
+             */
+            destinationIds: string[];
+            /** @description Whether the rule is actively evaluated. */
+            enabled: boolean;
+            /**
+             * Format: int32
+             * @description Evaluation window in seconds — must be one of `{300, 900, 3600}`.
+             */
+            evaluationWindowSeconds: number;
+            /** @description Server-assigned ULID-style identifier. */
+            id: string;
+            /** @description Metric the rule polls. */
+            metric: components["schemas"]["RuleMetric"];
+            /**
+             * @description Human-readable rule name. Must be 1-128 characters and unique
+             *     per tenant (uniqueness is enforced at the store layer).
+             */
+            name: string;
+            /**
+             * @description Comparison operator applied between the metric value and
+             *     [`Self::threshold`].
+             */
+            operator: components["schemas"]["RuleOperator"];
+            /** @description Severity propagated to alerts emitted by this rule. */
+            severity: components["schemas"]["RuleSeverity"];
+            /** @description Optional free-form `key=value` suppression labels. */
+            suppressionLabels?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: double
+             * @description Numeric threshold. Must be 0-100 for percentage metrics
+             *     (see [`AlertRule::validate`]).
+             */
+            threshold: number;
+            /** @description RFC 3339 timestamp of the last mutation. */
+            updatedAt: string;
+        };
+        /**
+         * @description Wire shape for POST / PUT request bodies.
+         *
+         *     Mirrors the Story's JSON example. Enum-shaped fields are accepted as
+         *     strings so the handler can map unknown values onto the spec's
+         *     `invalid_metric` error code rather than relying on serde's default
+         *     422 rejection.
+         */
+        AlertRuleRequest: {
+            /** Format: int32 */
+            dedupWindowSeconds: number;
+            description: string;
+            destinationIds: string[];
+            enabled: boolean;
+            /** Format: int32 */
+            evaluationWindowSeconds: number;
+            metric: string;
+            name: string;
+            operator: string;
+            severity: string;
+            suppressionLabels?: {
+                [key: string]: string;
+            };
+            /** Format: double */
+            threshold: number;
+        };
+        /**
          * @description Lifecycle frame pushed to clients over the alerts WebSocket.
          *
          *     Server-only — `AlertResponse` does not currently derive
@@ -2378,6 +2530,26 @@ export interface components {
             /** @description Team the request was routed to, if known. */
             target_team_id?: string | null;
         };
+        /**
+         * @description Metric a rule evaluates against. Snake-case wire form matches the
+         *     Story's enum exactly so the dashboard rule-builder dropdown can map
+         *     1:1 onto these variants.
+         * @enum {string}
+         */
+        RuleMetric: "budget_spent_pct" | "anomaly_score" | "approval_pending_age" | "policy_violation_count";
+        /**
+         * @description Comparison operator applied between the metric's current value and
+         *     the rule's threshold. Wire form is the literal symbol (e.g. `">"`),
+         *     matching the Story description.
+         * @enum {string}
+         */
+        RuleOperator: ">" | ">=" | "<" | "=";
+        /**
+         * @description Severity assigned to alerts that this rule fires. Wire form is the
+         *     uppercase string matching the Story (e.g. `"CRITICAL"`).
+         * @enum {string}
+         */
+        RuleSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
         /**
          * @description Snapshot of the rule definition at the moment the alert fired.
          *
@@ -3521,6 +3693,173 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConnectorFailedBody"];
                 };
+            };
+        };
+    };
+    list_rules: {
+        parameters: {
+            query?: {
+                /** @description Filter by the rule's `enabled` flag. Omit to return every rule. */
+                enabled?: boolean | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bare array of alert rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"][];
+                };
+            };
+        };
+    };
+    create_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created rule */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description Validation failure (invalid_metric, invalid_threshold, destination_unknown, ...) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description rule_name_conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id assigned by the server */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description rule_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id assigned by the server */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRule"];
+                };
+            };
+            /** @description Validation failure */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description rule_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description rule_name_conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Rule id assigned by the server */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rule deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description rule_not_found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
