@@ -97,3 +97,104 @@ fn find_dashboard_dist_in(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// Build a minimal `dashboard/dist/`-shaped tempdir for the router
+    /// tests: `index.html` at the root plus an `assets/main.js` file
+    /// whose contents we assert against to prove `ServeDir` is reaching
+    /// real files (rather than always returning the index fallback).
+    fn make_stub_dist() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<!doctype html><html><body><div id="root"></div></body></html>"#,
+        )
+        .expect("write index.html");
+        std::fs::create_dir_all(dir.path().join("assets")).expect("mkdir assets");
+        std::fs::write(dir.path().join("assets/main.js"), "export const main = () => 42;\n")
+            .expect("write assets/main.js");
+        dir
+    }
+
+    async fn get(router: Router, path: &str) -> axum::http::Response<Body> {
+        router
+            .oneshot(Request::builder().uri(path).body(Body::empty()).expect("build request"))
+            .await
+            .expect("router.oneshot")
+    }
+
+    /// AAASM-1580 AC #1 at the helper level: `GET /` returns 200 and
+    /// the body contains `<div id="root">`, proving the React SPA's
+    /// `index.html` is what the router serves at the root.
+    #[tokio::test]
+    async fn dashboard_router_serves_index_at_root() {
+        let dist = make_stub_dist();
+        let response = get(dashboard_router(dist.path()), "/").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+        let body = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(
+            body.contains(r#"<div id="root">"#),
+            "GET / must serve index.html with the React mount node; got: {body}"
+        );
+    }
+
+    /// AAASM-1580 AC "All JS/CSS assets served with correct Content-Type":
+    /// `GET /assets/main.js` reaches the real file and `ServeDir` sets
+    /// a JavaScript content-type from its mime-guess table — covers
+    /// both `application/javascript` and `text/javascript` because the
+    /// canonical value has moved between tower-http releases.
+    #[tokio::test]
+    async fn dashboard_router_serves_static_assets_with_javascript_content_type() {
+        let dist = make_stub_dist();
+        let response = get(dashboard_router(dist.path()), "/assets/main.js").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            ctype.contains("javascript"),
+            "asset must be served with a JavaScript content-type; got {ctype:?}"
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+        assert_eq!(
+            std::str::from_utf8(&bytes).expect("utf8"),
+            "export const main = () => 42;\n",
+            "asset body must match the file on disk"
+        );
+    }
+
+    /// AAASM-1580 AC "GET /agents → index.html (SPA fallback, not 404)":
+    /// an unknown nested path falls through to `ServeDir::fallback`
+    /// (ServeFile of index.html), so React Router receives the SPA
+    /// shell with a real 200 status instead of a 404.
+    #[tokio::test]
+    async fn dashboard_router_falls_back_to_index_on_unknown_path() {
+        let dist = make_stub_dist();
+        let response = get(dashboard_router(dist.path()), "/agents/abc").await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "SPA fallback must return 200, not 404"
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+        let body = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(
+            body.contains(r#"<div id="root">"#),
+            "fallback body must be index.html; got: {body}"
+        );
+    }
+}
