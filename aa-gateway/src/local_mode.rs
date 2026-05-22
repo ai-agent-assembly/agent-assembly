@@ -8,7 +8,7 @@
 //! [`DeploymentMode::Local`]: aa_core::config::DeploymentMode::Local
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::{routing::get, Extension, Router};
 use tokio::sync::oneshot;
@@ -89,6 +89,30 @@ pub enum LocalModeError {
 pub(crate) fn router() -> Router {
     let state = HealthzState::new("local", "sqlite");
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
+}
+
+/// Create the parent directory tree for `path` if it does not yet exist.
+///
+/// Called by [`open_storage`] before opening the SQLite file so that a
+/// developer's first `aasm start --mode local` can write to
+/// `~/.aasm/local.db` even when `~/.aasm/` doesn't exist yet — matches
+/// AAASM-1576 AC #3 (`SQLite file created at ~/.aasm/local.db on first start`).
+///
+/// `path.parent()` returning `None` or an empty path (e.g. a bare
+/// filename like `:memory:`) is a no-op success.
+///
+/// Tilde expansion is not performed here — `aa-core::config::GatewayConfig::
+/// expand_paths()` (AAASM-1691) resolves `~` upstream before this is called.
+#[allow(dead_code)] // consumed by open_storage / start_local — AAASM-1710, AAASM-1725
+pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
+    let Some(parent) = path.parent() else { return Ok(()) };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|source| LocalModeError::Storage {
+        path: path.to_path_buf(),
+        source: sqlx::Error::Io(source),
+    })
 }
 
 #[cfg(test)]
