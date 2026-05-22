@@ -981,6 +981,54 @@ mod tests {
         );
     }
 
+    /// Migration 0002 must promote `audit_events` and `metrics` to
+    /// TimescaleDB hypertables when the extension is available. Exercises
+    /// the present-path: hypertable rows appear in
+    /// `timescaledb_information.hypertables` for both tables.
+    ///
+    /// Runs only when `TIMESCALEDB_AVAILABLE=1` is set — the CI
+    /// `timescaledb-tests` job (AAASM-1858 / SD-5) wires this against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn migrate_0002_creates_hypertables_when_timescaledb_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping timescaledb present-path test: TIMESCALEDB_AVAILABLE != 1 (set to 1 when AAASM_DATABASE_URL points at a TimescaleDB-enabled instance)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend
+            .migrate()
+            .await
+            .expect("migrate must not fail on a TimescaleDB-enabled PostgreSQL");
+
+        let has_extension: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')")
+                .fetch_one(&backend.pool)
+                .await
+                .expect("query pg_extension");
+        assert!(
+            has_extension,
+            "TIMESCALEDB_AVAILABLE=1 was set but the timescaledb extension is not installed; \
+             check the docker image is timescale/timescaledb:latest-pg17"
+        );
+
+        let hypertable_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM timescaledb_information.hypertables \
+             WHERE hypertable_name IN ('audit_events', 'metrics')",
+        )
+        .fetch_one(&backend.pool)
+        .await
+        .expect("query timescaledb_information.hypertables");
+        assert_eq!(
+            hypertable_count, 2,
+            "expected both audit_events and metrics to be promoted to hypertables, found {hypertable_count}"
+        );
+    }
+
     /// Mint a fresh, unique [`AgentId`] so every test can scope its
     /// inserts and assertions against an isolated key — necessary because
     /// the audit_events table is shared across all postgres tests when
