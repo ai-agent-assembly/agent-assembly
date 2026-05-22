@@ -150,4 +150,10 @@ mod tests {
         let resolved = resolve_mode(None, env_with("remote")).expect("resolve");
         assert_eq!(resolved, Mode::Remote);
     }
+
+    #[test]
+    fn defaults_to_legacy_grpc() {
+        let resolved = resolve_mode(None, |_| None).expect("resolve");
+        assert_eq!(resolved, Mode::LegacyGrpc);
+    }
 }
