@@ -224,6 +224,18 @@ mod tests {
     }
 
     #[test]
+    fn healthz_response_deserializes_minimal_body() {
+        let json = r#"{"mode":"local","version":"0.0.1","storage":"sqlite","uptime_secs":0}"#;
+        let resp: HealthzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.mode, "local");
+        assert_eq!(resp.version, "0.0.1");
+        assert_eq!(resp.storage, "sqlite");
+        assert_eq!(resp.uptime_secs, 0);
+        assert!(resp.storage_path.is_none());
+        assert!(resp.database_url.is_none());
+    }
+
+    #[test]
     fn agent_response_deserializes() {
         let json = r#"{
             "id": "abc123",
