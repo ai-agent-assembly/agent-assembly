@@ -220,6 +220,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_deployment_overview_redacts_database_url_for_remote_postgres() {
+        let healthz = HealthzResponse {
+            mode: "remote".to_string(),
+            version: "0.0.1".to_string(),
+            storage: "postgres".to_string(),
+            uptime_secs: 1_234_567,
+            storage_path: None,
+            database_url: Some("postgresql://aasm:secret@aasm-db:5432/aasm".to_string()),
+        };
+        let overview = build_deployment_overview("https://cp.company.internal:7391", Some(healthz));
+        assert_eq!(overview.mode, "remote");
+        assert_eq!(overview.storage_backend, "postgres");
+        assert!(overview.storage_path.is_none());
+        assert_eq!(
+            overview.database_url_redacted.as_deref(),
+            Some("postgresql://aasm:***@aasm-db:5432/aasm")
+        );
+        assert_eq!(overview.health, "ok");
+    }
+
+    #[test]
     fn build_deployment_overview_populates_fields_from_local_sqlite_healthz() {
         let healthz = HealthzResponse {
             mode: "local".to_string(),
