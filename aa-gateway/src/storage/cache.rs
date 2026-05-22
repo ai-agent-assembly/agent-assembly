@@ -548,5 +548,23 @@ mod tests {
                 Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
             }
         }
+
+        #[tokio::test]
+        async fn from_config_async_falls_back_to_disabled_on_bad_url() {
+            // `127.0.0.1:1` is reserved and consistently refuses connections,
+            // which exercises the runtime-failure branch — not the URL-parse
+            // branch.
+            let config = RedisConfig {
+                enabled: true,
+                url: Some("redis://127.0.0.1:1".into()),
+                ..RedisConfig::default()
+            };
+            let cache = PolicyCache::from_config_async(&config).await;
+            assert!(
+                matches!(cache, PolicyCache::Disabled),
+                "connect failure must fall back to Disabled, not panic"
+            );
+            assert!(!cache.is_enabled());
+        }
     }
 }
