@@ -12,6 +12,7 @@ use aa_core::identity::AgentId;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
+use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
 use super::postgres_config::PostgresConfig;
@@ -75,6 +76,47 @@ fn row_to_audit_event(row: &sqlx::postgres::PgRow) -> StorageResult<AuditEvent> 
     })
 }
 
+/// Decode a single `agent_registry` row into an [`AgentRecord`].
+///
+/// Native PostgreSQL types map directly to the value-type fields —
+/// `TIMESTAMPTZ` → `DateTime<Utc>`, `JSONB` → `serde_json::Value` →
+/// `BTreeMap<String, String>`. `agent_id` is the only column that takes
+/// a manual TEXT round-trip via [`agent_id_from_text`].
+fn row_to_agent_record(row: &sqlx::postgres::PgRow) -> StorageResult<AgentRecord> {
+    use sqlx::Row;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    let metadata_json: serde_json::Value = row
+        .try_get("metadata")
+        .map_err(|e| StorageError::QueryFailed(format!("metadata column: {e}")))?;
+    let metadata: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(metadata_json).map_err(|e| StorageError::QueryFailed(format!("metadata parse: {e}")))?;
+
+    Ok(AgentRecord {
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        org_id: row
+            .try_get("org_id")
+            .map_err(|e| StorageError::QueryFailed(format!("org_id column: {e}")))?,
+        metadata,
+        registered_at: row
+            .try_get("registered_at")
+            .map_err(|e| StorageError::QueryFailed(format!("registered_at column: {e}")))?,
+        last_seen_at: row
+            .try_get("last_seen_at")
+            .map_err(|e| StorageError::QueryFailed(format!("last_seen_at column: {e}")))?,
+        enforcement_mode: row
+            .try_get("enforcement_mode")
+            .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode column: {e}")))?,
+    })
+}
+
 /// Push the audit-event WHERE clause derived from `filter` into `qb`.
 ///
 /// Adds clauses for `agent_id`, `team_id`, `from` / `to` (`ts >=` / `ts <`),
@@ -105,6 +147,32 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
     if filter.dry_run_only {
         connective(qb);
         qb.push("dry_run = TRUE");
+    }
+}
+
+/// Push the agent-registry WHERE clause derived from `filter` into `qb`.
+///
+/// PostgreSQL JSONB exposes object lookups via `metadata->>'name'`, so the
+/// `name_contains` filter does a parameterised LIKE against that key. SQLite
+/// uses `json_extract(metadata, '$.name')` for the same effect.
+fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter: &'q AgentFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(org_id) = filter.org_id.as_ref() {
+        connective(qb);
+        qb.push("org_id = ").push_bind(org_id.clone());
+    }
+    if let Some(name_contains) = filter.name_contains.as_ref() {
+        connective(qb);
+        qb.push("metadata->>'name' LIKE ")
+            .push_bind(format!("%{name_contains}%"));
     }
 }
 
@@ -244,6 +312,105 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(count as u64)
+    }
+
+    /// Insert or update an agent record.
+    ///
+    /// Uses PostgreSQL `ON CONFLICT (agent_id) DO UPDATE` so a re-registration
+    /// preserves the original `registered_at` while refreshing every other
+    /// field — including `last_seen_at`, which is the column the gateway
+    /// uses to detect liveness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] when metadata fails to encode as
+    /// JSON or the INSERT/UPDATE is rejected by the driver.
+    pub async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
+        let metadata = serde_json::to_value(&record.metadata)
+            .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO agent_registry \
+             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (agent_id) DO UPDATE SET \
+               team_id          = EXCLUDED.team_id, \
+               org_id           = EXCLUDED.org_id, \
+               metadata         = EXCLUDED.metadata, \
+               last_seen_at     = EXCLUDED.last_seen_at, \
+               enforcement_mode = EXCLUDED.enforcement_mode",
+        )
+        .bind(agent_id_to_text(&record.agent_id))
+        .bind(record.team_id.as_deref())
+        .bind(record.org_id.as_deref())
+        .bind(metadata)
+        .bind(record.registered_at)
+        .bind(record.last_seen_at)
+        .bind(&record.enforcement_mode)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    /// Return the agent record for `id`, if registered.
+    ///
+    /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
+    /// as a [`StorageError`].
+    pub async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        let row = sqlx::query(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
+             enforcement_mode FROM agent_registry WHERE agent_id = $1",
+        )
+        .bind(agent_id_to_text(id))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        row.as_ref().map(row_to_agent_record).transpose()
+    }
+
+    /// Return all agent records matching `filter`, ordered by `agent_id`.
+    ///
+    /// `filter.limit` and `filter.offset` translate to PostgreSQL
+    /// `LIMIT`/`OFFSET` bound as `i64`. `name_contains` performs a
+    /// substring search against the `metadata.name` JSONB key.
+    pub async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
+             enforcement_mode FROM agent_registry",
+        );
+        push_agent_where(&mut qb, &filter);
+        qb.push(" ORDER BY agent_id");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+            if let Some(offset) = filter.offset {
+                qb.push(" OFFSET ").push_bind(i64::from(offset));
+            }
+        }
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.iter().map(row_to_agent_record).collect()
+    }
+
+    /// Remove the agent record for `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NotFound`] when no row matches; the error
+    /// payload carries the offending agent id (TEXT form) so callers can
+    /// log it without re-encoding.
+    pub async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
+        let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = $1")
+            .bind(agent_id_to_text(id))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(agent_id_to_text(id)));
+        }
+        Ok(())
     }
 }
 
@@ -469,5 +636,141 @@ mod tests {
         assert_eq!(dry_only.len(), 1, "expected only the dry-run event");
         assert!(dry_only[0].dry_run, "returned event must be dry_run = true");
         assert_eq!(dry_only[0].event_id, dry.event_id);
+    }
+
+    fn sample_agent_record(
+        agent_id: AgentId,
+        registered_at: chrono::DateTime<chrono::Utc>,
+        last_seen_at: chrono::DateTime<chrono::Utc>,
+    ) -> AgentRecord {
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert("name".to_string(), "alpha-agent".to_string());
+        metadata.insert("env".to_string(), "test".to_string());
+        AgentRecord {
+            agent_id,
+            team_id: Some("team-rust".to_string()),
+            org_id: Some("acme".to_string()),
+            metadata,
+            registered_at,
+            last_seen_at,
+            enforcement_mode: "enforce".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_then_get_round_trip() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let ts = now_micros();
+        let record = sample_agent_record(agent_id, ts, ts);
+        backend.upsert_agent(record.clone()).await.expect("upsert");
+
+        let fetched = backend
+            .get_agent(&agent_id)
+            .await
+            .expect("get_agent")
+            .expect("agent should exist");
+
+        assert_eq!(fetched, record, "round-trip record must match insert exactly");
+    }
+
+    #[tokio::test]
+    async fn upsert_updates_last_seen_at() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let t1 = now_micros();
+        let t2 = t1 + chrono::Duration::seconds(60);
+
+        backend
+            .upsert_agent(sample_agent_record(agent_id, t1, t1))
+            .await
+            .expect("first upsert");
+        backend
+            .upsert_agent(sample_agent_record(agent_id, t1, t2))
+            .await
+            .expect("second upsert");
+
+        let fetched = backend
+            .get_agent(&agent_id)
+            .await
+            .expect("get_agent")
+            .expect("agent should exist");
+
+        assert_eq!(fetched.last_seen_at, t2, "second upsert must move last_seen_at forward");
+        assert_eq!(
+            fetched.registered_at, t1,
+            "registered_at must be preserved across re-registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_team() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Use a fresh team_id per test to isolate from rows left by other tests.
+        let team = format!("team-{}", uuid::Uuid::new_v4());
+        let other_team = format!("team-{}", uuid::Uuid::new_v4());
+        let ts = now_micros();
+
+        let mut in_team_a = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_team_a.team_id = Some(team.clone());
+        let mut in_team_a_2 = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_team_a_2.team_id = Some(team.clone());
+        let mut in_other = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_other.team_id = Some(other_team.clone());
+
+        backend.upsert_agent(in_team_a.clone()).await.expect("upsert a1");
+        backend.upsert_agent(in_team_a_2.clone()).await.expect("upsert a2");
+        backend.upsert_agent(in_other.clone()).await.expect("upsert other");
+
+        let listed = backend
+            .list_agents(AgentFilter {
+                team_id: Some(team.clone()),
+                ..AgentFilter::default()
+            })
+            .await
+            .expect("list");
+
+        assert_eq!(listed.len(), 2, "filter should return both team-a agents");
+        assert!(
+            listed.iter().all(|r| r.team_id.as_deref() == Some(team.as_str())),
+            "every returned row must belong to {team}",
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_returns_not_found() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let missing = fresh_agent_id();
+        let err = backend
+            .delete_agent(&missing)
+            .await
+            .expect_err("delete of unknown id must error");
+
+        match err {
+            StorageError::NotFound(payload) => {
+                assert_eq!(
+                    payload,
+                    agent_id_to_text(&missing),
+                    "NotFound payload should carry the offending TEXT id",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 }
