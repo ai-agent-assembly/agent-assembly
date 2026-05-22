@@ -15,9 +15,11 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::health::{HealthStatus, RowCounts, StorageHealth};
 use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
+use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
 /// hyphenated form). Mirrors the SQLite backend's storage shape so the
@@ -742,6 +744,117 @@ impl PostgresBackend {
 
         Ok(rows.into_iter().map(|(ts, value)| MetricPoint { ts, value }).collect())
     }
+
+    /// Apply `policy` to the `audit_events` table.
+    ///
+    /// The cold-tier cutoff is `now() - (hot_days + warm_days)` — any row
+    /// with `ts` older than this is past the warm tier and a candidate
+    /// for cold-action processing.
+    ///
+    /// * `dry_run = true` projects `dropped_rows` via `SELECT count(*)`
+    ///   without modifying any rows. `freed_bytes` is left at `0` since
+    ///   no chunks are compressed (E18 S-D will replace this path with
+    ///   TimescaleDB `drop_chunks` + byte accounting).
+    /// * `dry_run = false`, `cold_action = Drop` → `DELETE FROM
+    ///   audit_events WHERE ts < $1`; the affected row count populates
+    ///   `dropped_rows`.
+    /// * `cold_action = Archive` → returns
+    ///   [`StorageError::RetentionError`] until E18 S-D lands the
+    ///   TimescaleDB `drop_chunks()` path. The error surfaces the
+    ///   archive URL so operators see what they configured.
+    ///
+    /// `hot_rows` is always populated via a second `count(*)` filtered
+    /// at the hot cutoff so the caller can report how much data is
+    /// indexed-and-queryable after the run.
+    pub async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+        if matches!(policy.cold_action, ColdAction::Archive) {
+            return Err(StorageError::RetentionError(format!(
+                "archive cold_action not supported by PostgresBackend yet (S-D will add drop_chunks); \
+                 archive_url = {:?}",
+                policy.archive_url
+            )));
+        }
+
+        let now = chrono::Utc::now();
+        let cold_threshold = now - chrono::Duration::days(i64::from(policy.hot_days + policy.warm_days));
+        let hot_threshold = now - chrono::Duration::days(i64::from(policy.hot_days));
+
+        let dropped_rows: u64 = if policy.dry_run {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE ts < $1")
+                .bind(cold_threshold)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            count as u64
+        } else {
+            let result = sqlx::query("DELETE FROM audit_events WHERE ts < $1")
+                .bind(cold_threshold)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::RetentionError(e.to_string()))?;
+            result.rows_affected()
+        };
+
+        let hot_count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE ts >= $1")
+            .bind(hot_threshold)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(RetentionStats {
+            hot_rows: hot_count as u64,
+            compressed_rows: 0,
+            archived_rows: 0,
+            dropped_rows,
+            freed_bytes: 0,
+            ran_at: chrono::Utc::now(),
+        })
+    }
+
+    /// Probe backend liveness, latency, and current row counts.
+    ///
+    /// Runs `SELECT 1` to confirm the pool can talk to PostgreSQL, then
+    /// fans out a single `SELECT (… count …)` to gather row counts for
+    /// the three top-level tables in one round-trip. Reports
+    /// [`HealthStatus::Degraded`] when the probe + counts take 200 ms or
+    /// more — operators can use that as a leading indicator before the
+    /// gateway's own latency budget trips.
+    pub async fn healthcheck(&self) -> StorageResult<StorageHealth> {
+        let start = std::time::Instant::now();
+
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+
+        let (audit_events, agents, policy_versions): (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+               (SELECT count(*) FROM audit_events), \
+               (SELECT count(*) FROM agent_registry), \
+               (SELECT count(*) FROM policy_versions)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let status = if latency_ms < 200 {
+            HealthStatus::Ok
+        } else {
+            HealthStatus::Degraded
+        };
+
+        Ok(StorageHealth {
+            status,
+            backend: "postgres",
+            latency_ms,
+            row_counts: RowCounts {
+                audit_events: audit_events as u64,
+                agents: agents as u64,
+                policy_versions: policy_versions as u64,
+            },
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1334,5 +1447,171 @@ mod tests {
             }
             other => panic!("expected QueryFailed, got {other:?}"),
         }
+    }
+
+    /// Insert an audit event with a caller-chosen timestamp so retention
+    /// tests can place old data without rewriting the schema.
+    fn ancient_event(agent_id: AgentId, ts: chrono::DateTime<chrono::Utc>) -> AuditEvent {
+        AuditEvent {
+            ts,
+            ..sample_event(agent_id, ts)
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_retention_dry_run_does_not_delete() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        // ts = NOW − 1 hour places the event in the dry-run cutoff window
+        // (`hot_days = 0` ⇒ cutoff = NOW) without making it old enough for
+        // the destructive drop test (which uses a year-2010-ish cutoff) to
+        // delete it from underneath us in parallel runs.
+        let recent_past = chrono::Utc::now() - chrono::Duration::hours(1);
+        backend
+            .append_audit_event(&ancient_event(agent_id, recent_past))
+            .await
+            .expect("seed recent-past event");
+
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 0,
+                warm_days: 0,
+                cold_action: ColdAction::Drop,
+                archive_url: None,
+                dry_run: true,
+            })
+            .await
+            .expect("apply_retention dry_run");
+
+        assert!(
+            stats.dropped_rows >= 1,
+            "dry_run should project at least our recent-past event as droppable, got {}",
+            stats.dropped_rows,
+        );
+
+        let remaining = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+        assert_eq!(
+            remaining.len(),
+            1,
+            "dry_run must not delete any rows; recent-past event must still be present",
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_retention_drop_removes_old_rows() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        // ts = Y2K places the event well behind the chosen cutoff but well
+        // ahead of any policy the dry_run test uses (NOW), so parallel runs
+        // of the two tests do not delete each other's seeds.
+        let y2k = chrono::DateTime::from_timestamp(946_684_800, 0).expect("Y2K fits in chrono range");
+        backend
+            .append_audit_event(&ancient_event(agent_id, y2k))
+            .await
+            .expect("seed Y2K event");
+
+        // hot_days + warm_days = 10 years → cutoff ≈ 2016. Y2K (2000) is past
+        // that cutoff; recent-past events seeded by other tests are not.
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 1825,
+                warm_days: 1825,
+                cold_action: ColdAction::Drop,
+                archive_url: None,
+                dry_run: false,
+            })
+            .await
+            .expect("apply_retention drop");
+
+        assert!(
+            stats.dropped_rows >= 1,
+            "Drop should report at least our Y2K event as dropped, got {}",
+            stats.dropped_rows,
+        );
+
+        let remaining = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+        assert!(
+            remaining.is_empty(),
+            "Y2K event must be gone after Drop, got {} row(s)",
+            remaining.len(),
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_retention_archive_returns_error_until_s_d() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let err = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 90,
+                cold_action: ColdAction::Archive,
+                archive_url: Some("s3://aasm-archive/test".to_string()),
+                dry_run: false,
+            })
+            .await
+            .expect_err("Archive must error until E18 S-D wires drop_chunks");
+
+        match err {
+            StorageError::RetentionError(msg) => {
+                assert!(
+                    msg.contains("archive cold_action not supported"),
+                    "RetentionError must explain the unsupported action; got: {msg}",
+                );
+                assert!(
+                    msg.contains("s3://aasm-archive/test"),
+                    "RetentionError should echo the configured archive_url; got: {msg}",
+                );
+            }
+            other => panic!("expected RetentionError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn healthcheck_returns_ok_with_row_counts() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Seed one event so audit_events count is guaranteed > 0.
+        let agent_id = fresh_agent_id();
+        backend
+            .append_audit_event(&sample_event(agent_id, now_micros()))
+            .await
+            .expect("append");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+
+        assert_eq!(health.status, HealthStatus::Ok);
+        assert_eq!(health.backend, "postgres");
+        assert!(
+            health.row_counts.audit_events >= 1,
+            "audit_events count must include our fresh insert, got {}",
+            health.row_counts.audit_events,
+        );
     }
 }
