@@ -327,4 +327,40 @@ mod tests {
 
         assert!(alive, "probe must report alive against a real local-mode /healthz");
     }
+
+    /// AAASM-1576 AC #2 guard: when *some other* HTTP server is
+    /// listening on port 7391 — say a developer's static-asset server
+    /// or a stale process from a different product — `probe_running`
+    /// must return `false`. Otherwise `start_local()` would falsely
+    /// reuse a foreign process and the gateway would silently fail to
+    /// come up.
+    ///
+    /// Spins up a tiny axum router that responds 200 OK with
+    /// `{"foo":"bar"}` (missing every documented `HealthzBody` field)
+    /// and asserts the probe rejects it.
+    #[tokio::test]
+    async fn probe_running_returns_false_on_body_shape_mismatch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        async fn foreign_handler() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({"foo": "bar"}))
+        }
+        let foreign_app = Router::new().route("/healthz", get(foreign_handler));
+
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, foreign_app).await;
+        });
+
+        let alive = probe_running(port).await;
+
+        server.abort();
+
+        assert!(
+            !alive,
+            "probe must reject foreign /healthz responses missing HealthzBody fields"
+        );
+    }
 }
