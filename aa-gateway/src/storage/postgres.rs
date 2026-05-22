@@ -1556,4 +1556,37 @@ mod tests {
             remaining.len(),
         );
     }
+
+    #[tokio::test]
+    async fn apply_retention_archive_returns_error_until_s_d() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let err = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 90,
+                cold_action: ColdAction::Archive,
+                archive_url: Some("s3://aasm-archive/test".to_string()),
+                dry_run: false,
+            })
+            .await
+            .expect_err("Archive must error until E18 S-D wires drop_chunks");
+
+        match err {
+            StorageError::RetentionError(msg) => {
+                assert!(
+                    msg.contains("archive cold_action not supported"),
+                    "RetentionError must explain the unsupported action; got: {msg}",
+                );
+                assert!(
+                    msg.contains("s3://aasm-archive/test"),
+                    "RetentionError should echo the configured archive_url; got: {msg}",
+                );
+            }
+            other => panic!("expected RetentionError, got {other:?}"),
+        }
+    }
 }
