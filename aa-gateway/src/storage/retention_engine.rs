@@ -99,6 +99,7 @@ impl RetentionEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -111,44 +112,50 @@ mod tests {
     };
     use aa_core::identity::AgentId;
 
-    /// `StorageBackend` test double that records the
-    /// [`RetentionPolicy`] handed to `apply_retention` and returns either
-    /// canned [`RetentionStats`] or a configured error. Every other trait
-    /// method is unreachable in this module's tests and panics if called.
+    /// `StorageBackend` test double that records every
+    /// [`RetentionPolicy`] handed to `apply_retention` and returns a
+    /// per-call outcome built by a closure. Multi-fire safe so a cron
+    /// loop can drive it across multiple ticks. Every other trait method
+    /// is unreachable in this module's tests and panics if called.
     struct FakeBackend {
-        outcome: Mutex<Option<StorageResult<RetentionStats>>>,
-        captured: Mutex<Option<RetentionPolicy>>,
+        factory: Box<dyn Fn() -> StorageResult<RetentionStats> + Send + Sync>,
+        captured: Mutex<Vec<RetentionPolicy>>,
+        call_count: AtomicUsize,
     }
 
     impl FakeBackend {
         fn new(canned: RetentionStats) -> Self {
             Self {
-                outcome: Mutex::new(Some(Ok(canned))),
-                captured: Mutex::new(None),
+                factory: Box::new(move || Ok(canned.clone())),
+                captured: Mutex::new(Vec::new()),
+                call_count: AtomicUsize::new(0),
             }
         }
 
-        fn failing(error: StorageError) -> Self {
+        fn failing(error_message: &'static str) -> Self {
             Self {
-                outcome: Mutex::new(Some(Err(error))),
-                captured: Mutex::new(None),
+                factory: Box::new(move || Err(StorageError::RetentionError(error_message.to_string()))),
+                captured: Mutex::new(Vec::new()),
+                call_count: AtomicUsize::new(0),
             }
         }
 
         fn captured_policy(&self) -> Option<RetentionPolicy> {
-            self.captured.lock().unwrap().clone()
+            self.captured.lock().unwrap().last().cloned()
+        }
+
+        #[allow(dead_code)] // read by the cron-loop test landing in the next commit
+        fn call_count(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
         }
     }
 
     #[async_trait]
     impl StorageBackend for FakeBackend {
         async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
-            *self.captured.lock().unwrap() = Some(policy.clone());
-            self.outcome
-                .lock()
-                .unwrap()
-                .take()
-                .expect("FakeBackend::apply_retention fired more than once in a single test")
+            self.captured.lock().unwrap().push(policy.clone());
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            (self.factory)()
         }
         async fn append_audit_event(&self, _: &AuditEvent) -> StorageResult<()> {
             unreachable!()
@@ -260,9 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_once_surfaces_backend_error() {
-        let backend = Arc::new(FakeBackend::failing(StorageError::RetentionError(
-            "simulated S3 archive timeout".to_string(),
-        )));
+        let backend = Arc::new(FakeBackend::failing("simulated S3 archive timeout"));
         let engine = RetentionEngine::new(backend, RetentionConfig::default());
 
         let err = engine.run_once().await.expect_err("backend error must surface");
