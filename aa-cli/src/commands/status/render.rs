@@ -3,8 +3,71 @@
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 
-use super::models::{AgentRow, ApprovalsSummary, BudgetRow, RuntimeHealth, StatusSnapshot};
+use super::models::{AgentRow, ApprovalsSummary, BudgetRow, DeploymentOverview, RuntimeHealth, StatusSnapshot};
 use crate::output::OutputFormat;
+
+/// Build the multi-line deployment-overview header block as a `String`.
+///
+/// Pure function so render tests can assert on the exact output without
+/// capturing stdout. The shape follows the AAASM-1579 story description:
+///
+/// ```text
+/// Agent Assembly Status
+/// ─────────────────────────────────────
+///   Mode:      local
+///   Gateway:   http://localhost:7391
+///   Storage:   sqlite  (~/.aasm/local.db)
+///   Version:   0.0.1
+///   Uptime:    2h 15m 33s
+///   Health:    ✓ ok
+/// ─────────────────────────────────────
+/// ```
+///
+/// When `overview.health == "unreachable"` the body collapses to just the
+/// `Gateway` and `Health` lines since the other fields are unknown:
+///
+/// ```text
+/// Agent Assembly Status
+/// ─────────────────────────────────────
+///   Gateway:   http://localhost:7391
+///   Health:    ✗ unreachable
+/// ─────────────────────────────────────
+/// ```
+///
+/// The Storage line prefers `storage_path` for sqlite, falls back to
+/// `database_url_redacted` for postgres, and shows just the backend label
+/// when neither is reported.
+pub fn format_deployment_overview(overview: &DeploymentOverview) -> String {
+    let separator = "─────────────────────────────────────";
+    let mut out = String::new();
+    out.push_str("Agent Assembly Status\n");
+    out.push_str(separator);
+    out.push('\n');
+
+    if overview.health == "unreachable" {
+        out.push_str(&format!("  Gateway:   {}\n", overview.gateway_url));
+        out.push_str(&format!("  Health:    {}\n", "✗ unreachable".red()));
+    } else {
+        let storage_detail = overview
+            .storage_path
+            .as_deref()
+            .or(overview.database_url_redacted.as_deref());
+        let storage_line = match storage_detail {
+            Some(detail) => format!("{}  ({detail})", overview.storage_backend),
+            None => overview.storage_backend.clone(),
+        };
+        out.push_str(&format!("  Mode:      {}\n", overview.mode));
+        out.push_str(&format!("  Gateway:   {}\n", overview.gateway_url));
+        out.push_str(&format!("  Storage:   {storage_line}\n"));
+        out.push_str(&format!("  Version:   {}\n", overview.version));
+        out.push_str(&format!("  Uptime:    {}\n", format_duration(overview.uptime_secs)));
+        out.push_str(&format!("  Health:    {}\n", "✓ ok".green()));
+    }
+
+    out.push_str(separator);
+    out.push('\n');
+    out
+}
 
 /// Render the Runtime Health section to stdout.
 pub fn render_runtime_health(health: &RuntimeHealth) {
