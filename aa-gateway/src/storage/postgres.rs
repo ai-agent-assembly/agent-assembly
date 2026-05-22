@@ -710,4 +710,42 @@ mod tests {
             "registered_at must be preserved across re-registration"
         );
     }
+
+    #[tokio::test]
+    async fn list_filters_by_team() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Use a fresh team_id per test to isolate from rows left by other tests.
+        let team = format!("team-{}", uuid::Uuid::new_v4());
+        let other_team = format!("team-{}", uuid::Uuid::new_v4());
+        let ts = now_micros();
+
+        let mut in_team_a = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_team_a.team_id = Some(team.clone());
+        let mut in_team_a_2 = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_team_a_2.team_id = Some(team.clone());
+        let mut in_other = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_other.team_id = Some(other_team.clone());
+
+        backend.upsert_agent(in_team_a.clone()).await.expect("upsert a1");
+        backend.upsert_agent(in_team_a_2.clone()).await.expect("upsert a2");
+        backend.upsert_agent(in_other.clone()).await.expect("upsert other");
+
+        let listed = backend
+            .list_agents(AgentFilter {
+                team_id: Some(team.clone()),
+                ..AgentFilter::default()
+            })
+            .await
+            .expect("list");
+
+        assert_eq!(listed.len(), 2, "filter should return both team-a agents");
+        assert!(
+            listed.iter().all(|r| r.team_id.as_deref() == Some(team.as_str())),
+            "every returned row must belong to {team}",
+        );
+    }
 }
