@@ -1207,4 +1207,51 @@ mod tests {
             other => panic!("expected NotFound, got {other:?}"),
         }
     }
+
+    /// Mint a fresh metric name so each test scopes its inserts and
+    /// assertions to its own slice of the shared `metrics` table.
+    fn fresh_metric_name() -> String {
+        format!("metric-{}", uuid::Uuid::new_v4())
+    }
+
+    fn sample_metric(agent_id: AgentId, metric: &str, ts: chrono::DateTime<chrono::Utc>, value: f64) -> Metric {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("region".to_string(), "us-west".to_string());
+        Metric {
+            ts,
+            agent_id,
+            metric: metric.to_owned(),
+            value,
+            labels,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_metric_then_query_round_trip() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let metric_name = fresh_metric_name();
+        let ts = now_micros();
+        backend
+            .record_metric(sample_metric(agent_id, &metric_name, ts, 42.5))
+            .await
+            .expect("record_metric");
+
+        let points = backend
+            .query_metrics(MetricQuery {
+                agent_id: Some(agent_id),
+                metric: Some(metric_name.clone()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("query_metrics");
+
+        assert_eq!(points.len(), 1, "expected the single sample we just inserted");
+        assert_eq!(points[0].ts, ts);
+        assert_eq!(points[0].value, 42.5);
+    }
 }
