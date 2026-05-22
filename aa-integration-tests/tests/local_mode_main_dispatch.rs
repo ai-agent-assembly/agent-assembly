@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use assert_cmd::cargo::CommandCargoExt;
 use tempfile::TempDir;
 
 /// Grab a free port by binding to `127.0.0.1:0` and immediately dropping.
@@ -31,6 +30,54 @@ fn free_port() -> u16 {
         .local_addr()
         .expect("local_addr")
         .port()
+}
+
+/// Locate the `aa-gateway` binary on disk, or return `None` to signal
+/// the test should skip.
+///
+/// Mirrors `cli_gateway.rs` skip-gracefully pattern so the Integration
+/// tests CI job (which runs `cargo nextest run --workspace` without
+/// first invoking `cargo build -p aa-gateway`) doesn't fail when the
+/// binary isn't yet built. Uses absolute paths via `CARGO_MANIFEST_DIR`
+/// because nextest sets the test's CWD to the test-crate's manifest
+/// directory, not the workspace root.
+fn locate_aa_gateway() -> Option<PathBuf> {
+    fn binary_runnable(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+
+    // Workspace target/ — CARGO_MANIFEST_DIR is `<workspace>/aa-integration-tests`,
+    // so the workspace root is one level up.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(workspace_root) = manifest_dir.parent() {
+        for profile in &["release", "debug"] {
+            let p = workspace_root.join("target").join(profile).join("aa-gateway");
+            if binary_runnable(&p) {
+                return Some(p);
+            }
+        }
+    }
+
+    // `$HOME/.cargo/bin/aa-gateway` (cargo install).
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".cargo").join("bin").join("aa-gateway");
+        if binary_runnable(&p) {
+            return Some(p);
+        }
+    }
+
+    // PATH lookup.
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let p = std::path::Path::new(dir).join("aa-gateway");
+            if binary_runnable(&p) {
+                return Some(p);
+            }
+        }
+    }
+
+    None
 }
 
 /// Send `signal` to `pid`. No-op on failure (process may have already exited).
@@ -63,12 +110,16 @@ async fn wait_for_healthz(port: u16, deadline: Duration) -> Option<serde_json::V
 
 #[tokio::test]
 async fn aa_mode_local_serves_healthz_and_exits_cleanly_on_sigterm() {
+    let Some(binary) = locate_aa_gateway() else {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return;
+    };
+
     // Hermetic tempdir for $HOME so PID + SQLite DB land here.
     let tmp = TempDir::new().expect("tempdir");
     let port = free_port();
 
-    let mut child = Command::cargo_bin("aa-gateway")
-        .expect("locate aa-gateway binary")
+    let mut child = Command::new(&binary)
         .env("AA_MODE", "local")
         .env("AAASM_GATEWAY_PORT", port.to_string())
         .env("HOME", tmp.path())
