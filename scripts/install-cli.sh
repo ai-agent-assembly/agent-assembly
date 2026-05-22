@@ -41,6 +41,20 @@ detect_arch() {
   esac
 }
 
+# ── sha256 ─────────────────────────────────────────────────────────────────────
+
+sha256_compute() {
+  # Print the lowercase hex SHA-256 of a file path.
+  # Uses sha256sum (Linux) or shasum -a 256 (macOS).
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    err "no sha256 tool available (need sha256sum or shasum)"
+  fi
+}
+
 # ── fetch latest release tag ──────────────────────────────────────────────────
 
 latest_release() {
