@@ -261,6 +261,8 @@ pub struct PaginatedResponse<T> {
 /// Complete status snapshot combining all sections.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusSnapshot {
+    /// Deployment-overview header: mode, gateway URL, storage backend, version, uptime, health.
+    pub deployment: DeploymentOverview,
     pub runtime: RuntimeHealth,
     pub agents: Vec<AgentRow>,
     pub approvals: ApprovalsSummary,

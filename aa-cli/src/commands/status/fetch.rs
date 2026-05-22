@@ -134,7 +134,10 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         },
     };
 
+    let deployment = build_deployment_overview(client.base_url(), None);
+
     StatusSnapshot {
+        deployment,
         runtime,
         agents,
         approvals,
