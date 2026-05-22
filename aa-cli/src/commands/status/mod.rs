@@ -147,6 +147,34 @@ mod tests {
     }
 
     #[test]
+    fn json_flag_output_contains_documented_top_level_keys() {
+        // The --json flag emits snapshot.deployment alone via
+        // serde_json::to_string_pretty — verify the resulting shape matches
+        // the AAASM-1579 documented contract.
+        let snapshot = healthy_snapshot();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&snapshot.deployment).expect("serialise deployment"))
+                .expect("parse deployment JSON");
+        for required_key in [
+            "mode",
+            "gateway_url",
+            "storage_backend",
+            "version",
+            "uptime_secs",
+            "health",
+        ] {
+            assert!(
+                json.get(required_key).is_some(),
+                "missing top-level key {required_key:?}"
+            );
+        }
+        assert_eq!(json["mode"], "local");
+        assert_eq!(json["gateway_url"], "http://localhost:7391");
+        assert_eq!(json["storage_backend"], "sqlite");
+        assert_eq!(json["health"], "ok");
+    }
+
+    #[test]
     fn exit_code_1_when_deployment_unreachable_with_violations() {
         let mut snapshot = healthy_snapshot();
         snapshot.deployment.health = "unreachable".to_string();
