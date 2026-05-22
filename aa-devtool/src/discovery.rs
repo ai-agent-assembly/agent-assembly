@@ -228,14 +228,17 @@ mod tests {
     async fn discover_runs_concurrently() {
         use std::time::{Duration, Instant};
 
-        // Build three adapters each sleeping 10 ms in detect().
-        // If run serially the total would be ~30 ms; concurrently it should be ~10 ms.
+        // Build three adapters each sleeping 50 ms in detect().
+        // If run serially the total would be ~150 ms; concurrently — via the
+        // spawn_blocking fan-out in DiscoveryService — wall time stays around
+        // 50–90 ms even on a contended CI runner. The 100 ms upper bound
+        // cleanly separates the concurrent path from the sequential floor.
         struct SleepyAdapter;
 
         #[async_trait]
         impl DevToolAdapter for SleepyAdapter {
             fn detect(&self) -> Option<DevToolInfo> {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(50));
                 Some(DevToolInfo {
                     kind: DevToolKind::Codex,
                     version: None,
@@ -282,10 +285,12 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(tools.len(), 3);
-        // Concurrent run: wall time must be less than 2× the individual sleep time.
+        // Concurrent wall time must be well under the 3 × 50 ms = 150 ms
+        // sequential floor. 100 ms accommodates spawn_blocking scheduling
+        // overhead on slow CI runners without admitting the sequential path.
         assert!(
-            elapsed < Duration::from_millis(20),
-            "expected concurrent execution (~10 ms), got {elapsed:?}"
+            elapsed < Duration::from_millis(100),
+            "expected concurrent execution (~50 ms, sequential would be ~150 ms), got {elapsed:?}"
         );
     }
 }
