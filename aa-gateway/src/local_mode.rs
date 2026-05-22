@@ -114,7 +114,6 @@ impl LocalGatewayHandle {
 /// macOS / Linux when `tokio::signal::unix::signal()` fails to
 /// register a SIGTERM listener (very rare in practice).
 #[cfg(unix)]
-#[allow(dead_code)] // consumed by run_until_shutdown() — next commit
 pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
     let mut sigterm =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(LocalModeError::Signal)?;
@@ -125,9 +124,32 @@ pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
 }
 
 #[cfg(not(unix))]
-#[allow(dead_code)] // consumed by run_until_shutdown() — next commit
 pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
     tokio::signal::ctrl_c().await.map_err(LocalModeError::Signal)
+}
+
+/// Block until a shutdown signal arrives, then clean up the gateway.
+///
+/// The intended call pattern in `aa-gateway::main` (AAASM-1731):
+///
+/// ```rust,ignore
+/// let handle = start_local(&config.local).await?;
+/// run_until_shutdown(handle).await?;
+/// ```
+///
+/// Awaits `wait_for_shutdown_signal()` (SIGTERM/SIGINT on Unix,
+/// Ctrl+C on Windows) and then drives `handle.shutdown()` so the
+/// server drains, the PID file is removed, and the SQLite pool is
+/// closed before the process exits.
+///
+/// Tests that want to verify cleanup without sending a real signal
+/// call `handle.shutdown()` directly — `run_until_shutdown` itself
+/// is exercised via the `aa-integration-tests` crate (AAASM-1731's
+/// integration test will spawn the gateway binary, send SIGTERM,
+/// and assert clean exit + PID removal).
+pub async fn run_until_shutdown(handle: LocalGatewayHandle) -> Result<(), LocalModeError> {
+    wait_for_shutdown_signal().await?;
+    handle.shutdown().await
 }
 
 /// Errors that can occur while booting the local-mode control plane.
