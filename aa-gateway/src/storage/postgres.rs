@@ -1059,4 +1059,31 @@ mod tests {
         assert_eq!(active_metas.len(), 1, "exactly one version must be active");
         assert_eq!(active_metas[0].version, 2);
     }
+
+    #[tokio::test]
+    async fn rollback_unknown_version_returns_not_found() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        backend.save_policy(json_policy(&name, 1)).await.expect("save v1");
+
+        let err = backend
+            .rollback_policy(&name, 999)
+            .await
+            .expect_err("rollback of missing version must error");
+
+        match err {
+            StorageError::NotFound(payload) => {
+                assert_eq!(
+                    payload,
+                    format!("{name}@999"),
+                    "NotFound payload should carry <name>@<version>",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
 }
