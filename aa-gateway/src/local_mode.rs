@@ -142,6 +142,47 @@ pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeErr
         })
 }
 
+/// Probe `GET http://127.0.0.1:{port}/healthz` with a 100 ms timeout.
+///
+/// Used as the auto-start idempotency check by `start_local()` (AAASM-1725):
+/// if a previous gateway is already serving on the port, the call short-
+/// circuits and we reuse the existing process rather than failing to bind.
+/// Matches AAASM-1576 AC #2 ("If port 7391 is already in use by a running
+/// AASM gateway, auto-start is skipped").
+///
+/// Returns:
+/// * `true`  — a running gateway responded 200 OK and the body carries a
+///   `HealthzBody`-compatible shape (string `mode`, `version`, `storage`).
+/// * `false` — connection refused, request timeout, non-200 response, or
+///   unexpected body shape. The probe never panics; every error path maps
+///   to `false` so callers can treat it as a boolean.
+///
+/// The body-shape check guards against falsely identifying *foreign*
+/// services that happen to be listening on the port (e.g. a developer
+/// running a different HTTP server on 7391) as a healthy AASM gateway.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) async fn probe_running(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(100))
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client.get(&url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return false;
+    };
+    body.get("mode").and_then(|v| v.as_str()).is_some()
+        && body.get("storage").and_then(|v| v.as_str()).is_some()
+        && body.get("version").and_then(|v| v.as_str()).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
