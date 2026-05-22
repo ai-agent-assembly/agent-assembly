@@ -418,6 +418,17 @@ pub struct StorageConfig {
     pub redis: RedisConfig,
     /// Hot / warm / cold audit-event lifecycle policy.
     pub retention: RetentionConfig,
+    /// Internal marker — `true` iff `backend` was explicitly set in
+    /// YAML or via the `AAASM_STORAGE_BACKEND` env var. When `false`,
+    /// `GatewayConfig::resolve_storage_backend` infers the value from
+    /// the deployment mode (Local → Sqlite, Remote → Postgres).
+    ///
+    /// Marked `#[serde(skip)]` so it never appears in YAML and never
+    /// shows up in serialized output. Always `false` on
+    /// `Self::default()` and immediately after deserialization;
+    /// `from_yaml_str` patches it via a single-pass YAML peek.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) backend_explicit: bool,
 }
 
 /// Top-level gateway configuration loaded at startup.
@@ -448,8 +459,16 @@ impl GatewayConfig {
     /// Missing fields fall back to their documented defaults thanks to
     /// the type-level `#[serde(default)]` attribute, so an empty
     /// document (`""` or `"{}"`) deserialises to `Self::default()`.
+    ///
+    /// In addition to the structural parse, this peeks at the raw YAML
+    /// to determine whether `storage.backend` was set explicitly — used
+    /// by `resolve_storage_backend` (AAASM-1740) to know when to infer
+    /// the value from the deployment mode rather than overwrite an
+    /// operator-supplied choice.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
-        Ok(serde_yaml::from_str(yaml)?)
+        let mut cfg: Self = serde_yaml::from_str(yaml)?;
+        cfg.storage.backend_explicit = yaml_has_storage_backend(yaml);
+        Ok(cfg)
     }
 
     /// Load a `GatewayConfig` from a YAML file on disk.
@@ -490,6 +509,7 @@ impl GatewayConfig {
         let mut cfg = Self::load_default_path()?;
         cfg.expand_paths();
         cfg.apply_env_overrides()?;
+        cfg.resolve_storage_backend();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -512,6 +532,7 @@ impl GatewayConfig {
     /// directory — used by tests so the assertion is independent of `$HOME`.
     pub(crate) fn expand_paths_in(&mut self, home: &std::path::Path) {
         self.local.storage_path = expand_tilde(&self.local.storage_path, home);
+        self.storage.sqlite.path = expand_tilde(&self.storage.sqlite.path, home);
         if let Some(tls) = &mut self.remote.tls {
             tls.cert_file = expand_tilde(&tls.cert_file, home);
             tls.key_file = expand_tilde(&tls.key_file, home);
@@ -524,6 +545,20 @@ fn expand_tilde(path: &std::path::Path, home: &std::path::Path) -> PathBuf {
         Ok(stripped) => home.join(stripped),
         Err(_) => path.to_path_buf(),
     }
+}
+
+/// Peek at raw YAML to determine whether `storage.backend` was set
+/// explicitly. Returns `false` for invalid YAML — `from_yaml_str` will
+/// surface that as a `ConfigError::Yaml` further up the call chain.
+#[cfg(feature = "serde")]
+fn yaml_has_storage_backend(yaml: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return false;
+    };
+    value
+        .get("storage")
+        .and_then(|storage| storage.get("backend"))
+        .is_some()
 }
 
 impl GatewayConfig {
@@ -561,6 +596,9 @@ impl GatewayConfig {
                 "postgres" => StorageBackendType::Postgres,
                 _ => return Err(ConfigError::InvalidStorageBackend { raw }),
             };
+            // An explicit env-var choice counts as "set by operator" —
+            // resolve_storage_backend must not overwrite it.
+            self.storage.backend_explicit = true;
         }
         if let Some(url) = get_env("AAASM_DATABASE_URL") {
             self.storage.postgres.database_url = Some(url);
@@ -629,6 +667,29 @@ impl GatewayConfig {
             });
         }
         Ok(())
+    }
+}
+
+impl GatewayConfig {
+    /// Infer `storage.backend` from `mode` when it was not explicitly
+    /// set in YAML or via the `AAASM_STORAGE_BACKEND` env var.
+    ///
+    /// * `mode: Local` → `storage.backend = Sqlite`
+    /// * `mode: Remote` → `storage.backend = Postgres`
+    ///
+    /// No-op when the operator explicitly set `storage.backend` in
+    /// YAML or via `AAASM_STORAGE_BACKEND` — their choice always wins,
+    /// including the odd-but-valid `mode: remote` + `storage.backend:
+    /// sqlite` combo (an in-memory test runner pointed at the remote
+    /// API surface).
+    pub fn resolve_storage_backend(&mut self) {
+        if self.storage.backend_explicit {
+            return;
+        }
+        self.storage.backend = match self.mode {
+            DeploymentMode::Local => StorageBackendType::Sqlite,
+            DeploymentMode::Remote => StorageBackendType::Postgres,
+        };
     }
 }
 
@@ -1078,5 +1139,51 @@ agent:
             err,
             ConfigError::WarmDaysNotGreaterThanHotDays { hot: 30, warm: 30 }
         ));
+    }
+
+    #[test]
+    fn resolve_storage_backend_defaults_to_sqlite_in_local_mode() {
+        // Default mode is already Local; backend_explicit stays false
+        // since it's only flipped via YAML peek or AAASM_STORAGE_BACKEND.
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Local,
+            ..GatewayConfig::default()
+        };
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
+    }
+
+    #[test]
+    fn resolve_storage_backend_defaults_to_postgres_in_remote_mode() {
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Remote,
+            ..GatewayConfig::default()
+        };
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+    }
+
+    #[test]
+    fn resolve_storage_backend_respects_explicit_choice() {
+        // Operator pinned sqlite in remote mode (e.g. in-process test
+        // runner pointed at the remote API surface) — resolver must
+        // leave it alone.
+        let mut cfg = GatewayConfig {
+            mode: DeploymentMode::Remote,
+            ..GatewayConfig::default()
+        };
+        cfg.storage.backend = StorageBackendType::Sqlite;
+        cfg.storage.backend_explicit = true;
+        cfg.resolve_storage_backend();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Sqlite);
+    }
+
+    #[test]
+    fn expand_paths_in_resolves_tilde_in_storage_sqlite_path() {
+        let mut cfg = GatewayConfig::default();
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("~/.aasm/local.db"));
+        let fake_home = PathBuf::from("/srv/dev/bryant");
+        cfg.expand_paths_in(&fake_home);
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("/srv/dev/bryant/.aasm/local.db"),);
     }
 }
