@@ -292,6 +292,13 @@ mod tests {
     }
 
     #[test]
+    fn redact_database_url_leaves_malformed_input_unchanged() {
+        for input in ["~/.aasm/local.db", "not-a-url", "://no-scheme", ""] {
+            assert_eq!(redact_database_url(input), input, "input: {input:?}");
+        }
+    }
+
+    #[test]
     fn healthz_response_deserializes_with_storage_path_and_database_url() {
         let json = r#"{
             "mode": "remote",
