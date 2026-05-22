@@ -329,6 +329,30 @@ mod tests {
     }
 
     #[test]
+    fn deployment_overview_serialises_with_documented_field_names() {
+        let overview = DeploymentOverview {
+            mode: "remote".to_string(),
+            gateway_url: "https://cp.company.internal:7391".to_string(),
+            storage_backend: "postgres".to_string(),
+            storage_path: None,
+            database_url_redacted: Some("postgresql://aasm:***@aasm-db:5432/aasm".to_string()),
+            version: "0.0.1".to_string(),
+            uptime_secs: 8133,
+            health: "ok".to_string(),
+        };
+        let json = serde_json::to_value(&overview).expect("DeploymentOverview must serialise");
+        assert_eq!(json["mode"], "remote");
+        assert_eq!(json["gateway_url"], "https://cp.company.internal:7391");
+        assert_eq!(json["storage_backend"], "postgres");
+        assert_eq!(json["database_url_redacted"], "postgresql://aasm:***@aasm-db:5432/aasm");
+        assert_eq!(json["version"], "0.0.1");
+        assert_eq!(json["uptime_secs"], 8133);
+        assert_eq!(json["health"], "ok");
+        // storage_path = None must be omitted, not serialised as null.
+        assert!(json.get("storage_path").is_none(), "Option::None must be skipped");
+    }
+
+    #[test]
     fn healthz_response_deserializes_with_storage_path_and_database_url() {
         let json = r#"{
             "mode": "remote",
