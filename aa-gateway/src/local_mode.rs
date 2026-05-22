@@ -969,4 +969,176 @@ mod tests {
             "pool must report closed after handle.shutdown()"
         );
     }
+
+    /// Build a tempdir shaped like a real `dashboard/dist/`: an
+    /// `index.html` carrying the React root marker the AC asserts on.
+    /// Kept here rather than reused from `dashboard_server::tests`
+    /// because that test module is private to its crate path.
+    fn make_dashboard_stub_dist() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<!doctype html><html><body><div id="root"></div></body></html>"#,
+        )
+        .expect("write index.html");
+        dir
+    }
+
+    /// `LocalModeConfig` with the dashboard turned on and an unused
+    /// SQLite path — the dashboard tests below never reach storage.
+    fn dashboard_on_config() -> LocalModeConfig {
+        LocalModeConfig {
+            port: 0,
+            dashboard: true,
+            storage_path: std::path::PathBuf::from("/dev/null"),
+        }
+    }
+
+    /// AAASM-1580 AC #1 end-to-end at the local-mode router level:
+    /// `GET /` returns 200 + the React shell when `config.dashboard`
+    /// is on and a real `dashboard/dist/` is resolved.
+    #[tokio::test]
+    async fn router_serves_dashboard_index_when_enabled_with_dist() {
+        let dist = make_dashboard_stub_dist();
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).expect("build request"))
+            .await
+            .expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+        let body = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(
+            body.contains(r#"<div id="root">"#),
+            "GET / must serve the dashboard index when dashboard is enabled; got: {body}"
+        );
+    }
+
+    /// AAASM-1580 AC "GET /agents → index.html (SPA fallback, not 404)"
+    /// driven through the merged local-mode router — the dashboard SPA
+    /// fallback fires for unknown nested routes.
+    #[tokio::test]
+    async fn router_falls_back_to_index_on_unknown_spa_route() {
+        let dist = make_dashboard_stub_dist();
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/agents/abc")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router.oneshot");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "SPA fallback must return 200, not 404"
+        );
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+        let body = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(
+            body.contains(r#"<div id="root">"#),
+            "SPA fallback body must be index.html; got: {body}"
+        );
+    }
+
+    /// AAASM-1580 AC "GET /api/v1/agents → JSON (API route, not
+    /// overridden by dashboard handler)" — `/healthz` stands in for
+    /// any concrete API route. With the dashboard mounted, the
+    /// API route must still resolve to its handler, *not* fall
+    /// through to the SPA catch-all.
+    #[tokio::test]
+    async fn router_preserves_healthz_when_dashboard_enabled() {
+        let dist = make_dashboard_stub_dist();
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            ctype.starts_with("application/json"),
+            "API route must keep its JSON content-type with the SPA mounted; got {ctype:?}"
+        );
+        let bytes = to_bytes(response.into_body(), 8 * 1024).await.expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+        assert_eq!(body["mode"], "local");
+    }
+
+    /// When `config.dashboard == false`, the router must *not* mount
+    /// the SPA — `GET /` returns 404. Mirrors the remote-mode default
+    /// where operators opt in to dashboard serving explicitly.
+    #[tokio::test]
+    async fn router_does_not_mount_dashboard_when_config_disables_it() {
+        let dist = make_dashboard_stub_dist();
+        let cfg = LocalModeConfig {
+            port: 0,
+            dashboard: false,
+            storage_path: std::path::PathBuf::from("/dev/null"),
+        };
+        let app = router_with_resolved_dist(&cfg, Some(dist.path()));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).expect("build request"))
+            .await
+            .expect("router.oneshot");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "with dashboard disabled, GET / must return 404 — no SPA mounted"
+        );
+    }
+
+    /// AAASM-1580 AC "Missing dashboard/dist/ → gateway starts
+    /// successfully with warning (dashboard unavailable, gateway API
+    /// still works)" — when the resolver returns None but the
+    /// dashboard is requested, the gateway keeps serving `/healthz`
+    /// and rejects `/` with 404 instead of crashing. The warning
+    /// emission itself is covered by the `tracing::warn!` call site
+    /// and doesn't need a subscriber-capture assertion at this level.
+    #[tokio::test]
+    async fn router_serves_healthz_when_dashboard_enabled_but_dist_missing() {
+        let app = router_with_resolved_dist(&dashboard_on_config(), None);
+
+        let healthz = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router.oneshot");
+        assert_eq!(healthz.status(), StatusCode::OK);
+
+        let root = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).expect("build request"))
+            .await
+            .expect("router.oneshot");
+        assert_eq!(
+            root.status(),
+            StatusCode::NOT_FOUND,
+            "no dist resolved → no SPA mounted, but the gateway must still answer /healthz"
+        );
+    }
 }
