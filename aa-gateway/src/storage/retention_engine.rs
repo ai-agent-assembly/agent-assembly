@@ -402,4 +402,20 @@ mod tests {
             .expect_err("invalid schedule must return Err, not panic");
         assert!(matches!(err, RetentionConfigError::InvalidSchedule { .. }));
     }
+
+    #[tokio::test]
+    async fn current_config_returns_constructor_value() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let config = RetentionConfig {
+            hot_days: 7,
+            warm_days: 21,
+            cold_action: ColdAction::Archive,
+            archive_url: Some("s3://bucket/a/".to_string()),
+            dry_run: true,
+            ..RetentionConfig::default()
+        };
+        let engine = RetentionEngine::new(backend, config.clone());
+
+        assert_eq!(engine.current_config(), config);
+    }
 }
