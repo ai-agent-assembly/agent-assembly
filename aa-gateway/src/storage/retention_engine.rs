@@ -482,4 +482,15 @@ mod tests {
 
         assert!(engine.last_run_stats().is_none());
     }
+
+    #[tokio::test]
+    async fn last_run_stats_populated_after_run_once() {
+        let canned = canned_stats();
+        let backend = Arc::new(FakeBackend::new(canned.clone()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        engine.run_once().await.expect("run_once should succeed");
+
+        assert_eq!(engine.last_run_stats(), Some(canned));
+    }
 }
