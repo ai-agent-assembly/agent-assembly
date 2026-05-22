@@ -509,6 +509,9 @@ mod tests {
             spawned_by_tool: String::new(),
             depth: 0,
             call_stack: Vec::new(),
+            dry_run: false,
+            shadow_decision: String::new(),
+            matched_rule_id: String::new(),
         }
     }
 
