@@ -34,11 +34,14 @@ use models::StatusSnapshot;
 /// Compute the process exit code from a status snapshot.
 ///
 /// - `0` — all healthy
-/// - `1` — at least one agent has violations
-/// - `2` — runtime API is unreachable
+/// - `1` — gateway is unreachable (`deployment.health == "unreachable"`) OR at
+///   least one agent has violations. Per the AAASM-1579 acceptance criteria,
+///   unreachable now maps to exit code 1 instead of the legacy exit code 2 so
+///   shell scripts can use a single non-zero check without distinguishing
+///   between failure modes.
 pub fn compute_exit_code(snapshot: &StatusSnapshot) -> ExitCode {
-    if !snapshot.runtime.reachable {
-        return ExitCode::from(2);
+    if snapshot.deployment.health == "unreachable" {
+        return ExitCode::from(1);
     }
     let has_violations = snapshot.agents.iter().any(|a| a.violations_today > 0);
     if has_violations {
@@ -127,17 +130,17 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_2_when_unreachable() {
+    fn exit_code_1_when_deployment_unreachable() {
         let mut snapshot = healthy_snapshot();
-        snapshot.runtime.reachable = false;
-        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(2));
+        snapshot.deployment.health = "unreachable".to_string();
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(1));
     }
 
     #[test]
-    fn exit_code_2_takes_precedence_over_violations() {
+    fn exit_code_1_when_deployment_unreachable_with_violations() {
         let mut snapshot = healthy_snapshot();
-        snapshot.runtime.reachable = false;
+        snapshot.deployment.health = "unreachable".to_string();
         snapshot.agents[0].violations_today = 5;
-        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(2));
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(1));
     }
 }
