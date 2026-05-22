@@ -574,4 +574,46 @@ mod tests {
 
         let _ = handle.shutdown_tx.send(());
     }
+
+    /// AAASM-1576 AC #2: when a gateway is **already** running on the
+    /// configured port, the second `start_local()` call must short-
+    /// circuit via the `probe_running` pre-flight check instead of
+    /// trying to re-bind and failing with `EADDRINUSE`.
+    ///
+    /// Pattern: bring up a real local-mode gateway via `start_local`,
+    /// then immediately call `start_local` again against the same
+    /// config. The second call must return Ok — proof the probe path
+    /// was taken (re-bind would have returned `LocalModeError::Bind`).
+    /// The second call's PID file *must not* be written, because we
+    /// reused the existing process and never reached the PID-write
+    /// step.
+    #[tokio::test]
+    async fn start_local_skips_when_probe_returns_true() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let first_pid_path = _tmp.path().join("first.pid");
+        let second_pid_path = _tmp.path().join("second.pid");
+
+        let first = start_local_with_pid_path(&config, &first_pid_path)
+            .await
+            .expect("first start_local");
+        assert!(first_pid_path.is_file(), "first start must write its PID file");
+
+        // Second call against the same port must short-circuit via the probe.
+        let second = start_local_with_pid_path(&config, &second_pid_path)
+            .await
+            .expect("second start_local must succeed via probe short-circuit");
+
+        assert!(
+            !second_pid_path.exists(),
+            "short-circuited start must NOT write a new PID file"
+        );
+        assert_eq!(
+            second.local_addr.port(),
+            config.port,
+            "short-circuited handle must still report the configured port"
+        );
+
+        let _ = first.shutdown_tx.send(());
+        let _ = second.shutdown_tx.send(());
+    }
 }
