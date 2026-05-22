@@ -42,3 +42,48 @@ impl AppState {
         Self { storage }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{SqliteBackend, SqliteConfig};
+
+    /// Constructing `AppState` exposes the storage handle through the
+    /// public `storage` field — the single dependency promised by the
+    /// Story S-I acceptance criteria. The healthcheck round-trips
+    /// through the `dyn StorageBackend` vtable, proving the type
+    /// erasure is wired correctly.
+    #[tokio::test]
+    async fn app_state_holds_storage_handle() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let backend = SqliteBackend::open(&SqliteConfig {
+            path: tmp.path().join("local.db"),
+        })
+        .await
+        .expect("open backend");
+        backend.migrate().await.expect("migrate");
+        let state = AppState::new(Arc::new(backend));
+        state
+            .storage
+            .healthcheck()
+            .await
+            .expect("healthcheck round-trips through dyn StorageBackend");
+    }
+
+    /// `AppState` is `Clone`, so handlers and background tasks can
+    /// take an owned copy without forcing the gateway to hand out
+    /// `Arc<AppState>` everywhere.
+    #[tokio::test]
+    async fn app_state_is_clone() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let backend = SqliteBackend::open(&SqliteConfig {
+            path: tmp.path().join("local.db"),
+        })
+        .await
+        .expect("open backend");
+        let state = AppState::new(Arc::new(backend));
+        let clone = state.clone();
+        // Both clones share the same Arc<dyn StorageBackend>.
+        assert!(Arc::ptr_eq(&state.storage, &clone.storage));
+    }
+}
