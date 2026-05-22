@@ -8,6 +8,10 @@
 //! Submodules:
 //!
 //! - [`tls`] — pre-flight cert / key validation (AAASM-1702 / ST-2)
-//! - `server` — listener bootstrap (AAASM-1709 / ST-3, lands next)
+//! - [`error`] — `GatewayError` reported by the bootstrap path
+//! - `server` — listener bootstrap (AAASM-1709 / ST-3, lands in subsequent commits)
 
+pub mod error;
 pub mod tls;
+
+pub use error::GatewayError;
