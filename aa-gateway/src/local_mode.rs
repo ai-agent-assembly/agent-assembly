@@ -547,4 +547,31 @@ mod tests {
         // down at the end of the test. Signal it explicitly via the handle.
         let _ = handle.shutdown_tx.send(());
     }
+
+    /// AAASM-1576 AC #7: `start_local()` must write the running process
+    /// id to the configured PID file. Uses the `pub(crate)`
+    /// `start_local_with_pid_path()` variant so the test can point the
+    /// PID file at a tempdir instead of the developer's real
+    /// `~/.aasm/gateway.pid`.
+    #[tokio::test]
+    async fn start_local_writes_pid_file_with_running_pid() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+        assert!(!pid_path.exists(), "pid file must not exist before start");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        assert!(pid_path.is_file(), "pid file must be written by start_local");
+        let written = std::fs::read_to_string(&pid_path).expect("read pid file");
+        let written_pid: u32 = written.trim().parse().expect("pid file contents must be a u32");
+        assert_eq!(
+            written_pid,
+            std::process::id(),
+            "pid file must contain the running process id"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+    }
 }
