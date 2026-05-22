@@ -8,11 +8,20 @@
 
 use std::time::Duration;
 
+use aa_core::identity::AgentId;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
+use super::audit::AuditEvent;
 use super::error::{StorageError, StorageResult};
 use super::postgres_config::PostgresConfig;
+
+/// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
+/// hyphenated form). Mirrors the SQLite backend's storage shape so the
+/// same TEXT serialisation round-trips across both backends.
+fn agent_id_to_text(id: &AgentId) -> String {
+    uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
+}
 
 /// PostgreSQL-backed control-plane storage.
 ///
@@ -62,6 +71,40 @@ impl PostgresBackend {
             .run(&self.pool)
             .await
             .map_err(|e| StorageError::MigrationFailed(e.to_string()))
+    }
+
+    /// Persist a single audit event.
+    ///
+    /// Binds native PostgreSQL types: `TIMESTAMPTZ` for `ts`, `UUID` for
+    /// `event_id`, `BOOLEAN` for `dry_run`, and `JSONB` for `payload`.
+    /// `agent_id` is serialised via [`agent_id_to_text`] so the column
+    /// shape matches the SQLite backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] when the INSERT is rejected
+    /// (duplicate `(ts, event_id)` PK, transport failure, etc.).
+    pub async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
+        sqlx::query(
+            "INSERT INTO audit_events \
+             (ts, event_id, agent_id, team_id, action, decision, \
+              dry_run, shadow_decision, matched_rule_id, payload) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(event.ts)
+        .bind(event.event_id)
+        .bind(agent_id_to_text(&event.agent_id))
+        .bind(event.team_id.as_deref())
+        .bind(&event.action)
+        .bind(&event.decision)
+        .bind(event.dry_run)
+        .bind(event.shadow_decision.as_deref())
+        .bind(event.matched_rule_id.as_deref())
+        .bind(event.payload.as_ref())
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))
     }
 }
 
