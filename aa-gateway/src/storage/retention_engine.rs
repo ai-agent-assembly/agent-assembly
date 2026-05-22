@@ -11,8 +11,17 @@ use super::backend::StorageBackend;
 use super::retention_config::RetentionConfig;
 
 /// Owns the periodic retention task lifecycle.
-#[allow(dead_code)] // fields read by the constructor + run_once landing in subsequent commits
+#[allow(dead_code)] // fields read by run_once landing in the next commit
 pub struct RetentionEngine {
     backend: Arc<dyn StorageBackend>,
     config: RetentionConfig,
+}
+
+impl RetentionEngine {
+    /// Build an engine that, when driven, calls
+    /// [`apply_retention`](StorageBackend::apply_retention) on `backend`
+    /// using the policy derived from `config`.
+    pub fn new(backend: Arc<dyn StorageBackend>, config: RetentionConfig) -> Self {
+        Self { backend, config }
+    }
 }
