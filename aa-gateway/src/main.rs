@@ -129,3 +129,19 @@ async fn run_remote() -> Result<(), Box<dyn std::error::Error>> {
     aa_gateway::remote_mode::start_remote(&cfg.remote).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a closure that pretends `AA_MODE` is set to `value`.
+    fn env_with(value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |k| (k == "AA_MODE").then(|| value.to_string())
+    }
+
+    #[test]
+    fn cli_flag_overrides_env() {
+        let resolved = resolve_mode(Some(Mode::Remote), env_with("local")).expect("resolve");
+        assert_eq!(resolved, Mode::Remote);
+    }
+}
