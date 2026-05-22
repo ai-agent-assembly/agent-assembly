@@ -637,4 +637,44 @@ mod tests {
         assert!(dry_only[0].dry_run, "returned event must be dry_run = true");
         assert_eq!(dry_only[0].event_id, dry.event_id);
     }
+
+    fn sample_agent_record(
+        agent_id: AgentId,
+        registered_at: chrono::DateTime<chrono::Utc>,
+        last_seen_at: chrono::DateTime<chrono::Utc>,
+    ) -> AgentRecord {
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert("name".to_string(), "alpha-agent".to_string());
+        metadata.insert("env".to_string(), "test".to_string());
+        AgentRecord {
+            agent_id,
+            team_id: Some("team-rust".to_string()),
+            org_id: Some("acme".to_string()),
+            metadata,
+            registered_at,
+            last_seen_at,
+            enforcement_mode: "enforce".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_then_get_round_trip() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let ts = now_micros();
+        let record = sample_agent_record(agent_id, ts, ts);
+        backend.upsert_agent(record.clone()).await.expect("upsert");
+
+        let fetched = backend
+            .get_agent(&agent_id)
+            .await
+            .expect("get_agent")
+            .expect("agent should exist");
+
+        assert_eq!(fetched, record, "round-trip record must match insert exactly");
+    }
 }
