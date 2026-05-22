@@ -6,9 +6,11 @@
 
 use aa_core::config::RemoteModeConfig;
 use axum::{routing::get, Extension, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use axum_server::Handle;
 
 use super::error::GatewayError;
+use super::tls::{self, TlsValidation};
 use crate::routes::healthz::{healthz, HealthzState};
 
 /// Build the remote-mode Axum router.
@@ -38,15 +40,42 @@ pub fn router() -> Router {
 /// production [`start_remote`] entrypoint wires the handle to a
 /// SIGTERM / SIGINT listener.
 pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle) -> Result<(), GatewayError> {
-    if cfg.tls.is_none() {
-        tracing::warn!("⚠ TLS not configured — running over plain HTTP");
-    }
-
     let app = router().into_make_service();
 
-    axum_server::bind(cfg.listen_addr)
-        .handle(handle)
-        .serve(app)
-        .await
-        .map_err(GatewayError::Serve)
+    if let Some(tls_cfg) = &cfg.tls {
+        // Pre-flight cert + key (existence, readability, PEM parse, expiry).
+        match tls::validate(tls_cfg)? {
+            TlsValidation::Ok => {}
+            TlsValidation::ExpiringSoon { days_until_expiry } => {
+                tracing::warn!(
+                    days_until_expiry,
+                    "⚠ TLS cert expires within 30 days — rotate before notAfter"
+                );
+            }
+            TlsValidation::Expired { expired_days_ago } => {
+                tracing::error!(
+                    expired_days_ago,
+                    "TLS cert has already expired — new TLS clients will reject the chain"
+                );
+            }
+        }
+
+        let rustls_cfg = RustlsConfig::from_pem_file(&tls_cfg.cert_file, &tls_cfg.key_file)
+            .await
+            .map_err(GatewayError::TlsLoad)?;
+
+        axum_server::bind_rustls(cfg.listen_addr, rustls_cfg)
+            .handle(handle)
+            .serve(app)
+            .await
+            .map_err(GatewayError::Serve)
+    } else {
+        tracing::warn!("⚠ TLS not configured — running over plain HTTP");
+
+        axum_server::bind(cfg.listen_addr)
+            .handle(handle)
+            .serve(app)
+            .await
+            .map_err(GatewayError::Serve)
+    }
 }
