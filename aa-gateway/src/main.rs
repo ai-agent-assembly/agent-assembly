@@ -81,8 +81,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    let _mode = resolve_mode(cli.mode, |k| std::env::var(k).ok())?;
+    let mode = resolve_mode(cli.mode, |k| std::env::var(k).ok())?;
 
+    match mode {
+        Mode::LegacyGrpc => run_legacy_grpc(cli).await,
+        Mode::Local => Err("Local Dev Mode bootstrap (E17 S-B / AAASM-1576) is not yet implemented".into()),
+        Mode::Remote => run_remote().await,
+    }
+}
+
+/// Existing gRPC + policy serving path. Preserves the pre-Epic-17
+/// invocation contract `aasm-gateway --policy /path [--listen ...]`.
+async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let policy = cli
         .policy
         .as_ref()
@@ -108,4 +118,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         aa_gateway::server::serve_tcp(&policy, &cli.listen, registry, approval_queue, budget_alert_tx).await
     }
+}
+
+/// Remote Control-Plane Mode entry: load the persisted `GatewayConfig`
+/// (YAML + env overrides) and hand its `remote` section to
+/// `aa_gateway::remote_mode::start_remote`. Blocks until SIGTERM /
+/// SIGINT triggers graceful drain.
+async fn run_remote() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = aa_core::config::GatewayConfig::load()?;
+    aa_gateway::remote_mode::start_remote(&cfg.remote).await?;
+    Ok(())
 }
