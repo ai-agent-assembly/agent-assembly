@@ -418,4 +418,19 @@ mod tests {
 
         assert_eq!(engine.current_config(), config);
     }
+
+    #[tokio::test]
+    async fn hot_reload_swaps_active_config_observed_by_current_config() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        let new_config = RetentionConfig {
+            hot_days: 15,
+            warm_days: 60,
+            ..RetentionConfig::default()
+        };
+        engine.hot_reload(new_config.clone()).expect("valid config must swap");
+
+        assert_eq!(engine.current_config(), new_config);
+    }
 }
