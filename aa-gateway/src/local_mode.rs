@@ -812,4 +812,23 @@ mod tests {
         let still_alive = matches!(post, Ok(Ok(resp)) if resp.status().is_success());
         assert!(!still_alive, "server must not respond after shutdown");
     }
+
+    /// AAASM-1576 AC #8 PID-file cleanup invariant: after
+    /// `handle.shutdown()`, the PID file written by `start_local()`
+    /// must no longer exist — `aasm stop` and other operators rely on
+    /// PID-file-absent ≡ no-gateway-running.
+    #[tokio::test]
+    async fn handle_shutdown_removes_the_pid_file() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        assert!(pid_path.is_file(), "pid file must exist after start_local");
+
+        handle.shutdown().await.expect("shutdown");
+
+        assert!(!pid_path.exists(), "pid file must be removed by handle.shutdown()");
+    }
 }
