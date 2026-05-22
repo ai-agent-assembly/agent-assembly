@@ -41,6 +41,38 @@ impl Default for RedisConfig {
     }
 }
 
+/// Number of hex characters retained from the SHA-256 digest when building a
+/// cache key. Sixty-four bits of entropy is overkill for collision avoidance
+/// across a single policy namespace and keeps the Redis key short.
+const POLICY_CACHE_HASH_HEX_LEN: usize = 16;
+
+/// Build the Redis key used to store a cached policy document.
+///
+/// The key is content-addressed: changing a single byte of `bytes` changes
+/// the hash slice and therefore the key, so a stale Redis entry can never
+/// serve an outdated policy document. The format is `policy:{name}:{hex}`,
+/// where `hex` is the first 16 hex characters of `sha2::Sha256(bytes)`.
+pub fn policy_cache_key(name: &str, bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(POLICY_CACHE_HASH_HEX_LEN);
+    for byte in digest.iter().take(POLICY_CACHE_HASH_HEX_LEN / 2) {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("policy:{name}:{hex}")
+}
+
+/// Build the Redis `SCAN MATCH` pattern that targets every cached version of
+/// `name`, regardless of content hash.
+///
+/// Used by `PolicyCache::invalidate` (Epic-18 S-G sub-task 4) to evict every
+/// historical entry for a policy in one sweep — there is no need to know the
+/// previous content hash.
+pub fn policy_invalidation_pattern(name: &str) -> String {
+    format!("policy:{name}:*")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +100,50 @@ mod tests {
             assert_eq!(cfg.url.as_deref(), Some("redis://10.0.0.5:6379"));
             assert_eq!(cfg.policy_cache_ttl_secs, 30);
             assert_eq!(cfg.max_connections, 10);
+        }
+    }
+
+    mod key {
+        use super::*;
+
+        #[test]
+        fn same_inputs_yield_identical_key() {
+            let a = policy_cache_key("default", b"version-1-body");
+            let b = policy_cache_key("default", b"version-1-body");
+            assert_eq!(a, b);
+        }
+
+        #[test]
+        fn changing_bytes_changes_key() {
+            let v1 = policy_cache_key("default", b"version-1-body");
+            let v2 = policy_cache_key("default", b"version-2-body");
+            assert_ne!(v1, v2, "content-addressing must shift the key");
+        }
+
+        #[test]
+        fn name_namespaces_the_key() {
+            let same_bytes: &[u8] = b"shared-bytes";
+            let a = policy_cache_key("default", same_bytes);
+            let b = policy_cache_key("legacy", same_bytes);
+            assert_ne!(a, b, "different names must produce different keys");
+        }
+
+        #[test]
+        fn hash_slice_is_sixteen_hex_chars() {
+            let key = policy_cache_key("default", b"any-body");
+            // Format is `policy:{name}:{hex}` — slice after the last colon.
+            let hex = key.rsplit(':').next().expect("key has a hex segment");
+            assert_eq!(hex.len(), 16, "expected 16 hex chars, got {hex:?}");
+            assert!(
+                hex.bytes().all(|b| b.is_ascii_hexdigit()),
+                "hex segment must be ascii hex: {hex:?}"
+            );
+        }
+
+        #[test]
+        fn invalidation_pattern_matches_every_version() {
+            assert_eq!(policy_invalidation_pattern("default"), "policy:default:*");
+            assert_eq!(policy_invalidation_pattern("legacy"), "policy:legacy:*");
         }
     }
 }
