@@ -324,6 +324,12 @@ mod tests {
     }
 
     #[test]
+    fn enforcement_mode_default_is_enforce() {
+        // Pre-feature semantics: omitting the mode anywhere must resolve to Enforce.
+        assert_eq!(EnforcementMode::default(), EnforcementMode::Enforce);
+    }
+
+    #[test]
     #[cfg(feature = "alloc")]
     fn policy_rule_field_access_clone_eq() {
         let rule = PolicyRule {
