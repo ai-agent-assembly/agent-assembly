@@ -220,6 +220,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_deployment_overview_populates_fields_from_local_sqlite_healthz() {
+        let healthz = HealthzResponse {
+            mode: "local".to_string(),
+            version: "0.0.1".to_string(),
+            storage: "sqlite".to_string(),
+            uptime_secs: 8133,
+            storage_path: Some("~/.aasm/local.db".to_string()),
+            database_url: None,
+        };
+        let overview = build_deployment_overview("http://localhost:7391", Some(healthz));
+        assert_eq!(overview.mode, "local");
+        assert_eq!(overview.gateway_url, "http://localhost:7391");
+        assert_eq!(overview.storage_backend, "sqlite");
+        assert_eq!(overview.storage_path.as_deref(), Some("~/.aasm/local.db"));
+        assert!(overview.database_url_redacted.is_none());
+        assert_eq!(overview.version, "0.0.1");
+        assert_eq!(overview.uptime_secs, 8133);
+        assert_eq!(overview.health, "ok");
+    }
+
+    #[test]
     fn build_runtime_health_reachable() {
         let resp = Some(HealthResponse {
             status: "ok".to_string(),
