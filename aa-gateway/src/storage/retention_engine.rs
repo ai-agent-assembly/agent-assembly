@@ -38,6 +38,17 @@ impl RetentionEngine {
         }
     }
 
+    /// Return a snapshot of the active retention configuration.
+    ///
+    /// The admin REST API uses this for `GET /api/v1/admin/retention-policy`
+    /// and to render the current values back to the caller after a successful
+    /// `PUT`. The returned value is a clone, decoupled from any subsequent
+    /// [`hot_reload`](Self::hot_reload) so the caller can hold it without
+    /// blocking writers.
+    pub fn current_config(&self) -> RetentionConfig {
+        RetentionConfig::clone(&self.config.load())
+    }
+
     /// Run one retention pass: build the [`RetentionPolicy`](super::RetentionPolicy)
     /// from `self.config`, hand it to the backend, and return the
     /// resulting [`RetentionStats`].
