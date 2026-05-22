@@ -2123,4 +2123,26 @@ mod tests {
         assert_eq!(timeout, Some(120u64));
         assert_eq!(role, Some("org-admin".to_string()));
     }
+
+    // ── observe-mode transform (AAASM-1556) ──────────────────────────────────
+
+    fn allow_result() -> EvaluationResult {
+        EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: None,
+        }
+    }
+
+    #[test]
+    fn observe_mode_passes_allow_through_with_no_shadow_event() {
+        // An Allow decision is already a no-op for enforcement — observe mode
+        // must NOT fabricate a shadow event for it (otherwise audit log
+        // sandbox-event volume would be 1:1 with all traffic, not 1:1 with
+        // would-be violations).
+        let (out, shadow) = transform_for_observe_mode(allow_result(), aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        assert!(shadow.is_none(), "no shadow event for Allow decisions");
+    }
 }
