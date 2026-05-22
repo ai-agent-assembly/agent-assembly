@@ -6,6 +6,7 @@
 
 pub mod alerts;
 pub mod anomaly;
+pub mod app_state;
 pub mod approval;
 pub mod audit;
 pub mod audit_reader;
