@@ -186,7 +186,6 @@ pub fn active_policy_key(name: &str) -> String {
 /// cloneable [`ConnectionManager`] (the redis-rs multiplexed handle) and the
 /// per-entry TTL pulled from [`RedisConfig::policy_cache_ttl_secs`].
 #[cfg(feature = "redis-cache")]
-#[allow(dead_code)] // `conn` and `ttl_secs` are wired up by the next get/set commits.
 pub struct RedisPolicyCache {
     conn: ConnectionManager,
     ttl_secs: u64,
