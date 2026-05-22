@@ -236,6 +236,27 @@ mod tests {
     }
 
     #[test]
+    fn healthz_response_deserializes_with_storage_path_and_database_url() {
+        let json = r#"{
+            "mode": "remote",
+            "version": "0.0.1",
+            "storage": "postgres",
+            "uptime_secs": 8133,
+            "storage_path": "~/.aasm/local.db",
+            "database_url": "postgresql://user:secret@aasm-db:5432/aasm"
+        }"#;
+        let resp: HealthzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.mode, "remote");
+        assert_eq!(resp.storage, "postgres");
+        assert_eq!(resp.uptime_secs, 8133);
+        assert_eq!(resp.storage_path.as_deref(), Some("~/.aasm/local.db"));
+        assert_eq!(
+            resp.database_url.as_deref(),
+            Some("postgresql://user:secret@aasm-db:5432/aasm")
+        );
+    }
+
+    #[test]
     fn agent_response_deserializes() {
         let json = r#"{
             "id": "abc123",
