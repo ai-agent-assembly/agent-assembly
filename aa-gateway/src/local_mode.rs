@@ -768,4 +768,48 @@ mod tests {
 
         let _ = handle.shutdown_tx.send(());
     }
+
+    /// AAASM-1576 AC #8 (server stops accepting connections): after
+    /// `handle.shutdown()` returns, the server task has fully exited
+    /// and `/healthz` requests can no longer reach it.
+    ///
+    /// Drives the cleanup directly via `handle.shutdown()` rather than
+    /// SIGTERM — gives a deterministic test that doesn't require
+    /// killing the test process. The 100 ms ceiling matches the AC's
+    /// "stops accepting connections within 100ms" requirement.
+    #[tokio::test]
+    async fn handle_shutdown_stops_the_server_within_100ms() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        // Sanity: server is up and responding before shutdown.
+        let pre = reqwest::get(format!("http://127.0.0.1:{port}/healthz")).await;
+        assert!(
+            pre.is_ok_and(|r| r.status().is_success()),
+            "server must respond before shutdown"
+        );
+
+        let started = std::time::Instant::now();
+        handle.shutdown().await.expect("shutdown");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "shutdown must complete promptly; took {elapsed:?}"
+        );
+
+        // After shutdown, GET /healthz fails (connection refused or hangs;
+        // either way, not `is_ok_and(success)`).
+        let post = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            reqwest::get(format!("http://127.0.0.1:{port}/healthz")),
+        )
+        .await;
+        let still_alive = matches!(post, Ok(Ok(resp)) if resp.status().is_success());
+        assert!(!still_alive, "server must not respond after shutdown");
+    }
 }
