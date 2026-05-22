@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
-use super::metric::Metric;
+use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 
@@ -167,6 +167,50 @@ fn policy_document_bytes(value: serde_json::Value) -> Vec<u8> {
         }
     }
     serde_json::to_vec(&value).expect("serialising a parsed JSON value never fails")
+}
+
+/// Map a [`MetricQuery::bucket`] string into the corresponding
+/// PostgreSQL `date_trunc` unit. Returns
+/// [`StorageError::QueryFailed`] for any unsupported value so the
+/// query never gets near the database with a typo.
+fn metric_bucket_unit(raw: &str) -> StorageResult<&'static str> {
+    match raw.trim() {
+        "1 second" => Ok("second"),
+        "1 minute" => Ok("minute"),
+        "1 hour" => Ok("hour"),
+        "1 day" => Ok("day"),
+        other => Err(StorageError::QueryFailed(format!(
+            "unsupported metric bucket interval: {other:?} (supported: \"1 second\", \"1 minute\", \"1 hour\", \"1 day\")"
+        ))),
+    }
+}
+
+/// Push the metric WHERE clause derived from `query` into `qb`.
+///
+/// Adds clauses for `agent_id`, `metric`, `from` / `to` (`ts >=` / `ts <`).
+/// Pushes nothing when no field is set.
+fn push_metric_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, query: &'q MetricQuery) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(agent_id) = query.agent_id.as_ref() {
+        connective(qb);
+        qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+    }
+    if let Some(metric) = query.metric.as_ref() {
+        connective(qb);
+        qb.push("metric = ").push_bind(metric.clone());
+    }
+    if let Some(from) = query.from {
+        connective(qb);
+        qb.push("ts >= ").push_bind(from);
+    }
+    if let Some(to) = query.to {
+        connective(qb);
+        qb.push("ts < ").push_bind(to);
+    }
 }
 
 /// Push the agent-registry WHERE clause derived from `filter` into `qb`.
@@ -640,6 +684,54 @@ impl PostgresBackend {
         .await
         .map(|_| ())
         .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    /// Return metric points matching `query`, ordered by timestamp ascending.
+    ///
+    /// When `query.bucket` is set, rows are aggregated via
+    /// `date_trunc(<unit>, ts)` + `AVG(value)` grouped by the truncated
+    /// timestamp. Supported bucket strings are validated by
+    /// [`metric_bucket_unit`] before any SQL hits the wire, so a typo
+    /// surfaces as [`StorageError::QueryFailed`] rather than a confusing
+    /// driver error.
+    ///
+    /// When `query.bucket` is `None`, raw `(ts, value)` rows are returned.
+    /// `query.limit` translates to `LIMIT $N` (bound as `i64`).
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::QueryFailed`] for an unsupported bucket string or
+    ///   any driver failure.
+    pub async fn query_metrics(&self, query: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+        let bucket_unit = query.bucket.as_deref().map(metric_bucket_unit).transpose()?;
+
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+        if let Some(unit) = bucket_unit {
+            // `unit` came from a validated allow-list, never user input
+            qb.push("date_trunc('");
+            qb.push(unit);
+            qb.push("', ts) AS ts, AVG(value) AS value FROM metrics");
+        } else {
+            qb.push("ts, value FROM metrics");
+        }
+
+        push_metric_where(&mut qb, &query);
+
+        if bucket_unit.is_some() {
+            qb.push(" GROUP BY ts");
+        }
+        qb.push(" ORDER BY ts ASC");
+        if let Some(limit) = query.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+        }
+
+        let rows: Vec<(chrono::DateTime<chrono::Utc>, f64)> = qb
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(ts, value)| MetricPoint { ts, value }).collect())
     }
 }
 
