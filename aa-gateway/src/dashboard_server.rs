@@ -9,7 +9,7 @@
 //! currently provides only the module surface that the next commits layer
 //! `dashboard_router()` and `find_dashboard_dist()` onto.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
@@ -30,4 +30,63 @@ pub fn dashboard_router(dist_path: &Path) -> Router {
     let index_html = dist_path.join("index.html");
     let serve_dir = ServeDir::new(dist_path).not_found_service(ServeFile::new(index_html));
     Router::new().nest_service("/", serve_dir)
+}
+
+/// Resolve the `dashboard/dist/` directory the gateway should serve.
+///
+/// Resolution order, first match wins:
+///
+/// 1. `AAASM_DASHBOARD_DIST` — operator-supplied override; takes
+///    precedence over every other source so a developer can point at
+///    a sibling checkout or a custom build.
+/// 2. `{binary_dir}/../dashboard/dist/` — installed layout where the
+///    `aasm` / `aa-gateway` binary lives alongside its assets, e.g.
+///    `/usr/local/bin/aasm` + `/usr/local/dashboard/dist`.
+/// 3. `{cargo_manifest_dir}/../dashboard/dist/` — workspace
+///    development layout, used by `cargo run -p aa-gateway` against a
+///    locally-built `dashboard/dist/`.
+///
+/// Returns `None` when every candidate is missing. The local-mode
+/// router (next sub-task) interprets `None` as "log a warning and
+/// skip mounting the SPA" so the gateway still starts and `/healthz`
+/// keeps working — AAASM-1580 AC "Missing dashboard/dist/ → gateway
+/// starts successfully with warning".
+pub fn find_dashboard_dist() -> Option<PathBuf> {
+    find_dashboard_dist_in(
+        std::env::var("AAASM_DASHBOARD_DIST").ok(),
+        std::env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .map(Path::to_path_buf),
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("..")),
+    )
+}
+
+/// Pure resolution helper exposed for hermetic testing — `find_dashboard_dist`
+/// is a thin wrapper that supplies real process inputs.
+///
+/// Each `*_root` is treated as the parent of `dashboard/dist`. The
+/// helper validates `is_dir()` on every candidate so it never returns
+/// a path that does not actually exist on disk; an empty
+/// `env_override` skips straight to the disk fallbacks.
+fn find_dashboard_dist_in(
+    env_override: Option<String>,
+    installed_root: Option<PathBuf>,
+    dev_root: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(env_path) = env_override {
+        let p = PathBuf::from(env_path);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    for root in [installed_root, dev_root].into_iter().flatten() {
+        let candidate = root.join("dashboard").join("dist");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
 }
