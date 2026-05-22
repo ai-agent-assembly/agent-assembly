@@ -1448,4 +1448,62 @@ mod tests {
             other => panic!("expected QueryFailed, got {other:?}"),
         }
     }
+
+    /// Insert an audit event with a caller-chosen timestamp so retention
+    /// tests can place old data without rewriting the schema.
+    fn ancient_event(agent_id: AgentId, ts: chrono::DateTime<chrono::Utc>) -> AuditEvent {
+        AuditEvent {
+            ts,
+            ..sample_event(agent_id, ts)
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_retention_dry_run_does_not_delete() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        // ts = NOW − 1 hour places the event in the dry-run cutoff window
+        // (`hot_days = 0` ⇒ cutoff = NOW) without making it old enough for
+        // the destructive drop test (which uses a year-2010-ish cutoff) to
+        // delete it from underneath us in parallel runs.
+        let recent_past = chrono::Utc::now() - chrono::Duration::hours(1);
+        backend
+            .append_audit_event(&ancient_event(agent_id, recent_past))
+            .await
+            .expect("seed recent-past event");
+
+        let stats = backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 0,
+                warm_days: 0,
+                cold_action: ColdAction::Drop,
+                archive_url: None,
+                dry_run: true,
+            })
+            .await
+            .expect("apply_retention dry_run");
+
+        assert!(
+            stats.dropped_rows >= 1,
+            "dry_run should project at least our recent-past event as droppable, got {}",
+            stats.dropped_rows,
+        );
+
+        let remaining = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+        assert_eq!(
+            remaining.len(),
+            1,
+            "dry_run must not delete any rows; recent-past event must still be present",
+        );
+    }
 }
