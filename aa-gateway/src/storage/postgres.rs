@@ -223,6 +223,28 @@ impl PostgresBackend {
 
         rows.iter().map(row_to_audit_event).collect()
     }
+
+    /// Count audit events matching `filter`.
+    ///
+    /// Uses the same WHERE-builder as [`Self::query_audit_events`] so both
+    /// methods always agree on filter semantics. The PostgreSQL
+    /// `count(*)` returns `BIGINT`, which is bound as `i64` and cast to
+    /// `u64`; rows above `i64::MAX` are impossible in practice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] on driver errors.
+    pub async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM audit_events");
+        push_audit_where(&mut qb, &filter);
+
+        let count: i64 = qb
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(count as u64)
+    }
 }
 
 #[cfg(test)]
