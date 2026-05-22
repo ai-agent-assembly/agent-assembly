@@ -2220,6 +2220,27 @@ mod tests {
     // ── enforcement-mode resolution (AAASM-1557) ─────────────────────────────
 
     #[test]
+    fn resolve_prefers_agent_override_over_policy_default() {
+        // Per-agent override is the whole point of this subtask — it must
+        // win over the policy-level default. Covers all four override values
+        // crossed with each policy default, so a regression that swaps the
+        // priority would be caught by at least one assertion.
+        for agent in [
+            aa_core::EnforcementMode::Enforce,
+            aa_core::EnforcementMode::Observe,
+            aa_core::EnforcementMode::Disabled,
+        ] {
+            for policy in [
+                aa_core::EnforcementMode::Enforce,
+                aa_core::EnforcementMode::Observe,
+                aa_core::EnforcementMode::Disabled,
+            ] {
+                assert_eq!(resolve_enforcement_mode(Some(agent), policy), agent);
+            }
+        }
+    }
+
+    #[test]
     fn resolve_falls_back_to_policy_default_when_agent_override_is_none() {
         // An agent that registered without setting enforcement_mode inherits
         // the policy document's posture. Most production agents take this path.
