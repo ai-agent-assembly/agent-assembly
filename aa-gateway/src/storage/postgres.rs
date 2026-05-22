@@ -18,8 +18,6 @@ use super::postgres_config::PostgresConfig;
 /// registry / policy / metrics / lifecycle methods) is filled in by the
 /// later Epic-18 S-C sub-tasks.
 pub struct PostgresBackend {
-    // Wired into trait method implementations in E18 S-C #2 onward.
-    #[allow(dead_code)]
     pool: PgPool,
 }
 
@@ -46,6 +44,22 @@ impl PostgresBackend {
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
 
         Ok(Self { pool })
+    }
+
+    /// Apply the embedded `migrations/postgres/*.sql` migrations.
+    ///
+    /// Idempotent — sqlx records applied versions in `_sqlx_migrations`,
+    /// so calling this against an already-migrated database is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::MigrationFailed`] when any migration fails
+    /// to apply or sqlx cannot verify previously-applied versions.
+    pub async fn migrate(&self) -> StorageResult<()> {
+        sqlx::migrate!("./migrations/postgres")
+            .run(&self.pool)
+            .await
+            .map_err(|e| StorageError::MigrationFailed(e.to_string()))
     }
 }
 
