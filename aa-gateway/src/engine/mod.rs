@@ -61,6 +61,25 @@ pub struct EvaluationResult {
     pub deny_action: Option<DenyAction>,
 }
 
+/// Metadata captured when observe-mode evaluation suppresses a non-Allow
+/// decision. Returned alongside the (now-Allow) `EvaluationResult` so the
+/// service layer can emit a `dry_run: true` audit event recording what
+/// would have happened under live enforcement.
+///
+/// The shadow event never carries the rejected payload itself — that lives
+/// in the surrounding `AuditEvent` constructed at the call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowEvent {
+    /// The decision the engine would have returned in `Enforce` mode.
+    /// One of `"deny"`, `"redact"`, `"pending"`. Mirrors the proto enum
+    /// `AuditEvent.shadow_decision`.
+    pub shadow_decision: String,
+    /// Reason carried by the original decision (e.g. "tool denied by policy").
+    /// Recorded so the audit reader can render the same explanation an
+    /// operator would have seen in enforce mode.
+    pub reason: String,
+}
+
 /// Summary of the currently active policy, returned by
 /// [`PolicyEngine::active_policy_info`].
 #[derive(Debug, Clone)]
