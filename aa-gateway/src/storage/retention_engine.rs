@@ -49,6 +49,35 @@ impl RetentionEngine {
         RetentionConfig::clone(&self.config.load())
     }
 
+    /// Atomically replace the active retention configuration.
+    ///
+    /// Called by the admin REST `PUT /api/v1/admin/retention-policy` handler.
+    /// The new config is validated first (delegating to
+    /// [`RetentionConfig::validate`]); on validation failure the active
+    /// config is left untouched. On success, subsequent [`run_once`] calls
+    /// observe the new thresholds; the cron schedule captured by
+    /// [`start`](Self::start) is not affected — schedule changes still
+    /// require a restart.
+    ///
+    /// # Errors
+    ///
+    /// - Any [`RetentionConfigError`] from
+    ///   [`RetentionConfig::validate`] (missing archive_url, invalid
+    ///   schedule). The active config is preserved when an error is
+    ///   returned.
+    pub fn hot_reload(&self, new_config: RetentionConfig) -> Result<(), RetentionConfigError> {
+        new_config.validate()?;
+        tracing::info!(
+            hot_days = new_config.hot_days,
+            warm_days = new_config.warm_days,
+            cold_action = ?new_config.cold_action,
+            dry_run = new_config.dry_run,
+            "retention config hot-reloaded",
+        );
+        self.config.store(Arc::new(new_config));
+        Ok(())
+    }
+
     /// Run one retention pass: build the [`RetentionPolicy`](super::RetentionPolicy)
     /// from `self.config`, hand it to the backend, and return the
     /// resulting [`RetentionStats`].
