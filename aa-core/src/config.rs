@@ -156,6 +156,233 @@ impl Default for AgentConnectConfig {
     }
 }
 
+/// What to do with audit-event rows once they age past the `warm_days`
+/// boundary in [`RetentionConfig`].
+///
+/// `Drop` is the default — operators must explicitly opt into `Archive`
+/// **and** supply an `archive_url` (validation enforced at startup;
+/// tracked under E18 S-H / AAASM-1582).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum ColdAction {
+    /// Permanently delete cold-tier rows once they pass `warm_days`.
+    #[default]
+    Drop,
+    /// Upload cold-tier rows to the operator-configured `archive_url`
+    /// (S3 / GCS / etc.) and remove them from primary storage.
+    Archive,
+}
+
+/// Hot / warm / cold audit-event lifecycle parameters.
+///
+/// Defaults align with the SOC 2 / ISO 27001 reference window from the
+/// Epic 18 spec: 30 days fully indexed (hot), 90 days
+/// compressed-but-queryable (warm), then `cold_action` decides. The
+/// `schedule` is a UTC cron expression — default `0 3 * * *` runs the
+/// retention sweep at 03:00 UTC daily.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RetentionConfig {
+    /// Days of hot-tier retention — rows are kept fully indexed.
+    pub hot_days: u32,
+    /// Days of warm-tier retention before `cold_action` kicks in.
+    pub warm_days: u32,
+    /// What to do with rows past the warm tier.
+    pub cold_action: ColdAction,
+    /// Required when `cold_action = Archive`; ignored otherwise.
+    pub archive_url: Option<String>,
+    /// UTC cron expression for the retention sweep job.
+    pub schedule: String,
+    /// When `true`, the retention task logs what it *would* do without
+    /// touching any data — used by operators to validate new policies
+    /// before turning them on.
+    pub dry_run: bool,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            hot_days: 30,
+            warm_days: 90,
+            cold_action: ColdAction::Drop,
+            archive_url: None,
+            schedule: String::from("0 3 * * *"),
+            dry_run: false,
+        }
+    }
+}
+
+/// TimescaleDB-specific knobs for the production Postgres backend.
+///
+/// When `enabled = true` the gateway creates `audit_events` and
+/// `metrics` as TimescaleDB hypertables on startup and installs the
+/// configured compression policy. The two interval fields are
+/// passed through to TimescaleDB verbatim — they accept any Postgres
+/// `INTERVAL` literal (e.g. `"7 days"`, `"12 hours"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TimescaleConfig {
+    /// Whether to enable the TimescaleDB extension on the connected
+    /// Postgres instance. Setting `false` falls back to plain Postgres
+    /// (no hypertables, no compression policy).
+    pub enabled: bool,
+    /// Hypertable time-chunk interval. Default: `"7 days"`.
+    pub chunk_interval: String,
+    /// Age at which chunks are auto-compressed. Default: `"30 days"`.
+    pub compression_policy: String,
+}
+
+impl Default for TimescaleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            chunk_interval: String::from("7 days"),
+            compression_policy: String::from("30 days"),
+        }
+    }
+}
+
+/// Connection pool and TimescaleDB knobs for the production Postgres
+/// `StorageBackend`.
+///
+/// `database_url` is `None` by default so YAML configs without an
+/// explicit URL fall back to the `AAASM_DATABASE_URL` env var (wired
+/// in the env-override Subtask, AAASM-1735). Pool sizing defaults
+/// match the spec's reference values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PostgresConfig {
+    /// PostgreSQL connection URL. Falls back to `AAASM_DATABASE_URL`
+    /// (env-override layer); leaving both unset is a startup error
+    /// when `storage.backend = Postgres`.
+    pub database_url: Option<String>,
+    /// Maximum sqlx connection-pool size. Default: `20`.
+    pub max_connections: u32,
+    /// Minimum sqlx connection-pool size kept warm. Default: `2`.
+    pub min_connections: u32,
+    /// Connection-establishment timeout in seconds. Default: `10`.
+    pub connect_timeout_secs: u64,
+    /// TimescaleDB-specific knobs.
+    pub timescaledb: TimescaleConfig,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            database_url: None,
+            max_connections: 20,
+            min_connections: 2,
+            connect_timeout_secs: 10,
+            timescaledb: TimescaleConfig::default(),
+        }
+    }
+}
+
+/// Local-mode SQLite `StorageBackend` settings.
+///
+/// `path` is stored raw — the leading `~` is expanded by
+/// `GatewayConfig::expand_paths()` (extension landing in Subtask
+/// AAASM-1740). `journal_mode = "wal"` gives a better concurrent-read
+/// experience for the local dashboard while a developer's gateway is
+/// writing audit events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SqliteConfig {
+    /// SQLite database path. Default: `~/.aasm/local.db` (un-expanded).
+    pub path: PathBuf,
+    /// SQLite `journal_mode` PRAGMA. Default: `"wal"`.
+    pub journal_mode: String,
+}
+
+impl Default for SqliteConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("~/.aasm/local.db"),
+            journal_mode: String::from("wal"),
+        }
+    }
+}
+
+/// Optional Redis policy / session cache.
+///
+/// `enabled = false` by default — Redis is opt-in. When the operator
+/// measures policy-evaluation latency as a bottleneck they flip
+/// `enabled = true` and the gateway's hot-path policy decisions get
+/// a `policy_cache_ttl_secs` TTL cache in front of PostgreSQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RedisConfig {
+    /// Master switch — when `false`, no Redis dependency is required.
+    pub enabled: bool,
+    /// Redis connection URL. Falls back to `AAASM_REDIS_URL` (env
+    /// override Subtask AAASM-1735); leaving both unset with
+    /// `enabled = true` is a startup error.
+    pub url: Option<String>,
+    /// TTL in seconds for hot-path policy-decision cache entries.
+    pub policy_cache_ttl_secs: u64,
+    /// Maximum Redis connection-pool size. Default: `10`.
+    pub max_connections: u32,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: None,
+            policy_cache_ttl_secs: 30,
+            max_connections: 10,
+        }
+    }
+}
+
+/// Which `StorageBackend` implementation the gateway should boot.
+///
+/// `Sqlite` is the documented default for local-dev mode; `Postgres`
+/// is required for any deployment that needs durability across gateway
+/// restarts at production scale. The actual mode-aware default is
+/// resolved by `GatewayConfig::resolve_storage_backend()` in Subtask
+/// AAASM-1740 — this enum's `Default = Sqlite` only matters when the
+/// resolver path is bypassed (e.g. direct `StorageConfig::default()`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum StorageBackendType {
+    /// Embedded SQLite database — single file, no external service.
+    #[default]
+    Sqlite,
+    /// PostgreSQL — optionally with TimescaleDB for hypertables.
+    Postgres,
+}
+
+/// Durable-persistence configuration for the gateway (Epic 18).
+///
+/// Composes the per-engine knobs (`sqlite`, `postgres`, `redis`) with
+/// retention-lifecycle parameters and a `backend` selector. Empty YAML
+/// hydrates straight to `Self::default()` thanks to `#[serde(default)]`
+/// on the struct itself; missing nested sections use each sub-config's
+/// own `Default`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct StorageConfig {
+    /// Which `StorageBackend` to instantiate at startup.
+    pub backend: StorageBackendType,
+    /// SQLite-specific settings (`backend = Sqlite`).
+    pub sqlite: SqliteConfig,
+    /// Postgres-specific settings (`backend = Postgres`).
+    pub postgres: PostgresConfig,
+    /// Optional Redis cache (`enabled = false` by default).
+    pub redis: RedisConfig,
+    /// Hot / warm / cold audit-event lifecycle policy.
+    pub retention: RetentionConfig,
+}
+
 /// Top-level gateway configuration loaded at startup.
 ///
 /// Composes the four sub-configs and a [`DeploymentMode`] flag. All
@@ -173,6 +400,8 @@ pub struct GatewayConfig {
     pub remote: RemoteModeConfig,
     /// Settings the SDK FFI shim reads to dial the gateway.
     pub agent: AgentConnectConfig,
+    /// Durable-persistence configuration (Epic 18 — AAASM-1569).
+    pub storage: StorageConfig,
 }
 
 #[cfg(feature = "serde")]
@@ -607,5 +836,36 @@ agent:
         let tls = cfg.remote.tls.expect("tls preserved");
         assert_eq!(tls.cert_file, PathBuf::from("/new/tls.crt"));
         assert_eq!(tls.key_file, PathBuf::from("/old/tls.key"), "key untouched");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn empty_yaml_hydrates_storage_defaults() {
+        let cfg = GatewayConfig::from_yaml_str("{}").expect("empty YAML must parse");
+        let s = &cfg.storage;
+        assert_eq!(s.backend, StorageBackendType::Sqlite, "default backend");
+        assert_eq!(
+            s.sqlite.path,
+            PathBuf::from("~/.aasm/local.db"),
+            "sqlite path un-expanded by default",
+        );
+        assert_eq!(s.sqlite.journal_mode, "wal");
+        assert!(s.postgres.database_url.is_none(), "postgres url unset");
+        assert_eq!(s.postgres.max_connections, 20);
+        assert_eq!(s.postgres.min_connections, 2);
+        assert_eq!(s.postgres.connect_timeout_secs, 10);
+        assert!(s.postgres.timescaledb.enabled);
+        assert_eq!(s.postgres.timescaledb.chunk_interval, "7 days");
+        assert_eq!(s.postgres.timescaledb.compression_policy, "30 days");
+        assert!(!s.redis.enabled, "redis opt-in");
+        assert!(s.redis.url.is_none());
+        assert_eq!(s.redis.policy_cache_ttl_secs, 30);
+        assert_eq!(s.redis.max_connections, 10);
+        assert_eq!(s.retention.hot_days, 30);
+        assert_eq!(s.retention.warm_days, 90);
+        assert_eq!(s.retention.cold_action, ColdAction::Drop);
+        assert!(s.retention.archive_url.is_none());
+        assert_eq!(s.retention.schedule, "0 3 * * *");
+        assert!(!s.retention.dry_run);
     }
 }
