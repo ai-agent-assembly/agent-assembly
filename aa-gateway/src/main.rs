@@ -27,6 +27,29 @@ enum Mode {
     Remote,
 }
 
+/// Resolve the active deployment mode using the documented precedence:
+/// explicit `--mode` flag > `AA_MODE` environment variable > default
+/// (`Mode::LegacyGrpc`).
+///
+/// `env_lookup` is parameterised so unit tests can inject a stub
+/// without poisoning the real process environment.
+fn resolve_mode(cli_mode: Option<Mode>, env_lookup: impl Fn(&str) -> Option<String>) -> Result<Mode, String> {
+    if let Some(m) = cli_mode {
+        return Ok(m);
+    }
+    if let Some(raw) = env_lookup("AA_MODE") {
+        return match raw.to_ascii_lowercase().as_str() {
+            "legacy-grpc" => Ok(Mode::LegacyGrpc),
+            "local" => Ok(Mode::Local),
+            "remote" => Ok(Mode::Remote),
+            other => Err(format!(
+                "invalid AA_MODE={other:?} — expected one of: legacy-grpc, local, remote"
+            )),
+        };
+    }
+    Ok(Mode::LegacyGrpc)
+}
+
 /// Agent Assembly governance gateway — gRPC policy evaluation server.
 #[derive(Parser)]
 #[command(name = "aa-gateway", version, about)]
@@ -57,6 +80,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+
+    let _mode = resolve_mode(cli.mode, |k| std::env::var(k).ok())?;
 
     let policy = cli
         .policy
