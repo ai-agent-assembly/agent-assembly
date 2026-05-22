@@ -274,6 +274,12 @@ mod tests {
     }
 
     #[test]
+    fn redact_database_url_replaces_postgres_password() {
+        let redacted = redact_database_url("postgresql://aasm:secret@aasm-db:5432/aasm");
+        assert_eq!(redacted, "postgresql://aasm:***@aasm-db:5432/aasm");
+    }
+
+    #[test]
     fn healthz_response_deserializes_with_storage_path_and_database_url() {
         let json = r#"{
             "mode": "remote",
