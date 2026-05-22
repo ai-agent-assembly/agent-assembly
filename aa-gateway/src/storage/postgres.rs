@@ -12,6 +12,7 @@ use aa_core::identity::AgentId;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
+use super::agent::AgentRecord;
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
 use super::postgres_config::PostgresConfig;
@@ -244,6 +245,44 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         Ok(count as u64)
+    }
+
+    /// Insert or update an agent record.
+    ///
+    /// Uses PostgreSQL `ON CONFLICT (agent_id) DO UPDATE` so a re-registration
+    /// preserves the original `registered_at` while refreshing every other
+    /// field — including `last_seen_at`, which is the column the gateway
+    /// uses to detect liveness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] when metadata fails to encode as
+    /// JSON or the INSERT/UPDATE is rejected by the driver.
+    pub async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
+        let metadata = serde_json::to_value(&record.metadata)
+            .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
+        sqlx::query(
+            "INSERT INTO agent_registry \
+             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (agent_id) DO UPDATE SET \
+               team_id          = EXCLUDED.team_id, \
+               org_id           = EXCLUDED.org_id, \
+               metadata         = EXCLUDED.metadata, \
+               last_seen_at     = EXCLUDED.last_seen_at, \
+               enforcement_mode = EXCLUDED.enforcement_mode",
+        )
+        .bind(agent_id_to_text(&record.agent_id))
+        .bind(record.team_id.as_deref())
+        .bind(record.org_id.as_deref())
+        .bind(metadata)
+        .bind(record.registered_at)
+        .bind(record.last_seen_at)
+        .bind(&record.enforcement_mode)
+        .execute(&self.pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))
     }
 }
 
