@@ -616,4 +616,35 @@ mod tests {
         let _ = first.shutdown_tx.send(());
         let _ = second.shutdown_tx.send(());
     }
+
+    /// AAASM-1576 AC #5: wall-clock from `start_local()` call to a
+    /// successful `/healthz` round-trip must be **under 500 ms** on a
+    /// standard developer laptop. The ceiling is generous against the
+    /// real expected latency (single-digit ms locally) so we catch
+    /// genuine regressions — e.g. someone adding a blocking migration
+    /// step to `open_storage` — without flaking on slow CI runners.
+    #[tokio::test]
+    async fn start_local_healthz_round_trip_completes_within_500ms() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let started = std::time::Instant::now();
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        let _ = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+            .await
+            .expect("GET /healthz")
+            .json::<serde_json::Value>()
+            .await
+            .expect("parse json");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "AAASM-1576 AC #5: start_local → /healthz round-trip must be < 500 ms, took {elapsed:?}"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+    }
 }
