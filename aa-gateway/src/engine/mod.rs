@@ -80,6 +80,49 @@ pub struct ShadowEvent {
     pub reason: String,
 }
 
+/// Transform an [`EvaluationResult`] according to the active enforcement mode.
+///
+/// In `Enforce` mode: returns the input unchanged with `None` shadow event.
+///
+/// In `Observe` mode: if the decision is non-`Allow`, rewrites it to
+/// `PolicyResult::Allow`, strips any deny-side-effect, and produces a
+/// `ShadowEvent` carrying the original decision string + reason. The caller
+/// is responsible for emitting an `AuditEvent { dry_run: true, ... }` from
+/// the returned metadata.
+///
+/// In `Disabled` mode: returns the input unchanged with `None` shadow event.
+/// Disabled is intended for hermetic test harnesses; production policy
+/// engines should not run with `Disabled` and `transform_for_observe_mode`
+/// makes no effort to mask its decisions.
+pub fn transform_for_observe_mode(
+    result: EvaluationResult,
+    mode: aa_core::EnforcementMode,
+) -> (EvaluationResult, Option<ShadowEvent>) {
+    if mode != aa_core::EnforcementMode::Observe {
+        return (result, None);
+    }
+
+    let (shadow_decision, reason) = match &result.decision {
+        aa_core::PolicyResult::Allow => return (result, None),
+        aa_core::PolicyResult::Deny { reason } => ("deny", reason.clone()),
+        aa_core::PolicyResult::RequiresApproval { .. } => ("pending", String::new()),
+    };
+
+    let shadow = ShadowEvent {
+        shadow_decision: shadow_decision.to_string(),
+        reason,
+    };
+
+    let transformed = EvaluationResult {
+        decision: aa_core::PolicyResult::Allow,
+        redacted_payload: None,
+        credential_findings: result.credential_findings,
+        deny_action: None,
+    };
+
+    (transformed, Some(shadow))
+}
+
 /// Summary of the currently active policy, returned by
 /// [`PolicyEngine::active_policy_info`].
 #[derive(Debug, Clone)]
