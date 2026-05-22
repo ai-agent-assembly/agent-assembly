@@ -1309,4 +1309,30 @@ mod tests {
             points[0].value,
         );
     }
+
+    #[tokio::test]
+    async fn query_metrics_unsupported_bucket_unit_returns_query_failed() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let err = backend
+            .query_metrics(MetricQuery {
+                bucket: Some("5 microseconds".to_string()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect_err("unsupported bucket must error");
+
+        match err {
+            StorageError::QueryFailed(msg) => {
+                assert!(
+                    msg.contains("unsupported metric bucket"),
+                    "error must explain the rejection, got: {msg}",
+                );
+            }
+            other => panic!("expected QueryFailed, got {other:?}"),
+        }
+    }
 }
