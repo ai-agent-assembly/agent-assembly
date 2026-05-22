@@ -20,6 +20,37 @@ pub struct HealthResponse {
     pub pipeline_lag_ms: u64,
 }
 
+/// API response from `GET /healthz` — the lightweight gateway liveness probe.
+///
+/// Mirrors the wire contract published by `aa-gateway::routes::healthz::HealthzBody`
+/// (landed under AAASM-1577 ST-1). Field names are part of that contract — do
+/// not rename without a coordinated server-side update.
+///
+/// `storage_path` and `database_url` are reserved for the richer
+/// `GET /api/v1/admin/status` response (AAASM-1474) and remain `None` when the
+/// gateway exposes only the minimum `/healthz` body; the `aasm status`
+/// deployment overview opportunistically surfaces them when present.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HealthzResponse {
+    /// Deployment mode label: `"local"` or `"remote"`.
+    pub mode: String,
+    /// Gateway crate version.
+    pub version: String,
+    /// Storage backend label: `"sqlite"`, `"postgres"`, or `"memory"`.
+    pub storage: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Local-mode SQLite file path, when reported.
+    #[serde(default)]
+    pub storage_path: Option<String>,
+    /// Raw PostgreSQL connection URL, when reported.
+    ///
+    /// Password redaction is applied by the display-layer composer, not here —
+    /// this model preserves the wire shape the gateway sent.
+    #[serde(default)]
+    pub database_url: Option<String>,
+}
+
 /// Computed runtime health for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
