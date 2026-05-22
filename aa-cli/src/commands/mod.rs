@@ -17,6 +17,7 @@ pub mod context;
 pub mod cost;
 pub mod dashboard;
 pub mod gateway;
+pub mod gw_probe;
 pub mod logs;
 pub mod permissions;
 pub mod pidfile;
