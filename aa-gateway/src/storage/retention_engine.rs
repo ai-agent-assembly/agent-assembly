@@ -175,4 +175,15 @@ mod tests {
             .expect("apply_retention should have been called");
         assert_eq!(captured, config.to_policy());
     }
+
+    #[tokio::test]
+    async fn run_once_returns_stats_from_backend_unchanged() {
+        let canned = canned_stats();
+        let backend = Arc::new(FakeBackend::new(canned.clone()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        let stats = engine.run_once().await.expect("run_once should succeed");
+
+        assert_eq!(stats, canned);
+    }
 }
