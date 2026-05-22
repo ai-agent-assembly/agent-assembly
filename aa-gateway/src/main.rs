@@ -156,4 +156,14 @@ mod tests {
         let resolved = resolve_mode(None, |_| None).expect("resolve");
         assert_eq!(resolved, Mode::LegacyGrpc);
     }
+
+    #[test]
+    fn rejects_invalid_aa_mode_value() {
+        let err = resolve_mode(None, env_with("foobar")).expect_err("expected error");
+        assert!(err.contains("foobar"), "error must echo the invalid value: {err}");
+        assert!(
+            err.contains("legacy-grpc") && err.contains("local") && err.contains("remote"),
+            "error must list valid modes: {err}"
+        );
+    }
 }
