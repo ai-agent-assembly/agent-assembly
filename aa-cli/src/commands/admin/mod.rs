@@ -30,3 +30,43 @@ pub fn dispatch(args: AdminArgs) -> ExitCode {
         AdminCommands::RunRetention(a) => retention::dispatch(a),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[derive(Parser)]
+    #[command(name = "aasm")]
+    struct TestCli {
+        #[command(subcommand)]
+        command: TestCommands,
+    }
+
+    #[derive(clap::Subcommand)]
+    enum TestCommands {
+        Admin(super::AdminArgs),
+    }
+
+    fn parse(args: &[&str]) -> super::AdminArgs {
+        let cli = TestCli::parse_from(args);
+        match cli.command {
+            TestCommands::Admin(a) => a,
+        }
+    }
+
+    #[test]
+    fn parse_admin_run_retention_defaults_dry_run_to_false() {
+        let args = parse(&["aasm", "admin", "run-retention"]);
+        match args.command {
+            super::AdminCommands::RunRetention(a) => assert!(!a.dry_run),
+        }
+    }
+
+    #[test]
+    fn parse_admin_run_retention_with_dry_run_flag() {
+        let args = parse(&["aasm", "admin", "run-retention", "--dry-run"]);
+        match args.command {
+            super::AdminCommands::RunRetention(a) => assert!(a.dry_run),
+        }
+    }
+}
