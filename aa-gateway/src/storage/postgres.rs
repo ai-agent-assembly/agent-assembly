@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
@@ -411,6 +412,81 @@ impl PostgresBackend {
             return Err(StorageError::NotFound(agent_id_to_text(id)));
         }
         Ok(())
+    }
+
+    /// Save a new policy version.
+    ///
+    /// Document bytes are first parsed as JSON so JSON policies round-trip
+    /// natively through the JSONB column. Anything that fails JSON parsing
+    /// (typically YAML) is wrapped as `{"raw_yaml": "<utf8 string>"}` so
+    /// the column always stores a valid JSON value.
+    ///
+    /// Runs inside a transaction: the next version is computed via
+    /// `SELECT COALESCE(MAX(version), 0) + 1`, then INSERT-RETURNING brings
+    /// the assigned `id`, `created_at`, and `is_active` back in a single
+    /// round-trip. Fresh saves land with `is_active = FALSE`.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Conflict`] when the `(name, version)` UNIQUE
+    ///   constraint trips (race against a concurrent save for the same name).
+    /// - [`StorageError::QueryFailed`] on any other driver / transaction failure.
+    pub async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+        let document_json = match serde_json::from_slice::<serde_json::Value>(&doc.bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                let text = std::str::from_utf8(&doc.bytes)
+                    .map_err(|e| StorageError::QueryFailed(format!("document bytes not UTF-8: {e}")))?;
+                serde_json::json!({ "raw_yaml": text })
+            }
+        };
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let next_version: i32 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM policy_versions WHERE name = $1")
+                .bind(&doc.name)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryFailed(format!("compute next version: {e}")))?;
+
+        let (_id, returned_version, created_at, is_active): (i64, i32, chrono::DateTime<chrono::Utc>, bool) =
+            sqlx::query_as(
+                "INSERT INTO policy_versions (name, version, document, is_active) \
+             VALUES ($1, $2, $3, FALSE) \
+             RETURNING id, version, created_at, is_active",
+            )
+            .bind(&doc.name)
+            .bind(next_version)
+            .bind(&document_json)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    StorageError::Conflict(format!("{}@{next_version}", doc.name))
+                }
+                other => StorageError::QueryFailed(other.to_string()),
+            })?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
+
+        let version =
+            u32::try_from(returned_version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+        Ok(PolicyVersion {
+            meta: PolicyMeta {
+                name: doc.name.clone(),
+                version,
+                created_at,
+                is_active,
+            },
+            document: doc,
+        })
     }
 }
 
