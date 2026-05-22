@@ -302,4 +302,52 @@ mod tests {
             .expect("should report running when both pid and listener are live");
         assert_eq!(pid, self_pid);
     }
+
+    /// Mock `GatewaySpawner` that returns a predetermined PID instead
+    /// of actually spawning a child. Used to drive `run_with_spawner`
+    /// end-to-end without an `aa-gateway` binary on PATH.
+    struct MockSpawner {
+        pid: u32,
+    }
+
+    impl GatewaySpawner for MockSpawner {
+        fn spawn_background(&self, _: SocketAddr) -> std::io::Result<u32> {
+            Ok(self.pid)
+        }
+        fn exec_foreground(&self, _: SocketAddr) -> std::io::Result<std::process::ExitStatus> {
+            // Foreground path is not exercised by these tests yet.
+            unimplemented!("MockSpawner::exec_foreground")
+        }
+    }
+
+    #[test]
+    fn run_background_writes_pid_file_via_injected_spawner() {
+        // Open a listener so `wait_for_ready` succeeds; the test
+        // process owns the socket and the mock spawner only needs
+        // to hand back the PID we want pinned to disk.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+
+        let args = StartArgs {
+            mode: ModeArg::Local,
+            port: addr.port(),
+            config: std::path::PathBuf::from("/dev/null"),
+            foreground: false,
+            no_dashboard: false,
+        };
+        let mock = MockSpawner { pid: 424_242 };
+
+        let exit = run_with_spawner(args, &mock, &pid_file);
+        assert_eq!(
+            format!("{exit:?}"),
+            format!("{:?}", ExitCode::SUCCESS),
+            "run should succeed when spawner + listener cooperate",
+        );
+        // Mock's PID, not the test process's PID — proves the
+        // injected spawner was actually consulted.
+        assert_eq!(super::super::pidfile::read_pid(&pid_file).unwrap(), Some(424_242),);
+    }
 }
