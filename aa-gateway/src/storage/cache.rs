@@ -421,4 +421,80 @@ mod tests {
             assert!(!cache.is_enabled());
         }
     }
+
+    /// HashMap-backed [`PolicyCacheLike`] stub used to exercise the trait
+    /// contract without a live Redis server. Honours TTL via
+    /// `tokio::time::Instant` so tests can fast-forward through
+    /// `tokio::time::advance` instead of sleeping.
+    mod stub {
+        use super::*;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use tokio::time::{Duration, Instant};
+
+        pub struct StubPolicyCache {
+            ttl: Duration,
+            store: Mutex<HashMap<String, (Vec<u8>, Instant)>>,
+        }
+
+        impl StubPolicyCache {
+            pub fn new(ttl_secs: u64) -> Self {
+                Self {
+                    ttl: Duration::from_secs(ttl_secs),
+                    store: Mutex::new(HashMap::new()),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl PolicyCacheLike for StubPolicyCache {
+            async fn get(&self, name: &str) -> Option<PolicyDocument> {
+                let guard = self.store.lock().expect("stub lock");
+                let (bytes, expires_at) = guard.get(name)?;
+                if *expires_at <= Instant::now() {
+                    return None;
+                }
+                Some(PolicyDocument {
+                    name: name.into(),
+                    bytes: bytes.clone(),
+                })
+            }
+
+            async fn set(&self, doc: &PolicyDocument) {
+                let mut guard = self.store.lock().expect("stub lock");
+                guard.insert(doc.name.clone(), (doc.bytes.clone(), Instant::now() + self.ttl));
+            }
+
+            async fn invalidate(&self, name: &str) {
+                let mut guard = self.store.lock().expect("stub lock");
+                guard.remove(name);
+            }
+
+            fn is_enabled(&self) -> bool {
+                true
+            }
+        }
+    }
+
+    mod contract {
+        use super::stub::StubPolicyCache;
+        use super::*;
+
+        fn doc(name: &str, body: &[u8]) -> PolicyDocument {
+            PolicyDocument {
+                name: name.into(),
+                bytes: body.to_vec(),
+            }
+        }
+
+        #[tokio::test]
+        async fn round_trip_set_then_get() {
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            let fetched = cache.get("default").await.expect("cached entry present");
+            assert_eq!(fetched.name, "default");
+            assert_eq!(fetched.bytes, b"v1-body".to_vec());
+            assert!(cache.is_enabled());
+        }
+    }
 }
