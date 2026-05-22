@@ -59,6 +59,19 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// `storage.retention.cold_action = archive` was selected but no
+    /// `archive_url` was supplied (in YAML or via env var).
+    #[error("archive_url is required when cold_action is archive")]
+    ArchiveUrlRequired,
+    /// `storage.retention.warm_days` was less than or equal to
+    /// `hot_days` — the warm tier must extend past the hot tier.
+    #[error("warm_days ({warm}) must be greater than hot_days ({hot})")]
+    WarmDaysNotGreaterThanHotDays {
+        /// The configured `hot_days` value (for the operator-facing message).
+        hot: u32,
+        /// The configured `warm_days` value.
+        warm: u32,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
@@ -467,14 +480,17 @@ impl GatewayConfig {
     }
 
     /// One-shot loader for `aasm start` and the gateway bootstrap path:
-    /// read `~/.aasm/config.yaml`, expand `~` in path fields, then apply
-    /// the `AA_MODE` / `AAASM_*` env-var overrides.
+    /// read `~/.aasm/config.yaml`, expand `~` in path fields, apply the
+    /// `AA_MODE` / `AAASM_*` env-var overrides, and finally
+    /// [`validate`](Self::validate) the result.
     ///
-    /// Returns the same `ConfigError` variants as the underlying steps.
+    /// Returns the same `ConfigError` variants as the underlying steps,
+    /// plus the validation errors from E18 S-H (AAASM-1739).
     pub fn load() -> Result<Self, ConfigError> {
         let mut cfg = Self::load_default_path()?;
         cfg.expand_paths();
         cfg.apply_env_overrides()?;
+        cfg.validate()?;
         Ok(cfg)
     }
 }
@@ -581,6 +597,36 @@ impl GatewayConfig {
             if let Some(path) = key {
                 tls.key_file = PathBuf::from(path);
             }
+        }
+        Ok(())
+    }
+}
+
+impl GatewayConfig {
+    /// Validate the fully-loaded config — call this **after**
+    /// [`expand_paths`](Self::expand_paths) and
+    /// [`apply_env_overrides`](Self::apply_env_overrides) so values
+    /// coming in from env vars are included in the checks.
+    ///
+    /// Currently enforces two storage-retention invariants from
+    /// E18 S-H (AAASM-1582):
+    ///
+    /// * `storage.retention.cold_action = archive` requires
+    ///   `storage.retention.archive_url` to be set (in YAML or by
+    ///   env var) — returns [`ConfigError::ArchiveUrlRequired`].
+    /// * `storage.retention.warm_days` must be strictly greater than
+    ///   `storage.retention.hot_days` — returns
+    ///   [`ConfigError::WarmDaysNotGreaterThanHotDays`].
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let r = &self.storage.retention;
+        if r.cold_action == ColdAction::Archive && r.archive_url.is_none() {
+            return Err(ConfigError::ArchiveUrlRequired);
+        }
+        if r.warm_days <= r.hot_days {
+            return Err(ConfigError::WarmDaysNotGreaterThanHotDays {
+                hot: r.hot_days,
+                warm: r.warm_days,
+            });
         }
         Ok(())
     }
@@ -984,6 +1030,53 @@ agent:
                 var: "AAASM_RETENTION_HOT_DAYS",
                 ref raw,
             } if raw == "thirty"
+        ));
+    }
+
+    #[test]
+    fn validate_archive_without_url_fails_with_documented_message() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.cold_action = ColdAction::Archive;
+        cfg.storage.retention.archive_url = None;
+        let err = cfg
+            .validate()
+            .expect_err("cold_action = Archive without archive_url must fail");
+        assert!(matches!(err, ConfigError::ArchiveUrlRequired));
+        assert_eq!(format!("{err}"), "archive_url is required when cold_action is archive",);
+    }
+
+    #[test]
+    fn validate_archive_with_url_passes() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.cold_action = ColdAction::Archive;
+        cfg.storage.retention.archive_url = Some("s3://aasm-archive/".into());
+        cfg.validate().expect("archive + url must validate");
+    }
+
+    #[test]
+    fn validate_warm_days_must_be_greater_than_hot_days() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.hot_days = 60;
+        cfg.storage.retention.warm_days = 30; // < hot_days
+        let err = cfg.validate().expect_err("warm_days <= hot_days must fail");
+        assert!(matches!(
+            err,
+            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 60, warm: 30 }
+        ));
+        assert_eq!(format!("{err}"), "warm_days (30) must be greater than hot_days (60)",);
+    }
+
+    #[test]
+    fn validate_warm_days_equal_to_hot_days_also_fails() {
+        let mut cfg = GatewayConfig::default();
+        cfg.storage.retention.hot_days = 30;
+        cfg.storage.retention.warm_days = 30; // == hot_days
+        let err = cfg
+            .validate()
+            .expect_err("warm_days == hot_days must fail (strict inequality)");
+        assert!(matches!(
+            err,
+            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 30, warm: 30 }
         ));
     }
 }
