@@ -35,6 +35,30 @@ pub enum ConfigError {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
+    /// `AAASM_STORAGE_BACKEND` was set to something other than `sqlite`
+    /// or `postgres`.
+    #[error("invalid AAASM_STORAGE_BACKEND value: '{raw}' (expected 'sqlite' or 'postgres')")]
+    InvalidStorageBackend {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
+    /// `AAASM_RETENTION_COLD_ACTION` was set to something other than
+    /// `drop` or `archive`.
+    #[error("invalid AAASM_RETENTION_COLD_ACTION value: '{raw}' (expected 'drop' or 'archive')")]
+    InvalidColdAction {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
+    /// A retention env var (`AAASM_RETENTION_HOT_DAYS`,
+    /// `AAASM_RETENTION_WARM_DAYS`, …) was not a non-negative integer.
+    #[error("invalid {var} value: '{raw}' (expected non-negative integer)")]
+    InvalidUnsignedInt {
+        /// The env-var name, surfaced verbatim in the message so an
+        /// operator scanning startup logs can `grep` for the variable.
+        var: &'static str,
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
 }
 
 /// Which deployment topology the gateway should boot into.
@@ -515,11 +539,34 @@ impl GatewayConfig {
             self.local.port = port;
             self.remote.listen_addr.set_port(port);
         }
+        if let Some(raw) = get_env("AAASM_STORAGE_BACKEND") {
+            self.storage.backend = match raw.as_str() {
+                "sqlite" => StorageBackendType::Sqlite,
+                "postgres" => StorageBackendType::Postgres,
+                _ => return Err(ConfigError::InvalidStorageBackend { raw }),
+            };
+        }
         if let Some(url) = get_env("AAASM_DATABASE_URL") {
-            self.remote.database_url = Some(url);
+            self.storage.postgres.database_url = Some(url);
         }
         if let Some(url) = get_env("AAASM_REDIS_URL") {
-            self.remote.redis_url = Some(url);
+            self.storage.redis.url = Some(url);
+        }
+        if let Some(path) = get_env("AAASM_SQLITE_PATH") {
+            self.storage.sqlite.path = PathBuf::from(path);
+        }
+        if let Some(raw) = get_env("AAASM_RETENTION_HOT_DAYS") {
+            self.storage.retention.hot_days = raw.parse().map_err(|_| ConfigError::InvalidUnsignedInt {
+                var: "AAASM_RETENTION_HOT_DAYS",
+                raw: raw.clone(),
+            })?;
+        }
+        if let Some(raw) = get_env("AAASM_RETENTION_COLD_ACTION") {
+            self.storage.retention.cold_action = match raw.as_str() {
+                "drop" => ColdAction::Drop,
+                "archive" => ColdAction::Archive,
+                _ => return Err(ConfigError::InvalidColdAction { raw }),
+            };
         }
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
@@ -798,15 +845,26 @@ agent:
     }
 
     #[test]
-    fn apply_env_overrides_database_and_redis_urls() {
+    fn apply_env_overrides_database_url_targets_storage_postgres() {
         let mut cfg = GatewayConfig::default();
-        cfg.apply_env_overrides_with(env(&[
-            ("AAASM_DATABASE_URL", "postgres://aasm@db/aasm"),
-            ("AAASM_REDIS_URL", "redis://redis:6379"),
-        ]))
-        .unwrap();
-        assert_eq!(cfg.remote.database_url.as_deref(), Some("postgres://aasm@db/aasm"));
-        assert_eq!(cfg.remote.redis_url.as_deref(), Some("redis://redis:6379"));
+        cfg.apply_env_overrides_with(env(&[("AAASM_DATABASE_URL", "postgres://aasm@db/aasm")]))
+            .unwrap();
+        assert_eq!(
+            cfg.storage.postgres.database_url.as_deref(),
+            Some("postgres://aasm@db/aasm"),
+        );
+        // Legacy remote.database_url is untouched (removed in E18 S-I).
+        assert!(cfg.remote.database_url.is_none());
+    }
+
+    #[test]
+    fn apply_env_overrides_redis_url_targets_storage_redis() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AAASM_REDIS_URL", "redis://redis:6379")]))
+            .unwrap();
+        assert_eq!(cfg.storage.redis.url.as_deref(), Some("redis://redis:6379"));
+        // Legacy remote.redis_url is untouched (removed in E18 S-I).
+        assert!(cfg.remote.redis_url.is_none());
     }
 
     #[test]
@@ -867,5 +925,65 @@ agent:
         assert!(s.retention.archive_url.is_none());
         assert_eq!(s.retention.schedule, "0 3 * * *");
         assert!(!s.retention.dry_run);
+    }
+
+    #[test]
+    fn apply_env_overrides_storage_matrix() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[
+            ("AAASM_STORAGE_BACKEND", "postgres"),
+            ("AAASM_DATABASE_URL", "postgres://aasm@prod/aasm"),
+            ("AAASM_REDIS_URL", "redis://prod:6379"),
+            ("AAASM_SQLITE_PATH", "/var/lib/aasm.db"),
+            ("AAASM_RETENTION_HOT_DAYS", "7"),
+            ("AAASM_RETENTION_COLD_ACTION", "archive"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+        assert_eq!(
+            cfg.storage.postgres.database_url.as_deref(),
+            Some("postgres://aasm@prod/aasm"),
+        );
+        assert_eq!(cfg.storage.redis.url.as_deref(), Some("redis://prod:6379"));
+        assert_eq!(cfg.storage.sqlite.path, PathBuf::from("/var/lib/aasm.db"));
+        assert_eq!(cfg.storage.retention.hot_days, 7);
+        assert_eq!(cfg.storage.retention.cold_action, ColdAction::Archive);
+    }
+
+    #[test]
+    fn apply_env_overrides_storage_backend_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_STORAGE_BACKEND", "mysql")]))
+            .expect_err("unsupported backend must return Err");
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidStorageBackend { ref raw } if raw == "mysql"));
+        assert!(msg.contains("AAASM_STORAGE_BACKEND"));
+        assert!(msg.contains("mysql"));
+        assert!(msg.contains("sqlite") && msg.contains("postgres"));
+    }
+
+    #[test]
+    fn apply_env_overrides_cold_action_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_RETENTION_COLD_ACTION", "tombstone")]))
+            .expect_err("unsupported cold_action must return Err");
+        assert!(matches!(err, ConfigError::InvalidColdAction { ref raw } if raw == "tombstone"));
+    }
+
+    #[test]
+    fn apply_env_overrides_retention_hot_days_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_RETENTION_HOT_DAYS", "thirty")]))
+            .expect_err("non-numeric hot_days must return Err");
+        assert!(matches!(
+            err,
+            ConfigError::InvalidUnsignedInt {
+                var: "AAASM_RETENTION_HOT_DAYS",
+                ref raw,
+            } if raw == "thirty"
+        ));
     }
 }
