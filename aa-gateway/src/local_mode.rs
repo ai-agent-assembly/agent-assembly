@@ -301,4 +301,30 @@ mod tests {
             "probe should fail fast on connection refused; took {elapsed:?}"
         );
     }
+
+    /// AAASM-1576 AC #2 positive path: when a real local-mode gateway is
+    /// serving on the port, `probe_running` must return `true` so
+    /// `start_local()` short-circuits and reuses the existing process.
+    ///
+    /// Spins up the actual `router()` (which mounts `routes::healthz`
+    /// with `HealthzState::new("local", "sqlite")`) on an ephemeral
+    /// port via `axum::serve`, then probes it. The server task is
+    /// aborted on the way out to keep the test hermetic.
+    #[tokio::test]
+    async fn probe_running_returns_true_against_local_mode_router() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router()).await;
+        });
+
+        let alive = probe_running(port).await;
+
+        server.abort();
+
+        assert!(alive, "probe must report alive against a real local-mode /healthz");
+    }
 }
