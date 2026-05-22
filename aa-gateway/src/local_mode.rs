@@ -183,6 +183,20 @@ pub(crate) async fn probe_running(port: u16) -> bool {
         && body.get("version").and_then(|v| v.as_str()).is_some()
 }
 
+/// Resolve the production PID-file location: `~/.aasm/gateway.pid`.
+///
+/// Called by `start_local()` (AAASM-1725) to record the running process
+/// id so `aasm stop` (AAASM-1717 / E17 S-D) can later signal it.
+/// Matches AAASM-1576 AC #7 ("PID file written to `~/.aasm/gateway.pid`").
+///
+/// Falls back to an empty `PathBuf` when `dirs::home_dir()` returns
+/// `None` — the caller's subsequent `std::fs::write` will surface the
+/// error as `LocalModeError::PidFile` rather than panicking.
+#[allow(dead_code)] // consumed by start_local() — same commit lifts it
+pub(crate) fn pid_file_path() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".aasm/gateway.pid")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
