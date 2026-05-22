@@ -146,6 +146,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_invalid_cron_schedule() {
+        let cfg = RetentionConfig {
+            schedule: "not a cron".to_string(),
+            ..RetentionConfig::default()
+        };
+        match cfg.validate() {
+            Err(RetentionConfigError::InvalidSchedule { schedule, reason }) => {
+                assert_eq!(schedule, "not a cron");
+                assert!(!reason.is_empty(), "underlying reason must be reported");
+            }
+            other => panic!("expected InvalidSchedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parsed_schedule_returns_schedule_for_default_config() {
+        let _schedule = RetentionConfig::default()
+            .parsed_schedule()
+            .expect("default schedule must parse");
+    }
+
+    #[test]
     fn to_policy_forwards_all_runtime_fields() {
         let cfg = RetentionConfig {
             schedule: "0 4 * * *".to_string(),
