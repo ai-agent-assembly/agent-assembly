@@ -2158,6 +2158,22 @@ mod tests {
     }
 
     #[test]
+    fn observe_mode_converts_requires_approval_to_allow_with_pending_shadow() {
+        // A RequiresApproval decision in Observe mode must NOT halt execution
+        // — the agent proceeds, and shadow_decision = "pending" is recorded.
+        let pending = EvaluationResult {
+            decision: PolicyResult::RequiresApproval { timeout_secs: 600 },
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: None,
+        };
+        let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        let shadow = shadow.expect("shadow event for RequiresApproval in Observe mode");
+        assert_eq!(shadow.shadow_decision, "pending");
+    }
+
+    #[test]
     fn observe_mode_converts_deny_to_allow_and_emits_shadow_event() {
         // The core observe-mode contract: a Deny decision is rewritten to
         // Allow, the deny_action side-effect is dropped, and a ShadowEvent
