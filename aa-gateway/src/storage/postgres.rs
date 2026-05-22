@@ -435,4 +435,39 @@ mod tests {
         assert_eq!(count, 5);
         assert_eq!(count as usize, rows.len(), "count must equal query length");
     }
+
+    #[tokio::test]
+    async fn dry_run_only_filter_excludes_non_dry_events() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let base = now_micros();
+
+        let dry = AuditEvent {
+            dry_run: true,
+            ..sample_event(agent_id, base)
+        };
+        let live = AuditEvent {
+            dry_run: false,
+            ..sample_event(agent_id, base - chrono::Duration::seconds(1))
+        };
+        backend.append_audit_event(&dry).await.expect("append dry");
+        backend.append_audit_event(&live).await.expect("append live");
+
+        let dry_only = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                dry_run_only: true,
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query dry-only");
+
+        assert_eq!(dry_only.len(), 1, "expected only the dry-run event");
+        assert!(dry_only[0].dry_run, "returned event must be dry_run = true");
+        assert_eq!(dry_only[0].event_id, dry.event_id);
+    }
 }
