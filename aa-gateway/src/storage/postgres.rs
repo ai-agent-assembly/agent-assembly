@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
@@ -148,6 +149,23 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
         connective(qb);
         qb.push("dry_run = TRUE");
     }
+}
+
+/// Decode a `policy_versions.document` JSONB value back into the byte
+/// representation expected by [`PolicyDocument::bytes`].
+///
+/// Inverse of the `save_policy` encoding: a `{"raw_yaml": "<utf8>"}`
+/// wrapper is unwrapped back to its inner string bytes; any other JSON
+/// value is re-serialised to compact canonical JSON.
+fn policy_document_bytes(value: serde_json::Value) -> Vec<u8> {
+    if let serde_json::Value::Object(ref obj) = value {
+        if obj.len() == 1 {
+            if let Some(serde_json::Value::String(raw)) = obj.get("raw_yaml") {
+                return raw.clone().into_bytes();
+            }
+        }
+    }
+    serde_json::to_vec(&value).expect("serialising a parsed JSON value never fails")
 }
 
 /// Push the agent-registry WHERE clause derived from `filter` into `qb`.
@@ -410,6 +428,188 @@ impl PostgresBackend {
         if result.rows_affected() == 0 {
             return Err(StorageError::NotFound(agent_id_to_text(id)));
         }
+        Ok(())
+    }
+
+    /// Save a new policy version.
+    ///
+    /// Document bytes are first parsed as JSON so JSON policies round-trip
+    /// natively through the JSONB column. Anything that fails JSON parsing
+    /// (typically YAML) is wrapped as `{"raw_yaml": "<utf8 string>"}` so
+    /// the column always stores a valid JSON value.
+    ///
+    /// Runs inside a transaction: the next version is computed via
+    /// `SELECT COALESCE(MAX(version), 0) + 1`, then INSERT-RETURNING brings
+    /// the assigned `id`, `created_at`, and `is_active` back in a single
+    /// round-trip. Fresh saves land with `is_active = FALSE`.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Conflict`] when the `(name, version)` UNIQUE
+    ///   constraint trips (race against a concurrent save for the same name).
+    /// - [`StorageError::QueryFailed`] on any other driver / transaction failure.
+    pub async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+        let document_json = match serde_json::from_slice::<serde_json::Value>(&doc.bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                let text = std::str::from_utf8(&doc.bytes)
+                    .map_err(|e| StorageError::QueryFailed(format!("document bytes not UTF-8: {e}")))?;
+                serde_json::json!({ "raw_yaml": text })
+            }
+        };
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let next_version: i32 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) + 1 FROM policy_versions WHERE name = $1")
+                .bind(&doc.name)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| StorageError::QueryFailed(format!("compute next version: {e}")))?;
+
+        let (_id, returned_version, created_at, is_active): (i64, i32, chrono::DateTime<chrono::Utc>, bool) =
+            sqlx::query_as(
+                "INSERT INTO policy_versions (name, version, document, is_active) \
+             VALUES ($1, $2, $3, FALSE) \
+             RETURNING id, version, created_at, is_active",
+            )
+            .bind(&doc.name)
+            .bind(next_version)
+            .bind(&document_json)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    StorageError::Conflict(format!("{}@{next_version}", doc.name))
+                }
+                other => StorageError::QueryFailed(other.to_string()),
+            })?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
+
+        let version =
+            u32::try_from(returned_version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+        Ok(PolicyVersion {
+            meta: PolicyMeta {
+                name: doc.name.clone(),
+                version,
+                created_at,
+                is_active,
+            },
+            document: doc,
+        })
+    }
+
+    /// Return the currently-active policy version for `name`, if one is
+    /// flagged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(None)` when no version is active. Driver failures surface
+    /// as [`StorageError::QueryFailed`].
+    pub async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT document FROM policy_versions \
+             WHERE name = $1 AND is_active = TRUE LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(row.map(|(document,)| PolicyDocument {
+            name: name.to_owned(),
+            bytes: policy_document_bytes(document),
+        }))
+    }
+
+    /// List every stored version of `name`, newest first.
+    ///
+    /// Returns an empty Vec when the name has no saved versions — only
+    /// driver failures surface as [`StorageError`].
+    pub async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
+        let rows: Vec<(i32, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
+            "SELECT version, created_at, is_active FROM policy_versions \
+             WHERE name = $1 ORDER BY version DESC",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(version, created_at, is_active)| {
+                let version =
+                    u32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+                Ok(PolicyMeta {
+                    name: name.to_owned(),
+                    version,
+                    created_at,
+                    is_active,
+                })
+            })
+            .collect()
+    }
+
+    /// Mark `version` of `name` as the active version.
+    ///
+    /// Runs the existence check and both UPDATEs inside one transaction so
+    /// no caller can ever observe two active versions for the same name.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::NotFound`] when `(name, version)` does not exist.
+    ///   Payload is formatted `"<name>@<version>"` to mirror the SQLite
+    ///   backend.
+    /// - [`StorageError::QueryFailed`] on driver / transaction failure.
+    pub async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
+        let version_i =
+            i32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("begin tx: {e}")))?;
+
+        let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM policy_versions WHERE name = $1 AND version = $2")
+            .bind(name)
+            .bind(version_i)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(format!("{name}@{version}")));
+        }
+
+        sqlx::query(
+            "UPDATE policy_versions SET is_active = FALSE \
+             WHERE name = $1 AND is_active = TRUE",
+        )
+        .bind(name)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        sqlx::query(
+            "UPDATE policy_versions SET is_active = TRUE \
+             WHERE name = $1 AND version = $2",
+        )
+        .bind(name)
+        .bind(version_i)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::QueryFailed(format!("commit tx: {e}")))?;
         Ok(())
     }
 }
@@ -768,6 +968,119 @@ mod tests {
                     payload,
                     agent_id_to_text(&missing),
                     "NotFound payload should carry the offending TEXT id",
+                );
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// Mint a fresh, unique policy name so each test's saves and rollbacks
+    /// stay isolated against the shared CI database.
+    fn fresh_policy_name() -> String {
+        format!("policy-{}", uuid::Uuid::new_v4())
+    }
+
+    /// JSON policy doc with alphabetical keys so serde_json's canonical
+    /// re-serialisation round-trips byte-equal back to this slice.
+    fn json_policy(name: &str, version_marker: u32) -> PolicyDocument {
+        PolicyDocument {
+            name: name.to_owned(),
+            bytes: format!(r#"{{"marker":{version_marker},"rule":"allow"}}"#).into_bytes(),
+        }
+    }
+
+    #[tokio::test]
+    async fn save_policy_assigns_monotonic_versions() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let v1 = backend.save_policy(json_policy(&name, 1)).await.expect("save 1");
+        let v2 = backend.save_policy(json_policy(&name, 2)).await.expect("save 2");
+        let v3 = backend.save_policy(json_policy(&name, 3)).await.expect("save 3");
+
+        assert_eq!(v1.meta.version, 1);
+        assert_eq!(v2.meta.version, 2);
+        assert_eq!(v3.meta.version, 3);
+    }
+
+    #[tokio::test]
+    async fn save_policy_does_not_activate_by_default() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let saved = backend.save_policy(json_policy(&name, 1)).await.expect("save");
+
+        assert!(
+            !saved.meta.is_active,
+            "freshly saved policy must land with is_active = false"
+        );
+        let active = backend.get_active_policy(&name).await.expect("get_active");
+        assert!(
+            active.is_none(),
+            "no version should be active until rollback_policy is called"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_then_get_active_returns_chosen_version() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let v1 = json_policy(&name, 1);
+        let v2 = json_policy(&name, 2);
+        let v3 = json_policy(&name, 3);
+        backend.save_policy(v1).await.expect("save v1");
+        backend.save_policy(v2.clone()).await.expect("save v2");
+        backend.save_policy(v3).await.expect("save v3");
+
+        backend.rollback_policy(&name, 2).await.expect("rollback to v2");
+
+        let active = backend
+            .get_active_policy(&name)
+            .await
+            .expect("get_active")
+            .expect("a version must be active after rollback");
+
+        assert_eq!(active.bytes, v2.bytes, "active document must be the v2 we wrote");
+
+        // Cross-check via list: exactly one row should be flagged active and
+        // it must be the one we rolled back to.
+        let metas = backend.list_policy_versions(&name).await.expect("list_policy_versions");
+        let active_metas: Vec<&PolicyMeta> = metas.iter().filter(|m| m.is_active).collect();
+        assert_eq!(active_metas.len(), 1, "exactly one version must be active");
+        assert_eq!(active_metas[0].version, 2);
+    }
+
+    #[tokio::test]
+    async fn rollback_unknown_version_returns_not_found() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        backend.save_policy(json_policy(&name, 1)).await.expect("save v1");
+
+        let err = backend
+            .rollback_policy(&name, 999)
+            .await
+            .expect_err("rollback of missing version must error");
+
+        match err {
+            StorageError::NotFound(payload) => {
+                assert_eq!(
+                    payload,
+                    format!("{name}@999"),
+                    "NotFound payload should carry <name>@<version>",
                 );
             }
             other => panic!("expected NotFound, got {other:?}"),
