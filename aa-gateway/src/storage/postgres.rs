@@ -1,19 +1,21 @@
 //! PostgreSQL-backed implementation of [`StorageBackend`](super::backend::StorageBackend).
 //!
-//! Sub-task progress: `connect()` (E18 S-C #1) and `migrate()` (E18 S-C #2)
-//! are implemented as inherent methods. The full
-//! [`StorageBackend`](super::backend::StorageBackend) trait impl is built up
-//! incrementally across sub-tasks #3 – #7 and consolidated into an
-//! `impl StorageBackend for PostgresBackend` block at the end.
+//! `connect()` is the only inherent method — it's the constructor.
+//! Every other method lives in the
+//! [`StorageBackend`](super::backend::StorageBackend) trait impl below
+//! (consolidated in E18 S-C #10 from the prior per-sub-task inherent
+//! implementations).
 
 use std::time::Duration;
 
 use aa_core::identity::AgentId;
+use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
+use super::backend::StorageBackend;
 use super::error::{StorageError, StorageResult};
 use super::health::{HealthStatus, RowCounts, StorageHealth};
 use super::metric::{Metric, MetricPoint, MetricQuery};
@@ -274,7 +276,10 @@ impl PostgresBackend {
 
         Ok(Self { pool })
     }
+}
 
+#[async_trait]
+impl StorageBackend for PostgresBackend {
     /// Apply the embedded `migrations/postgres/*.sql` migrations.
     ///
     /// Idempotent — sqlx records applied versions in `_sqlx_migrations`,
@@ -284,7 +289,7 @@ impl PostgresBackend {
     ///
     /// Returns [`StorageError::MigrationFailed`] when any migration fails
     /// to apply or sqlx cannot verify previously-applied versions.
-    pub async fn migrate(&self) -> StorageResult<()> {
+    async fn migrate(&self) -> StorageResult<()> {
         sqlx::migrate!("./migrations/postgres")
             .run(&self.pool)
             .await
@@ -302,7 +307,7 @@ impl PostgresBackend {
     ///
     /// Returns [`StorageError::QueryFailed`] when the INSERT is rejected
     /// (duplicate `(ts, event_id)` PK, transport failure, etc.).
-    pub async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
+    async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
         sqlx::query(
             "INSERT INTO audit_events \
              (ts, event_id, agent_id, team_id, action, decision, \
@@ -334,7 +339,7 @@ impl PostgresBackend {
     ///
     /// Returns [`StorageError::QueryFailed`] on driver errors and when a
     /// column cannot be decoded into its expected runtime type.
-    pub async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
+    async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT ts, event_id, agent_id, team_id, action, decision, \
              dry_run, shadow_decision, matched_rule_id, payload FROM audit_events",
@@ -367,7 +372,7 @@ impl PostgresBackend {
     /// # Errors
     ///
     /// Returns [`StorageError::QueryFailed`] on driver errors.
-    pub async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
+    async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM audit_events");
         push_audit_where(&mut qb, &filter);
 
@@ -390,7 +395,7 @@ impl PostgresBackend {
     ///
     /// Returns [`StorageError::QueryFailed`] when metadata fails to encode as
     /// JSON or the INSERT/UPDATE is rejected by the driver.
-    pub async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
+    async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
         let metadata = serde_json::to_value(&record.metadata)
             .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
         sqlx::query(
@@ -421,7 +426,7 @@ impl PostgresBackend {
     ///
     /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
     /// as a [`StorageError`].
-    pub async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+    async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
         let row = sqlx::query(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
              enforcement_mode FROM agent_registry WHERE agent_id = $1",
@@ -438,7 +443,7 @@ impl PostgresBackend {
     /// `filter.limit` and `filter.offset` translate to PostgreSQL
     /// `LIMIT`/`OFFSET` bound as `i64`. `name_contains` performs a
     /// substring search against the `metadata.name` JSONB key.
-    pub async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+    async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
              enforcement_mode FROM agent_registry",
@@ -466,7 +471,7 @@ impl PostgresBackend {
     /// Returns [`StorageError::NotFound`] when no row matches; the error
     /// payload carries the offending agent id (TEXT form) so callers can
     /// log it without re-encoding.
-    pub async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
+    async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
         let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = $1")
             .bind(agent_id_to_text(id))
             .execute(&self.pool)
@@ -495,7 +500,7 @@ impl PostgresBackend {
     /// - [`StorageError::Conflict`] when the `(name, version)` UNIQUE
     ///   constraint trips (race against a concurrent save for the same name).
     /// - [`StorageError::QueryFailed`] on any other driver / transaction failure.
-    pub async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+    async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
         let document_json = match serde_json::from_slice::<serde_json::Value>(&doc.bytes) {
             Ok(value) => value,
             Err(_) => {
@@ -560,7 +565,7 @@ impl PostgresBackend {
     ///
     /// Returns `Ok(None)` when no version is active. Driver failures surface
     /// as [`StorageError::QueryFailed`].
-    pub async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
+    async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
         let row: Option<(serde_json::Value,)> = sqlx::query_as(
             "SELECT document FROM policy_versions \
              WHERE name = $1 AND is_active = TRUE LIMIT 1",
@@ -580,7 +585,7 @@ impl PostgresBackend {
     ///
     /// Returns an empty Vec when the name has no saved versions — only
     /// driver failures surface as [`StorageError`].
-    pub async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
+    async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
         let rows: Vec<(i32, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
             "SELECT version, created_at, is_active FROM policy_versions \
              WHERE name = $1 ORDER BY version DESC",
@@ -615,7 +620,7 @@ impl PostgresBackend {
     ///   Payload is formatted `"<name>@<version>"` to mirror the SQLite
     ///   backend.
     /// - [`StorageError::QueryFailed`] on driver / transaction failure.
-    pub async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
+    async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
         let version_i =
             i32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
 
@@ -670,7 +675,7 @@ impl PostgresBackend {
     ///
     /// - [`StorageError::QueryFailed`] when `labels` cannot be encoded as
     ///   JSON or the INSERT is rejected.
-    pub async fn record_metric(&self, m: Metric) -> StorageResult<()> {
+    async fn record_metric(&self, m: Metric) -> StorageResult<()> {
         let labels =
             serde_json::to_value(&m.labels).map_err(|e| StorageError::QueryFailed(format!("labels serialize: {e}")))?;
         sqlx::query(
@@ -704,7 +709,7 @@ impl PostgresBackend {
     ///
     /// - [`StorageError::QueryFailed`] for an unsupported bucket string or
     ///   any driver failure.
-    pub async fn query_metrics(&self, query: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+    async fn query_metrics(&self, query: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
         let bucket_unit = query.bucket.as_deref().map(metric_bucket_unit).transpose()?;
 
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
@@ -766,7 +771,7 @@ impl PostgresBackend {
     /// `hot_rows` is always populated via a second `count(*)` filtered
     /// at the hot cutoff so the caller can report how much data is
     /// indexed-and-queryable after the run.
-    pub async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+    async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
         if matches!(policy.cold_action, ColdAction::Archive) {
             return Err(StorageError::RetentionError(format!(
                 "archive cold_action not supported by PostgresBackend yet (S-D will add drop_chunks); \
@@ -819,7 +824,7 @@ impl PostgresBackend {
     /// [`HealthStatus::Degraded`] when the probe + counts take 200 ms or
     /// more — operators can use that as a leading indicator before the
     /// gateway's own latency budget trips.
-    pub async fn healthcheck(&self) -> StorageResult<StorageHealth> {
+    async fn healthcheck(&self) -> StorageResult<StorageHealth> {
         let start = std::time::Instant::now();
 
         sqlx::query("SELECT 1")
