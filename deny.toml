@@ -28,6 +28,9 @@ allow = [
     "CC0-1.0",
     # MPL-2.0 — weak copyleft, compatible with Apache-2.0; used by option-ext (dirs dependency)
     "MPL-2.0",
+    # BSL-1.0 — Boost Software License 1.0, OSI-approved permissive license;
+    # used by xxhash-rust (transitive dep of redis 1.x under redis-cache feature)
+    "BSL-1.0",
 ]
 
 [[licenses.exceptions]]
