@@ -973,4 +973,36 @@ mod tests {
             other => panic!("expected NotFound, got {other:?}"),
         }
     }
+
+    /// Mint a fresh, unique policy name so each test's saves and rollbacks
+    /// stay isolated against the shared CI database.
+    fn fresh_policy_name() -> String {
+        format!("policy-{}", uuid::Uuid::new_v4())
+    }
+
+    /// JSON policy doc with alphabetical keys so serde_json's canonical
+    /// re-serialisation round-trips byte-equal back to this slice.
+    fn json_policy(name: &str, version_marker: u32) -> PolicyDocument {
+        PolicyDocument {
+            name: name.to_owned(),
+            bytes: format!(r#"{{"marker":{version_marker},"rule":"allow"}}"#).into_bytes(),
+        }
+    }
+
+    #[tokio::test]
+    async fn save_policy_assigns_monotonic_versions() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let v1 = backend.save_policy(json_policy(&name, 1)).await.expect("save 1");
+        let v2 = backend.save_policy(json_policy(&name, 2)).await.expect("save 2");
+        let v3 = backend.save_policy(json_policy(&name, 3)).await.expect("save 3");
+
+        assert_eq!(v1.meta.version, 1);
+        assert_eq!(v2.meta.version, 2);
+        assert_eq!(v3.meta.version, 3);
+    }
 }
