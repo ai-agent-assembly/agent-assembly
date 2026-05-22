@@ -183,4 +183,32 @@ mod tests {
         // Reap the (now-signaled) child so it doesn't linger.
         let _ = child.wait();
     }
+
+    #[test]
+    fn run_with_timeout_zero_escalates_directly_to_sigkill() {
+        use std::os::unix::process::ExitStatusExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("system `sleep` should be available");
+        let pid = child.id();
+        super::super::pidfile::write_pid(&pid_file, pid).unwrap();
+
+        // `--timeout 0` MUST skip SIGTERM and go straight to SIGKILL.
+        let exit = run_with_pid_file(StopArgs { timeout: 0 }, &pid_file);
+        assert_eq!(fmt(exit), fmt(std::process::ExitCode::SUCCESS));
+        assert!(!pid_file.exists(), "pid file should be removed");
+
+        // Reap and assert the termination signal was SIGKILL — proves
+        // the `--timeout 0` branch was taken, not the SIGTERM grace path.
+        let status = child.wait().unwrap();
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGKILL),
+            "child should have been killed by SIGKILL on --timeout 0",
+        );
+    }
 }
