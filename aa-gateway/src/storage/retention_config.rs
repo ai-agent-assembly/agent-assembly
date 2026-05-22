@@ -8,6 +8,14 @@ pub enum RetentionConfigError {
     /// `cold_action == Archive` was set but no `archive_url` was provided.
     #[error("cold_action=archive requires archive_url to be set")]
     MissingArchiveUrl,
+    /// `schedule` is not a valid cron expression.
+    #[error("invalid cron schedule {schedule:?}: {reason}")]
+    InvalidSchedule {
+        /// The offending schedule string verbatim from config.
+        schedule: String,
+        /// Underlying cron-parse error rendered as a string.
+        reason: String,
+    },
 }
 
 /// Operator-configurable retention engine settings parsed from the
