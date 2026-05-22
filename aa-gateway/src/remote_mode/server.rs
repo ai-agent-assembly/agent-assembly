@@ -29,6 +29,23 @@ pub fn router() -> Router {
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
 }
 
+/// Print the operator-facing startup banner via `tracing::info!`.
+///
+/// Five lines — mode, listen addr, scheme (http / https), storage label,
+/// version — sized to fit a typical 80-column terminal so the boot log
+/// is scannable.
+fn log_startup_banner(cfg: &RemoteModeConfig) {
+    let scheme = if cfg.tls.is_some() { "https" } else { "http" };
+    tracing::info!(
+        scheme,
+        addr = %cfg.listen_addr,
+        storage = "memory",
+        version = env!("CARGO_PKG_VERSION"),
+        "Agent Assembly [remote mode] starting on {scheme}://{}",
+        cfg.listen_addr
+    );
+}
+
 /// Bind the remote-mode listener and serve until `handle` triggers
 /// shutdown. Plain-HTTP path — TLS is added in a follow-up commit.
 ///
@@ -40,6 +57,7 @@ pub fn router() -> Router {
 /// production [`start_remote`] entrypoint wires the handle to a
 /// SIGTERM / SIGINT listener.
 pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle) -> Result<(), GatewayError> {
+    log_startup_banner(cfg);
     let app = router().into_make_service();
 
     if let Some(tls_cfg) = &cfg.tls {
