@@ -27,6 +27,7 @@ pub mod service;
 pub mod simulation;
 pub mod storage;
 
+pub use app_state::AppState;
 pub use audit_reader::AuditReader;
 pub use engine::{EvaluationResult, PolicyEngine, PolicyLoadError};
 pub use registry::{AgentRecord, AgentRegistry, AgentStatus};
