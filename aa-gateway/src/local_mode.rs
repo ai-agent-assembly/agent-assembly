@@ -228,9 +228,9 @@ pub enum LocalModeError {
 /// Build the local-mode Axum router.
 ///
 /// Always mounts `/healthz` via [`crate::routes::healthz::healthz`].
-/// When `config.dashboard` is `true` and
-/// [`crate::dashboard_server::find_dashboard_dist`] resolves a
-/// `dashboard/dist/` directory, also merges in the dashboard SPA
+/// When `config.dashboard` is `true`, calls
+/// [`crate::dashboard_server::find_dashboard_dist`] to resolve a
+/// `dashboard/dist/` directory and merges in the dashboard SPA
 /// router from [`crate::dashboard_server::dashboard_router`] so the
 /// gateway serves the React app at `/` and falls back to `index.html`
 /// for client-side routes. `/healthz` is registered before the merge
@@ -243,11 +243,25 @@ pub enum LocalModeError {
 /// "Missing dashboard/dist/ → gateway starts successfully with
 /// warning (dashboard unavailable, gateway API still works)".
 pub(crate) fn router(config: &LocalModeConfig) -> Router {
+    let dist = if config.dashboard { find_dashboard_dist() } else { None };
+    router_with_resolved_dist(config, dist.as_deref())
+}
+
+/// Test-injectable router builder — keeps `router()` thin and lets
+/// unit tests assemble a router around a tempdir-backed `dashboard/dist/`
+/// (or an explicit `None`) without having to mutate the
+/// `AAASM_DASHBOARD_DIST` env var. Production callers always go
+/// through [`router`] which supplies the resolver's output.
+///
+/// When `config.dashboard` is `false`, `dist` is ignored — the router
+/// returns the healthz-only skeleton regardless of what the caller
+/// resolved.
+pub(crate) fn router_with_resolved_dist(config: &LocalModeConfig, dist: Option<&Path>) -> Router {
     let state = HealthzState::new("local", "sqlite");
     let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
     if config.dashboard {
-        match find_dashboard_dist() {
-            Some(dist) => app = app.merge(dashboard_router(&dist)),
+        match dist {
+            Some(dist) => app = app.merge(dashboard_router(dist)),
             None => tracing::warn!(
                 target: "aa_gateway::local_mode",
                 "dashboard enabled but no dashboard/dist/ resolved \
