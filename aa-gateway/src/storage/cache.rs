@@ -535,5 +535,18 @@ mod tests {
                 Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
             }
         }
+
+        #[tokio::test]
+        async fn connect_with_malformed_url_returns_connection_failed() {
+            let config = RedisConfig {
+                enabled: true,
+                url: Some("not-a-redis-url".into()),
+                ..RedisConfig::default()
+            };
+            match RedisPolicyCache::connect(&config).await {
+                Ok(_) => panic!("malformed URL must surface as ConnectionFailed"),
+                Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
+            }
+        }
     }
 }
