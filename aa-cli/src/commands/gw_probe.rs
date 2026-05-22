@@ -107,4 +107,30 @@ mod tests {
             other => panic!("expected Timeout error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn wait_for_ready_returns_ok_when_listener_appears_mid_wait() {
+        // Reserve an ephemeral port, drop the listener so nothing is
+        // listening when `wait_for_ready` begins polling.
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        // After ~150ms (≥ 2 poll cycles at 50ms), a helper thread
+        // re-binds the same port. The polling loop must detect the
+        // mid-wait state change and return `Ok(())` before the 2s
+        // budget expires. Keep the listener alive on the thread for
+        // the test's lifetime so concurrent probes are still served.
+        let helper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let _held = TcpListener::bind(addr).expect("re-bind ephemeral port");
+            // Keep the listener accepting until the main thread is done.
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        wait_for_ready(addr, Duration::from_secs(2), Duration::from_millis(50))
+            .expect("listener should be detected once it appears mid-wait");
+
+        helper.join().unwrap();
+    }
 }
