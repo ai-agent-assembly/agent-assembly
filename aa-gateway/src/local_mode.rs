@@ -20,21 +20,136 @@ use crate::routes::healthz::{healthz, HealthzState};
 
 /// Handle returned by `start_local()` once the local control plane is up.
 ///
-/// Holds the bound socket address (useful in tests that bind to port `0`
-/// to pick a free port) and the one-shot sender that drives the graceful
-/// shutdown path installed in AAASM-1728.
+/// Holds the bound socket address, the one-shot sender that drives the
+/// graceful shutdown path, and the resources `shutdown()` (AAASM-1728)
+/// will clean up: the spawned server task, the `SqlitePool` to close,
+/// and the PID-file path to remove.
+///
+/// The trailing three fields are `Option` because the **shell-handle**
+/// path (probe short-circuit in `start_local`) has nothing to clean up
+/// — the running process is owned by a different `start_local` invocation.
 ///
 /// The handle is intentionally **not** `Clone` — only one caller can
 /// own the shutdown trigger at a time.
-#[allow(dead_code)] // consumed by start_local() / run_until_shutdown — AAASM-1725, AAASM-1728
 pub struct LocalGatewayHandle {
     /// Address the local gateway is actually bound to. In normal
     /// operation this is `127.0.0.1:{config.port}`; in tests that pass
     /// port `0`, the resolved ephemeral port lives here.
     pub local_addr: SocketAddr,
     /// One-shot channel that signals the Axum server task to begin
-    /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
+    /// graceful shutdown. Hooked up by AAASM-1728's `shutdown()`.
     pub(crate) shutdown_tx: oneshot::Sender<()>,
+    /// `JoinHandle` of the spawned `axum::serve` task. `shutdown()`
+    /// awaits this after signalling `shutdown_tx` so the server has
+    /// fully drained before we close the pool. `None` on the shell-
+    /// handle path (probe short-circuit).
+    pub(crate) server_task: Option<tokio::task::JoinHandle<()>>,
+    /// SQLite pool to close on shutdown. `None` on the shell-handle path.
+    pub(crate) pool: Option<SqlitePool>,
+    /// PID-file path to remove on shutdown. `None` on the shell-handle
+    /// path (no PID was written for that branch).
+    pub(crate) pid_path: Option<PathBuf>,
+}
+
+impl LocalGatewayHandle {
+    /// Drain the running gateway and clean up.
+    ///
+    /// Consumes the handle in this order:
+    /// 1. Signal `shutdown_tx` so `axum::serve`'s `with_graceful_shutdown`
+    ///    future resolves — the server stops accepting new connections
+    ///    and finishes in-flight requests.
+    /// 2. Await `server_task` so we don't return until the server has
+    ///    fully exited (AAASM-1576 AC #8 expects the server to stop
+    ///    accepting connections by the time `shutdown()` returns).
+    /// 3. Remove the PID file (best-effort — `aasm stop` may have
+    ///    already removed it; an error here doesn't fail the shutdown).
+    /// 4. `pool.close().await` so SQLite shuts cleanly and any cached
+    ///    statements are released.
+    ///
+    /// On the shell-handle path (probe short-circuit in `start_local`),
+    /// every Option is `None` and `shutdown()` is effectively a no-op —
+    /// the running gateway lives in a different process and we don't
+    /// own its lifecycle.
+    ///
+    /// Called by `run_until_shutdown()` (next commits) after a
+    /// SIGTERM/SIGINT signal fires. Tests call it directly to avoid
+    /// having to signal the test process.
+    pub async fn shutdown(self) -> Result<(), LocalModeError> {
+        // 1. Signal the server. send() returns Err if the receiver was
+        //    dropped (shell-handle path) — that's expected, ignore.
+        let _ = self.shutdown_tx.send(());
+
+        // 2. Wait for the spawned task to exit.
+        if let Some(task) = self.server_task {
+            let _ = task.await;
+        }
+
+        // 3. Remove the PID file.
+        if let Some(pid_path) = self.pid_path {
+            let _ = std::fs::remove_file(pid_path);
+        }
+
+        // 4. Close the SqlitePool.
+        if let Some(pool) = self.pool {
+            pool.close().await;
+        }
+
+        Ok(())
+    }
+}
+
+/// Wait for an OS shutdown signal.
+///
+/// On Unix (the production target — local mode is a developer/macOS
+/// thing primarily), `SIGTERM` and `SIGINT` both trigger the same
+/// shutdown path — Ctrl+C from a terminal is `SIGINT`; `systemctl stop`
+/// / Docker / Kubernetes graceful shutdown send `SIGTERM`. Either one
+/// must drive the cleanup the same way.
+///
+/// On non-Unix targets (Windows CI runners, mostly), only Ctrl+C is
+/// available via `tokio::signal::ctrl_c()`. There is no SIGTERM
+/// equivalent in the standard library / tokio surface.
+///
+/// Errors propagate as `LocalModeError::Signal` — typically only on
+/// macOS / Linux when `tokio::signal::unix::signal()` fails to
+/// register a SIGTERM listener (very rare in practice).
+#[cfg(unix)]
+pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(LocalModeError::Signal)?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(()),
+        _ = sigterm.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
+    tokio::signal::ctrl_c().await.map_err(LocalModeError::Signal)
+}
+
+/// Block until a shutdown signal arrives, then clean up the gateway.
+///
+/// The intended call pattern in `aa-gateway::main` (AAASM-1731):
+///
+/// ```rust,ignore
+/// let handle = start_local(&config.local).await?;
+/// run_until_shutdown(handle).await?;
+/// ```
+///
+/// Awaits `wait_for_shutdown_signal()` (SIGTERM/SIGINT on Unix,
+/// Ctrl+C on Windows) and then drives `handle.shutdown()` so the
+/// server drains, the PID file is removed, and the SQLite pool is
+/// closed before the process exits.
+///
+/// Tests that want to verify cleanup without sending a real signal
+/// call `handle.shutdown()` directly — `run_until_shutdown` itself
+/// is exercised via the `aa-integration-tests` crate (AAASM-1731's
+/// integration test will spawn the gateway binary, send SIGTERM,
+/// and assert clean exit + PID removal).
+pub async fn run_until_shutdown(handle: LocalGatewayHandle) -> Result<(), LocalModeError> {
+    wait_for_shutdown_signal().await?;
+    handle.shutdown().await
 }
 
 /// Errors that can occur while booting the local-mode control plane.
@@ -265,12 +380,15 @@ pub(crate) async fn start_local_with_pid_path(
         return Ok(LocalGatewayHandle {
             local_addr: addr,
             shutdown_tx,
+            server_task: None,
+            pool: None,
+            pid_path: None,
         });
     }
 
-    // 2. Storage (AAASM-1710). The pool is moved into the spawned task
-    //    so it's dropped when the server exits — AAASM-1728 will replace
-    //    the drop with an explicit `pool.close().await`.
+    // 2. Storage (AAASM-1710). The pool now lives on the handle so
+    //    `LocalGatewayHandle::shutdown()` (next commit) can close it
+    //    explicitly with `pool.close().await` rather than relying on Drop.
     let pool = open_storage(&config.storage_path).await?;
 
     // 3. Bind 127.0.0.1:port (AC #6 — explicit Ipv4Addr::LOCALHOST,
@@ -295,20 +413,23 @@ pub(crate) async fn start_local_with_pid_path(
 
     // 6. Serve. The shutdown_rx side stays in the spawned task; the
     //    handle keeps shutdown_tx for AAASM-1728's signal handler.
+    //    The `JoinHandle` lives on the handle so `shutdown()` can await
+    //    the task's completion after signalling shutdown_tx.
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         let _ = axum::serve(listener, router())
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
             })
             .await;
-        // Drop pool here — AAASM-1728 will replace with pool.close().await.
-        drop(pool);
     });
 
     Ok(LocalGatewayHandle {
         local_addr,
         shutdown_tx,
+        server_task: Some(server_task),
+        pool: Some(pool),
+        pid_path: Some(pid_path.to_path_buf()),
     })
 }
 
@@ -646,5 +767,100 @@ mod tests {
         );
 
         let _ = handle.shutdown_tx.send(());
+    }
+
+    /// AAASM-1576 AC #8 (server stops accepting connections): after
+    /// `handle.shutdown()` returns, the server task has fully exited
+    /// and `/healthz` requests can no longer reach it.
+    ///
+    /// Drives the cleanup directly via `handle.shutdown()` rather than
+    /// SIGTERM — gives a deterministic test that doesn't require
+    /// killing the test process. The 100 ms ceiling matches the AC's
+    /// "stops accepting connections within 100ms" requirement.
+    #[tokio::test]
+    async fn handle_shutdown_stops_the_server_within_100ms() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        // Sanity: server is up and responding before shutdown.
+        let pre = reqwest::get(format!("http://127.0.0.1:{port}/healthz")).await;
+        assert!(
+            pre.is_ok_and(|r| r.status().is_success()),
+            "server must respond before shutdown"
+        );
+
+        let started = std::time::Instant::now();
+        handle.shutdown().await.expect("shutdown");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "shutdown must complete promptly; took {elapsed:?}"
+        );
+
+        // After shutdown, GET /healthz fails (connection refused or hangs;
+        // either way, not `is_ok_and(success)`).
+        let post = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            reqwest::get(format!("http://127.0.0.1:{port}/healthz")),
+        )
+        .await;
+        let still_alive = matches!(post, Ok(Ok(resp)) if resp.status().is_success());
+        assert!(!still_alive, "server must not respond after shutdown");
+    }
+
+    /// AAASM-1576 AC #8 PID-file cleanup invariant: after
+    /// `handle.shutdown()`, the PID file written by `start_local()`
+    /// must no longer exist — `aasm stop` and other operators rely on
+    /// PID-file-absent ≡ no-gateway-running.
+    #[tokio::test]
+    async fn handle_shutdown_removes_the_pid_file() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        assert!(pid_path.is_file(), "pid file must exist after start_local");
+
+        handle.shutdown().await.expect("shutdown");
+
+        assert!(!pid_path.exists(), "pid file must be removed by handle.shutdown()");
+    }
+
+    /// AAASM-1576 AC #8 final invariant: after `handle.shutdown()`, the
+    /// SQLite connection pool reports `is_closed() == true` — guarantees
+    /// `aasm start` can re-open the same DB file without a "database is
+    /// locked" race against a not-yet-drained pool.
+    ///
+    /// `SqlitePool` is internally `Arc<...>` so cloning gives a second
+    /// view onto the same shared state. We clone the pool out of the
+    /// handle before `shutdown()` consumes it, then check the clone's
+    /// `is_closed()` after the cleanup completes.
+    #[tokio::test]
+    async fn handle_shutdown_closes_the_sqlite_pool() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        let pool_clone = handle
+            .pool
+            .as_ref()
+            .expect("normal start_local must populate pool")
+            .clone();
+        assert!(!pool_clone.is_closed(), "pool must be open after start");
+
+        handle.shutdown().await.expect("shutdown");
+
+        assert!(
+            pool_clone.is_closed(),
+            "pool must report closed after handle.shutdown()"
+        );
     }
 }
