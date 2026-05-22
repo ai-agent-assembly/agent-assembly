@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::{routing::get, Extension, Router};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use tokio::sync::oneshot;
 
 use crate::routes::healthz::{healthz, HealthzState};
@@ -113,6 +114,32 @@ pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
         path: path.to_path_buf(),
         source: sqlx::Error::Io(source),
     })
+}
+
+/// Open a SQLite connection pool backing the local control plane.
+///
+/// Calls [`ensure_storage_parent`] so `~/.aasm/` is created on first
+/// start, then opens `SqlitePool` with `create_if_missing(true)` so
+/// the SQLite file itself is materialised on the same call — the
+/// behaviour AAASM-1576 AC #3 requires (`SQLite file created at
+/// ~/.aasm/local.db on first start`).
+///
+/// Migrations are deliberately out of scope here — the durable
+/// storage layer (`E18 S-B`, AAASM-1574) owns the migration runner.
+/// Until that lands, the pool returned here is empty/schema-less; it
+/// satisfies the `/healthz` `"storage": "sqlite"` contract and lets
+/// the later sub-tasks (AAASM-1725, AAASM-1728) treat it as a real
+/// resource that must be opened and closed cleanly.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeError> {
+    ensure_storage_parent(path)?;
+    let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+    SqlitePool::connect_with(opts)
+        .await
+        .map_err(|source| LocalModeError::Storage {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]
