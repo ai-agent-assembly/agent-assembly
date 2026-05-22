@@ -1,6 +1,12 @@
 #!/bin/sh
 # One-line installer for the aasm CLI.
-# Usage: curl -sSf https://install.ai-agent-assembly.dev | sh
+# Usage: curl -fsSL https://get.agent-assembly.io | sh
+#
+# Detects the host OS and CPU architecture, downloads the matching
+# pre-built tarball plus its SHA256SUMS file from the AI-agent-assembly
+# GitHub Release, verifies the tarball's SHA-256 against SHA256SUMS, and
+# extracts the binary into ${AASM_INSTALL_DIR}. The install aborts if
+# the checksum cannot be downloaded or does not match.
 #
 # Environment overrides:
 #   AASM_INSTALL_DIR   Installation directory (default: ~/.local/bin)
