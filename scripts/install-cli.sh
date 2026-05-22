@@ -55,6 +55,23 @@ sha256_compute() {
   fi
 }
 
+sha256_verify() {
+  # Verify <tarball> against an entry in <sums_file>.
+  # SHA256SUMS lines are "<hash>  <filename>"; lookup is by basename.
+  local tarball="$1" sums_file="$2"
+  local fname expected actual
+  fname=$(basename "$tarball")
+  expected=$(awk -v t="$fname" '$2==t || $2=="*"t {print $1; exit}' "$sums_file")
+  [ -n "$expected" ] || err "no SHA256 entry for ${fname} in SHA256SUMS"
+  actual=$(sha256_compute "$tarball")
+  if [ "$expected" != "$actual" ]; then
+    err "SHA256 mismatch for ${fname}
+  expected: ${expected}
+    actual: ${actual}"
+  fi
+  say "SHA256 verified."
+}
+
 # ── fetch latest release tag ──────────────────────────────────────────────────
 
 latest_release() {
