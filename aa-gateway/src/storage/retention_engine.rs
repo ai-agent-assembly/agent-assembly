@@ -177,6 +177,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_once_propagates_dry_run_flag_to_policy() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let config = RetentionConfig {
+            dry_run: true,
+            ..RetentionConfig::default()
+        };
+        let engine = RetentionEngine::new(backend.clone(), config);
+
+        engine.run_once().await.expect("run_once should succeed");
+
+        let captured = backend.captured_policy().unwrap();
+        assert!(
+            captured.dry_run,
+            "dry_run must round-trip from RetentionConfig through to_policy and into the backend"
+        );
+    }
+
+    #[tokio::test]
     async fn run_once_returns_stats_from_backend_unchanged() {
         let canned = canned_stats();
         let backend = Arc::new(FakeBackend::new(canned.clone()));
