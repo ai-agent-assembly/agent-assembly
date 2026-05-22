@@ -12,6 +12,8 @@
 //! - `server` — listener bootstrap (AAASM-1709 / ST-3, lands in subsequent commits)
 
 pub mod error;
+pub mod server;
 pub mod tls;
 
 pub use error::GatewayError;
+pub use server::router;
