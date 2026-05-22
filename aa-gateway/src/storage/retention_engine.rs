@@ -8,10 +8,11 @@
 use std::sync::Arc;
 
 use super::backend::StorageBackend;
+use super::error::StorageResult;
+use super::retention::RetentionStats;
 use super::retention_config::RetentionConfig;
 
 /// Owns the periodic retention task lifecycle.
-#[allow(dead_code)] // fields read by run_once landing in the next commit
 pub struct RetentionEngine {
     backend: Arc<dyn StorageBackend>,
     config: RetentionConfig,
@@ -23,5 +24,22 @@ impl RetentionEngine {
     /// using the policy derived from `config`.
     pub fn new(backend: Arc<dyn StorageBackend>, config: RetentionConfig) -> Self {
         Self { backend, config }
+    }
+
+    /// Run one retention pass: build the [`RetentionPolicy`](super::RetentionPolicy)
+    /// from `self.config`, hand it to the backend, and return the
+    /// resulting [`RetentionStats`].
+    ///
+    /// The cron-driven background loop (next commit) invokes this once per
+    /// scheduled tick; operators can also invoke it manually via
+    /// `aasm admin run-retention`.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces any [`StorageError`](super::StorageError) returned by
+    /// [`apply_retention`](StorageBackend::apply_retention).
+    pub async fn run_once(&self) -> StorageResult<RetentionStats> {
+        let policy = self.config.to_policy();
+        self.backend.apply_retention(&policy).await
     }
 }
