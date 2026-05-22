@@ -518,4 +518,22 @@ mod tests {
             );
         }
     }
+
+    #[cfg(feature = "redis-cache")]
+    mod redis_backend {
+        use super::*;
+
+        #[tokio::test]
+        async fn connect_with_none_url_returns_connection_failed() {
+            let config = RedisConfig {
+                enabled: true,
+                url: None,
+                ..RedisConfig::default()
+            };
+            match RedisPolicyCache::connect(&config).await {
+                Ok(_) => panic!("None URL must surface as ConnectionFailed"),
+                Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
+            }
+        }
+    }
 }
