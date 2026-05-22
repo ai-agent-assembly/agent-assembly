@@ -1589,4 +1589,29 @@ mod tests {
             other => panic!("expected RetentionError, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn healthcheck_returns_ok_with_row_counts() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Seed one event so audit_events count is guaranteed > 0.
+        let agent_id = fresh_agent_id();
+        backend
+            .append_audit_event(&sample_event(agent_id, now_micros()))
+            .await
+            .expect("append");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+
+        assert_eq!(health.status, HealthStatus::Ok);
+        assert_eq!(health.backend, "postgres");
+        assert!(
+            health.row_counts.audit_events >= 1,
+            "audit_events count must include our fresh insert, got {}",
+            health.row_counts.audit_events,
+        );
+    }
 }
