@@ -394,6 +394,16 @@ mod tests {
 
     #[cfg(all(feature = "alloc", feature = "serde"))]
     #[test]
+    fn policy_document_enforcement_mode_parses_observe_from_yaml() {
+        // An operator-authored sandbox policy: `enforcement_mode: observe`
+        // at the document root must surface as EnforcementMode::Observe.
+        let yaml = "version: 1\nname: sandbox-policy\nenforcement_mode: observe\nrules: []\n";
+        let doc: PolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.enforcement_mode, EnforcementMode::Observe);
+    }
+
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    #[test]
     fn policy_document_enforcement_mode_defaults_to_enforce_when_absent() {
         // Backward compatibility: pre-feature YAML / JSON policy documents
         // never had this field, so deserialising one must produce Enforce.
