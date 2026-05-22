@@ -2158,6 +2158,20 @@ mod tests {
     }
 
     #[test]
+    fn enforce_mode_leaves_deny_unchanged_and_emits_no_shadow_event() {
+        // Backward-compat guard: pre-feature behaviour for every existing
+        // caller must be 100% preserved when enforcement_mode = Enforce.
+        let original = deny_result("tool denied by policy");
+        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Enforce);
+        match out.decision {
+            PolicyResult::Deny { reason } => assert_eq!(reason, "tool denied by policy"),
+            other => panic!("Enforce mode must preserve Deny; got {other:?}"),
+        }
+        assert_eq!(out.deny_action, Some(DenyAction::Block));
+        assert!(shadow.is_none(), "Enforce mode produces no shadow events");
+    }
+
+    #[test]
     fn observe_mode_converts_requires_approval_to_allow_with_pending_shadow() {
         // A RequiresApproval decision in Observe mode must NOT halt execution
         // — the agent proceeds, and shadow_decision = "pending" is recorded.
