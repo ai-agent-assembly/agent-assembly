@@ -2,14 +2,108 @@
 //!
 //! This module ships in stages across Epic-18 Story S-G:
 //!
-//! - First commit (this one): the [`RedisConfig`] value type that drives the
-//!   feature flag.
-//! - Subsequent sub-tasks: cache key derivation, the `PolicyCacheLike` trait,
-//!   the `Disabled` baseline, and the Redis-backed implementation.
+//! - First commit: the [`RedisConfig`] value type and the OFF default posture.
+//! - Second commit: content-addressed cache key derivation.
+//! - This commit: the [`PolicyCacheLike`] trait + [`PolicyCache`] enum,
+//!   shipped with the `Disabled` no-op variant only.
+//! - Final commit: the Redis-backed variant of [`PolicyCache`].
 //!
 //! The cache is **off by default** — the gateway should always be runnable
 //! without a Redis process. Production deployments opt in by setting
 //! `storage.redis.enabled = true` and providing a reachable URL.
+
+use async_trait::async_trait;
+
+use super::policy::PolicyDocument;
+
+/// Behaviour every policy cache implementation must provide.
+///
+/// The trait is defined for two reasons:
+///
+/// 1. Production callers depend on the trait, not the [`PolicyCache`] enum,
+///    so unit tests can substitute a stub backed by a `HashMap` (used
+///    extensively in Epic-18 S-G sub-task 4).
+/// 2. The `Disabled` and `Redis` variants share the same surface — keeping
+///    the implementation symmetric makes adding more variants cheap.
+#[async_trait]
+pub trait PolicyCacheLike: Send + Sync {
+    /// Return the currently cached policy for `name`, if any.
+    async fn get(&self, name: &str) -> Option<PolicyDocument>;
+
+    /// Replace the cached entry for `doc.name`. Best-effort — callers must
+    /// fall through to the authoritative store on cache miss either way.
+    async fn set(&self, doc: &PolicyDocument);
+
+    /// Drop every cached version of `name`. Used immediately after a policy
+    /// update so subsequent `get` calls cannot serve a stale entry.
+    async fn invalidate(&self, name: &str);
+
+    /// Whether the cache is actively backed by a remote store, as opposed to
+    /// the no-op `Disabled` posture.
+    fn is_enabled(&self) -> bool;
+}
+
+/// Concrete policy-cache value held by the gateway runtime.
+///
+/// The default constructor returns the `Disabled` variant; the `Redis`
+/// variant is only available when the `redis-cache` Cargo feature is on and
+/// will be added in Epic-18 S-G sub-task 4.
+#[non_exhaustive]
+pub enum PolicyCache {
+    /// No-op cache — `get` always returns `None`, `set` and `invalidate`
+    /// are no-ops, `is_enabled` returns `false`.
+    Disabled,
+}
+
+#[async_trait]
+impl PolicyCacheLike for PolicyCache {
+    async fn get(&self, _name: &str) -> Option<PolicyDocument> {
+        match self {
+            Self::Disabled => None,
+        }
+    }
+
+    async fn set(&self, _doc: &PolicyDocument) {
+        match self {
+            Self::Disabled => {}
+        }
+    }
+
+    async fn invalidate(&self, _name: &str) {
+        match self {
+            Self::Disabled => {}
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        match self {
+            Self::Disabled => false,
+        }
+    }
+}
+
+impl Default for PolicyCache {
+    /// Disabled — the safe posture when no Redis is configured.
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl PolicyCache {
+    /// Build a cache handle from `config`. When `config.enabled` is `false`
+    /// (the default), this returns [`PolicyCache::Disabled`] without
+    /// touching Redis. The `enabled = true` branch lands in Epic-18 S-G
+    /// sub-task 4.
+    pub fn from_config(config: &RedisConfig) -> Self {
+        if !config.enabled {
+            return Self::Disabled;
+        }
+        // TODO(AAASM-1716, S-G sub-task 4): attempt the Redis connection.
+        // Until then, treat enabled-but-unimplemented as Disabled so the
+        // gateway never tries to talk to a non-existent backend.
+        Self::Disabled
+    }
+}
 
 /// Operator-facing knobs for the optional Redis policy cache.
 ///
@@ -144,6 +238,42 @@ mod tests {
         fn invalidation_pattern_matches_every_version() {
             assert_eq!(policy_invalidation_pattern("default"), "policy:default:*");
             assert_eq!(policy_invalidation_pattern("legacy"), "policy:legacy:*");
+        }
+    }
+
+    mod disabled {
+        use super::*;
+
+        #[test]
+        fn default_is_disabled() {
+            let cache = PolicyCache::default();
+            assert!(matches!(cache, PolicyCache::Disabled));
+            assert!(!cache.is_enabled());
+        }
+
+        #[tokio::test]
+        async fn get_always_returns_none() {
+            let cache = PolicyCache::Disabled;
+            assert!(cache.get("default").await.is_none());
+            assert!(cache.get("any-other-name").await.is_none());
+        }
+
+        #[tokio::test]
+        async fn set_and_invalidate_do_not_panic() {
+            let cache = PolicyCache::Disabled;
+            let doc = PolicyDocument {
+                name: "default".into(),
+                bytes: b"any-body".to_vec(),
+            };
+            cache.set(&doc).await;
+            cache.invalidate("default").await;
+        }
+
+        #[test]
+        fn from_config_default_redis_is_disabled() {
+            let cache = PolicyCache::from_config(&RedisConfig::default());
+            assert!(matches!(cache, PolicyCache::Disabled));
+            assert!(!cache.is_enabled());
         }
     }
 }

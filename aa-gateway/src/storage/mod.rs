@@ -39,7 +39,7 @@ pub mod sqlite;
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
 pub use backend::StorageBackend;
-pub use cache::RedisConfig;
+pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
 pub use error::{StorageError, StorageResult};
 pub use health::{HealthStatus, RowCounts, StorageHealth};
 pub use metric::{Metric, MetricPoint, MetricQuery};
