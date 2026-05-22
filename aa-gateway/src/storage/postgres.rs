@@ -393,6 +393,25 @@ impl PostgresBackend {
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         rows.iter().map(row_to_agent_record).collect()
     }
+
+    /// Remove the agent record for `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NotFound`] when no row matches; the error
+    /// payload carries the offending agent id (TEXT form) so callers can
+    /// log it without re-encoding.
+    pub async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
+        let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = $1")
+            .bind(agent_id_to_text(id))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::NotFound(agent_id_to_text(id)));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
