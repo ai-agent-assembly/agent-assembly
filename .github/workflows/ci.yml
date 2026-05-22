@@ -135,7 +135,7 @@ jobs:
       # (any non-CI environment); CI exports it on the Run tests step so
       # the suite actually exercises the PostgresBackend.
       postgres:
-        image: postgres:15-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: aasm
           POSTGRES_PASSWORD: aasm
@@ -204,7 +204,7 @@ jobs:
       AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
     services:
       postgres:
-        image: postgres:15-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: aasm
           POSTGRES_PASSWORD: aasm
