@@ -20,16 +20,18 @@ use tower_http::services::{ServeDir, ServeFile};
 /// File requests resolve against `dist_path` directly; anything
 /// `ServeDir` cannot find falls through to `dist_path/index.html` so
 /// client-side React Router paths like `/agents/abc` reach the SPA
-/// instead of returning 404. Mounted via `nest_service("/")` so the
-/// router can be `.merge()`d into a parent that already owns concrete
-/// API routes (e.g. `/healthz`) without the SPA fallback eating them.
+/// instead of returning 404. The `ServeDir` is registered as the
+/// router's `fallback_service` so it only handles requests that did
+/// not match a concrete route — a parent router can therefore
+/// `.merge()` this in alongside `/healthz` and future `/api/v1/*`
+/// routes without the SPA catch-all eating them.
 ///
 /// Consumer: `local_mode::router()` mounts this in the next sub-task
 /// (AAASM-1844) when `LocalModeConfig.dashboard == true`.
 pub fn dashboard_router(dist_path: &Path) -> Router {
     let index_html = dist_path.join("index.html");
     let serve_dir = ServeDir::new(dist_path).not_found_service(ServeFile::new(index_html));
-    Router::new().nest_service("/", serve_dir)
+    Router::new().fallback_service(serve_dir)
 }
 
 /// Resolve the `dashboard/dist/` directory the gateway should serve.
