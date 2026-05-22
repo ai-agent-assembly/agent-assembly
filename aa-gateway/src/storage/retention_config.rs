@@ -1,5 +1,9 @@
 //! Runtime configuration for the retention background task.
 
+use std::str::FromStr;
+
+use cron::Schedule;
+
 use super::retention::{ColdAction, RetentionPolicy};
 
 /// Reasons a [`RetentionConfig`] can be invalid at startup time.
@@ -8,6 +12,14 @@ pub enum RetentionConfigError {
     /// `cold_action == Archive` was set but no `archive_url` was provided.
     #[error("cold_action=archive requires archive_url to be set")]
     MissingArchiveUrl,
+    /// `schedule` is not a valid cron expression.
+    #[error("invalid cron schedule {schedule:?}: {reason}")]
+    InvalidSchedule {
+        /// The offending schedule string verbatim from config.
+        schedule: String,
+        /// Underlying cron-parse error rendered as a string.
+        reason: String,
+    },
 }
 
 /// Operator-configurable retention engine settings parsed from the
@@ -43,7 +55,26 @@ impl RetentionConfig {
         if self.cold_action == ColdAction::Archive && self.archive_url.is_none() {
             return Err(RetentionConfigError::MissingArchiveUrl);
         }
+        self.parsed_schedule()?;
         Ok(())
+    }
+
+    /// Parse `self.schedule` into a [`cron::Schedule`].
+    ///
+    /// The retention engine's background loop uses the returned schedule to
+    /// compute the next run instant on each tick. Surfaced as a method so
+    /// callers (`RetentionEngine::start`, `RetentionConfig::validate`) share
+    /// one parse path and one error variant.
+    ///
+    /// # Errors
+    ///
+    /// - [`RetentionConfigError::InvalidSchedule`] when the schedule string
+    ///   is not a valid cron expression.
+    pub fn parsed_schedule(&self) -> Result<Schedule, RetentionConfigError> {
+        Schedule::from_str(&self.schedule).map_err(|e| RetentionConfigError::InvalidSchedule {
+            schedule: self.schedule.clone(),
+            reason: e.to_string(),
+        })
     }
 
     /// Build the [`RetentionPolicy`] descriptor the backend's
@@ -61,10 +92,10 @@ impl RetentionConfig {
 
 impl Default for RetentionConfig {
     /// Compliance-friendly defaults: hot=30d, warm=90d, cold=Drop,
-    /// schedule="0 3 * * *" (3am UTC daily), dry_run=false.
+    /// schedule="0 0 3 * * *" (3am UTC daily, 6-field cron), dry_run=false.
     fn default() -> Self {
         Self {
-            schedule: "0 3 * * *".to_string(),
+            schedule: "0 0 3 * * *".to_string(),
             hot_days: 30,
             warm_days: 90,
             cold_action: ColdAction::Drop,
@@ -81,7 +112,7 @@ mod tests {
     #[test]
     fn default_uses_compliance_friendly_30_90_drop_3am() {
         let cfg = RetentionConfig::default();
-        assert_eq!(cfg.schedule, "0 3 * * *");
+        assert_eq!(cfg.schedule, "0 0 3 * * *");
         assert_eq!(cfg.hot_days, 30);
         assert_eq!(cfg.warm_days, 90);
         assert_eq!(cfg.cold_action, ColdAction::Drop);
@@ -112,6 +143,28 @@ mod tests {
             ..RetentionConfig::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_cron_schedule() {
+        let cfg = RetentionConfig {
+            schedule: "not a cron".to_string(),
+            ..RetentionConfig::default()
+        };
+        match cfg.validate() {
+            Err(RetentionConfigError::InvalidSchedule { schedule, reason }) => {
+                assert_eq!(schedule, "not a cron");
+                assert!(!reason.is_empty(), "underlying reason must be reported");
+            }
+            other => panic!("expected InvalidSchedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parsed_schedule_returns_schedule_for_default_config() {
+        let _schedule = RetentionConfig::default()
+            .parsed_schedule()
+            .expect("default schedule must parse");
     }
 
     #[test]
