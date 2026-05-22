@@ -1005,4 +1005,25 @@ mod tests {
         assert_eq!(v2.meta.version, 2);
         assert_eq!(v3.meta.version, 3);
     }
+
+    #[tokio::test]
+    async fn save_policy_does_not_activate_by_default() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let saved = backend.save_policy(json_policy(&name, 1)).await.expect("save");
+
+        assert!(
+            !saved.meta.is_active,
+            "freshly saved policy must land with is_active = false"
+        );
+        let active = backend.get_active_policy(&name).await.expect("get_active");
+        assert!(
+            active.is_none(),
+            "no version should be active until rollback_policy is called"
+        );
+    }
 }
