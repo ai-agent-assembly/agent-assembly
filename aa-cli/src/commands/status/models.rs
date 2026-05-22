@@ -280,6 +280,12 @@ mod tests {
     }
 
     #[test]
+    fn redact_database_url_leaves_no_password_url_unchanged() {
+        let input = "postgresql://aasm@aasm-db:5432/aasm";
+        assert_eq!(redact_database_url(input), input);
+    }
+
+    #[test]
     fn healthz_response_deserializes_with_storage_path_and_database_url() {
         let json = r#"{
             "mode": "remote",
