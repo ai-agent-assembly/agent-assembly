@@ -289,6 +289,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rust_decimal",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
