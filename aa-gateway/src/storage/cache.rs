@@ -504,5 +504,18 @@ mod tests {
             cache.invalidate("default").await;
             assert!(cache.get("default").await.is_none());
         }
+
+        #[tokio::test(start_paused = true)]
+        async fn entry_expires_after_ttl() {
+            use tokio::time::Duration;
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            assert!(cache.get("default").await.is_some());
+            tokio::time::advance(Duration::from_secs(31)).await;
+            assert!(
+                cache.get("default").await.is_none(),
+                "entry must expire once ttl_secs elapses"
+            );
+        }
     }
 }
