@@ -40,6 +40,17 @@ impl RetentionEngine {
     /// [`apply_retention`](StorageBackend::apply_retention).
     pub async fn run_once(&self) -> StorageResult<RetentionStats> {
         let policy = self.config.to_policy();
-        self.backend.apply_retention(&policy).await
+        let stats = self.backend.apply_retention(&policy).await?;
+        tracing::info!(
+            dry_run = policy.dry_run,
+            hot_rows = stats.hot_rows,
+            compressed_rows = stats.compressed_rows,
+            archived_rows = stats.archived_rows,
+            dropped_rows = stats.dropped_rows,
+            freed_bytes = stats.freed_bytes,
+            ran_at = %stats.ran_at,
+            "retention run complete",
+        );
+        Ok(stats)
     }
 }
