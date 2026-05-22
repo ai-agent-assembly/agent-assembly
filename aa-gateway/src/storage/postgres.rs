@@ -407,4 +407,32 @@ mod tests {
         assert_eq!(recent[0].ts, t2);
         assert_eq!(recent[1].ts, t1);
     }
+
+    #[tokio::test]
+    async fn count_matches_query_length() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let base = now_micros();
+        for offset in 0..5 {
+            backend
+                .append_audit_event(&sample_event(agent_id, base - chrono::Duration::seconds(offset)))
+                .await
+                .expect("append");
+        }
+
+        let filter = AuditFilter {
+            agent_id: Some(agent_id),
+            ..AuditFilter::default()
+        };
+        let rows = backend.query_audit_events(filter.clone()).await.expect("query");
+        let count = backend.count_audit_events(filter).await.expect("count");
+
+        assert_eq!(rows.len(), 5);
+        assert_eq!(count, 5);
+        assert_eq!(count as usize, rows.len(), "count must equal query length");
+    }
 }
