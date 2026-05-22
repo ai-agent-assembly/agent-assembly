@@ -65,7 +65,7 @@ main() {
     VERSION="$(latest_release)"
   fi
 
-  TARBALL="${BINARY}-${VERSION}-${ARCH}-${OS}.tar.gz"
+  TARBALL="${BINARY}-${ARCH}-${OS}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
 
   say "Installing ${BINARY} ${VERSION} (${ARCH}-${OS}) ..."
