@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use chrono::Utc;
+use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -25,6 +26,11 @@ pub struct RetentionEngine {
     /// without restarting the gateway, while concurrent `run_once` calls
     /// see a stable snapshot for the duration of one pass.
     config: Arc<ArcSwap<RetentionConfig>>,
+    /// Stats from the most recent successful [`run_once`]. `None` until
+    /// the engine has completed at least one pass. Surfaced by
+    /// [`last_run_stats`](Self::last_run_stats) for the admin GET handler
+    /// "Last retention run" panel.
+    last_run_stats: Arc<RwLock<Option<RetentionStats>>>,
 }
 
 impl RetentionEngine {
@@ -35,6 +41,7 @@ impl RetentionEngine {
         Self {
             backend,
             config: Arc::new(ArcSwap::from_pointee(config)),
+            last_run_stats: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -103,7 +110,17 @@ impl RetentionEngine {
             ran_at = %stats.ran_at,
             "retention run complete",
         );
+        *self.last_run_stats.write() = Some(stats.clone());
         Ok(stats)
+    }
+
+    /// Stats from the most recent successful [`run_once`], or `None` if
+    /// the engine has not completed a run yet.
+    ///
+    /// Powers the "Last retention run" panel on the dashboard admin UI
+    /// (AAASM-1592 S-K).
+    pub fn last_run_stats(&self) -> Option<RetentionStats> {
+        self.last_run_stats.read().clone()
     }
 
     /// Spawn the background retention task. Returns a [`JoinHandle`] for
