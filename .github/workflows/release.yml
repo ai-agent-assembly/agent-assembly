@@ -173,3 +173,18 @@ jobs:
         with:
           path: artifacts/
           merge-multiple: true
+
+      - name: Extract per-platform sha256
+        id: shas
+        shell: bash
+        run: |
+          cd artifacts
+          if [ ! -f SHA256SUMS ]; then
+            sha256sum aasm-*.tar.gz > SHA256SUMS
+          fi
+          {
+            echo "darwin_arm=$(awk '$2=="aasm-aarch64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
+            echo "darwin_intel=$(awk '$2=="aasm-x86_64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
+            echo "linux_arm=$(awk '$2=="aasm-aarch64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
+            echo "linux_intel=$(awk '$2=="aasm-x86_64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
+          } >> "$GITHUB_OUTPUT"
