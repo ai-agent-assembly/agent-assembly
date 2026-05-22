@@ -4,6 +4,8 @@
 //! design rationale; the deeper architectural context lives in
 //! AAASM-1577 / E17 S-C.
 
+use std::time::Duration;
+
 use aa_core::config::RemoteModeConfig;
 use axum::{routing::get, Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
@@ -44,6 +46,62 @@ fn log_startup_banner(cfg: &RemoteModeConfig) {
         "Agent Assembly [remote mode] starting on {scheme}://{}",
         cfg.listen_addr
     );
+}
+
+/// How long graceful shutdown waits for in-flight requests to drain
+/// before forcefully closing the listener. Matches the 30-second
+/// budget the Story AC documents.
+const GRACEFUL_SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// Bind the remote-mode listener and serve until SIGTERM / SIGINT.
+///
+/// Top-level entrypoint for `aasm-gateway --mode remote`. Creates an
+/// internal [`Handle`], spawns a signal listener that drives graceful
+/// shutdown on SIGTERM (Unix) or Ctrl+C, then defers to
+/// [`start_remote_with_handle`] for the actual bind + serve loop.
+///
+/// Returns `Ok(())` after the server has drained, or `Err(GatewayError)`
+/// for any pre-flight / bind / serve / signal-installation failure.
+pub async fn start_remote(cfg: &RemoteModeConfig) -> Result<(), GatewayError> {
+    let handle = Handle::new();
+    let signal_handle = handle.clone();
+
+    tokio::spawn(async move {
+        if let Err(err) = wait_for_shutdown_signal().await {
+            tracing::error!(error = %err, "shutdown signal listener failed");
+            signal_handle.shutdown();
+            return;
+        }
+        tracing::info!(
+            secs = GRACEFUL_SHUTDOWN_BUDGET.as_secs(),
+            "shutdown signal received — draining in-flight requests"
+        );
+        signal_handle.graceful_shutdown(Some(GRACEFUL_SHUTDOWN_BUDGET));
+    });
+
+    start_remote_with_handle(cfg, handle).await
+}
+
+/// Wait for SIGTERM (Unix) or SIGINT (Ctrl+C, all platforms), whichever
+/// arrives first. Returns `Err(GatewayError::Signal)` only when the
+/// underlying signal handler could not be installed.
+async fn wait_for_shutdown_signal() -> Result<(), GatewayError> {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(GatewayError::Signal)?;
+        tokio::select! {
+            res = ctrl_c => res.map_err(GatewayError::Signal),
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.map_err(GatewayError::Signal)
+    }
 }
 
 /// Bind the remote-mode listener and serve until `handle` triggers
