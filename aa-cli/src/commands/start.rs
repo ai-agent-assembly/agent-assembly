@@ -183,7 +183,6 @@ impl GatewaySpawner for ProcessSpawner {
 /// `ExitCode::FAILURE` if the readiness probe times out or the
 /// spawn itself fails.
 pub fn run(args: StartArgs) -> ExitCode {
-    let addr = resolve_listen_addr(args.mode, args.port);
     let pid_file = match super::pidfile::pid_file_path() {
         Ok(p) => p,
         Err(e) => {
@@ -191,46 +190,50 @@ pub fn run(args: StartArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    run_with_spawner(args, &ProcessSpawner, &pid_file)
+}
 
-    if let Some(pid) = check_already_running(&pid_file, addr, Duration::from_millis(200)) {
+/// Same as [`run`] but with an injectable `Spawner` and PID-file path
+/// so unit tests can drive the full flow without spawning a real
+/// `aa-gateway` child.
+pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_file: &Path) -> ExitCode {
+    let addr = resolve_listen_addr(args.mode, args.port);
+
+    if let Some(pid) = check_already_running(pid_file, addr, Duration::from_millis(200)) {
         println!("{}", format_already_running_message(args.mode, args.port, pid));
         return ExitCode::SUCCESS;
     }
 
-    let mut cmd = Command::new("aa-gateway");
-    cmd.arg("--listen").arg(addr.to_string());
-
     if args.foreground {
-        match cmd.status() {
+        return match spawner.exec_foreground(addr) {
             Ok(status) if status.success() => ExitCode::SUCCESS,
             Ok(_) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("aasm start: failed to exec aa-gateway: {e}");
                 ExitCode::FAILURE
             }
-        }
-    } else {
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("aasm start: failed to spawn aa-gateway: {e}");
-                return ExitCode::FAILURE;
-            }
         };
-        let pid = child.id();
-        if let Err(e) = super::pidfile::write_pid(&pid_file, pid) {
-            eprintln!("aasm start: failed to write pid file: {e}");
+    }
+
+    let pid = match spawner.spawn_background(addr) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("aasm start: failed to spawn aa-gateway: {e}");
             return ExitCode::FAILURE;
         }
-        match super::gw_probe::wait_for_ready(addr, Duration::from_secs(5), Duration::from_millis(100)) {
-            Ok(()) => {
-                println!("{}", format_started_banner(args.mode, args.port, pid));
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("aasm start: {e}");
-                ExitCode::FAILURE
-            }
+    };
+    if let Err(e) = super::pidfile::write_pid(pid_file, pid) {
+        eprintln!("aasm start: failed to write pid file: {e}");
+        return ExitCode::FAILURE;
+    }
+    match super::gw_probe::wait_for_ready(addr, Duration::from_secs(5), Duration::from_millis(100)) {
+        Ok(()) => {
+            println!("{}", format_started_banner(args.mode, args.port, pid));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("aasm start: {e}");
+            ExitCode::FAILURE
         }
     }
 }
