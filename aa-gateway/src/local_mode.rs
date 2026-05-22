@@ -98,6 +98,38 @@ impl LocalGatewayHandle {
     }
 }
 
+/// Wait for an OS shutdown signal.
+///
+/// On Unix (the production target — local mode is a developer/macOS
+/// thing primarily), `SIGTERM` and `SIGINT` both trigger the same
+/// shutdown path — Ctrl+C from a terminal is `SIGINT`; `systemctl stop`
+/// / Docker / Kubernetes graceful shutdown send `SIGTERM`. Either one
+/// must drive the cleanup the same way.
+///
+/// On non-Unix targets (Windows CI runners, mostly), only Ctrl+C is
+/// available via `tokio::signal::ctrl_c()`. There is no SIGTERM
+/// equivalent in the standard library / tokio surface.
+///
+/// Errors propagate as `LocalModeError::Signal` — typically only on
+/// macOS / Linux when `tokio::signal::unix::signal()` fails to
+/// register a SIGTERM listener (very rare in practice).
+#[cfg(unix)]
+#[allow(dead_code)] // consumed by run_until_shutdown() — next commit
+pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(LocalModeError::Signal)?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(()),
+        _ = sigterm.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)] // consumed by run_until_shutdown() — next commit
+pub(crate) async fn wait_for_shutdown_signal() -> Result<(), LocalModeError> {
+    tokio::signal::ctrl_c().await.map_err(LocalModeError::Signal)
+}
+
 /// Errors that can occur while booting the local-mode control plane.
 ///
 /// Each variant maps to a discrete failure mode an operator running
