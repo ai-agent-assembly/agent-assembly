@@ -27,8 +27,8 @@ need() {
 
 detect_os() {
   case "$(uname -s)" in
-    Darwin) echo "macos" ;;
-    Linux)  echo "linux" ;;
+    Darwin) echo "apple-darwin" ;;
+    Linux)  echo "unknown-linux-gnu" ;;
     *)      err "unsupported OS: $(uname -s)" ;;
   esac
 }
