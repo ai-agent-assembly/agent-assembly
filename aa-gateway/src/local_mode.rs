@@ -226,14 +226,19 @@ pub enum LocalModeError {
 
 /// Build the local-mode Axum router skeleton.
 ///
-/// Mounts only `/healthz` for now via [`crate::routes::healthz::healthz`];
-/// later sub-tasks (dashboard SPA in AAASM-1580, API routes wired by
-/// AAASM-1731) merge into this same router.
+/// Mounts `/healthz` (always) via [`crate::routes::healthz::healthz`];
+/// the dashboard SPA mount (AAASM-1580 / E17 S-F) layers onto this in
+/// the next commit, gated on `config.dashboard`. Future API routes
+/// wired by AAASM-1731 merge into the same router.
 ///
 /// The `Extension(HealthzState::new("local", "sqlite"))` layer supplies
 /// the labels the shared `/healthz` handler reads, so the response body
 /// carries `mode: "local"` and `storage: "sqlite"` per AAASM-1576 AC #4.
-pub(crate) fn router() -> Router {
+///
+/// Takes `&LocalModeConfig` rather than being parameterless so the
+/// router can branch on `config.dashboard` (and future config) without
+/// the caller having to pre-build separate routers.
+pub(crate) fn router(_config: &LocalModeConfig) -> Router {
     let state = HealthzState::new("local", "sqlite");
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
 }
@@ -468,8 +473,9 @@ pub(crate) async fn start_local_with_pid_path(
     //    The `JoinHandle` lives on the handle so `shutdown()` can await
     //    the task's completion after signalling shutdown_tx.
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let app = router(config);
     let server_task = tokio::spawn(async move {
-        let _ = axum::serve(listener, router())
+        let _ = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
             })
@@ -500,9 +506,21 @@ mod tests {
     /// local-mode labels. The `uptime_secs` field is asserted to be
     /// present (guards against a regression that would drop the field
     /// from `HealthzBody`).
+    /// Build a `LocalModeConfig` with dashboard disabled and a tempdir
+    /// SQLite path — sufficient for the healthz-router tests below
+    /// that only care about the `/healthz` route.
+    fn healthz_only_config() -> LocalModeConfig {
+        LocalModeConfig {
+            port: 0,
+            dashboard: false,
+            storage_path: std::path::PathBuf::from("/dev/null"),
+        }
+    }
+
     #[tokio::test]
     async fn router_serves_healthz_with_local_mode_json() {
-        let app = router();
+        let cfg = healthz_only_config();
+        let app = router(&cfg);
         let request = Request::builder()
             .uri("/healthz")
             .body(Body::empty())
@@ -624,8 +642,9 @@ mod tests {
             .expect("bind ephemeral port");
         let port = listener.local_addr().expect("local_addr").port();
 
+        let cfg = healthz_only_config();
         let server = tokio::spawn(async move {
-            let _ = axum::serve(listener, router()).await;
+            let _ = axum::serve(listener, router(&cfg)).await;
         });
 
         let alive = probe_running(port).await;
