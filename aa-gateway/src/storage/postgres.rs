@@ -1263,4 +1263,50 @@ mod tests {
         assert_eq!(points[0].ts, ts);
         assert_eq!(points[0].value, 42.5);
     }
+
+    #[tokio::test]
+    async fn query_metrics_with_bucket_aggregates() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let metric_name = fresh_metric_name();
+        // Three samples within the same minute — date_trunc('minute') collapses
+        // them into a single bucketed point with the averaged value. Aligning
+        // to a minute boundary makes the test timing-deterministic regardless
+        // of when in the wall-clock minute it runs.
+        let now = chrono::Utc::now();
+        let base = chrono::DateTime::from_timestamp(now.timestamp() / 60 * 60, 0)
+            .expect("minute-aligned timestamp fits in chrono range");
+        for (offset_secs, value) in [(0i64, 10.0_f64), (10, 20.0), (20, 30.0)] {
+            let ts = base + chrono::Duration::seconds(offset_secs);
+            backend
+                .record_metric(sample_metric(agent_id, &metric_name, ts, value))
+                .await
+                .expect("record");
+        }
+
+        let points = backend
+            .query_metrics(MetricQuery {
+                agent_id: Some(agent_id),
+                metric: Some(metric_name.clone()),
+                bucket: Some("1 minute".to_string()),
+                ..MetricQuery::default()
+            })
+            .await
+            .expect("query_metrics");
+
+        assert_eq!(
+            points.len(),
+            1,
+            "three samples in the same minute must collapse to one bucket"
+        );
+        assert!(
+            (points[0].value - 20.0).abs() < 1e-9,
+            "averaged value should be (10 + 20 + 30) / 3 = 20.0, got {}",
+            points[0].value,
+        );
+    }
 }
