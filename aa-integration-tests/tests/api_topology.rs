@@ -82,6 +82,7 @@ fn make_agent(
         root_agent_id,
         children: vec![],
         parent_key,
+        enforcement_mode: None,
     }
 }
 

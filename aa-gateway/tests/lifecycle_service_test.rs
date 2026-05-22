@@ -756,6 +756,7 @@ fn aged_record_for_test(
         root_agent_id: Some(agent_key),
         children: vec![],
         parent_key: None,
+        enforcement_mode: None,
     }
 }
 
