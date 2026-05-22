@@ -372,4 +372,39 @@ mod tests {
         assert_eq!(rows.len(), 1, "expected exactly one row for fresh agent");
         assert_eq!(rows[0], event, "round-trip event must match insert exactly");
     }
+
+    #[tokio::test]
+    async fn query_filters_by_time_range() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let base = now_micros();
+        // Three events spaced 10 minutes apart so we can pick a cutoff between them.
+        let t0 = base - chrono::Duration::minutes(20);
+        let t1 = base - chrono::Duration::minutes(10);
+        let t2 = base;
+        for ts in [t0, t1, t2] {
+            backend
+                .append_audit_event(&sample_event(agent_id, ts))
+                .await
+                .expect("append");
+        }
+
+        let recent = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                from: Some(base - chrono::Duration::minutes(15)),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+
+        assert_eq!(recent.len(), 2, "from-filter should drop the oldest event");
+        // ORDER BY ts DESC — t2 first, then t1.
+        assert_eq!(recent[0].ts, t2);
+        assert_eq!(recent[1].ts, t1);
+    }
 }
