@@ -1,8 +1,10 @@
 //! PostgreSQL-backed implementation of [`StorageBackend`](super::backend::StorageBackend).
 //!
-//! Only the constructor lands in this sub-task (Epic 18 S-C #1). The
+//! Sub-task progress: `connect()` (E18 S-C #1) and `migrate()` (E18 S-C #2)
+//! are implemented as inherent methods. The full
 //! [`StorageBackend`](super::backend::StorageBackend) trait impl is built up
-//! incrementally across sub-tasks #2 – #7.
+//! incrementally across sub-tasks #3 – #7 and consolidated into an
+//! `impl StorageBackend for PostgresBackend` block at the end.
 
 use std::time::Duration;
 
