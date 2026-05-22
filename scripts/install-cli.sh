@@ -98,6 +98,7 @@ main() {
 
   TARBALL="${BINARY}-${ARCH}-${OS}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
+  SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
 
   say "Installing ${BINARY} ${VERSION} (${ARCH}-${OS}) ..."
 
@@ -107,6 +108,11 @@ main() {
 
   curl -sSfL "$URL" -o "${TMP}/${TARBALL}" \
     || err "download failed: ${URL}\n  Make sure ${VERSION} has a published release for ${ARCH}-${OS}."
+
+  curl -sSfL "$SUMS_URL" -o "${TMP}/SHA256SUMS" \
+    || err "SHA256SUMS download failed: ${SUMS_URL}\n  Refusing to install without checksum verification."
+
+  sha256_verify "${TMP}/${TARBALL}" "${TMP}/SHA256SUMS"
 
   tar -C "$TMP" -xzf "${TMP}/${TARBALL}" "${BINARY}" \
     || err "failed to extract ${BINARY} from ${TARBALL}"
