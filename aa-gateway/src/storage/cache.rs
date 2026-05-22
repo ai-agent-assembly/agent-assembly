@@ -1,12 +1,9 @@
 //! Optional Redis-backed policy cache for the gateway.
 //!
-//! This module ships in stages across Epic-18 Story S-G:
-//!
-//! - First commit: the [`RedisConfig`] value type and the OFF default posture.
-//! - Second commit: content-addressed cache key derivation.
-//! - This commit: the [`PolicyCacheLike`] trait + [`PolicyCache`] enum,
-//!   shipped with the `Disabled` no-op variant only.
-//! - Final commit: the Redis-backed variant of [`PolicyCache`].
+//! The cache ships under the `redis-cache` Cargo feature. With the feature
+//! off the gateway still compiles and runs against [`PolicyCache::Disabled`],
+//! a no-op implementation that lets the rest of the codebase write
+//! cache-aware code unconditionally.
 //!
 //! The cache is **off by default** — the gateway should always be runnable
 //! without a Redis process. Production deployments opt in by setting
@@ -14,6 +11,11 @@
 
 use async_trait::async_trait;
 
+#[cfg(feature = "redis-cache")]
+use redis::aio::ConnectionManager;
+
+#[cfg(feature = "redis-cache")]
+use super::error::{StorageError, StorageResult};
 use super::policy::PolicyDocument;
 
 /// Behaviour every policy cache implementation must provide.
@@ -53,6 +55,9 @@ pub enum PolicyCache {
     /// No-op cache — `get` always returns `None`, `set` and `invalidate`
     /// are no-ops, `is_enabled` returns `false`.
     Disabled,
+    /// Redis-backed cache. Only available with the `redis-cache` feature.
+    #[cfg(feature = "redis-cache")]
+    Redis(RedisPolicyCache),
 }
 
 #[async_trait]
@@ -60,24 +65,32 @@ impl PolicyCacheLike for PolicyCache {
     async fn get(&self, _name: &str) -> Option<PolicyDocument> {
         match self {
             Self::Disabled => None,
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.get(_name).await,
         }
     }
 
     async fn set(&self, _doc: &PolicyDocument) {
         match self {
             Self::Disabled => {}
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.set(_doc).await,
         }
     }
 
     async fn invalidate(&self, _name: &str) {
         match self {
             Self::Disabled => {}
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(cache) => cache.invalidate(_name).await,
         }
     }
 
     fn is_enabled(&self) -> bool {
         match self {
             Self::Disabled => false,
+            #[cfg(feature = "redis-cache")]
+            Self::Redis(_) => true,
         }
     }
 }
@@ -90,18 +103,56 @@ impl Default for PolicyCache {
 }
 
 impl PolicyCache {
-    /// Build a cache handle from `config`. When `config.enabled` is `false`
-    /// (the default), this returns [`PolicyCache::Disabled`] without
-    /// touching Redis. The `enabled = true` branch lands in Epic-18 S-G
-    /// sub-task 4.
+    /// Build a cache handle from `config` without touching the network.
+    ///
+    /// When `config.enabled` is `false` (the default), this returns
+    /// [`PolicyCache::Disabled`]. When `enabled = true` and the
+    /// `redis-cache` feature is on, the synchronous `from_config` cannot
+    /// run async I/O — callers should use [`PolicyCache::from_config_async`]
+    /// to attempt the Redis connection. The sync constructor here still
+    /// returns `Disabled` for the enabled case, matching the safe posture
+    /// callers see if they forget to switch to the async constructor.
     pub fn from_config(config: &RedisConfig) -> Self {
         if !config.enabled {
             return Self::Disabled;
         }
-        // TODO(AAASM-1716, S-G sub-task 4): attempt the Redis connection.
-        // Until then, treat enabled-but-unimplemented as Disabled so the
-        // gateway never tries to talk to a non-existent backend.
+        // The enabled branch requires async I/O — see `from_config_async`.
         Self::Disabled
+    }
+
+    /// Build a cache handle, attempting the Redis connection when enabled.
+    ///
+    /// * `config.enabled = false` → returns [`PolicyCache::Disabled`].
+    /// * `config.enabled = true` and the `redis-cache` feature is on → tries
+    ///   to open a [`RedisPolicyCache`]. On connection failure, logs a
+    ///   `tracing::warn!` and returns [`PolicyCache::Disabled`] so the
+    ///   gateway can still serve requests via the authoritative store.
+    /// * `config.enabled = true` and the feature is off → logs a warning
+    ///   and returns [`PolicyCache::Disabled`].
+    pub async fn from_config_async(config: &RedisConfig) -> Self {
+        if !config.enabled {
+            return Self::Disabled;
+        }
+        #[cfg(feature = "redis-cache")]
+        {
+            match RedisPolicyCache::connect(config).await {
+                Ok(cache) => Self::Redis(cache),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "redis policy cache connect failed — falling back to disabled cache"
+                    );
+                    Self::Disabled
+                }
+            }
+        }
+        #[cfg(not(feature = "redis-cache"))]
+        {
+            tracing::warn!(
+                "storage.redis.enabled = true but the `redis-cache` feature is not compiled in; falling back to disabled cache"
+            );
+            Self::Disabled
+        }
     }
 }
 
@@ -165,6 +216,100 @@ pub fn policy_cache_key(name: &str, bytes: &[u8]) -> String {
 /// previous content hash.
 pub fn policy_invalidation_pattern(name: &str) -> String {
     format!("policy:{name}:*")
+}
+
+/// Direct Redis key under which the currently-active cached document for
+/// `name` lives.
+///
+/// The active-key scheme uses `policy:{name}` (no hash suffix) so `get`,
+/// `set`, and `invalidate` all operate on a single, deterministic key. The
+/// content-hash helpers above remain available as building blocks for any
+/// future multi-version cache scheme.
+pub fn active_policy_key(name: &str) -> String {
+    format!("policy:{name}")
+}
+
+/// Redis-backed policy cache.
+///
+/// Only available with the `redis-cache` Cargo feature. The struct holds a
+/// cloneable [`ConnectionManager`] (the redis-rs multiplexed handle) and the
+/// per-entry TTL pulled from [`RedisConfig::policy_cache_ttl_secs`].
+#[cfg(feature = "redis-cache")]
+pub struct RedisPolicyCache {
+    conn: ConnectionManager,
+    ttl_secs: u64,
+}
+
+#[cfg(feature = "redis-cache")]
+impl RedisPolicyCache {
+    /// Establish a Redis connection from `config` and wrap it in a
+    /// [`ConnectionManager`].
+    ///
+    /// Returns [`StorageError::ConnectionFailed`] when `config.url` is `None`
+    /// or the URL cannot be parsed, and when the connection manager cannot
+    /// complete its initial handshake.
+    pub async fn connect(config: &RedisConfig) -> StorageResult<Self> {
+        let url = config.url.as_deref().ok_or_else(|| {
+            StorageError::ConnectionFailed("storage.redis.url is required when redis.enabled = true".into())
+        })?;
+        let client = redis::Client::open(url).map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+        let conn = client
+            .get_connection_manager()
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+        Ok(Self {
+            conn,
+            ttl_secs: config.policy_cache_ttl_secs,
+        })
+    }
+
+    /// Expose the configured TTL — useful in tests and for debug introspection.
+    #[cfg(test)]
+    pub fn ttl_secs(&self) -> u64 {
+        self.ttl_secs
+    }
+}
+
+#[cfg(feature = "redis-cache")]
+#[async_trait]
+impl PolicyCacheLike for RedisPolicyCache {
+    async fn get(&self, name: &str) -> Option<PolicyDocument> {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(name);
+        let bytes: redis::RedisResult<Option<Vec<u8>>> = conn.get(&key).await;
+        bytes.ok().flatten().map(|b| PolicyDocument {
+            name: name.into(),
+            bytes: b,
+        })
+    }
+
+    async fn set(&self, doc: &PolicyDocument) {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(&doc.name);
+        // SET with EX (TTL in seconds). Best-effort — driver errors are
+        // logged at debug and otherwise swallowed; callers still see a
+        // consistent view through the authoritative store on cache miss.
+        let result: redis::RedisResult<()> = conn.set_ex(&key, &doc.bytes, self.ttl_secs).await;
+        if let Err(err) = result {
+            tracing::debug!(error = %err, key = %key, "redis policy cache set failed");
+        }
+    }
+
+    async fn invalidate(&self, name: &str) {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        let key = active_policy_key(name);
+        let result: redis::RedisResult<()> = conn.del(&key).await;
+        if let Err(err) = result {
+            tracing::debug!(error = %err, key = %key, "redis policy cache invalidate failed");
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +418,152 @@ mod tests {
         fn from_config_default_redis_is_disabled() {
             let cache = PolicyCache::from_config(&RedisConfig::default());
             assert!(matches!(cache, PolicyCache::Disabled));
+            assert!(!cache.is_enabled());
+        }
+    }
+
+    /// HashMap-backed [`PolicyCacheLike`] stub used to exercise the trait
+    /// contract without a live Redis server. Honours TTL via
+    /// `tokio::time::Instant` so tests can fast-forward through
+    /// `tokio::time::advance` instead of sleeping.
+    mod stub {
+        use super::*;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use tokio::time::{Duration, Instant};
+
+        pub struct StubPolicyCache {
+            ttl: Duration,
+            store: Mutex<HashMap<String, (Vec<u8>, Instant)>>,
+        }
+
+        impl StubPolicyCache {
+            pub fn new(ttl_secs: u64) -> Self {
+                Self {
+                    ttl: Duration::from_secs(ttl_secs),
+                    store: Mutex::new(HashMap::new()),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl PolicyCacheLike for StubPolicyCache {
+            async fn get(&self, name: &str) -> Option<PolicyDocument> {
+                let guard = self.store.lock().expect("stub lock");
+                let (bytes, expires_at) = guard.get(name)?;
+                if *expires_at <= Instant::now() {
+                    return None;
+                }
+                Some(PolicyDocument {
+                    name: name.into(),
+                    bytes: bytes.clone(),
+                })
+            }
+
+            async fn set(&self, doc: &PolicyDocument) {
+                let mut guard = self.store.lock().expect("stub lock");
+                guard.insert(doc.name.clone(), (doc.bytes.clone(), Instant::now() + self.ttl));
+            }
+
+            async fn invalidate(&self, name: &str) {
+                let mut guard = self.store.lock().expect("stub lock");
+                guard.remove(name);
+            }
+
+            fn is_enabled(&self) -> bool {
+                true
+            }
+        }
+    }
+
+    mod contract {
+        use super::stub::StubPolicyCache;
+        use super::*;
+
+        fn doc(name: &str, body: &[u8]) -> PolicyDocument {
+            PolicyDocument {
+                name: name.into(),
+                bytes: body.to_vec(),
+            }
+        }
+
+        #[tokio::test]
+        async fn round_trip_set_then_get() {
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            let fetched = cache.get("default").await.expect("cached entry present");
+            assert_eq!(fetched.name, "default");
+            assert_eq!(fetched.bytes, b"v1-body".to_vec());
+            assert!(cache.is_enabled());
+        }
+
+        #[tokio::test]
+        async fn invalidate_evicts_entry() {
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            cache.invalidate("default").await;
+            assert!(cache.get("default").await.is_none());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn entry_expires_after_ttl() {
+            use tokio::time::Duration;
+            let cache = StubPolicyCache::new(30);
+            cache.set(&doc("default", b"v1-body")).await;
+            assert!(cache.get("default").await.is_some());
+            tokio::time::advance(Duration::from_secs(31)).await;
+            assert!(
+                cache.get("default").await.is_none(),
+                "entry must expire once ttl_secs elapses"
+            );
+        }
+    }
+
+    #[cfg(feature = "redis-cache")]
+    mod redis_backend {
+        use super::*;
+
+        #[tokio::test]
+        async fn connect_with_none_url_returns_connection_failed() {
+            let config = RedisConfig {
+                enabled: true,
+                url: None,
+                ..RedisConfig::default()
+            };
+            match RedisPolicyCache::connect(&config).await {
+                Ok(_) => panic!("None URL must surface as ConnectionFailed"),
+                Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
+            }
+        }
+
+        #[tokio::test]
+        async fn connect_with_malformed_url_returns_connection_failed() {
+            let config = RedisConfig {
+                enabled: true,
+                url: Some("not-a-redis-url".into()),
+                ..RedisConfig::default()
+            };
+            match RedisPolicyCache::connect(&config).await {
+                Ok(_) => panic!("malformed URL must surface as ConnectionFailed"),
+                Err(err) => assert!(matches!(err, StorageError::ConnectionFailed(_))),
+            }
+        }
+
+        #[tokio::test]
+        async fn from_config_async_falls_back_to_disabled_on_bad_url() {
+            // `127.0.0.1:1` is reserved and consistently refuses connections,
+            // which exercises the runtime-failure branch — not the URL-parse
+            // branch.
+            let config = RedisConfig {
+                enabled: true,
+                url: Some("redis://127.0.0.1:1".into()),
+                ..RedisConfig::default()
+            };
+            let cache = PolicyCache::from_config_async(&config).await;
+            assert!(
+                matches!(cache, PolicyCache::Disabled),
+                "connect failure must fall back to Disabled, not panic"
+            );
             assert!(!cache.is_enabled());
         }
     }
