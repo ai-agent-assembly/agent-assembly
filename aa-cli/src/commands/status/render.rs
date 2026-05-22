@@ -318,6 +318,9 @@ mod tests {
             },
         };
         let json = serde_json::to_string_pretty(&snapshot).unwrap();
+        assert!(json.contains("\"deployment\""));
+        assert!(json.contains("\"gateway_url\""));
+        assert!(json.contains("\"storage_backend\""));
         assert!(json.contains("\"runtime\""));
         assert!(json.contains("\"agents\""));
         assert!(json.contains("\"approvals\""));
