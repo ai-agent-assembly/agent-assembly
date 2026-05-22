@@ -677,4 +677,37 @@ mod tests {
 
         assert_eq!(fetched, record, "round-trip record must match insert exactly");
     }
+
+    #[tokio::test]
+    async fn upsert_updates_last_seen_at() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let t1 = now_micros();
+        let t2 = t1 + chrono::Duration::seconds(60);
+
+        backend
+            .upsert_agent(sample_agent_record(agent_id, t1, t1))
+            .await
+            .expect("first upsert");
+        backend
+            .upsert_agent(sample_agent_record(agent_id, t1, t2))
+            .await
+            .expect("second upsert");
+
+        let fetched = backend
+            .get_agent(&agent_id)
+            .await
+            .expect("get_agent")
+            .expect("agent should exist");
+
+        assert_eq!(fetched.last_seen_at, t2, "second upsert must move last_seen_at forward");
+        assert_eq!(
+            fetched.registered_at, t1,
+            "registered_at must be preserved across re-registration"
+        );
+    }
 }
