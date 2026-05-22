@@ -151,6 +151,23 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
     }
 }
 
+/// Decode a `policy_versions.document` JSONB value back into the byte
+/// representation expected by [`PolicyDocument::bytes`].
+///
+/// Inverse of the `save_policy` encoding: a `{"raw_yaml": "<utf8>"}`
+/// wrapper is unwrapped back to its inner string bytes; any other JSON
+/// value is re-serialised to compact canonical JSON.
+fn policy_document_bytes(value: serde_json::Value) -> Vec<u8> {
+    if let serde_json::Value::Object(ref obj) = value {
+        if obj.len() == 1 {
+            if let Some(serde_json::Value::String(raw)) = obj.get("raw_yaml") {
+                return raw.clone().into_bytes();
+            }
+        }
+    }
+    serde_json::to_vec(&value).expect("serialising a parsed JSON value never fails")
+}
+
 /// Push the agent-registry WHERE clause derived from `filter` into `qb`.
 ///
 /// PostgreSQL JSONB exposes object lookups via `metadata->>'name'`, so the
@@ -487,6 +504,29 @@ impl PostgresBackend {
             },
             document: doc,
         })
+    }
+
+    /// Return the currently-active policy version for `name`, if one is
+    /// flagged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Ok(None)` when no version is active. Driver failures surface
+    /// as [`StorageError::QueryFailed`].
+    pub async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(
+            "SELECT document FROM policy_versions \
+             WHERE name = $1 AND is_active = TRUE LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(row.map(|(document,)| PolicyDocument {
+            name: name.to_owned(),
+            bytes: policy_document_bytes(document),
+        }))
     }
 }
 
