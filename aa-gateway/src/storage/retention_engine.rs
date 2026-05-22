@@ -268,4 +268,19 @@ mod tests {
         let err = engine.run_once().await.expect_err("backend error must surface");
         assert!(matches!(err, StorageError::RetentionError(ref msg) if msg.contains("S3 archive timeout")));
     }
+
+    #[tokio::test]
+    async fn start_rejects_invalid_schedule_before_spawning() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let config = RetentionConfig {
+            schedule: "not a cron expression".to_string(),
+            ..RetentionConfig::default()
+        };
+        let engine = Arc::new(RetentionEngine::new(backend, config));
+
+        let err = engine
+            .start(CancellationToken::new())
+            .expect_err("invalid schedule must return Err, not panic");
+        assert!(matches!(err, RetentionConfigError::InvalidSchedule { .. }));
+    }
 }
