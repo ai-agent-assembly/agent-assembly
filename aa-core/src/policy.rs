@@ -392,6 +392,16 @@ mod tests {
         assert_eq!(doc.rules[0].decision, PolicyDecision::Allow);
     }
 
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    #[test]
+    fn policy_document_enforcement_mode_defaults_to_enforce_when_absent() {
+        // Backward compatibility: pre-feature YAML / JSON policy documents
+        // never had this field, so deserialising one must produce Enforce.
+        let yaml = "version: 1\nname: legacy-policy\nrules: []\n";
+        let doc: PolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.enforcement_mode, EnforcementMode::Enforce);
+    }
+
     #[test]
     #[cfg(feature = "alloc")]
     fn policy_result_cross_variant_inequality() {
