@@ -69,10 +69,10 @@ impl RetentionConfig {
 
 impl Default for RetentionConfig {
     /// Compliance-friendly defaults: hot=30d, warm=90d, cold=Drop,
-    /// schedule="0 3 * * *" (3am UTC daily), dry_run=false.
+    /// schedule="0 0 3 * * *" (3am UTC daily, 6-field cron), dry_run=false.
     fn default() -> Self {
         Self {
-            schedule: "0 3 * * *".to_string(),
+            schedule: "0 0 3 * * *".to_string(),
             hot_days: 30,
             warm_days: 90,
             cold_action: ColdAction::Drop,
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn default_uses_compliance_friendly_30_90_drop_3am() {
         let cfg = RetentionConfig::default();
-        assert_eq!(cfg.schedule, "0 3 * * *");
+        assert_eq!(cfg.schedule, "0 0 3 * * *");
         assert_eq!(cfg.hot_days, 30);
         assert_eq!(cfg.warm_days, 90);
         assert_eq!(cfg.cold_action, ColdAction::Drop);
