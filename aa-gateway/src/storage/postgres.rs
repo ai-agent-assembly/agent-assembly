@@ -18,6 +18,7 @@ use super::error::{StorageError, StorageResult};
 use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
+use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
 /// hyphenated form). Mirrors the SQLite backend's storage shape so the
@@ -741,6 +742,72 @@ impl PostgresBackend {
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
 
         Ok(rows.into_iter().map(|(ts, value)| MetricPoint { ts, value }).collect())
+    }
+
+    /// Apply `policy` to the `audit_events` table.
+    ///
+    /// The cold-tier cutoff is `now() - (hot_days + warm_days)` — any row
+    /// with `ts` older than this is past the warm tier and a candidate
+    /// for cold-action processing.
+    ///
+    /// * `dry_run = true` projects `dropped_rows` via `SELECT count(*)`
+    ///   without modifying any rows. `freed_bytes` is left at `0` since
+    ///   no chunks are compressed (E18 S-D will replace this path with
+    ///   TimescaleDB `drop_chunks` + byte accounting).
+    /// * `dry_run = false`, `cold_action = Drop` → `DELETE FROM
+    ///   audit_events WHERE ts < $1`; the affected row count populates
+    ///   `dropped_rows`.
+    /// * `cold_action = Archive` → returns
+    ///   [`StorageError::RetentionError`] until E18 S-D lands the
+    ///   TimescaleDB `drop_chunks()` path. The error surfaces the
+    ///   archive URL so operators see what they configured.
+    ///
+    /// `hot_rows` is always populated via a second `count(*)` filtered
+    /// at the hot cutoff so the caller can report how much data is
+    /// indexed-and-queryable after the run.
+    pub async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+        if matches!(policy.cold_action, ColdAction::Archive) {
+            return Err(StorageError::RetentionError(format!(
+                "archive cold_action not supported by PostgresBackend yet (S-D will add drop_chunks); \
+                 archive_url = {:?}",
+                policy.archive_url
+            )));
+        }
+
+        let now = chrono::Utc::now();
+        let cold_threshold = now - chrono::Duration::days(i64::from(policy.hot_days + policy.warm_days));
+        let hot_threshold = now - chrono::Duration::days(i64::from(policy.hot_days));
+
+        let dropped_rows: u64 = if policy.dry_run {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE ts < $1")
+                .bind(cold_threshold)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+            count as u64
+        } else {
+            let result = sqlx::query("DELETE FROM audit_events WHERE ts < $1")
+                .bind(cold_threshold)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StorageError::RetentionError(e.to_string()))?;
+            result.rows_affected()
+        };
+
+        let hot_count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE ts >= $1")
+            .bind(hot_threshold)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        Ok(RetentionStats {
+            hot_rows: hot_count as u64,
+            compressed_rows: 0,
+            archived_rows: 0,
+            dropped_rows,
+            freed_bytes: 0,
+            ran_at: chrono::Utc::now(),
+        })
     }
 }
 
