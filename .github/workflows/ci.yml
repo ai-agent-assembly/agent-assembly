@@ -198,6 +198,24 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
+    env:
+      # AAASM-1741: lets the env-gated storage::postgres::tests run under
+      # cargo llvm-cov so codecov/patch sees coverage for the PG backend.
+      AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: aasm
+          POSTGRES_PASSWORD: aasm
+          POSTGRES_DB: aasm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v6
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
