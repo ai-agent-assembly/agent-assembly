@@ -89,6 +89,36 @@ pub struct HealthzResponse {
     pub database_url: Option<String>,
 }
 
+/// Display model for the `aasm status` deployment-overview header.
+///
+/// The serialised shape is the JSON contract for `aasm status --json` — field
+/// names must stay in lockstep with the AAASM-1579 story description so
+/// scripting and CI consumers can rely on them. `storage_path` and
+/// `database_url_redacted` are `Option` to allow them to be omitted in the
+/// minimum `/healthz` body case rather than emitted as `null`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DeploymentOverview {
+    /// Deployment mode label: `"local"` or `"remote"` (or `"unknown"` when unreachable).
+    pub mode: String,
+    /// Gateway base URL the CLI was configured to talk to.
+    pub gateway_url: String,
+    /// Storage backend label: `"sqlite"`, `"postgres"`, `"memory"`, or `"unknown"`.
+    pub storage_backend: String,
+    /// Local-mode SQLite file path, when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_path: Option<String>,
+    /// PostgreSQL connection URL with the password segment replaced by `***`,
+    /// when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_url_redacted: Option<String>,
+    /// Gateway crate version.
+    pub version: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Overall health label: `"ok"` when the gateway responded, `"unreachable"` otherwise.
+    pub health: String,
+}
+
 /// Computed runtime health for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
