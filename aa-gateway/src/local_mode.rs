@@ -209,4 +209,28 @@ mod tests {
             "ensure_storage_parent should mkdir -p the parent tree"
         );
     }
+
+    /// AAASM-1576 AC #3 end-to-end at the helper level: `open_storage`
+    /// must materialise the SQLite file on disk in a fresh directory
+    /// tree, not just open a connection in memory. Uses `tempfile`
+    /// so the test is hermetic — no `~/.aasm/` writes leak from CI.
+    #[tokio::test]
+    async fn open_storage_creates_sqlite_file_in_fresh_tempdir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("nested/local.db");
+
+        // Sanity: neither the parent nor the file exist yet.
+        assert!(!db_path.parent().expect("parent").exists());
+        assert!(!db_path.exists());
+
+        let pool = open_storage(&db_path).await.expect("open_storage");
+
+        assert!(
+            db_path.is_file(),
+            "open_storage should materialise the SQLite file on disk"
+        );
+        assert!(!pool.is_closed(), "open_storage should return an open pool",);
+
+        pool.close().await;
+    }
 }
