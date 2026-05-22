@@ -54,6 +54,7 @@ redis        = { version = "1.2", default-features = false, features = ["tokio-c
 criterion    = { version = "0.8", features = ["async_tokio"] }
 proptest     = "1"
 tempfile     = "3"
+tokio        = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
 tokio-stream = "0.1"
 insta        = "1"
 tower        = { version = "0.5", features = ["util"] }
