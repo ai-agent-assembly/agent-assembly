@@ -10,8 +10,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use axum::{routing::get, Extension, Router};
 use tokio::sync::oneshot;
+
+use crate::routes::healthz::{healthz, HealthzState};
 
 /// Handle returned by `start_local()` once the local control plane is up.
 ///
@@ -30,27 +32,6 @@ pub struct LocalGatewayHandle {
     /// One-shot channel that signals the Axum server task to begin
     /// graceful shutdown. Hooked up by AAASM-1728's signal handler.
     pub(crate) shutdown_tx: oneshot::Sender<()>,
-}
-
-/// JSON payload returned by `GET /healthz` in local mode.
-///
-/// Documented response shape from AAASM-1576 AC #4:
-///
-/// ```json
-/// {"mode":"local","storage":"sqlite","version":"0.0.1"}
-/// ```
-///
-/// `Deserialize` is derived so the pre-flight probe in AAASM-1715 can
-/// re-parse the response and reject other servers that happen to be
-/// listening on the same port but speak a different protocol.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthzResponse {
-    /// Always `"local"` when produced by this module.
-    pub mode: String,
-    /// Storage backend label — `"sqlite"` for local mode.
-    pub storage: String,
-    /// Gateway binary version (set from `CARGO_PKG_VERSION` at compile time).
-    pub version: String,
 }
 
 /// Errors that can occur while booting the local-mode control plane.
@@ -95,37 +76,65 @@ pub enum LocalModeError {
     Signal(#[source] std::io::Error),
 }
 
+/// Build the local-mode Axum router skeleton.
+///
+/// Mounts only `/healthz` for now via [`crate::routes::healthz::healthz`];
+/// later sub-tasks (dashboard SPA in AAASM-1580, API routes wired by
+/// AAASM-1731) merge into this same router.
+///
+/// The `Extension(HealthzState::new("local", "sqlite"))` layer supplies
+/// the labels the shared `/healthz` handler reads, so the response body
+/// carries `mode: "local"` and `storage: "sqlite"` per AAASM-1576 AC #4.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) fn router() -> Router {
+    let state = HealthzState::new("local", "sqlite");
+    Router::new().route("/healthz", get(healthz)).layer(Extension(state))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// AAASM-1576 AC #4: `/healthz` must return exactly
-    /// `{"mode":"local","storage":"sqlite","version":"<v>"}` —
-    /// no extra fields, no extra whitespace, lowercase values,
-    /// and the keys in the documented order.
-    #[test]
-    fn healthz_response_serialises_to_documented_shape() {
-        let resp = HealthzResponse {
-            mode: "local".to_string(),
-            storage: "sqlite".to_string(),
-            version: "0.0.1".to_string(),
-        };
-        let json = serde_json::to_string(&resp).expect("serde_json::to_string");
-        assert_eq!(json, r#"{"mode":"local","storage":"sqlite","version":"0.0.1"}"#);
-    }
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
 
-    /// The probe path in AAASM-1715 re-parses `/healthz` responses as
-    /// `HealthzResponse`; round-tripping the documented shape must
-    /// recover the exact same struct.
-    #[test]
-    fn healthz_response_round_trips_through_serde() {
-        let original = HealthzResponse {
-            mode: "local".to_string(),
-            storage: "sqlite".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-        let json = serde_json::to_string(&original).expect("serialise");
-        let parsed: HealthzResponse = serde_json::from_str(&json).expect("deserialise");
-        assert_eq!(parsed, original);
+    /// AAASM-1576 AC #4, driven through the router built by `router()`:
+    /// `GET /healthz` returns 200 with `application/json` content-type and
+    /// a body whose `mode`, `storage`, and `version` fields carry the
+    /// local-mode labels. The `uptime_secs` field is asserted to be
+    /// present (guards against a regression that would drop the field
+    /// from `HealthzBody`).
+    #[tokio::test]
+    async fn router_serves_healthz_with_local_mode_json() {
+        let app = router();
+        let request = Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            ctype.starts_with("application/json"),
+            "expected application/json, got {ctype}"
+        );
+
+        let bytes = to_bytes(response.into_body(), 8 * 1024).await.expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        assert_eq!(body["mode"], "local", "mode label");
+        assert_eq!(body["storage"], "sqlite", "storage label");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"), "crate version");
+        assert!(
+            body["uptime_secs"].is_u64(),
+            "uptime_secs must be present and a u64; got {body}",
+        );
     }
 }
