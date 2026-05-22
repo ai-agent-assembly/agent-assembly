@@ -12,7 +12,7 @@ use aa_core::identity::AgentId;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use super::audit::AuditEvent;
+use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
 use super::postgres_config::PostgresConfig;
 
@@ -21,6 +21,91 @@ use super::postgres_config::PostgresConfig;
 /// same TEXT serialisation round-trips across both backends.
 fn agent_id_to_text(id: &AgentId) -> String {
     uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
+}
+
+/// Decode an `agent_id` TEXT column value back into an [`AgentId`].
+fn agent_id_from_text(s: &str) -> StorageResult<AgentId> {
+    let uuid = uuid::Uuid::parse_str(s).map_err(|e| StorageError::QueryFailed(format!("invalid agent_id {s}: {e}")))?;
+    Ok(AgentId::from_bytes(*uuid.as_bytes()))
+}
+
+/// Decode a single `audit_events` row into an [`AuditEvent`].
+///
+/// Native PostgreSQL types map directly to the value-type fields —
+/// `TIMESTAMPTZ` → `DateTime<Utc>`, `UUID` → `Uuid`, `JSONB` →
+/// `serde_json::Value`, `BOOLEAN` → `bool`. `agent_id` is the only
+/// column that takes a manual TEXT round-trip via [`agent_id_from_text`].
+fn row_to_audit_event(row: &sqlx::postgres::PgRow) -> StorageResult<AuditEvent> {
+    use sqlx::Row;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    Ok(AuditEvent {
+        ts: row
+            .try_get("ts")
+            .map_err(|e| StorageError::QueryFailed(format!("ts column: {e}")))?,
+        event_id: row
+            .try_get("event_id")
+            .map_err(|e| StorageError::QueryFailed(format!("event_id column: {e}")))?,
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        action: row
+            .try_get("action")
+            .map_err(|e| StorageError::QueryFailed(format!("action column: {e}")))?,
+        decision: row
+            .try_get("decision")
+            .map_err(|e| StorageError::QueryFailed(format!("decision column: {e}")))?,
+        dry_run: row
+            .try_get("dry_run")
+            .map_err(|e| StorageError::QueryFailed(format!("dry_run column: {e}")))?,
+        shadow_decision: row
+            .try_get("shadow_decision")
+            .map_err(|e| StorageError::QueryFailed(format!("shadow_decision column: {e}")))?,
+        matched_rule_id: row
+            .try_get("matched_rule_id")
+            .map_err(|e| StorageError::QueryFailed(format!("matched_rule_id column: {e}")))?,
+        payload: row
+            .try_get("payload")
+            .map_err(|e| StorageError::QueryFailed(format!("payload column: {e}")))?,
+    })
+}
+
+/// Push the audit-event WHERE clause derived from `filter` into `qb`.
+///
+/// Adds clauses for `agent_id`, `team_id`, `from` / `to` (`ts >=` / `ts <`),
+/// and `dry_run_only`. Pushes nothing when `filter` is empty, leaving the
+/// caller's base `SELECT … FROM audit_events` intact.
+fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter: &'q AuditFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(agent_id) = filter.agent_id.as_ref() {
+        connective(qb);
+        qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+    }
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(from) = filter.from {
+        connective(qb);
+        qb.push("ts >= ").push_bind(from);
+    }
+    if let Some(to) = filter.to {
+        connective(qb);
+        qb.push("ts < ").push_bind(to);
+    }
+    if filter.dry_run_only {
+        connective(qb);
+        qb.push("dry_run = TRUE");
+    }
 }
 
 /// PostgreSQL-backed control-plane storage.
@@ -105,6 +190,38 @@ impl PostgresBackend {
         .await
         .map(|_| ())
         .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    /// Return audit events matching `filter`, ordered by timestamp descending.
+    ///
+    /// `filter.limit` and `filter.offset` translate to PostgreSQL `LIMIT` /
+    /// `OFFSET` clauses with `i64` bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] on driver errors and when a
+    /// column cannot be decoded into its expected runtime type.
+    pub async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT ts, event_id, agent_id, team_id, action, decision, \
+             dry_run, shadow_decision, matched_rule_id, payload FROM audit_events",
+        );
+        push_audit_where(&mut qb, &filter);
+        qb.push(" ORDER BY ts DESC");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+        }
+        if let Some(offset) = filter.offset {
+            qb.push(" OFFSET ").push_bind(i64::from(offset));
+        }
+
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        rows.iter().map(row_to_audit_event).collect()
     }
 }
 
