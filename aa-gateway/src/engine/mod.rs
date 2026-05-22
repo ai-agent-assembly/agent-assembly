@@ -2145,4 +2145,29 @@ mod tests {
         assert_eq!(out.decision, PolicyResult::Allow);
         assert!(shadow.is_none(), "no shadow event for Allow decisions");
     }
+
+    fn deny_result(reason: &str) -> EvaluationResult {
+        EvaluationResult {
+            decision: PolicyResult::Deny {
+                reason: reason.to_string(),
+            },
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: Some(DenyAction::Block),
+        }
+    }
+
+    #[test]
+    fn observe_mode_converts_deny_to_allow_and_emits_shadow_event() {
+        // The core observe-mode contract: a Deny decision is rewritten to
+        // Allow, the deny_action side-effect is dropped, and a ShadowEvent
+        // with shadow_decision = "deny" is produced for the audit sink.
+        let original = deny_result("tool denied by policy");
+        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        assert!(out.deny_action.is_none(), "deny side-effect must be dropped");
+        let shadow = shadow.expect("shadow event for Deny in Observe mode");
+        assert_eq!(shadow.shadow_decision, "deny");
+        assert_eq!(shadow.reason, "tool denied by policy");
+    }
 }
