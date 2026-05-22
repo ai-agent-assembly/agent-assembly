@@ -33,6 +33,7 @@ pub mod postgres;
 pub mod postgres_config;
 pub mod retention;
 pub mod retention_config;
+pub mod retention_engine;
 pub mod sqlite;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
@@ -46,4 +47,5 @@ pub use postgres::PostgresBackend;
 pub use postgres_config::PostgresConfig;
 pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
 pub use retention_config::{RetentionConfig, RetentionConfigError};
+pub use retention_engine::RetentionEngine;
 pub use sqlite::{SqliteBackend, SqliteConfig};
