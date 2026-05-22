@@ -23,7 +23,6 @@ use super::models::{
 /// exception of `database_url`, which is run through [`redact_database_url`]
 /// before being assigned to `database_url_redacted`. The raw wire value never
 /// reaches the display layer.
-#[allow(dead_code)]
 pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzResponse>) -> DeploymentOverview {
     match healthz {
         Some(h) => DeploymentOverview {
