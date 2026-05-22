@@ -29,6 +29,7 @@ pub mod cache;
 pub mod error;
 pub mod health;
 pub mod metric;
+pub mod migrations;
 pub mod policy;
 pub mod postgres;
 pub mod postgres_config;
