@@ -261,6 +261,7 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
             Err(e) => eprintln!("error serializing status to YAML: {e}"),
         },
         OutputFormat::Table => {
+            render_deployment_overview(&snapshot.deployment);
             render_runtime_health(&snapshot.runtime);
             render_agents_table(&snapshot.agents);
             render_approvals_summary(&snapshot.approvals);
