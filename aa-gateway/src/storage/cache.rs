@@ -103,18 +103,56 @@ impl Default for PolicyCache {
 }
 
 impl PolicyCache {
-    /// Build a cache handle from `config`. When `config.enabled` is `false`
-    /// (the default), this returns [`PolicyCache::Disabled`] without
-    /// touching Redis. The `enabled = true` branch lands in Epic-18 S-G
-    /// sub-task 4.
+    /// Build a cache handle from `config` without touching the network.
+    ///
+    /// When `config.enabled` is `false` (the default), this returns
+    /// [`PolicyCache::Disabled`]. When `enabled = true` and the
+    /// `redis-cache` feature is on, the synchronous `from_config` cannot
+    /// run async I/O — callers should use [`PolicyCache::from_config_async`]
+    /// to attempt the Redis connection. The sync constructor here still
+    /// returns `Disabled` for the enabled case, matching the safe posture
+    /// callers see if they forget to switch to the async constructor.
     pub fn from_config(config: &RedisConfig) -> Self {
         if !config.enabled {
             return Self::Disabled;
         }
-        // TODO(AAASM-1716, S-G sub-task 4): attempt the Redis connection.
-        // Until then, treat enabled-but-unimplemented as Disabled so the
-        // gateway never tries to talk to a non-existent backend.
+        // The enabled branch requires async I/O — see `from_config_async`.
         Self::Disabled
+    }
+
+    /// Build a cache handle, attempting the Redis connection when enabled.
+    ///
+    /// * `config.enabled = false` → returns [`PolicyCache::Disabled`].
+    /// * `config.enabled = true` and the `redis-cache` feature is on → tries
+    ///   to open a [`RedisPolicyCache`]. On connection failure, logs a
+    ///   `tracing::warn!` and returns [`PolicyCache::Disabled`] so the
+    ///   gateway can still serve requests via the authoritative store.
+    /// * `config.enabled = true` and the feature is off → logs a warning
+    ///   and returns [`PolicyCache::Disabled`].
+    pub async fn from_config_async(config: &RedisConfig) -> Self {
+        if !config.enabled {
+            return Self::Disabled;
+        }
+        #[cfg(feature = "redis-cache")]
+        {
+            match RedisPolicyCache::connect(config).await {
+                Ok(cache) => Self::Redis(cache),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "redis policy cache connect failed — falling back to disabled cache"
+                    );
+                    Self::Disabled
+                }
+            }
+        }
+        #[cfg(not(feature = "redis-cache"))]
+        {
+            tracing::warn!(
+                "storage.redis.enabled = true but the `redis-cache` feature is not compiled in; falling back to disabled cache"
+            );
+            Self::Disabled
+        }
     }
 }
 
