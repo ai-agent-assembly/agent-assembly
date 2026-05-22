@@ -237,16 +237,23 @@ pub enum LocalModeError {
 /// so the SPA catch-all never eats the API route — AAASM-1580 AC
 /// "API route, not overridden by dashboard handler".
 ///
-/// Missing dist when the dashboard is requested is silent in this
-/// commit — the next commit adds the `tracing::warn!` for AAASM-1580
-/// AC "Missing dashboard/dist/ → gateway starts successfully with
-/// warning".
+/// When the dashboard is requested but no candidate
+/// `dashboard/dist/` resolves, the gateway logs a `tracing::warn!`
+/// and continues serving without the SPA — matches AAASM-1580 AC
+/// "Missing dashboard/dist/ → gateway starts successfully with
+/// warning (dashboard unavailable, gateway API still works)".
 pub(crate) fn router(config: &LocalModeConfig) -> Router {
     let state = HealthzState::new("local", "sqlite");
     let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
     if config.dashboard {
-        if let Some(dist) = find_dashboard_dist() {
-            app = app.merge(dashboard_router(&dist));
+        match find_dashboard_dist() {
+            Some(dist) => app = app.merge(dashboard_router(&dist)),
+            None => tracing::warn!(
+                target: "aa_gateway::local_mode",
+                "dashboard enabled but no dashboard/dist/ resolved \
+                 (checked AAASM_DASHBOARD_DIST, installed layout, and workspace layout); \
+                 serving /healthz only — run `pnpm --dir dashboard build` to enable the SPA",
+            ),
         }
     }
     app
