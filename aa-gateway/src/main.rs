@@ -144,4 +144,10 @@ mod tests {
         let resolved = resolve_mode(Some(Mode::Remote), env_with("local")).expect("resolve");
         assert_eq!(resolved, Mode::Remote);
     }
+
+    #[test]
+    fn falls_back_to_aa_mode_env() {
+        let resolved = resolve_mode(None, env_with("remote")).expect("resolve");
+        assert_eq!(resolved, Mode::Remote);
+    }
 }
