@@ -172,6 +172,7 @@ spec:
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
         destination_registry: Arc::new(DestinationRegistry::seeded()),
+        retention_engine: None,
     }
 }
 
