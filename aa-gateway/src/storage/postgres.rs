@@ -528,6 +528,34 @@ impl PostgresBackend {
             bytes: policy_document_bytes(document),
         }))
     }
+
+    /// List every stored version of `name`, newest first.
+    ///
+    /// Returns an empty Vec when the name has no saved versions — only
+    /// driver failures surface as [`StorageError`].
+    pub async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
+        let rows: Vec<(i32, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
+            "SELECT version, created_at, is_active FROM policy_versions \
+             WHERE name = $1 ORDER BY version DESC",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(version, created_at, is_active)| {
+                let version =
+                    u32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
+                Ok(PolicyMeta {
+                    name: name.to_owned(),
+                    version,
+                    created_at,
+                    is_active,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
