@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use super::agent::{AgentFilter, AgentRecord};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::{StorageError, StorageResult};
+use super::health::{HealthStatus, RowCounts, StorageHealth};
 use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
@@ -807,6 +808,51 @@ impl PostgresBackend {
             dropped_rows,
             freed_bytes: 0,
             ran_at: chrono::Utc::now(),
+        })
+    }
+
+    /// Probe backend liveness, latency, and current row counts.
+    ///
+    /// Runs `SELECT 1` to confirm the pool can talk to PostgreSQL, then
+    /// fans out a single `SELECT (… count …)` to gather row counts for
+    /// the three top-level tables in one round-trip. Reports
+    /// [`HealthStatus::Degraded`] when the probe + counts take 200 ms or
+    /// more — operators can use that as a leading indicator before the
+    /// gateway's own latency budget trips.
+    pub async fn healthcheck(&self) -> StorageResult<StorageHealth> {
+        let start = std::time::Instant::now();
+
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
+
+        let (audit_events, agents, policy_versions): (i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+               (SELECT count(*) FROM audit_events), \
+               (SELECT count(*) FROM agent_registry), \
+               (SELECT count(*) FROM policy_versions)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+
+        let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let status = if latency_ms < 200 {
+            HealthStatus::Ok
+        } else {
+            HealthStatus::Degraded
+        };
+
+        Ok(StorageHealth {
+            status,
+            backend: "postgres",
+            latency_ms,
+            row_counts: RowCounts {
+                audit_events: audit_events as u64,
+                agents: agents as u64,
+                policy_versions: policy_versions as u64,
+            },
         })
     }
 }
