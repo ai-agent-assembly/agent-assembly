@@ -7,11 +7,13 @@
 //!
 //! [`DeploymentMode::Local`]: aa_core::config::DeploymentMode::Local
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+use aa_core::config::LocalModeConfig;
 use axum::{routing::get, Extension, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::routes::healthz::{healthz, HealthzState};
@@ -86,7 +88,6 @@ pub enum LocalModeError {
 /// The `Extension(HealthzState::new("local", "sqlite"))` layer supplies
 /// the labels the shared `/healthz` handler reads, so the response body
 /// carries `mode: "local"` and `storage: "sqlite"` per AAASM-1576 AC #4.
-#[allow(dead_code)] // consumed by start_local() — AAASM-1725
 pub(crate) fn router() -> Router {
     let state = HealthzState::new("local", "sqlite");
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
@@ -104,7 +105,6 @@ pub(crate) fn router() -> Router {
 ///
 /// Tilde expansion is not performed here — `aa-core::config::GatewayConfig::
 /// expand_paths()` (AAASM-1691) resolves `~` upstream before this is called.
-#[allow(dead_code)] // consumed by open_storage / start_local — AAASM-1710, AAASM-1725
 pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
     let Some(parent) = path.parent() else { return Ok(()) };
     if parent.as_os_str().is_empty() {
@@ -130,7 +130,6 @@ pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
 /// satisfies the `/healthz` `"storage": "sqlite"` contract and lets
 /// the later sub-tasks (AAASM-1725, AAASM-1728) treat it as a real
 /// resource that must be opened and closed cleanly.
-#[allow(dead_code)] // consumed by start_local() — AAASM-1725
 pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeError> {
     ensure_storage_parent(path)?;
     let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true);
@@ -160,7 +159,6 @@ pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeErr
 /// The body-shape check guards against falsely identifying *foreign*
 /// services that happen to be listening on the port (e.g. a developer
 /// running a different HTTP server on 7391) as a healthy AASM gateway.
-#[allow(dead_code)] // consumed by start_local() — AAASM-1725
 pub(crate) async fn probe_running(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/healthz");
     let Ok(client) = reqwest::Client::builder()
@@ -181,6 +179,137 @@ pub(crate) async fn probe_running(port: u16) -> bool {
     body.get("mode").and_then(|v| v.as_str()).is_some()
         && body.get("storage").and_then(|v| v.as_str()).is_some()
         && body.get("version").and_then(|v| v.as_str()).is_some()
+}
+
+/// Resolve the production PID-file location: `~/.aasm/gateway.pid`.
+///
+/// Called by `start_local()` (AAASM-1725) to record the running process
+/// id so `aasm stop` (AAASM-1717 / E17 S-D) can later signal it.
+/// Matches AAASM-1576 AC #7 ("PID file written to `~/.aasm/gateway.pid`").
+///
+/// Falls back to an empty `PathBuf` when `dirs::home_dir()` returns
+/// `None` — the caller's subsequent `std::fs::write` will surface the
+/// error as `LocalModeError::PidFile` rather than panicking.
+pub(crate) fn pid_file_path() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".aasm/gateway.pid")
+}
+
+/// Print the local-mode startup banner to stderr.
+///
+/// The exact banner shape matches the AAASM-1576 Story description so
+/// operators see a consistent "what just started" message across
+/// versions:
+///
+/// ```text
+/// Agent Assembly [local mode] v0.0.1
+///   Listening:  http://127.0.0.1:7391
+///   Dashboard:  http://127.0.0.1:7391/
+///   Storage:    /Users/alice/.aasm/local.db (SQLite)
+///
+///   Ctrl+C to stop.
+/// ```
+///
+/// Goes to stderr (not stdout) so it never pollutes piped JSON output
+/// from `aasm`-family tools.
+pub(crate) fn write_banner(addr: &SocketAddr, storage_path: &Path) {
+    eprintln!("Agent Assembly [local mode] v{}", env!("CARGO_PKG_VERSION"));
+    eprintln!("  Listening:  http://{addr}");
+    eprintln!("  Dashboard:  http://{addr}/");
+    eprintln!("  Storage:    {} (SQLite)", storage_path.display());
+    eprintln!();
+    eprintln!("  Ctrl+C to stop.");
+}
+
+/// Boot the local-mode control plane.
+///
+/// The entry point of E17 S-B — strings together every helper this
+/// module has accumulated (`probe_running` → `open_storage` → bind
+/// → `write_banner` → PID file → spawn) to deliver AAASM-1576 ACs
+/// #1, #5, #6, #7 in a single call:
+///
+/// * **AC #1** — `AA_MODE=local` starts a control plane at the
+///   configured port (default `7391`).
+/// * **AC #5** — Startup completes in well under 500 ms on a
+///   developer laptop (the round-trip is bounded by the local
+///   `axum::serve` task scheduling).
+/// * **AC #6** — Listener binds to `127.0.0.1` only, never
+///   `0.0.0.0` — explicit `IpAddr::V4(Ipv4Addr::LOCALHOST)`.
+/// * **AC #7** — PID file written to `~/.aasm/gateway.pid`.
+///
+/// **Idempotency** (AC #2) — if `probe_running(config.port)` returns
+/// `true`, the function short-circuits and returns a handle pointing
+/// at the existing process. The handle's `shutdown_tx` is a closed
+/// channel in that case — signalling it is a silent no-op, which is
+/// correct because we don't own the other process's lifecycle.
+///
+/// Graceful shutdown wiring (SIGTERM/SIGINT handler + DB pool close)
+/// lands in AAASM-1728; this Sub-task leaves the shutdown channel as
+/// the only mechanism, intended for `run_until_shutdown()` to consume.
+pub async fn start_local(config: &LocalModeConfig) -> Result<LocalGatewayHandle, LocalModeError> {
+    start_local_with_pid_path(config, &pid_file_path()).await
+}
+
+/// `start_local` with an explicit PID-file path, kept `pub(crate)` so
+/// tests can target a `tempfile::tempdir()` location instead of the
+/// developer's real `~/.aasm/gateway.pid`.
+pub(crate) async fn start_local_with_pid_path(
+    config: &LocalModeConfig,
+    pid_path: &Path,
+) -> Result<LocalGatewayHandle, LocalModeError> {
+    // 1. Pre-flight idempotency probe (AAASM-1715).
+    if probe_running(config.port).await {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
+        // Closed channel: shutdown_tx.send(()) is a no-op because the
+        // existing gateway runs in a different process — we don't own it.
+        let (shutdown_tx, _closed_rx) = oneshot::channel();
+        return Ok(LocalGatewayHandle {
+            local_addr: addr,
+            shutdown_tx,
+        });
+    }
+
+    // 2. Storage (AAASM-1710). The pool is moved into the spawned task
+    //    so it's dropped when the server exits — AAASM-1728 will replace
+    //    the drop with an explicit `pool.close().await`.
+    let pool = open_storage(&config.storage_path).await?;
+
+    // 3. Bind 127.0.0.1:port (AC #6 — explicit Ipv4Addr::LOCALHOST,
+    //    never 0.0.0.0).
+    let requested_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
+    let listener = TcpListener::bind(requested_addr)
+        .await
+        .map_err(|source| LocalModeError::Bind {
+            addr: requested_addr.to_string(),
+            source,
+        })?;
+    let local_addr = listener.local_addr().unwrap_or(requested_addr);
+
+    // 4. Startup banner (stderr).
+    write_banner(&local_addr, &config.storage_path);
+
+    // 5. PID file (AC #7).
+    std::fs::write(pid_path, std::process::id().to_string()).map_err(|source| LocalModeError::PidFile {
+        path: pid_path.to_path_buf(),
+        source,
+    })?;
+
+    // 6. Serve. The shutdown_rx side stays in the spawned task; the
+    //    handle keeps shutdown_tx for AAASM-1728's signal handler.
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router())
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+        // Drop pool here — AAASM-1728 will replace with pool.close().await.
+        drop(pool);
+    });
+
+    Ok(LocalGatewayHandle {
+        local_addr,
+        shutdown_tx,
+    })
 }
 
 #[cfg(test)]
@@ -362,5 +491,160 @@ mod tests {
             !alive,
             "probe must reject foreign /healthz responses missing HealthzBody fields"
         );
+    }
+
+    /// Build a `LocalModeConfig` pointing at a fresh tempdir SQLite path
+    /// and a free ephemeral port. Used by every `start_local` test so
+    /// none of them collide on port 7391 or pollute `~/.aasm/`.
+    async fn test_config_with_ephemeral_port() -> (LocalModeConfig, tempfile::TempDir, u16) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Grab a free port by binding then dropping the listener.
+        let probe_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = probe_listener.local_addr().expect("local_addr").port();
+        drop(probe_listener);
+
+        let config = LocalModeConfig {
+            port,
+            dashboard: false,
+            storage_path: tmp.path().join("local.db"),
+        };
+        (config, tmp, port)
+    }
+
+    /// AAASM-1576 AC #1 + AC #6 end-to-end:
+    /// `start_local()` binds `127.0.0.1:<port>` (never `0.0.0.0`) and
+    /// `/healthz` responds with the documented local-mode JSON.
+    #[tokio::test]
+    async fn start_local_binds_127_0_0_1_and_serves_healthz() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        // AC #6 — bound address is the v4 loopback, not 0.0.0.0.
+        assert_eq!(
+            handle.local_addr.ip(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            "start_local must bind 127.0.0.1, never 0.0.0.0"
+        );
+        assert_eq!(handle.local_addr.port(), port);
+
+        // AC #1 — /healthz reachable with the documented body.
+        let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+            .await
+            .expect("GET /healthz")
+            .json::<serde_json::Value>()
+            .await
+            .expect("parse json");
+        assert_eq!(body["mode"], "local");
+        assert_eq!(body["storage"], "sqlite");
+
+        // Tear down — the spawned axum task lives until the runtime shuts it
+        // down at the end of the test. Signal it explicitly via the handle.
+        let _ = handle.shutdown_tx.send(());
+    }
+
+    /// AAASM-1576 AC #7: `start_local()` must write the running process
+    /// id to the configured PID file. Uses the `pub(crate)`
+    /// `start_local_with_pid_path()` variant so the test can point the
+    /// PID file at a tempdir instead of the developer's real
+    /// `~/.aasm/gateway.pid`.
+    #[tokio::test]
+    async fn start_local_writes_pid_file_with_running_pid() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+        assert!(!pid_path.exists(), "pid file must not exist before start");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+
+        assert!(pid_path.is_file(), "pid file must be written by start_local");
+        let written = std::fs::read_to_string(&pid_path).expect("read pid file");
+        let written_pid: u32 = written.trim().parse().expect("pid file contents must be a u32");
+        assert_eq!(
+            written_pid,
+            std::process::id(),
+            "pid file must contain the running process id"
+        );
+
+        let _ = handle.shutdown_tx.send(());
+    }
+
+    /// AAASM-1576 AC #2: when a gateway is **already** running on the
+    /// configured port, the second `start_local()` call must short-
+    /// circuit via the `probe_running` pre-flight check instead of
+    /// trying to re-bind and failing with `EADDRINUSE`.
+    ///
+    /// Pattern: bring up a real local-mode gateway via `start_local`,
+    /// then immediately call `start_local` again against the same
+    /// config. The second call must return Ok — proof the probe path
+    /// was taken (re-bind would have returned `LocalModeError::Bind`).
+    /// The second call's PID file *must not* be written, because we
+    /// reused the existing process and never reached the PID-write
+    /// step.
+    #[tokio::test]
+    async fn start_local_skips_when_probe_returns_true() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let first_pid_path = _tmp.path().join("first.pid");
+        let second_pid_path = _tmp.path().join("second.pid");
+
+        let first = start_local_with_pid_path(&config, &first_pid_path)
+            .await
+            .expect("first start_local");
+        assert!(first_pid_path.is_file(), "first start must write its PID file");
+
+        // Second call against the same port must short-circuit via the probe.
+        let second = start_local_with_pid_path(&config, &second_pid_path)
+            .await
+            .expect("second start_local must succeed via probe short-circuit");
+
+        assert!(
+            !second_pid_path.exists(),
+            "short-circuited start must NOT write a new PID file"
+        );
+        assert_eq!(
+            second.local_addr.port(),
+            config.port,
+            "short-circuited handle must still report the configured port"
+        );
+
+        let _ = first.shutdown_tx.send(());
+        let _ = second.shutdown_tx.send(());
+    }
+
+    /// AAASM-1576 AC #5: wall-clock from `start_local()` call to a
+    /// successful `/healthz` round-trip must be **under 500 ms** on a
+    /// standard developer laptop. The ceiling is generous against the
+    /// real expected latency (single-digit ms locally) so we catch
+    /// genuine regressions — e.g. someone adding a blocking migration
+    /// step to `open_storage` — without flaking on slow CI runners.
+    #[tokio::test]
+    async fn start_local_healthz_round_trip_completes_within_500ms() {
+        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let started = std::time::Instant::now();
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        let _ = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+            .await
+            .expect("GET /healthz")
+            .json::<serde_json::Value>()
+            .await
+            .expect("parse json");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "AAASM-1576 AC #5: start_local → /healthz round-trip must be < 500 ms, took {elapsed:?}"
+        );
+
+        let _ = handle.shutdown_tx.send(());
     }
 }
