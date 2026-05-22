@@ -67,6 +67,31 @@ impl PostgresBackend {
 mod tests {
     use super::*;
 
+    /// Returns a connected backend when `AAASM_DATABASE_URL` is set, or `None`
+    /// after printing a skip notice when the env var is absent. This lets the
+    /// suite stay green on developer machines without a local PostgreSQL while
+    /// still exercising the real driver in CI.
+    async fn pg_backend_or_skip() -> Option<PostgresBackend> {
+        let url = match std::env::var("AAASM_DATABASE_URL") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "skipping postgres test: AAASM_DATABASE_URL not set (CI provides this via services: postgres)"
+                );
+                return None;
+            }
+        };
+        let config = PostgresConfig {
+            database_url: Some(url),
+            ..PostgresConfig::default()
+        };
+        Some(
+            PostgresBackend::connect(&config)
+                .await
+                .expect("connect to AAASM_DATABASE_URL"),
+        )
+    }
+
     #[tokio::test]
     async fn connect_rejects_missing_database_url() {
         let config = PostgresConfig::default();
@@ -80,6 +105,24 @@ mod tests {
             }
             Err(other) => panic!("expected ConnectionFailed, got {other:?}"),
             Ok(_) => panic!("expected error when database_url is None"),
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_creates_expected_tables() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        for table in ["agent_registry", "policy_versions", "audit_events", "metrics"] {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_tables WHERE tablename = $1)")
+                    .bind(table)
+                    .fetch_one(&backend.pool)
+                    .await
+                    .expect("query pg_tables");
+            assert!(exists, "table {table} should exist after migrate()");
         }
     }
 }
