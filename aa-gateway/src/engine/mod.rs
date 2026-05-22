@@ -2216,4 +2216,17 @@ mod tests {
         assert_eq!(shadow.shadow_decision, "deny");
         assert_eq!(shadow.reason, "tool denied by policy");
     }
+
+    // ── enforcement-mode resolution (AAASM-1557) ─────────────────────────────
+
+    #[test]
+    fn resolve_falls_back_to_policy_default_when_agent_override_is_none() {
+        // An agent that registered without setting enforcement_mode inherits
+        // the policy document's posture. Most production agents take this path.
+        let resolved = resolve_enforcement_mode(None, aa_core::EnforcementMode::Observe);
+        assert_eq!(resolved, aa_core::EnforcementMode::Observe);
+
+        let resolved = resolve_enforcement_mode(None, aa_core::EnforcementMode::Enforce);
+        assert_eq!(resolved, aa_core::EnforcementMode::Enforce);
+    }
 }
