@@ -453,4 +453,25 @@ mod tests {
             .expect("apply_retention should have been called");
         assert_eq!(captured, new_config.to_policy());
     }
+
+    #[tokio::test]
+    async fn hot_reload_validation_failure_preserves_active_config() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let initial = RetentionConfig::default();
+        let engine = RetentionEngine::new(backend, initial.clone());
+
+        // archive without archive_url fails RetentionConfig::validate
+        let invalid = RetentionConfig {
+            cold_action: ColdAction::Archive,
+            archive_url: None,
+            ..RetentionConfig::default()
+        };
+        let err = engine.hot_reload(invalid).expect_err("invalid config must be rejected");
+        assert_eq!(err, RetentionConfigError::MissingArchiveUrl);
+        assert_eq!(
+            engine.current_config(),
+            initial,
+            "active config must be untouched after a rejected hot_reload"
+        );
+    }
 }
