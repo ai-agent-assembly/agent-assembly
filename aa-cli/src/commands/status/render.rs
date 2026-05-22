@@ -265,6 +265,52 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
 mod tests {
     use super::*;
 
+    fn strip_ansi(s: &str) -> String {
+        // The renderer wraps the health indicator in ANSI colour codes via the
+        // `colored` crate. Strip a minimal subset (CSI escapes) so substring
+        // assertions don't have to encode escape sequences.
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for tail in chars.by_ref() {
+                    if tail == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn local_sqlite_overview() -> DeploymentOverview {
+        DeploymentOverview {
+            mode: "local".to_string(),
+            gateway_url: "http://localhost:7391".to_string(),
+            storage_backend: "sqlite".to_string(),
+            storage_path: Some("~/.aasm/local.db".to_string()),
+            database_url_redacted: None,
+            version: "0.0.1".to_string(),
+            uptime_secs: 8133,
+            health: "ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_deployment_overview_renders_local_sqlite_header() {
+        let rendered = strip_ansi(&format_deployment_overview(&local_sqlite_overview()));
+        assert!(rendered.starts_with("Agent Assembly Status\n"));
+        assert!(rendered.contains("  Mode:      local\n"));
+        assert!(rendered.contains("  Gateway:   http://localhost:7391\n"));
+        assert!(rendered.contains("  Storage:   sqlite  (~/.aasm/local.db)\n"));
+        assert!(rendered.contains("  Version:   0.0.1\n"));
+        assert!(rendered.contains("  Uptime:    2h 15m 33s\n"));
+        assert!(rendered.contains("  Health:    ✓ ok\n"));
+    }
+
     #[test]
     fn bar_chart_at_zero_percent() {
         let bar = format_bar_chart(0);
