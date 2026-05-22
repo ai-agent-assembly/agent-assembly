@@ -300,6 +300,26 @@ mod tests {
     }
 
     #[test]
+    fn format_deployment_overview_shows_redacted_db_url_for_remote_postgres() {
+        let overview = DeploymentOverview {
+            mode: "remote".to_string(),
+            gateway_url: "https://cp.company.internal:7391".to_string(),
+            storage_backend: "postgres".to_string(),
+            storage_path: None,
+            database_url_redacted: Some("postgresql://aasm:***@aasm-db:5432/aasm".to_string()),
+            version: "0.0.1".to_string(),
+            uptime_secs: 1_234_567,
+            health: "ok".to_string(),
+        };
+        let rendered = strip_ansi(&format_deployment_overview(&overview));
+        assert!(rendered.contains("  Mode:      remote\n"));
+        assert!(rendered.contains("  Gateway:   https://cp.company.internal:7391\n"));
+        assert!(rendered.contains("  Storage:   postgres  (postgresql://aasm:***@aasm-db:5432/aasm)\n"));
+        // Raw secret must never appear in the rendered output.
+        assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
     fn format_deployment_overview_renders_local_sqlite_header() {
         let rendered = strip_ansi(&format_deployment_overview(&local_sqlite_overview()));
         assert!(rendered.starts_with("Agent Assembly Status\n"));
