@@ -176,6 +176,71 @@ mod tests {
         );
     }
 
+    /// AAASM-1580 AC "AAASM_DASHBOARD_DIST=/custom/path env var
+    /// overrides default dist path": when the env override resolves to
+    /// an existing directory, it wins regardless of what the installed
+    /// or dev roots contain — even when *both* would otherwise match.
+    #[test]
+    fn find_dashboard_dist_prefers_env_override() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let installed = tempfile::tempdir().expect("installed root");
+        std::fs::create_dir_all(installed.path().join("dashboard").join("dist")).expect("installed dist");
+
+        let resolved = find_dashboard_dist_in(
+            Some(tmp.path().to_string_lossy().into_owned()),
+            Some(installed.path().to_path_buf()),
+            None,
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(tmp.path()),
+            "env-var override must beat the installed-layout root"
+        );
+    }
+
+    /// Negative path of the override: an env value pointing at a path
+    /// that is *not* an existing directory must be ignored, and the
+    /// helper must fall through to the installed/dev fallbacks. This
+    /// keeps a stale env var from blocking a working development tree.
+    #[test]
+    fn find_dashboard_dist_falls_through_when_env_path_missing() {
+        let installed = tempfile::tempdir().expect("installed root");
+        let installed_dist = installed.path().join("dashboard").join("dist");
+        std::fs::create_dir_all(&installed_dist).expect("installed dist");
+
+        let resolved = find_dashboard_dist_in(
+            Some("/definitely/does/not/exist".to_string()),
+            Some(installed.path().to_path_buf()),
+            None,
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(installed_dist.as_path()),
+            "missing env-var path must fall through to the installed root"
+        );
+    }
+
+    /// AAASM-1580 AC "Missing dashboard/dist/ → gateway starts
+    /// successfully with warning" at the helper level: when every
+    /// candidate root is absent, the resolver returns `None` so the
+    /// caller (the local-mode router in AAASM-1844) can warn and skip
+    /// mounting the SPA instead of crashing.
+    #[test]
+    fn find_dashboard_dist_returns_none_when_no_candidate_resolves() {
+        let installed = tempfile::tempdir().expect("installed root"); // no dashboard/dist inside
+        let dev = tempfile::tempdir().expect("dev root"); //          no dashboard/dist inside
+
+        let resolved = find_dashboard_dist_in(
+            None,
+            Some(installed.path().to_path_buf()),
+            Some(dev.path().to_path_buf()),
+        );
+
+        assert_eq!(resolved, None, "missing every candidate must yield None");
+    }
+
     /// AAASM-1580 AC "GET /agents → index.html (SPA fallback, not 404)":
     /// an unknown nested path falls through to `ServeDir::fallback`
     /// (ServeFile of index.html), so React Router receives the SPA
