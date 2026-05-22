@@ -8,9 +8,10 @@
 //! [`DeploymentMode::Local`]: aa_core::config::DeploymentMode::Local
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::{routing::get, Extension, Router};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use tokio::sync::oneshot;
 
 use crate::routes::healthz::{healthz, HealthzState};
@@ -91,6 +92,56 @@ pub(crate) fn router() -> Router {
     Router::new().route("/healthz", get(healthz)).layer(Extension(state))
 }
 
+/// Create the parent directory tree for `path` if it does not yet exist.
+///
+/// Called by [`open_storage`] before opening the SQLite file so that a
+/// developer's first `aasm start --mode local` can write to
+/// `~/.aasm/local.db` even when `~/.aasm/` doesn't exist yet — matches
+/// AAASM-1576 AC #3 (`SQLite file created at ~/.aasm/local.db on first start`).
+///
+/// `path.parent()` returning `None` or an empty path (e.g. a bare
+/// filename like `:memory:`) is a no-op success.
+///
+/// Tilde expansion is not performed here — `aa-core::config::GatewayConfig::
+/// expand_paths()` (AAASM-1691) resolves `~` upstream before this is called.
+#[allow(dead_code)] // consumed by open_storage / start_local — AAASM-1710, AAASM-1725
+pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
+    let Some(parent) = path.parent() else { return Ok(()) };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|source| LocalModeError::Storage {
+        path: path.to_path_buf(),
+        source: sqlx::Error::Io(source),
+    })
+}
+
+/// Open a SQLite connection pool backing the local control plane.
+///
+/// Calls [`ensure_storage_parent`] so `~/.aasm/` is created on first
+/// start, then opens `SqlitePool` with `create_if_missing(true)` so
+/// the SQLite file itself is materialised on the same call — the
+/// behaviour AAASM-1576 AC #3 requires (`SQLite file created at
+/// ~/.aasm/local.db on first start`).
+///
+/// Migrations are deliberately out of scope here — the durable
+/// storage layer (`E18 S-B`, AAASM-1574) owns the migration runner.
+/// Until that lands, the pool returned here is empty/schema-less; it
+/// satisfies the `/healthz` `"storage": "sqlite"` contract and lets
+/// the later sub-tasks (AAASM-1725, AAASM-1728) treat it as a real
+/// resource that must be opened and closed cleanly.
+#[allow(dead_code)] // consumed by start_local() — AAASM-1725
+pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeError> {
+    ensure_storage_parent(path)?;
+    let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true);
+    SqlitePool::connect_with(opts)
+        .await
+        .map_err(|source| LocalModeError::Storage {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +187,50 @@ mod tests {
             body["uptime_secs"].is_u64(),
             "uptime_secs must be present and a u64; got {body}",
         );
+    }
+
+    /// Mirrors the developer's first `aasm start --mode local` —
+    /// `~/.aasm/` does not exist yet, so `ensure_storage_parent`
+    /// must `mkdir -p` the parent tree before the SQLite file can
+    /// be written. Verifies the helper creates nested missing
+    /// directories rather than only the immediate parent.
+    #[test]
+    fn ensure_storage_parent_creates_nested_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nested = tmp.path().join("a/b/c/local.db");
+
+        // Sanity: the nested parent does not exist yet.
+        assert!(!nested.parent().expect("parent").exists());
+
+        ensure_storage_parent(&nested).expect("ensure_storage_parent");
+
+        assert!(
+            nested.parent().expect("parent").is_dir(),
+            "ensure_storage_parent should mkdir -p the parent tree"
+        );
+    }
+
+    /// AAASM-1576 AC #3 end-to-end at the helper level: `open_storage`
+    /// must materialise the SQLite file on disk in a fresh directory
+    /// tree, not just open a connection in memory. Uses `tempfile`
+    /// so the test is hermetic — no `~/.aasm/` writes leak from CI.
+    #[tokio::test]
+    async fn open_storage_creates_sqlite_file_in_fresh_tempdir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("nested/local.db");
+
+        // Sanity: neither the parent nor the file exist yet.
+        assert!(!db_path.parent().expect("parent").exists());
+        assert!(!db_path.exists());
+
+        let pool = open_storage(&db_path).await.expect("open_storage");
+
+        assert!(
+            db_path.is_file(),
+            "open_storage should materialise the SQLite file on disk"
+        );
+        assert!(!pool.is_closed(), "open_storage should return an open pool",);
+
+        pool.close().await;
     }
 }
