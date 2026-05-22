@@ -76,6 +76,47 @@ fn row_to_audit_event(row: &sqlx::postgres::PgRow) -> StorageResult<AuditEvent> 
     })
 }
 
+/// Decode a single `agent_registry` row into an [`AgentRecord`].
+///
+/// Native PostgreSQL types map directly to the value-type fields —
+/// `TIMESTAMPTZ` → `DateTime<Utc>`, `JSONB` → `serde_json::Value` →
+/// `BTreeMap<String, String>`. `agent_id` is the only column that takes
+/// a manual TEXT round-trip via [`agent_id_from_text`].
+fn row_to_agent_record(row: &sqlx::postgres::PgRow) -> StorageResult<AgentRecord> {
+    use sqlx::Row;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    let metadata_json: serde_json::Value = row
+        .try_get("metadata")
+        .map_err(|e| StorageError::QueryFailed(format!("metadata column: {e}")))?;
+    let metadata: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(metadata_json).map_err(|e| StorageError::QueryFailed(format!("metadata parse: {e}")))?;
+
+    Ok(AgentRecord {
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        org_id: row
+            .try_get("org_id")
+            .map_err(|e| StorageError::QueryFailed(format!("org_id column: {e}")))?,
+        metadata,
+        registered_at: row
+            .try_get("registered_at")
+            .map_err(|e| StorageError::QueryFailed(format!("registered_at column: {e}")))?,
+        last_seen_at: row
+            .try_get("last_seen_at")
+            .map_err(|e| StorageError::QueryFailed(format!("last_seen_at column: {e}")))?,
+        enforcement_mode: row
+            .try_get("enforcement_mode")
+            .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode column: {e}")))?,
+    })
+}
+
 /// Push the audit-event WHERE clause derived from `filter` into `qb`.
 ///
 /// Adds clauses for `agent_id`, `team_id`, `from` / `to` (`ts >=` / `ts <`),
@@ -283,6 +324,22 @@ impl PostgresBackend {
         .await
         .map(|_| ())
         .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    /// Return the agent record for `id`, if registered.
+    ///
+    /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
+    /// as a [`StorageError`].
+    pub async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        let row = sqlx::query(
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
+             enforcement_mode FROM agent_registry WHERE agent_id = $1",
+        )
+        .bind(agent_id_to_text(id))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        row.as_ref().map(row_to_agent_record).transpose()
     }
 }
 
