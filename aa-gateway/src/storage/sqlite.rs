@@ -12,9 +12,18 @@
 
 use std::path::{Path, PathBuf};
 
+use aa_core::identity::AgentId;
+use async_trait::async_trait;
 use sqlx::SqlitePool;
 
+use super::agent::{AgentFilter, AgentRecord};
+use super::audit::{AuditEvent, AuditFilter};
+use super::backend::StorageBackend;
 use super::error::{StorageError, StorageResult};
+use super::health::StorageHealth;
+use super::metric::{Metric, MetricPoint, MetricQuery};
+use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
+use super::retention::{RetentionPolicy, RetentionStats};
 
 /// SQL DDL applied by [`SqliteBackend::migrate`] on every gateway start.
 ///
@@ -137,19 +146,224 @@ impl SqliteBackend {
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
 
-    /// Apply the [`SCHEMA`] DDL to the open database.
-    ///
-    /// Idempotent: each statement uses `IF NOT EXISTS`, so re-running on
-    /// an already-migrated database is a no-op. Intended to be invoked
-    /// once at gateway startup before the runtime issues any trait-level
-    /// reads or writes.
-    ///
-    /// # Errors
-    ///
-    /// - [`StorageError::MigrationFailed`] if any DDL statement is
-    ///   rejected by the backend.
-    pub async fn migrate(&self) -> StorageResult<()> {
+/// Encode an [`AgentId`] for storage as a TEXT column (canonical UUID
+/// hyphenated string).
+fn agent_id_to_text(id: &AgentId) -> String {
+    uuid::Uuid::from_bytes(*id.as_bytes()).to_string()
+}
+
+/// Decode an `agent_id` TEXT column value back into an [`AgentId`].
+fn agent_id_from_text(s: &str) -> StorageResult<AgentId> {
+    let uuid = uuid::Uuid::parse_str(s).map_err(|e| StorageError::QueryFailed(format!("invalid agent_id {s}: {e}")))?;
+    Ok(AgentId::from_bytes(*uuid.as_bytes()))
+}
+
+/// Decode a single `audit_events` row into an [`AuditEvent`].
+///
+/// Maps TEXT timestamps back to `DateTime<Utc>` and TEXT JSON payloads
+/// back to `serde_json::Value`. Any malformed column produces
+/// [`StorageError::QueryFailed`] with the column name.
+fn row_to_audit_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AuditEvent> {
+    use sqlx::Row;
+
+    let ts_text: String = row
+        .try_get("ts")
+        .map_err(|e| StorageError::QueryFailed(format!("ts column: {e}")))?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&ts_text)
+        .map_err(|e| StorageError::QueryFailed(format!("ts parse: {e}")))?
+        .with_timezone(&chrono::Utc);
+
+    let event_id_text: String = row
+        .try_get("event_id")
+        .map_err(|e| StorageError::QueryFailed(format!("event_id column: {e}")))?;
+    let event_id =
+        uuid::Uuid::parse_str(&event_id_text).map_err(|e| StorageError::QueryFailed(format!("event_id parse: {e}")))?;
+
+    let agent_id_text: String = row
+        .try_get("agent_id")
+        .map_err(|e| StorageError::QueryFailed(format!("agent_id column: {e}")))?;
+    let agent_id = agent_id_from_text(&agent_id_text)?;
+
+    let dry_run: i64 = row
+        .try_get("dry_run")
+        .map_err(|e| StorageError::QueryFailed(format!("dry_run column: {e}")))?;
+
+    let payload_text: Option<String> = row
+        .try_get("payload")
+        .map_err(|e| StorageError::QueryFailed(format!("payload column: {e}")))?;
+    let payload = payload_text
+        .map(|t| {
+            serde_json::from_str::<serde_json::Value>(&t)
+                .map_err(|e| StorageError::QueryFailed(format!("payload parse: {e}")))
+        })
+        .transpose()?;
+
+    Ok(AuditEvent {
+        ts,
+        event_id,
+        agent_id,
+        team_id: row
+            .try_get("team_id")
+            .map_err(|e| StorageError::QueryFailed(format!("team_id column: {e}")))?,
+        action: row
+            .try_get("action")
+            .map_err(|e| StorageError::QueryFailed(format!("action column: {e}")))?,
+        decision: row
+            .try_get("decision")
+            .map_err(|e| StorageError::QueryFailed(format!("decision column: {e}")))?,
+        dry_run: dry_run != 0,
+        shadow_decision: row
+            .try_get("shadow_decision")
+            .map_err(|e| StorageError::QueryFailed(format!("shadow_decision column: {e}")))?,
+        matched_rule_id: row
+            .try_get("matched_rule_id")
+            .map_err(|e| StorageError::QueryFailed(format!("matched_rule_id column: {e}")))?,
+        payload,
+    })
+}
+
+/// Push the audit-event WHERE clause derived from `filter` into `qb`.
+///
+/// Adds clauses for `agent_id`, `team_id`, `from`/`to` (`ts >=` / `ts <`),
+/// and `dry_run_only`. Pushes nothing when `filter` is empty, leaving the
+/// caller's `SELECT … FROM audit_events` unchanged.
+fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &'q AuditFilter) {
+    let mut started = false;
+    let mut connective = move |qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>| {
+        qb.push(if started { " AND " } else { " WHERE " });
+        started = true;
+    };
+    if let Some(agent_id) = filter.agent_id.as_ref() {
+        connective(qb);
+        qb.push("agent_id = ").push_bind(agent_id_to_text(agent_id));
+    }
+    if let Some(team_id) = filter.team_id.as_ref() {
+        connective(qb);
+        qb.push("team_id = ").push_bind(team_id.clone());
+    }
+    if let Some(from) = filter.from {
+        connective(qb);
+        qb.push("ts >= ").push_bind(from.to_rfc3339());
+    }
+    if let Some(to) = filter.to {
+        connective(qb);
+        qb.push("ts < ").push_bind(to.to_rfc3339());
+    }
+    if filter.dry_run_only {
+        connective(qb);
+        qb.push("dry_run = 1");
+    }
+}
+
+/// Trait wiring. Concrete method bodies for each slice land in their own
+/// Epic-18 S-B sub-task; until then the unimplemented slices return
+/// `todo!("AAASM-…")` so the workspace compiles.
+#[async_trait]
+impl StorageBackend for SqliteBackend {
+    async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
+        let payload_text = match event.payload.as_ref() {
+            Some(value) => Some(
+                serde_json::to_string(value)
+                    .map_err(|e| StorageError::QueryFailed(format!("payload serialize: {e}")))?,
+            ),
+            None => None,
+        };
+        sqlx::query(
+            "INSERT INTO audit_events \
+             (ts, event_id, agent_id, team_id, action, decision, dry_run, shadow_decision, matched_rule_id, payload) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(event.ts.to_rfc3339())
+        .bind(event.event_id.to_string())
+        .bind(agent_id_to_text(&event.agent_id))
+        .bind(event.team_id.clone())
+        .bind(&event.action)
+        .bind(&event.decision)
+        .bind(i64::from(event.dry_run))
+        .bind(event.shadow_decision.clone())
+        .bind(event.matched_rule_id.clone())
+        .bind(payload_text)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT ts, event_id, agent_id, team_id, action, decision, dry_run, \
+             shadow_decision, matched_rule_id, payload FROM audit_events",
+        );
+        push_audit_where(&mut qb, &filter);
+        qb.push(" ORDER BY ts DESC");
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+            if let Some(offset) = filter.offset {
+                qb.push(" OFFSET ").push_bind(i64::from(offset));
+            }
+        }
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        rows.iter().map(row_to_audit_event).collect()
+    }
+
+    async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM audit_events");
+        push_audit_where(&mut qb, &filter);
+        let (count,): (i64,) = qb
+            .build_query_as()
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        u64::try_from(count).map_err(|e| StorageError::QueryFailed(format!("count overflow: {e}")))
+    }
+
+    async fn upsert_agent(&self, _record: AgentRecord) -> StorageResult<()> {
+        todo!("AAASM-1708: upsert_agent")
+    }
+
+    async fn get_agent(&self, _id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        todo!("AAASM-1708: get_agent")
+    }
+
+    async fn list_agents(&self, _filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
+        todo!("AAASM-1708: list_agents")
+    }
+
+    async fn delete_agent(&self, _id: &AgentId) -> StorageResult<()> {
+        todo!("AAASM-1708: delete_agent")
+    }
+
+    async fn save_policy(&self, _doc: PolicyDocument) -> StorageResult<PolicyVersion> {
+        todo!("AAASM-1712: save_policy")
+    }
+
+    async fn get_active_policy(&self, _name: &str) -> StorageResult<Option<PolicyDocument>> {
+        todo!("AAASM-1712: get_active_policy")
+    }
+
+    async fn list_policy_versions(&self, _name: &str) -> StorageResult<Vec<PolicyMeta>> {
+        todo!("AAASM-1712: list_policy_versions")
+    }
+
+    async fn rollback_policy(&self, _name: &str, _version: u32) -> StorageResult<()> {
+        todo!("AAASM-1712: rollback_policy")
+    }
+
+    async fn record_metric(&self, _m: Metric) -> StorageResult<()> {
+        todo!("AAASM-1714: record_metric")
+    }
+
+    async fn query_metrics(&self, _q: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
+        todo!("AAASM-1714: query_metrics")
+    }
+
+    async fn migrate(&self) -> StorageResult<()> {
         for stmt in SCHEMA {
             sqlx::query(stmt)
                 .execute(&self.pool)
@@ -157,6 +371,14 @@ impl SqliteBackend {
                 .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
         }
         Ok(())
+    }
+
+    async fn apply_retention(&self, _policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
+        todo!("AAASM-1721: apply_retention")
+    }
+
+    async fn healthcheck(&self) -> StorageResult<StorageHealth> {
+        todo!("AAASM-1721: healthcheck")
     }
 }
 
@@ -264,5 +486,185 @@ mod tests {
         .await
         .expect("count probe");
         assert_eq!(count, 6, "exactly 4 tables + 2 indexes expected");
+    }
+
+    /// Three audit events with distinct agent_ids, timestamps and flags.
+    /// Shared helper for the AuditFilter / paging / count tests.
+    fn sample_events() -> Vec<AuditEvent> {
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let agent_b = AgentId::from_bytes([2; 16]);
+        vec![
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(1),
+                agent_id: agent_a,
+                team_id: Some("team-x".into()),
+                action: "tool_call".into(),
+                decision: "allow".into(),
+                dry_run: false,
+                shadow_decision: None,
+                matched_rule_id: Some("rule-1".into()),
+                payload: Some(serde_json::json!({"tool": "fetch"})),
+            },
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T11:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(2),
+                agent_id: agent_a,
+                team_id: Some("team-x".into()),
+                action: "policy_decision".into(),
+                decision: "deny".into(),
+                dry_run: true,
+                shadow_decision: Some("allow".into()),
+                matched_rule_id: None,
+                payload: None,
+            },
+            AuditEvent {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-05-21T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                event_id: uuid::Uuid::from_u128(3),
+                agent_id: agent_b,
+                team_id: Some("team-y".into()),
+                action: "tool_call".into(),
+                decision: "allow".into(),
+                dry_run: false,
+                shadow_decision: None,
+                matched_rule_id: Some("rule-2".into()),
+                payload: Some(serde_json::json!({"k": [1, 2, 3]})),
+            },
+        ]
+    }
+
+    async fn migrated_backend_with_samples() -> (TempDir, SqliteBackend, Vec<AuditEvent>) {
+        let (tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let events = sample_events();
+        for ev in &events {
+            backend.append_audit_event(ev).await.expect("append");
+        }
+        (tmp, backend, events)
+    }
+
+    #[tokio::test]
+    async fn audit_round_trip_preserves_all_columns_including_payload() {
+        let (_tmp, backend, events) = migrated_backend_with_samples().await;
+        let mut out = backend.query_audit_events(AuditFilter::default()).await.expect("query");
+        // ORDER BY ts DESC — newest first.
+        out.reverse();
+        assert_eq!(out, events, "all columns + payload must round-trip");
+    }
+
+    #[tokio::test]
+    async fn audit_filter_dimensions_independently_narrow_results() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let agent_b = AgentId::from_bytes([2; 16]);
+
+        let by_a = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("agent filter");
+        assert_eq!(by_a.len(), 2);
+        assert!(by_a.iter().all(|e| e.agent_id == agent_a));
+
+        let by_team_y = backend
+            .query_audit_events(AuditFilter {
+                team_id: Some("team-y".into()),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("team filter");
+        assert_eq!(by_team_y.len(), 1);
+        assert_eq!(by_team_y[0].agent_id, agent_b);
+
+        let only_dry = backend
+            .query_audit_events(AuditFilter {
+                dry_run_only: true,
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("dry_run filter");
+        assert_eq!(only_dry.len(), 1);
+        assert!(only_dry[0].dry_run);
+
+        let in_window = backend
+            .query_audit_events(AuditFilter {
+                from: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T10:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                to: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-05-21T11:30:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("time-range filter");
+        assert_eq!(in_window.len(), 1);
+        assert_eq!(in_window[0].event_id, uuid::Uuid::from_u128(2));
+    }
+
+    #[tokio::test]
+    async fn audit_query_limit_and_offset_produce_disjoint_pages() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+        let first = backend
+            .query_audit_events(AuditFilter {
+                limit: Some(2),
+                offset: Some(0),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("page 1");
+        let second = backend
+            .query_audit_events(AuditFilter {
+                limit: Some(2),
+                offset: Some(2),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("page 2");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        let ids_first: std::collections::HashSet<_> = first.iter().map(|e| e.event_id).collect();
+        let ids_second: std::collections::HashSet<_> = second.iter().map(|e| e.event_id).collect();
+        assert!(ids_first.is_disjoint(&ids_second));
+    }
+
+    #[tokio::test]
+    async fn audit_count_matches_query_result_size() {
+        let (_tmp, backend, _events) = migrated_backend_with_samples().await;
+
+        let total = backend
+            .count_audit_events(AuditFilter::default())
+            .await
+            .expect("count all");
+        assert_eq!(total, 3);
+
+        let agent_a = AgentId::from_bytes([1; 16]);
+        let scoped = backend
+            .count_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("count scoped");
+        let scoped_rows = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_a),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query scoped");
+        assert_eq!(scoped, scoped_rows.len() as u64);
     }
 }
