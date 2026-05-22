@@ -197,6 +197,33 @@ pub(crate) fn pid_file_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".aasm/gateway.pid")
 }
 
+/// Print the local-mode startup banner to stderr.
+///
+/// The exact banner shape matches the AAASM-1576 Story description so
+/// operators see a consistent "what just started" message across
+/// versions:
+///
+/// ```text
+/// Agent Assembly [local mode] v0.0.1
+///   Listening:  http://127.0.0.1:7391
+///   Dashboard:  http://127.0.0.1:7391/
+///   Storage:    /Users/alice/.aasm/local.db (SQLite)
+///
+///   Ctrl+C to stop.
+/// ```
+///
+/// Goes to stderr (not stdout) so it never pollutes piped JSON output
+/// from `aasm`-family tools.
+#[allow(dead_code)] // consumed by start_local() — same commit lifts it
+pub(crate) fn write_banner(addr: &SocketAddr, storage_path: &Path) {
+    eprintln!("Agent Assembly [local mode] v{}", env!("CARGO_PKG_VERSION"));
+    eprintln!("  Listening:  http://{addr}");
+    eprintln!("  Dashboard:  http://{addr}/");
+    eprintln!("  Storage:    {} (SQLite)", storage_path.display());
+    eprintln!();
+    eprintln!("  Ctrl+C to stop.");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
