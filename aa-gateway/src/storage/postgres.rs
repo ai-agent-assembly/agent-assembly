@@ -125,4 +125,13 @@ mod tests {
             assert!(exists, "table {table} should exist after migrate()");
         }
     }
+
+    #[tokio::test]
+    async fn migrate_is_idempotent() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("first migrate");
+        backend.migrate().await.expect("second migrate should be a no-op");
+    }
 }
