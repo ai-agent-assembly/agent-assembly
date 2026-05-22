@@ -318,4 +318,58 @@ mod tests {
         backend.migrate().await.expect("first migrate");
         backend.migrate().await.expect("second migrate should be a no-op");
     }
+
+    /// Mint a fresh, unique [`AgentId`] so every test can scope its
+    /// inserts and assertions against an isolated key — necessary because
+    /// the audit_events table is shared across all postgres tests when
+    /// they run against the CI's single-database service.
+    fn fresh_agent_id() -> AgentId {
+        AgentId::from_bytes(*uuid::Uuid::new_v4().as_bytes())
+    }
+
+    /// PostgreSQL `TIMESTAMPTZ` stores microsecond precision; chrono's
+    /// `DateTime<Utc>::now()` is nanosecond-resolution. Round-trip
+    /// assertions need a pre-truncated timestamp or they flake.
+    fn now_micros() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+            .expect("now fits in micros range")
+    }
+
+    fn sample_event(agent_id: AgentId, ts: chrono::DateTime<chrono::Utc>) -> AuditEvent {
+        AuditEvent {
+            ts,
+            event_id: uuid::Uuid::new_v4(),
+            agent_id,
+            team_id: Some("test-team".to_string()),
+            action: "tool_call".to_string(),
+            decision: "allow".to_string(),
+            dry_run: false,
+            shadow_decision: None,
+            matched_rule_id: Some("rule-42".to_string()),
+            payload: Some(serde_json::json!({"tool": "shell", "args": ["ls", "-la"]})),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_then_query_round_trip() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let agent_id = fresh_agent_id();
+        let event = sample_event(agent_id, now_micros());
+        backend.append_audit_event(&event).await.expect("append");
+
+        let rows = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query");
+
+        assert_eq!(rows.len(), 1, "expected exactly one row for fresh agent");
+        assert_eq!(rows[0], event, "round-trip event must match insert exactly");
+    }
 }
