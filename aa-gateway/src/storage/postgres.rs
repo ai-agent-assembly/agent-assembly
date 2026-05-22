@@ -1026,4 +1026,37 @@ mod tests {
             "no version should be active until rollback_policy is called"
         );
     }
+
+    #[tokio::test]
+    async fn rollback_then_get_active_returns_chosen_version() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let name = fresh_policy_name();
+        let v1 = json_policy(&name, 1);
+        let v2 = json_policy(&name, 2);
+        let v3 = json_policy(&name, 3);
+        backend.save_policy(v1).await.expect("save v1");
+        backend.save_policy(v2.clone()).await.expect("save v2");
+        backend.save_policy(v3).await.expect("save v3");
+
+        backend.rollback_policy(&name, 2).await.expect("rollback to v2");
+
+        let active = backend
+            .get_active_policy(&name)
+            .await
+            .expect("get_active")
+            .expect("a version must be active after rollback");
+
+        assert_eq!(active.bytes, v2.bytes, "active document must be the v2 we wrote");
+
+        // Cross-check via list: exactly one row should be flagged active and
+        // it must be the one we rolled back to.
+        let metas = backend.list_policy_versions(&name).await.expect("list_policy_versions");
+        let active_metas: Vec<&PolicyMeta> = metas.iter().filter(|m| m.is_active).collect();
+        assert_eq!(active_metas.len(), 1, "exactly one version must be active");
+        assert_eq!(active_metas[0].version, 2);
+    }
 }
