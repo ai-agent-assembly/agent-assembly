@@ -831,4 +831,36 @@ mod tests {
 
         assert!(!pid_path.exists(), "pid file must be removed by handle.shutdown()");
     }
+
+    /// AAASM-1576 AC #8 final invariant: after `handle.shutdown()`, the
+    /// SQLite connection pool reports `is_closed() == true` — guarantees
+    /// `aasm start` can re-open the same DB file without a "database is
+    /// locked" race against a not-yet-drained pool.
+    ///
+    /// `SqlitePool` is internally `Arc<...>` so cloning gives a second
+    /// view onto the same shared state. We clone the pool out of the
+    /// handle before `shutdown()` consumes it, then check the clone's
+    /// `is_closed()` after the cleanup completes.
+    #[tokio::test]
+    async fn handle_shutdown_closes_the_sqlite_pool() {
+        let (config, _tmp, _port) = test_config_with_ephemeral_port().await;
+        let pid_path = _tmp.path().join("gateway.pid");
+
+        let handle = start_local_with_pid_path(&config, &pid_path)
+            .await
+            .expect("start_local");
+        let pool_clone = handle
+            .pool
+            .as_ref()
+            .expect("normal start_local must populate pool")
+            .clone();
+        assert!(!pool_clone.is_closed(), "pool must be open after start");
+
+        handle.shutdown().await.expect("shutdown");
+
+        assert!(
+            pool_clone.is_closed(),
+            "pool must report closed after handle.shutdown()"
+        );
+    }
 }
