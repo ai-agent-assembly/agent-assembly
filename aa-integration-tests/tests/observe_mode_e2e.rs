@@ -301,3 +301,60 @@ async fn st_r_2_observe_mode_allow_decision_emits_no_shadow_metadata() {
         "ST-R-2: Allow-decision audit entries in observe mode must NOT carry shadow_decision, got: {payload}",
     );
 }
+
+// ── ST-R-3 ──────────────────────────────────────────────────────────────────
+
+/// **ST-R-3** — `aasm run --observe --dry-run <tool>` surfaces the sandbox
+/// posture to the operator before any tool output and injects
+/// `AA_ENFORCEMENT_MODE=observe` into the planned child environment.
+///
+/// `--dry-run` short-circuits gateway registration (see `run.rs:520`), so
+/// the F116 attestation here is the operator-visible contract only: the
+/// banner, the env-var plan, and the audit-list filter hint. The
+/// registration-payload + gateway-side `RegisterRequest.enforcement_mode`
+/// path is already attested by AAASM-1556 / AAASM-1558 crate-level tests
+/// — re-driving it from `aa-integration-tests` would require pre-building
+/// the `aasm` binary against a live local gateway, which adds CI cost
+/// without strengthening the F116 contract.
+#[test]
+fn st_r_3_aasm_run_observe_emits_banner_and_env_injection() {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "aa-cli",
+            "--bin",
+            "aasm",
+            "--",
+            "run",
+            "claude",
+            "--observe",
+            "--dry-run",
+        ])
+        .output()
+        .expect("aasm run --observe --dry-run must execute");
+
+    assert!(
+        out.status.success(),
+        "ST-R-3: aasm run --observe --dry-run should exit 0; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[AAASM] Running in sandbox/observe mode"),
+        "ST-R-3: observe banner must be printed to stderr before tool output:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("aa audit list --dry-run-only"),
+        "ST-R-3: banner must point operators at the dry-run audit filter:\n{stderr}",
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("AA_ENFORCEMENT_MODE=observe"),
+        "ST-R-3: dry-run plan must show AA_ENFORCEMENT_MODE=observe in the env section:\n{stdout}",
+    );
+}
