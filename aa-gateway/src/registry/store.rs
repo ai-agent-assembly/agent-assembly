@@ -1,7 +1,7 @@
 //! Agent registry store — `AgentRecord` and `AgentRegistry` backed by `DashMap`.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use aa_core::GovernanceLevel;
 use chrono::{DateTime, Utc};
@@ -14,6 +14,7 @@ use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
 use super::orphan::{OrphanEffect, OrphanMode};
 use super::{AgentStatus, LineageError, RegistryError, SuspendReason};
+use crate::storage::StorageBackend;
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
@@ -150,6 +151,12 @@ pub struct AgentRegistry {
     /// Per-team maximum agent age in seconds. Agents older than this threshold
     /// are force-deregistered by `sweep_aged_agents`.
     team_max_age_secs: DashMap<String, u64>,
+    /// Optional durable [`StorageBackend`] for write-through persistence and
+    /// boot-time rehydrate. `None` means the registry is purely in-memory —
+    /// the legacy behaviour preserved for existing tests and any caller that
+    /// constructs an [`AgentRegistry::new`] without storage. Wired in by
+    /// Epic 18 Story S-I.2 (AAASM-1864).
+    storage: Option<Arc<dyn StorageBackend>>,
 }
 
 impl AgentRegistry {
@@ -162,7 +169,23 @@ impl AgentRegistry {
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
+            storage: None,
         }
+    }
+
+    /// Attach a durable [`StorageBackend`] for write-through persistence and
+    /// boot-time rehydrate. Builder-style — chains after `new()`:
+    ///
+    /// ```ignore
+    /// let registry = AgentRegistry::new().with_storage(storage_handle);
+    /// ```
+    ///
+    /// Without this call, the registry stays purely in-memory and the
+    /// `register_persisted` / `deregister_persisted` / `rehydrate_from_storage`
+    /// methods behave identically to their non-persisted counterparts.
+    pub fn with_storage(mut self, storage: Arc<dyn StorageBackend>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// Configure the maximum allowed age (in seconds) for agents belonging to `team_id`.
