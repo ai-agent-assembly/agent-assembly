@@ -143,3 +143,54 @@ async fn e2e_hitl_approve_releases_blocked_waiter() {
     assert_eq!(record.decided_by, "ops-1");
     assert_eq!(record.decision_reason.as_deref(), Some("approved by ST-P-1"));
 }
+
+// =============================================================================
+// ST-P-2 — Human rejects; the blocked waiter receives `Rejected` with reason.
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_hitl_reject_returns_deny_with_reason() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+
+    let request = make_pending_request(
+        "send_email",
+        30,
+        PolicyResult::Deny {
+            reason: "fallback-deny (unused on reject path)".to_string(),
+        },
+    );
+    let (id, handle) = spawn_blocking_wait(&env, request);
+
+    // Operator rejects with a mandatory non-empty reason.
+    let resp = client
+        .post(format!("{}/api/v1/approvals/{}/reject", env.base_url(), id))
+        .json(&serde_json::json!({ "by": "ops-2", "reason": "not authorised" }))
+        .send()
+        .await
+        .expect("reject POST succeeds");
+    assert_eq!(resp.status(), 200);
+
+    // The waiter resolves with `Rejected` carrying the operator's reason —
+    // production maps this to `PolicyResult::Deny` so the tool does not run.
+    let decision = tokio::time::timeout(RESOLVE_DEADLINE, handle)
+        .await
+        .expect("waiter resolves within deadline")
+        .expect("waiter task did not panic");
+    match decision {
+        ApprovalDecision::Rejected { by, reason } => {
+            assert_eq!(by, "ops-2");
+            assert_eq!(reason, "not authorised");
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+
+    let resolved = env.approval_queue.list_resolved(Some("rejected"), None);
+    assert_eq!(resolved.len(), 1);
+    let record = &resolved[0];
+    assert_eq!(record.request_id, id);
+    assert_eq!(record.action, "tool.send_email");
+    assert_eq!(record.status, "rejected");
+    assert_eq!(record.decided_by, "ops-2");
+    assert_eq!(record.decision_reason.as_deref(), Some("not authorised"));
+}
