@@ -619,6 +619,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/audit/sandbox-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/audit/sandbox-summary` — observe-mode shadow-event aggregate.
+         * @description Returns the dashboard SandboxSummaryCard breakdown — would-be denies,
+         *     would-be redactions, and would-be pending approvals — across every audit
+         *     entry the gateway recorded with `dry_run: true` in the requested window.
+         *     Surfaces the single most-frequent `policy_rule` value as `top_rule`. The
+         *     optional `root` parameter scopes the aggregate to one delegation subtree.
+         */
+        get: operations["get_sandbox_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit/violations-by-lineage": {
         parameters: {
             query?: never;
@@ -2702,6 +2726,61 @@ export interface components {
             verb: components["schemas"]["Verb"];
         };
         /**
+         * @description Aggregate counts for the dashboard SandboxSummaryCard.
+         *
+         *     Each field is the number of shadow audit events (entries whose payload
+         *     carries `dry_run: true`) that would have produced the named outcome under
+         *     live enforcement. `would_be_redactions` is the count of dry-run entries
+         *     that also carry one or more credential-scanner findings — those secrets
+         *     would have been redacted by the scanner under `enforcement_mode: enforce`.
+         */
+        SandboxSummaryCounts: {
+            /**
+             * Format: int64
+             * @description Shadow-decision = `"deny"` count.
+             */
+            would_be_denies: number;
+            /**
+             * Format: int64
+             * @description Shadow-decision = `"pending"` count.
+             */
+            would_be_pending_approvals: number;
+            /**
+             * Format: int64
+             * @description Dry-run entries with non-empty `credential_findings`.
+             */
+            would_be_redactions: number;
+        };
+        /** @description Response for `GET /api/v1/audit/sandbox-summary`. */
+        SandboxSummaryResponse: {
+            /** @description Counts bucketed by the dashboard's wouldBe* categories. */
+            counts: components["schemas"]["SandboxSummaryCounts"];
+            /** @description ISO 8601 UTC timestamp when this response was generated. */
+            generated_at: string;
+            top_rule?: null | components["schemas"]["SandboxSummaryTopRule"];
+            /**
+             * Format: int64
+             * @description Time window used for aggregation, in seconds.
+             */
+            window_secs: number;
+        };
+        /**
+         * @description Most-frequent matched policy rule across the shadow events in the window.
+         *
+         *     Mirrors `policy_rule` field on the shadow payload (see
+         *     `aa-gateway::service::policy_service::record_audit`). Omitted from the
+         *     response when no shadow entry carried a non-empty `policy_rule`.
+         */
+        SandboxSummaryTopRule: {
+            /**
+             * Format: int64
+             * @description Number of shadow events in the window matched by this rule.
+             */
+            count: number;
+            /** @description Rule identifier as recorded in the shadow payload's `policy_rule`. */
+            id: string;
+        };
+        /**
          * @description Authorization scope level for API operations.
          *
          *     Variants are ordered by privilege: `Read < Write < Admin`.
@@ -4387,6 +4466,38 @@ export interface operations {
             };
             /** @description Approval request not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_sandbox_summary: {
+        parameters: {
+            query?: {
+                /** @description Hex-encoded root agent ID; scopes counts to that delegation subtree. */
+                root?: string | null;
+                /** @description Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`. */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sandbox / observe-mode aggregate counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxSummaryResponse"];
+                };
+            };
+            /** @description Invalid query parameter */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -47,6 +47,49 @@ pub struct ViolationsByLineageResponse {
     pub generated_at: String,
 }
 
+/// Aggregate counts for the dashboard SandboxSummaryCard.
+///
+/// Each field is the number of shadow audit events (entries whose payload
+/// carries `dry_run: true`) that would have produced the named outcome under
+/// live enforcement. `would_be_redactions` is the count of dry-run entries
+/// that also carry one or more credential-scanner findings — those secrets
+/// would have been redacted by the scanner under `enforcement_mode: enforce`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SandboxSummaryCounts {
+    /// Shadow-decision = `"deny"` count.
+    pub would_be_denies: u64,
+    /// Dry-run entries with non-empty `credential_findings`.
+    pub would_be_redactions: u64,
+    /// Shadow-decision = `"pending"` count.
+    pub would_be_pending_approvals: u64,
+}
+
+/// Most-frequent matched policy rule across the shadow events in the window.
+///
+/// Mirrors `policy_rule` field on the shadow payload (see
+/// `aa-gateway::service::policy_service::record_audit`). Omitted from the
+/// response when no shadow entry carried a non-empty `policy_rule`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SandboxSummaryTopRule {
+    /// Rule identifier as recorded in the shadow payload's `policy_rule`.
+    pub id: String,
+    /// Number of shadow events in the window matched by this rule.
+    pub count: u64,
+}
+
+/// Response for `GET /api/v1/audit/sandbox-summary`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SandboxSummaryResponse {
+    /// Counts bucketed by the dashboard's wouldBe* categories.
+    pub counts: SandboxSummaryCounts,
+    /// Top-ranked policy rule by shadow-event frequency, when one exists.
+    pub top_rule: Option<SandboxSummaryTopRule>,
+    /// Time window used for aggregation, in seconds.
+    pub window_secs: u64,
+    /// ISO 8601 UTC timestamp when this response was generated.
+    pub generated_at: String,
+}
+
 // ---------------------------------------------------------------------------
 // Query params
 // ---------------------------------------------------------------------------
@@ -55,6 +98,15 @@ pub struct ViolationsByLineageResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ViolationsParams {
     /// Hex-encoded root agent ID; scopes results to that delegation subtree.
+    pub root: Option<String>,
+    /// Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`.
+    pub window: Option<String>,
+}
+
+/// Query parameters for the sandbox-summary endpoint.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct SandboxSummaryParams {
+    /// Hex-encoded root agent ID; scopes counts to that delegation subtree.
     pub root: Option<String>,
     /// Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`.
     pub window: Option<String>,
@@ -105,6 +157,55 @@ pub async fn get_violations_by_lineage(
         StatusCode::OK,
         Json(ViolationsByLineageResponse {
             nodes,
+            window_secs,
+            generated_at: Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+/// `GET /api/v1/audit/sandbox-summary` — observe-mode shadow-event aggregate.
+///
+/// Returns the dashboard SandboxSummaryCard breakdown — would-be denies,
+/// would-be redactions, and would-be pending approvals — across every audit
+/// entry the gateway recorded with `dry_run: true` in the requested window.
+/// Surfaces the single most-frequent `policy_rule` value as `top_rule`. The
+/// optional `root` parameter scopes the aggregate to one delegation subtree.
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/sandbox-summary",
+    params(SandboxSummaryParams),
+    responses(
+        (status = 200, description = "Sandbox / observe-mode aggregate counts", body = SandboxSummaryResponse),
+        (status = 400, description = "Invalid query parameter")
+    ),
+    tag = "audit"
+)]
+pub async fn get_sandbox_summary(
+    Extension(state): Extension<AppState>,
+    axum::extract::Query(params): axum::extract::Query<SandboxSummaryParams>,
+) -> impl IntoResponse {
+    let window_secs = parse_window(params.window.as_deref()).unwrap_or(86_400);
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let since_ns = now_ns.saturating_sub(window_secs * 1_000_000_000);
+
+    let root_agent: Option<AgentId> = params.root.as_deref().and_then(parse_agent_id);
+
+    let entries = state
+        .audit_reader
+        .list_dry_run(since_ns, root_agent)
+        .await
+        .unwrap_or_default();
+
+    let (counts, top_rule) = aggregate_sandbox_summary(&entries);
+
+    (
+        StatusCode::OK,
+        Json(SandboxSummaryResponse {
+            counts,
+            top_rule,
             window_secs,
             generated_at: Utc::now().to_rfc3339(),
         }),
@@ -175,6 +276,58 @@ pub(crate) fn aggregate_violations(entries: &[AuditEntry]) -> Vec<ViolationNode>
     nodes.sort_by_key(|n| std::cmp::Reverse(n.violation_count));
 
     nodes
+}
+
+/// Aggregate dry-run audit entries into [`SandboxSummaryCounts`] + optional
+/// top rule.
+///
+/// Buckets each entry by payload `shadow_decision`:
+/// * `"deny"` → `would_be_denies`
+/// * `"pending"` → `would_be_pending_approvals`
+///
+/// `would_be_redactions` counts entries whose `credential_findings()` is
+/// non-empty, regardless of `shadow_decision` — the credential-scanner outcome
+/// is orthogonal to the policy decision. The top rule is the most-frequent
+/// non-empty `policy_rule` value across the input set; ties are broken by
+/// insertion order from the HashMap (deterministic enough for surfacing —
+/// callers can re-rank if they need a strict total order).
+pub(crate) fn aggregate_sandbox_summary(
+    entries: &[AuditEntry],
+) -> (SandboxSummaryCounts, Option<SandboxSummaryTopRule>) {
+    let mut counts = SandboxSummaryCounts::default();
+    let mut rule_counts: HashMap<String, u64> = HashMap::new();
+
+    for entry in entries {
+        if !entry.credential_findings().is_empty() {
+            counts.would_be_redactions += 1;
+        }
+
+        let payload: serde_json::Value = match serde_json::from_str(entry.payload()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some(decision) = payload.get("shadow_decision").and_then(|v| v.as_str()) {
+            match decision {
+                "deny" => counts.would_be_denies += 1,
+                "pending" => counts.would_be_pending_approvals += 1,
+                _ => {}
+            }
+        }
+
+        if let Some(rule) = payload.get("policy_rule").and_then(|v| v.as_str()) {
+            if !rule.is_empty() {
+                *rule_counts.entry(rule.to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    let top_rule = rule_counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(id, count)| SandboxSummaryTopRule { id, count });
+
+    (counts, top_rule)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,5 +500,143 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].violation_count, 4);
         assert_eq!(nodes[0].top_policies, vec!["good".to_string()]);
+    }
+
+    // ── aggregate_sandbox_summary ────────────────────────────────────────────
+
+    use aa_core::audit::Redaction;
+    use aa_core::scanner::CredentialFinding;
+
+    fn entry_with_findings(agent: AgentId, payload: &str, findings: Vec<CredentialFinding>) -> AuditEntry {
+        AuditEntry::new_with_lineage_and_redaction(
+            0,
+            0,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            SessionId::from_bytes([0xEE; 16]),
+            payload.to_string(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction {
+                credential_findings: findings,
+                redacted_payload: None,
+            },
+        )
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_returns_zero_for_empty_input() {
+        let (counts, top) = aggregate_sandbox_summary(&[]);
+        assert_eq!(counts, SandboxSummaryCounts::default());
+        assert!(top.is_none());
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_buckets_shadow_decision() {
+        let a = AgentId::from_bytes([0xAA; 16]);
+        let entries = vec![
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"pending"}"#),
+            // Unrecognised shadow_decision values are ignored, not bucketed.
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"budget_block"}"#),
+            // No shadow_decision at all → ignored.
+            entry(a, None, None, r#"{"dry_run":true}"#),
+        ];
+
+        let (counts, _) = aggregate_sandbox_summary(&entries);
+        assert_eq!(counts.would_be_denies, 2);
+        assert_eq!(counts.would_be_pending_approvals, 1);
+        assert_eq!(counts.would_be_redactions, 0);
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_counts_redactions_via_credential_findings() {
+        let a = AgentId::from_bytes([0xAA; 16]);
+        let finding = CredentialFinding::from_regex_match(0, 10);
+        let entries = vec![
+            entry_with_findings(a, r#"{"dry_run":true}"#, vec![finding.clone()]),
+            entry_with_findings(a, r#"{"dry_run":true}"#, vec![finding.clone(), finding]),
+            // No findings → no redaction count.
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+        ];
+
+        let (counts, _) = aggregate_sandbox_summary(&entries);
+        assert_eq!(counts.would_be_redactions, 2);
+        assert_eq!(counts.would_be_denies, 1);
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_picks_most_frequent_policy_rule_as_top() {
+        let a = AgentId::from_bytes([0xAA; 16]);
+        let entries = vec![
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"deny","policy_rule":"rule-a"}"#,
+            ),
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"deny","policy_rule":"rule-a"}"#,
+            ),
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"deny","policy_rule":"rule-a"}"#,
+            ),
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"pending","policy_rule":"rule-b"}"#,
+            ),
+            // Empty / missing rule strings don't enter the ranking.
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"deny","policy_rule":""}"#,
+            ),
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+        ];
+
+        let (_, top) = aggregate_sandbox_summary(&entries);
+        let top = top.expect("a top rule must exist when at least one entry carries policy_rule");
+        assert_eq!(top.id, "rule-a");
+        assert_eq!(top.count, 3);
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_returns_none_top_rule_when_no_policy_rule_present() {
+        let a = AgentId::from_bytes([0xAA; 16]);
+        let entries = vec![
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+            entry(
+                a,
+                None,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"pending","policy_rule":""}"#,
+            ),
+        ];
+
+        let (_, top) = aggregate_sandbox_summary(&entries);
+        assert!(top.is_none());
+    }
+
+    #[test]
+    fn aggregate_sandbox_summary_tolerates_malformed_payloads() {
+        let a = AgentId::from_bytes([0xAA; 16]);
+        let entries = vec![
+            entry(a, None, None, "not-json"),
+            entry(a, None, None, "{"),
+            entry(a, None, None, r#"{"dry_run":true,"shadow_decision":"deny"}"#),
+        ];
+
+        let (counts, _) = aggregate_sandbox_summary(&entries);
+        assert_eq!(counts.would_be_denies, 1);
     }
 }

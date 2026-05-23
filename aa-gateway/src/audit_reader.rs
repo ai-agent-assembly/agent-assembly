@@ -87,6 +87,25 @@ impl AuditReader {
             .collect())
     }
 
+    /// Return all observe-mode shadow entries newer than `since_ns`.
+    ///
+    /// Shadow entries are the audit rows written when the policy evaluated
+    /// non-Allow under observe mode: their event_type is the would-have-been
+    /// decision and the payload carries `dry_run: true` plus `shadow_decision`
+    /// and `shadow_reason`. Selection is on payload, not event_type, because
+    /// the allowed-on-the-wire decision can take several event_type values.
+    pub async fn list_dry_run(&self, since_ns: u64, root: Option<AgentId>) -> io::Result<Vec<AuditEntry>> {
+        let all = self.read_all_entries().await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| {
+                e.timestamp_ns() >= since_ns
+                    && root.map_or(true, |r| e.root_agent_id() == Some(r) || e.agent_id() == r)
+                    && payload_has_dry_run_true(e.payload())
+            })
+            .collect())
+    }
+
     /// Read and parse all JSONL files in the audit directory.
     async fn read_all_entries(&self) -> io::Result<Vec<AuditEntry>> {
         let mut entries = Vec::new();
@@ -120,6 +139,21 @@ impl AuditReader {
 
         Ok(entries)
     }
+}
+
+/// Returns true when `payload` parses as a JSON object containing `"dry_run": true`.
+///
+/// Implemented as a free helper so the dry-run selector is independent of how
+/// shadow payloads are constructed and tolerates non-JSON / malformed lines
+/// the same way `aggregate_violations` tolerates missing fields — by returning
+/// false rather than erroring.
+fn payload_has_dry_run_true(payload: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("dry_run"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Parse a hex-encoded agent ID string into an [`AgentId`].
@@ -198,6 +232,17 @@ mod tests {
         agent_id: AgentId,
         root: Option<AgentId>,
     ) -> AuditEntry {
+        make_entry_with_payload(seq, timestamp_ns, event_type, agent_id, root, "{}")
+    }
+
+    fn make_entry_with_payload(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        root: Option<AgentId>,
+        payload: &str,
+    ) -> AuditEntry {
         let lineage = Lineage {
             root_agent_id: root,
             ..Lineage::default()
@@ -208,7 +253,7 @@ mod tests {
             event_type,
             agent_id,
             SessionId::from_bytes(SESSION_BYTES),
-            "{}".to_string(),
+            payload.to_string(),
             [0u8; 32],
             lineage,
         )
@@ -375,5 +420,113 @@ mod tests {
         let violations = reader.list_violations(0, None).await.expect("list_violations");
 
         assert_eq!(violations.len(), 2);
+    }
+
+    // ── list_dry_run ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_dry_run_returns_only_entries_with_dry_run_true() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let entries = vec![
+            // dry_run shadow entry — included
+            make_entry_with_payload(
+                0,
+                100,
+                AuditEventType::ToolCallIntercepted,
+                child,
+                None,
+                r#"{"dry_run":true,"shadow_decision":"deny"}"#,
+            ),
+            // enforce-mode allow — excluded (no dry_run field)
+            make_entry_with_payload(
+                1,
+                200,
+                AuditEventType::ToolCallIntercepted,
+                child,
+                None,
+                r#"{"decision":"Allow"}"#,
+            ),
+            // explicit dry_run:false — excluded
+            make_entry_with_payload(
+                2,
+                300,
+                AuditEventType::ToolCallIntercepted,
+                child,
+                None,
+                r#"{"dry_run":false}"#,
+            ),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let dry_run = reader.list_dry_run(0, None).await.expect("list_dry_run");
+
+        assert_eq!(dry_run.len(), 1);
+        assert_eq!(dry_run[0].seq(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_dry_run_filters_by_since_ns_and_root() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = AgentId::from_bytes(ROOT_BYTES);
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let other = AgentId::from_bytes(OTHER_BYTES);
+
+        let entries = vec![
+            // too old, excluded by since_ns
+            make_entry_with_payload(
+                0,
+                100,
+                AuditEventType::ToolCallIntercepted,
+                child,
+                Some(root),
+                r#"{"dry_run":true}"#,
+            ),
+            // in subtree + newer — included
+            make_entry_with_payload(
+                1,
+                500,
+                AuditEventType::ToolCallIntercepted,
+                child,
+                Some(root),
+                r#"{"dry_run":true,"shadow_decision":"deny"}"#,
+            ),
+            // newer but unrelated subtree — excluded by root scope
+            make_entry_with_payload(
+                2,
+                600,
+                AuditEventType::ToolCallIntercepted,
+                other,
+                Some(AgentId::from_bytes(PARENT_BYTES)),
+                r#"{"dry_run":true}"#,
+            ),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let scoped = reader.list_dry_run(200, Some(root)).await.expect("list_dry_run");
+
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].seq(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_dry_run_returns_empty_when_dir_missing() {
+        let reader = AuditReader::new(PathBuf::from("/nonexistent/audit/dir"));
+        let result = reader
+            .list_dry_run(0, None)
+            .await
+            .expect("list_dry_run should not error on missing dir");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn payload_has_dry_run_true_accepts_only_explicit_true() {
+        assert!(payload_has_dry_run_true(r#"{"dry_run":true}"#));
+        assert!(!payload_has_dry_run_true(r#"{"dry_run":false}"#));
+        assert!(!payload_has_dry_run_true(r#"{"dry_run":"true"}"#));
+        assert!(!payload_has_dry_run_true(r#"{"other":1}"#));
+        assert!(!payload_has_dry_run_true("not-json"));
     }
 }

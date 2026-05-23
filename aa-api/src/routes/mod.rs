@@ -127,6 +127,8 @@ pub fn v1_router() -> Router {
         .route("/ops/{id}/terminate", post(ops::terminate_op))
         // Audit aggregations
         .route("/audit/violations-by-lineage", get(audit::get_violations_by_lineage))
+        // Sandbox / observe-mode aggregate for SandboxSummaryCard — AAASM-1911
+        .route("/audit/sandbox-summary", get(audit::get_sandbox_summary))
         // Admin — retention policy (AAASM-1592 S-K)
         .route(
             "/admin/retention-policy",
