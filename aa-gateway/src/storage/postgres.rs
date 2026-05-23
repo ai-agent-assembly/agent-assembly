@@ -22,6 +22,7 @@ use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
+use super::timescale::has_timescaledb_extension;
 use aa_core::config::TimescaleConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
@@ -285,6 +286,42 @@ impl PostgresBackend {
             pool,
             timescale_config: config.timescaledb.clone(),
         })
+    }
+
+    /// Gate the TimescaleDB hypertable setup based on `config.enabled` and
+    /// the presence of the `timescaledb` extension on the cluster.
+    ///
+    /// Three paths, all returning `Ok(())`:
+    /// * `config.enabled = false` → log `info`, skip — operator opted out
+    /// * extension absent on cluster → log `warn`, skip — graceful fallback
+    /// * extension present → log `info` — the `0002_timescaledb_hypertables.sql`
+    ///   migration (S-D #1) already created the hypertables; this method
+    ///   only governs runtime gating + observability
+    ///
+    /// Called from `migrate()` after `sqlx::migrate!` runs (wired in the
+    /// next commit of this SD-3 stack).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] only when the `pg_extension`
+    /// probe itself fails (transport / permission). The graceful-fallback
+    /// paths above never raise an error — production deployments must be
+    /// able to boot against plain PostgreSQL.
+    #[allow(dead_code)]
+    pub(crate) async fn apply_timescaledb_setup(&self, config: &TimescaleConfig) -> StorageResult<()> {
+        if !config.enabled {
+            tracing::info!("storage.postgres.timescaledb.enabled = false; skipping hypertable setup");
+            return Ok(());
+        }
+        if !has_timescaledb_extension(&self.pool).await? {
+            tracing::warn!(
+                "TimescaleDB extension not found — using standard PostgreSQL tables. \
+                 Install TimescaleDB for time-series query acceleration and auto-compression."
+            );
+            return Ok(());
+        }
+        tracing::info!("TimescaleDB extension active; hypertables governed by 0002_timescaledb_hypertables.sql");
+        Ok(())
     }
 }
 
