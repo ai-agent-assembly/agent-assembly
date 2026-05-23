@@ -12,6 +12,91 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::storage::{HealthStatus, StorageHealth};
+
+/// Wire-contract storage health block returned under
+/// `body.storage` in the admin status response.
+///
+/// Per-backend optional fields:
+///
+/// * `path` — populated on SQLite, omitted on PostgreSQL.
+/// * `database_url` — populated on PostgreSQL (always already redacted by
+///   [`redact_database_url`]), omitted on SQLite.
+/// * `timescaledb` — populated only when the PostgreSQL backend is
+///   connected to a cluster with the TimescaleDB extension installed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorageHealthBlock {
+    /// Static backend identifier — e.g. `"sqlite"`, `"postgres"`,
+    /// `"memory"`.
+    pub backend: String,
+    /// Local-mode SQLite file path. Present only when `backend == "sqlite"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// PostgreSQL connection URL with the password segment replaced by
+    /// `***`. Present only when `backend == "postgres"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_url: Option<String>,
+    /// Coarse health label: `"ok"`, `"degraded"`, or `"unavailable"`.
+    pub health: String,
+    /// Latency of the healthcheck round-trip in milliseconds (time to
+    /// execute the backend's `SELECT 1` equivalent).
+    pub latency_ms: u32,
+    /// Hot-tier row-count snapshot taken during the healthcheck.
+    pub row_counts: RowCountsBlock,
+    /// TimescaleDB rollup, present only when the extension is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timescaledb: Option<TimescaleDbBlock>,
+}
+
+impl StorageHealthBlock {
+    /// Project a [`StorageHealth`] snapshot into the wire-contract shape.
+    ///
+    /// `sqlite_path` is propagated to the `path` field only when
+    /// `health.backend == "sqlite"`; passing `Some(_)` for other backends
+    /// is silently dropped, so callers can hand the same value in
+    /// unconditionally.
+    ///
+    /// `database_url` is propagated to the `database_url` field only
+    /// when `health.backend == "postgres"` and is redacted via
+    /// [`redact_database_url`] before storage.
+    pub fn from_health(health: &StorageHealth, sqlite_path: Option<&str>, database_url: Option<&str>) -> Self {
+        let backend = health.backend.to_string();
+        let path = (backend == "sqlite").then(|| sqlite_path.map(str::to_string)).flatten();
+        let database_url = (backend == "postgres")
+            .then(|| database_url.map(redact_database_url))
+            .flatten();
+        let timescaledb = health.timescale.as_ref().map(|stats| TimescaleDbBlock {
+            enabled: true,
+            total_chunks: stats.total_chunks,
+            compressed_chunks: stats.compressed_chunks,
+            compression_ratio: stats.compression_ratio_tenths as f32 / 10.0,
+        });
+        Self {
+            backend,
+            path,
+            database_url,
+            health: health_status_label(health.status).to_string(),
+            latency_ms: health.latency_ms,
+            row_counts: RowCountsBlock {
+                audit_events_hot: health.row_counts.audit_events,
+                agents: health.row_counts.agents,
+                policy_versions: health.row_counts.policy_versions,
+            },
+            timescaledb,
+        }
+    }
+}
+
+/// Render the coarse [`HealthStatus`] as the lowercase string used in the
+/// wire contract.
+const fn health_status_label(status: HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::Ok => "ok",
+        HealthStatus::Degraded => "degraded",
+        HealthStatus::Unavailable => "unavailable",
+    }
+}
+
 /// Hot-tier row-count snapshot returned inside the storage health block.
 ///
 /// Field names are stable wire contract — the `aasm status` CLI and the
@@ -97,6 +182,21 @@ pub fn redact_database_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{HealthStatus, RowCounts, StorageHealth, TimescaleStats};
+
+    fn sample_health(backend: &'static str, timescale: Option<TimescaleStats>) -> StorageHealth {
+        StorageHealth {
+            status: HealthStatus::Ok,
+            backend,
+            latency_ms: 3,
+            row_counts: RowCounts {
+                audit_events: 47,
+                agents: 2,
+                policy_versions: 1,
+            },
+            timescale,
+        }
+    }
 
     #[test]
     fn redact_replaces_postgres_password_with_stars() {
@@ -166,5 +266,76 @@ mod tests {
         // serde_json represents f32 as the closest f64; assert via approx.
         let ratio = json["compression_ratio"].as_f64().expect("compression_ratio is number");
         assert!((ratio - 11.4).abs() < 0.05, "ratio drift > 0.05: got {ratio}");
+    }
+
+    #[test]
+    fn from_health_propagates_sqlite_path_and_drops_database_url() {
+        let block = StorageHealthBlock::from_health(
+            &sample_health("sqlite", None),
+            Some("~/.aasm/local.db"),
+            // Caller may pass database_url unconditionally; sqlite path drops it.
+            Some("postgresql://u:p@h/db"),
+        );
+        assert_eq!(block.backend, "sqlite");
+        assert_eq!(block.path.as_deref(), Some("~/.aasm/local.db"));
+        assert!(block.database_url.is_none(), "database_url must be omitted on sqlite");
+        assert!(block.timescaledb.is_none(), "no TimescaleStats → no timescaledb block");
+        assert_eq!(block.health, "ok");
+        assert_eq!(block.latency_ms, 3);
+        assert_eq!(block.row_counts.audit_events_hot, 47);
+    }
+
+    #[test]
+    fn from_health_redacts_postgres_database_url_and_drops_sqlite_path() {
+        let block = StorageHealthBlock::from_health(
+            &sample_health("postgres", None),
+            // Caller passes sqlite path unconditionally; postgres branch drops it.
+            Some("~/.aasm/local.db"),
+            Some("postgresql://aasm:secret@db.internal:5432/aasm"),
+        );
+        assert_eq!(block.backend, "postgres");
+        assert!(block.path.is_none(), "path must be omitted on postgres");
+        assert_eq!(
+            block.database_url.as_deref(),
+            Some("postgresql://aasm:***@db.internal:5432/aasm")
+        );
+    }
+
+    #[test]
+    fn from_health_populates_timescaledb_block_when_stats_present() {
+        let stats = TimescaleStats {
+            total_chunks: 12,
+            compressed_chunks: 8,
+            // 114 tenths → 11.4× ratio.
+            compression_ratio_tenths: 114,
+            oldest_chunk_age_days: 45,
+        };
+        let block = StorageHealthBlock::from_health(
+            &sample_health("postgres", Some(stats)),
+            None,
+            Some("postgresql://aasm:secret@db.internal:5432/aasm"),
+        );
+        let ts = block.timescaledb.expect("TimescaleStats → Some(TimescaleDbBlock)");
+        assert!(ts.enabled);
+        assert_eq!(ts.total_chunks, 12);
+        assert_eq!(ts.compressed_chunks, 8);
+        assert!((ts.compression_ratio - 11.4).abs() < 0.05);
+    }
+
+    #[test]
+    fn storage_block_omits_optional_fields_when_none() {
+        let block = StorageHealthBlock::from_health(&sample_health("sqlite", None), None, None);
+        let json = serde_json::to_value(&block).expect("serialise");
+        assert!(json.get("path").is_none(), "path None must be skipped");
+        assert!(json.get("database_url").is_none(), "database_url None must be skipped");
+        assert!(json.get("timescaledb").is_none(), "timescaledb None must be skipped");
+    }
+
+    #[test]
+    fn from_health_renders_unavailable_status_label() {
+        let mut health = sample_health("postgres", None);
+        health.status = HealthStatus::Unavailable;
+        let block = StorageHealthBlock::from_health(&health, None, Some("postgresql://u:p@h/db"));
+        assert_eq!(block.health, "unavailable");
     }
 }
