@@ -242,3 +242,40 @@ tools:
     );
     assert!(payload.get("shadow_decision").is_none());
 }
+
+#[tokio::test]
+async fn st_sandbox_3_enforce_mode_with_deny_rule_still_blocks_agent() {
+    // Regression guard: an agent without any per-agent override (or registered
+    // with Enforce) hitting a deny policy must still be blocked. If anyone
+    // ever flips the default in resolve_enforcement_mode this test catches it.
+    let (addr, registry, mut audit_rx) = start_server_with_audit_rx(DENY_BASH_POLICY).await;
+
+    let proto_id = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: "enforce-agent".into(),
+    };
+    register_agent_with_mode(&registry, "enforce-agent", &proto_id, None);
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let resp = client
+        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "enforce mode must still block deny rules — regression in {:?}",
+        resp.reason
+    );
+
+    // Audit entry must be a normal Deny record, NOT a shadow event.
+    let entries = drain_audit_entries(&mut audit_rx).await;
+    assert_eq!(entries.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(entries[0].payload()).expect("payload is valid JSON");
+    assert!(
+        payload.get("dry_run").is_none(),
+        "enforce-mode audit entry must not carry dry_run"
+    );
+}
