@@ -180,6 +180,11 @@ jobs:
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
+      - name: Build Node.js native binding (e2e_sdk_node real_* tests, AAASM-1602)
+        working-directory: node-sdk
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm native:build
       - name: Run tests
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
         # unit tests. Validated by the dedicated ebpf-build job.
@@ -251,6 +256,11 @@ jobs:
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
+      - name: Build Node.js native binding (e2e_sdk_node real_* tests, AAASM-1602)
+        working-directory: node-sdk
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm native:build
       - name: Generate coverage report
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python dev headers for linking — excluded.
