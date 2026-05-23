@@ -11,13 +11,17 @@
 // slowed down by spawning a Rust gateway they don't need.
 
 import { type ChildProcess, spawn } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-
-/** Workspace root (the agent-assembly Cargo workspace root). */
-const REPO_ROOT = resolve(HERE, '..', '..', '..')
+/**
+ * Workspace root (the agent-assembly Cargo workspace root).
+ *
+ * Playwright runs with `cwd` set to the dashboard package root, so the
+ * workspace root is one level up. Uses `process.cwd()` (Playwright sets
+ * it deterministically) to stay compatible with both CJS and ESM module
+ * loading without depending on `import.meta.url`.
+ */
+const REPO_ROOT = resolve(process.cwd(), '..')
 
 /** How long to wait for `READY` after spawn. Cold `cargo test` builds can be
  * very slow on CI; 4 min covers the worst case observed in practice. */
