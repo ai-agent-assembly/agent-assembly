@@ -54,7 +54,6 @@
 
 #![cfg(all(target_os = "linux", feature = "integration-test"))]
 
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -227,45 +226,39 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
 /// AAASM-1520 test 2 — `ebpf_exec_probe_captures_subprocess_spawn`.
 ///
 /// Drives the kernel `sched_process_exec` tracepoint by spawning
-/// `curl --version` from the test process. The BPF probe drops events
-/// whose tgid is absent from `EXEC_PID_FILTER`, so we use
-/// `CommandExt::pre_exec` to insert a 500 ms sleep between fork and the
-/// kernel-level call — long enough for the test to register the child
-/// PID into the filter map and stand up the ring-buffer reader before
-/// the tracepoint fires. Asserts: filename contains `curl`,
-/// `pid == child_pid`, `ppid` is the test process id.
+/// `curl --version` from the test process. Asserts: filename contains
+/// `curl`, `pid == child_pid`, `ppid` is the test process id.
 ///
-/// **Blocked on AAASM-1567**: after AAASM-1548 fixed the verifier
-/// reference leak and renamed the exec ring buffer to `EVENTS`, the
-/// program loads and `RingBufReader::new` succeeds — but the
-/// `sched_process_exec` event for the spawned `curl` is not observed
-/// by the test within 10 s. Suspected PID-filter timing race; see
-/// AAASM-1567 for the investigation plan. Remove `#[ignore]` once
-/// that ticket lands a reliable fix.
+/// The previous formulation inserted the spawned child's PID into
+/// `EXEC_PID_FILTER` between `cmd.spawn()` and the kernel `execve` —
+/// bridged by a 500 ms `pre_exec` sleep. Under CI load that window
+/// could close and the probe's `pid_allowed(tgid)` would return false
+/// for the actual exec event, silently dropping it (AAASM-1567).
+///
+/// This version uses the wildcard key (`0u32`) introduced alongside
+/// the AAASM-1567 fix: the filter is populated **before** `spawn()`,
+/// so the kernel tracepoint is free to fire any time after the child
+/// exists and the probe will still emit the event. Userspace then
+/// matches `ev.pid == child_pid` on the multiplexed ring buffer,
+/// which is the same approach the TLS uprobe tests already take with
+/// the system-wide `SSL_write` stream.
+///
+/// **Blocked on AAASM-1567**: the wildcard-based race-free formulation
+/// below replaces the original `pre_exec`-bridged test, but the test
+/// is kept `#[ignore]`'d until the AAASM-1567 fix has been observed
+/// green in CI ≥ 5 consecutive runs. Remove the `#[ignore]` once that
+/// confidence threshold is met.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "blocked on AAASM-1567: exec event for spawned subprocess never delivered to ring buffer"]
 async fn ebpf_exec_probe_captures_subprocess_spawn() {
     let mut bpf = Ebpf::load(AA_EXEC_BPF).expect("failed to load exec BPF object — run with sudo");
     let _mgr = TracepointManager::attach(&mut bpf).expect("failed to attach exec tracepoints");
 
-    // Spawn curl with a 500 ms pre_exec delay so the child PID is known and
-    // registered into the filter map before the kernel tracepoint fires.
-    let mut cmd = Command::new("curl");
-    cmd.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
-    // SAFETY: the closure does not allocate or call async-signal-unsafe APIs
-    // beyond `nanosleep`, which is documented async-signal-safe.
-    unsafe {
-        cmd.pre_exec(|| {
-            std::thread::sleep(Duration::from_millis(500));
-            Ok(())
-        });
-    }
-    let mut child = cmd.spawn().expect("failed to spawn curl");
-    let child_pid = child.id();
-    let parent_pid = std::process::id();
-
-    // Insert child_pid into EXEC_PID_FILTER. Scope the borrow so the map
-    // reference is dropped before we move `bpf` into the ring-buffer reader.
+    // Insert the wildcard (key 0) into EXEC_PID_FILTER before we fork.
+    // With the filter pre-populated the spawn-vs-insert race is gone:
+    // any execve that fires between now and the end of the test is
+    // visible to the probe. Scope the borrow so the map reference is
+    // dropped before we move `bpf` into the ring-buffer reader.
     {
         let mut pid_filter: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
             bpf.map_mut("EXEC_PID_FILTER")
@@ -273,11 +266,22 @@ async fn ebpf_exec_probe_captures_subprocess_spawn() {
         )
         .expect("EXEC_PID_FILTER should be a HashMap");
         pid_filter
-            .insert(child_pid, 1u8, 0)
-            .expect("inserting child pid into filter");
+            .insert(0u32, 1u8, 0)
+            .expect("inserting wildcard into exec filter");
     }
 
     let mut reader = RingBufReader::new(bpf).expect("failed to create ring-buffer reader");
+
+    // Spawn curl after the filter is live. No pre_exec sleep is needed
+    // — the wildcard means the probe is ready before the child exists.
+    let mut child = Command::new("curl")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn curl");
+    let child_pid = child.id();
+    let parent_pid = std::process::id();
 
     let ev = await_exec_event(&mut reader, Duration::from_secs(10), child_pid).await;
     let _ = child.wait();
