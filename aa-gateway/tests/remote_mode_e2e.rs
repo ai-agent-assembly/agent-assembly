@@ -10,6 +10,7 @@
 //! The placeholder agents handler is intentionally test-local — production
 //! agents wiring belongs to `aa-api` and the durable storage Epic.
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -58,7 +59,7 @@ async fn two_agents_register_and_list_via_http() {
     let store: AgentStore = Arc::new(Mutex::new(Vec::new()));
     let app = build_test_app(Arc::clone(&store)).into_make_service();
 
-    let handle = Handle::new();
+    let handle: Handle<SocketAddr> = Handle::new();
     let probe_handle = handle.clone();
     let shutdown_handle = handle.clone();
 

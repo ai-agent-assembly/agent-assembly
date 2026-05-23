@@ -4,6 +4,7 @@
 //! design rationale; the deeper architectural context lives in
 //! AAASM-1577 / E17 S-C.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -116,7 +117,7 @@ async fn wait_for_shutdown_signal() -> Result<(), GatewayError> {
 /// and call `handle.graceful_shutdown(Some(_))` to exit cleanly; the
 /// production [`start_remote`] entrypoint wires the handle to a
 /// SIGTERM / SIGINT listener.
-pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle) -> Result<(), GatewayError> {
+pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<SocketAddr>) -> Result<(), GatewayError> {
     log_startup_banner(cfg);
 
     // Epic 18 Story S-I.1 (AAASM-1859): when a database URL is
