@@ -740,6 +740,92 @@ mod proxy_data_path {
 
         abort.abort();
     }
+
+    // ── Test 3 — credential_findings reach the JSONL audit ───────────────
+
+    /// Drives AAASM-1566's third AC:
+    /// `proxy_secret_redact_only_credential_findings_in_audit`.
+    ///
+    /// Wires a `JsonlWriter` to the proxy via the `audit_jsonl_tx` channel,
+    /// sends a single request with a synthetic AWS key under
+    /// `CredentialAction::RedactOnly`, then reads the JSONL off disk and
+    /// asserts:
+    ///
+    /// 1. `credential_findings` field is present in the JSONL entry.
+    /// 2. The decision is `"forwarded_redacted"`.
+    /// 3. The raw AWS key string never appears anywhere in the JSONL file
+    ///    (grep returns 0 matches).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_secret_redact_only_credential_findings_in_audit() {
+        use aa_proxy::audit_jsonl::JsonlWriter;
+
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ca = CaStore::load_or_create(dir.path()).await.expect("ca");
+        let client_config = Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+        let upstream = TlsCapturingUpstream::start(&ca).await;
+
+        // Spin up the JSONL audit pipeline. The writer is owned by a
+        // background task; the proxy holds the mpsc::Sender half.
+        let jsonl_path = dir.path().join("proxy-audit.jsonl");
+        let (audit_tx, audit_rx) = mpsc::channel::<ProxyAuditEntry>(16);
+        let writer = JsonlWriter::new(&jsonl_path, audit_rx)
+            .await
+            .expect("open JSONL writer");
+        let writer_handle = tokio::spawn(writer.run());
+
+        let (proxy_addr, _rx, abort) = start_proxy(
+            dir.path(),
+            ca,
+            CredentialAction::RedactOnly,
+            upstream.addr,
+            Some(audit_tx.clone()),
+        )
+        .await;
+
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+            super::FAKE_AWS_ACCESS_KEY,
+        );
+        let result = send_through_proxy(proxy_addr, client_config, &body).await;
+        assert!(
+            result.connect_status.contains("200"),
+            "CONNECT must succeed for redact_only, got: {}",
+            result.connect_status,
+        );
+
+        // Wait for the upstream to have observed the request — then the
+        // audit entry has been sent by the proxy.
+        for _ in 0..50 {
+            if upstream.request_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Drop the proxy's sender clone so the writer can drain and exit.
+        drop(audit_tx);
+        abort.abort();
+        // Give the writer a moment to flush — bounded by writer task join.
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer_handle).await;
+
+        let on_disk = tokio::fs::read_to_string(&jsonl_path)
+            .await
+            .expect("read JSONL audit file");
+        assert!(
+            on_disk.contains("\"credential_findings\""),
+            "JSONL must carry the credential_findings field; got: {on_disk}",
+        );
+        assert!(
+            on_disk.contains("\"forwarded_redacted\""),
+            "JSONL must record decision=forwarded_redacted for redact_only path; got: {on_disk}",
+        );
+        assert!(
+            !on_disk.contains(super::FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT: raw AWS key appears in audit JSONL on disk: {on_disk}",
+        );
+    }
 }
 
 // ── Proxy-path scanner-only slice (AAASM-1549 / ST-N) ────────────────────────
