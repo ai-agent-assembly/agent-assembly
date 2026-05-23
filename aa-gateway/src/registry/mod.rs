@@ -7,6 +7,7 @@
 pub mod convert;
 pub mod lineage;
 pub mod orphan;
+pub mod storage_bridge;
 pub mod store;
 pub mod token;
 
