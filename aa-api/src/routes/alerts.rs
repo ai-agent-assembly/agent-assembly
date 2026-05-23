@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use utoipa::ToSchema;
 
-use crate::alerts::detail::{RoutingLogEntry, RuleSnapshot, Silence};
+use crate::alerts::detail::{RoutingLogEntry, Silence};
+use crate::alerts::rules::types::AlertRule;
 use crate::alerts::silence::SilenceRecord;
 use crate::alerts::StoredAlert;
 use crate::auth::AuthenticatedCaller;
@@ -52,8 +53,12 @@ pub struct AlertDetailResponse {
     pub rule_id: Option<String>,
     /// Human-readable rule name, or `null` for legacy alerts.
     pub rule_name: Option<String>,
-    /// Rule snapshot at fire time. `null` for legacy alerts.
-    pub rule_snapshot: Option<RuleSnapshot>,
+    /// Full [`AlertRule`] snapshot captured at fire time so the
+    /// alert-detail view can render the originating rule even after
+    /// the live rule has been edited or deleted (AAASM-1658). `null`
+    /// for legacy budget/secret alerts.
+    #[serde(rename = "ruleSnapshot")]
+    pub rule_snapshot: Option<AlertRule>,
     /// Alert severity level (`info` / `warning` / `critical`).
     pub severity: String,
     /// Lifecycle status — `"unresolved"` on capture, flipped to
@@ -105,46 +110,35 @@ pub struct AlertDetailResponse {
 
 /// Convert a `StoredAlert` into the rich `AlertDetailResponse`.
 fn alert_detail_from_stored(a: StoredAlert) -> AlertDetailResponse {
-    let (
-        rule_id,
-        rule_name,
-        rule_snapshot,
-        destination_ids,
-        event_payload,
-        routing_log,
-        silence,
-        dedup_count,
-        dedup_expires,
-    ) = match a.rule_context {
-        Some(ctx) => (
-            Some(ctx.rule_id),
-            Some(ctx.rule_name),
-            Some(ctx.rule_snapshot),
-            ctx.destination_ids,
-            ctx.event_payload,
-            ctx.routing_log,
-            ctx.silence,
-            ctx.dedup_occurrence_count,
-            ctx.dedup_window_expires_at,
-        ),
-        None => (
-            None,
-            None,
-            None,
-            Vec::new(),
-            serde_json::Value::Null,
-            Vec::new(),
-            None,
-            1,
-            None,
-        ),
-    };
+    let (rule_id, rule_name, destination_ids, event_payload, routing_log, silence, dedup_count, dedup_expires) =
+        match a.rule_context {
+            Some(ctx) => (
+                Some(ctx.rule_id),
+                Some(ctx.rule_name),
+                ctx.destination_ids,
+                ctx.event_payload,
+                ctx.routing_log,
+                ctx.silence,
+                ctx.dedup_occurrence_count,
+                ctx.dedup_window_expires_at,
+            ),
+            None => (
+                None,
+                None,
+                Vec::new(),
+                serde_json::Value::Null,
+                Vec::new(),
+                None,
+                1,
+                None,
+            ),
+        };
 
     AlertDetailResponse {
         id: a.id.to_string(),
         rule_id,
         rule_name,
-        rule_snapshot,
+        rule_snapshot: a.rule_snapshot,
         severity: a.severity.to_string(),
         status: a.status,
         agent_id: if a.agent_id.is_empty() { None } else { Some(a.agent_id) },

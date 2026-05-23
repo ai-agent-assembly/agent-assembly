@@ -5,6 +5,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use aa_api::alerts::detail::{RoutingLogEntry, RuleSnapshot};
+use aa_api::alerts::rules::types::{AlertRule, RuleMetric, RuleOperator, RuleSeverity};
 use aa_api::alerts::{DedupOutcome, RuleAlertSeed};
 use aa_core::AgentId;
 use aa_gateway::budget::types::BudgetAlert;
@@ -374,7 +375,30 @@ fn test_rule_seed() -> RuleAlertSeed {
             delivered_at: "2026-05-20T09:00:01Z".to_string(),
             status: "ok".to_string(),
         }],
-        alert_rule: None,
+        alert_rule: Some(sample_alert_rule()),
+    }
+}
+
+/// Full `AlertRule` fixture matching `test_rule_seed()`'s rule_id and
+/// rule_name so the rule_snapshot wire field on `GET /alerts/{id}`
+/// carries the same rule definition the dashboard would have seen at
+/// fire time (AAASM-1658).
+fn sample_alert_rule() -> AlertRule {
+    AlertRule {
+        id: "rule-budget-90".to_string(),
+        name: "Budget threshold > 90%".to_string(),
+        description: "Fire CRITICAL when budget spend exceeds 90%".to_string(),
+        metric: RuleMetric::BudgetSpentPct,
+        operator: RuleOperator::Gt,
+        threshold: 90.0,
+        evaluation_window_seconds: 300,
+        severity: RuleSeverity::Critical,
+        destination_ids: vec!["slack-ops".to_string()],
+        dedup_window_seconds: 600,
+        suppression_labels: std::collections::HashMap::new(),
+        enabled: true,
+        created_at: "2026-05-13T09:00:00Z".to_string(),
+        updated_at: "2026-05-13T09:00:00Z".to_string(),
     }
 }
 
@@ -404,8 +428,18 @@ async fn get_alert_returns_rich_detail_for_rule_alert() {
     assert_eq!(json["id"], id.to_string());
     assert_eq!(json["rule_id"], "rule-budget-90");
     assert_eq!(json["rule_name"], "Budget threshold > 90%");
-    assert_eq!(json["rule_snapshot"]["metric"], "budget_spent_pct");
-    assert_eq!(json["rule_snapshot"]["dedup_window_seconds"], 600);
+    assert_eq!(
+        json["ruleSnapshot"]["metric"], "budget_spent_pct",
+        "ruleSnapshot carries the full AlertRule with snake_case metric enum wire form",
+    );
+    assert_eq!(
+        json["ruleSnapshot"]["name"], "Budget threshold > 90%",
+        "ruleSnapshot.name is AlertRule.name — not present on the smaller RuleSnapshot",
+    );
+    assert_eq!(
+        json["ruleSnapshot"]["dedupWindowSeconds"], 600,
+        "AlertRule uses camelCase on the wire",
+    );
     assert_eq!(json["category"], "rule");
     assert_eq!(json["destination_ids"][0], "slack-ops");
     assert_eq!(json["event_payload"]["metric_value"], 92.3);
@@ -429,8 +463,8 @@ async fn get_alert_returns_null_rule_context_for_budget_alert() {
 
     assert!(json["rule_id"].is_null(), "rule_id must be null for budget alerts");
     assert!(
-        json["rule_snapshot"].is_null(),
-        "rule_snapshot must be null for budget alerts"
+        json["ruleSnapshot"].is_null(),
+        "ruleSnapshot must be null for budget alerts"
     );
     assert_eq!(json["destination_ids"].as_array().unwrap().len(), 0);
     assert_eq!(json["routing_log"].as_array().unwrap().len(), 0);
