@@ -89,6 +89,40 @@ pub struct HealthzResponse {
     pub database_url: Option<String>,
 }
 
+/// Hot-tier row-count snapshot returned inside the `/api/v1/admin/status`
+/// storage block (AAASM-1591 / Epic 18 S-J).
+///
+/// Field names mirror the server-side `aa_gateway::routes::admin_status::
+/// RowCountsBlock` wire contract verbatim. `#[serde(deny_unknown_fields)]`
+/// is intentionally omitted so future warm-/cold-tier counts can be added
+/// server-side without breaking older CLIs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AdminRowCountsBlock {
+    /// Audit events in the hot tier (uncompressed, queryable).
+    pub audit_events_hot: u64,
+    /// Registered agents.
+    pub agents: u64,
+    /// Total policy versions across all policy names.
+    pub policy_versions: u64,
+}
+
+/// TimescaleDB chunk + compression rollup, present in the
+/// `/api/v1/admin/status` storage block only when the PostgreSQL backend
+/// is connected to a cluster with the TimescaleDB extension installed.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct AdminTimescaleDbBlock {
+    /// Always `true` when the block is present — present-but-disabled is
+    /// reserved for a future state.
+    pub enabled: bool,
+    /// Total number of chunks across the gateway's hypertables.
+    pub total_chunks: u32,
+    /// Subset of `total_chunks` already compressed by the auto-policy.
+    pub compressed_chunks: u32,
+    /// Aggregate uncompressed/compressed size ratio as a human-friendly
+    /// float (e.g. `11.4` = 11.4× size reduction).
+    pub compression_ratio: f32,
+}
+
 /// Display model for the `aasm status` deployment-overview header.
 ///
 /// The serialised shape is the JSON contract for `aasm status --json` — field
@@ -373,6 +407,43 @@ mod tests {
             resp.database_url.as_deref(),
             Some("postgresql://user:secret@aasm-db:5432/aasm")
         );
+    }
+
+    #[test]
+    fn admin_row_counts_block_deserialises_documented_keys() {
+        let json = r#"{"audit_events_hot": 14293, "agents": 8, "policy_versions": 3}"#;
+        let block: AdminRowCountsBlock = serde_json::from_str(json).unwrap();
+        assert_eq!(block.audit_events_hot, 14_293);
+        assert_eq!(block.agents, 8);
+        assert_eq!(block.policy_versions, 3);
+    }
+
+    #[test]
+    fn admin_row_counts_block_tolerates_extra_keys() {
+        // Future warm/cold tier additions must not break older clients.
+        let json = r#"{
+            "audit_events_hot": 1,
+            "audit_events_warm": 99,
+            "agents": 1,
+            "policy_versions": 1
+        }"#;
+        let block: AdminRowCountsBlock = serde_json::from_str(json).unwrap();
+        assert_eq!(block.audit_events_hot, 1);
+    }
+
+    #[test]
+    fn admin_timescaledb_block_deserialises_documented_keys() {
+        let json = r#"{
+            "enabled": true,
+            "total_chunks": 12,
+            "compressed_chunks": 8,
+            "compression_ratio": 11.4
+        }"#;
+        let block: AdminTimescaleDbBlock = serde_json::from_str(json).unwrap();
+        assert!(block.enabled);
+        assert_eq!(block.total_chunks, 12);
+        assert_eq!(block.compressed_chunks, 8);
+        assert!((block.compression_ratio - 11.4).abs() < 0.05);
     }
 
     #[test]
