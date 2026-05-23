@@ -240,3 +240,64 @@ async fn st_r_1_observe_mode_deny_rule_returns_allow_and_dry_run_audit() {
         "ST-R-1: shadow_decision must record the suppressed Deny outcome",
     );
 }
+
+// ── ST-R-2 ──────────────────────────────────────────────────────────────────
+
+/// **ST-R-2** — An agent in observe mode dispatches a tool whose policy
+/// outcome is already `Allow`. The response stays `Allow` (same as enforce
+/// mode), and the audit entry must NOT carry `dry_run` or `shadow_decision`
+/// — observe mode only fabricates shadow metadata for would-be violations.
+/// Otherwise shadow-volume in the audit log would mirror all traffic
+/// instead of just the would-be deny / redact / pending outcomes
+/// operators care about.
+#[tokio::test]
+async fn st_r_2_observe_mode_allow_decision_emits_no_shadow_metadata() {
+    // `allow_deny_mixed.yaml` exposes `read_file: allow: true`; reusing the
+    // existing F116 fixture keeps the observe-mode allow path under the same
+    // policy schema other ST-X tests already validate.
+    let (addr, registry, mut audit_rx) = start_gateway_with_policy_fixture("policies/allow_deny_mixed.yaml").await;
+
+    let proto_id = ProtoAgentId {
+        org_id: "org-st-r-2".into(),
+        team_id: "team-st-r-2".into(),
+        agent_id: "observe-clean-agent".into(),
+    };
+    register_agent_with_mode(
+        &registry,
+        "observe-clean-agent",
+        &proto_id,
+        Some(aa_core::EnforcementMode::Observe),
+    );
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to PolicyService");
+    let resp = client
+        .check_action(tool_call_request_for(&proto_id, "read_file"))
+        .await
+        .expect("check_action RPC")
+        .into_inner();
+    assert_eq!(
+        resp.decision,
+        Decision::Allow as i32,
+        "ST-R-2: explicit-allow tool must continue to return Allow under observe mode",
+    );
+
+    let entries = drain_audit_entries(&mut audit_rx).await;
+    assert_eq!(
+        entries.len(),
+        1,
+        "ST-R-2: an Allow decision still produces one audit entry (the live ToolCallIntercepted record), got {}",
+        entries.len(),
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(entries[0].payload()).expect("ST-R-2: audit payload must be valid JSON");
+    assert!(
+        payload.get("dry_run").is_none(),
+        "ST-R-2: Allow-decision audit entries in observe mode must NOT carry dry_run, got: {payload}",
+    );
+    assert!(
+        payload.get("shadow_decision").is_none(),
+        "ST-R-2: Allow-decision audit entries in observe mode must NOT carry shadow_decision, got: {payload}",
+    );
+}
