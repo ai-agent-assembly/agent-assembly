@@ -117,3 +117,65 @@ impl JsonlWriter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Synthetic AWS access key from AWS public documentation. Not a real credential.
+    const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    /// Security invariant: the raw secret value must never appear in the
+    /// JSONL file on disk, even when the body that produced the finding
+    /// embedded the secret verbatim. Drives the AAASM-1566 acceptance
+    /// criterion "grep for the raw key against the JSONL file returns 0
+    /// matches".
+    #[tokio::test]
+    async fn audit_writer_never_writes_raw_secret() {
+        use aa_core::CredentialScanner;
+
+        let body = format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#);
+        let scan = CredentialScanner::new().scan(&body);
+        assert!(
+            !scan.findings.is_empty(),
+            "scanner fixture invariant — AWS key must be detected"
+        );
+        let redacted = scan.redact(&body);
+
+        let entry = ProxyAuditEntry {
+            ts_ms: 1_700_000_000_000,
+            agent_id: Some("agent-1".into()),
+            host: "api.openai.com".into(),
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            decision: ProxyAuditDecision::ForwardedRedacted,
+            credential_findings: scan.findings,
+            redacted_body: Some(redacted),
+        };
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("proxy-audit.jsonl");
+        let (tx, rx) = mpsc::channel(4);
+        let writer = JsonlWriter::new(&path, rx).await.expect("open jsonl writer");
+        let handle = tokio::spawn(writer.run());
+
+        tx.send(entry).await.expect("send entry");
+        drop(tx);
+        handle.await.expect("writer task joins cleanly");
+
+        let on_disk = tokio::fs::read_to_string(&path).await.expect("read JSONL");
+        assert!(
+            !on_disk.contains(FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT VIOLATED: raw secret present in proxy audit JSONL: {on_disk}",
+        );
+        assert!(
+            on_disk.contains("[REDACTED:AwsAccessKey]"),
+            "JSONL must carry the [REDACTED:AwsAccessKey] marker, got: {on_disk}",
+        );
+        assert_eq!(
+            on_disk.matches('\n').count(),
+            1,
+            "single entry must produce exactly one trailing newline: {on_disk}",
+        );
+    }
+}
