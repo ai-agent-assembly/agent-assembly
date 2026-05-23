@@ -1,0 +1,128 @@
+/* AAASM-1563 — Sandbox Summary Card
+ *
+ * Amber palette intentionally contrasts with the dashboard's red (live-deny)
+ * and green (live-allow) tokens so an operator can immediately distinguish
+ * "would-be" / observe-mode aggregates from live enforcement data.
+ */
+
+.sandbox-summary-card {
+  --sandbox-amber: #d97706;
+  --sandbox-amber-bg: rgba(217, 119, 6, 0.08);
+  --sandbox-amber-border: rgba(217, 119, 6, 0.32);
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--sandbox-amber-border);
+  border-left: 4px solid var(--sandbox-amber);
+  border-radius: 6px;
+  background: var(--sandbox-amber-bg);
+}
+
+.sandbox-summary-card__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sandbox-summary-card__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--sandbox-amber);
+}
+
+.sandbox-summary-card__subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-3, #4b5563);
+}
+
+.sandbox-summary-card__policy {
+  font-weight: 600;
+}
+
+.sandbox-summary-card__window {
+  color: var(--ink-4, #6b7280);
+}
+
+.sandbox-summary-card__counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.sandbox-summary-card__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sandbox-summary-card__count {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--sandbox-amber);
+}
+
+.sandbox-summary-card__label {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3, #4b5563);
+}
+
+.sandbox-summary-card__top-rule {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3, #4b5563);
+}
+
+.sandbox-summary-card__top-rule code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.04);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+}
+
+.sandbox-summary-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sandbox-summary-card__btn {
+  padding: 6px 12px;
+  border: 1px solid var(--sandbox-amber-border);
+  border-radius: 4px;
+  background: white;
+  color: var(--ink-2, #1f2937);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.sandbox-summary-card__btn:hover:not(:disabled) {
+  background: var(--sandbox-amber-bg);
+}
+
+.sandbox-summary-card__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sandbox-summary-card__btn--enforce {
+  background: var(--sandbox-amber);
+  border-color: var(--sandbox-amber);
+  color: white;
+}
+
+.sandbox-summary-card__btn--enforce:hover:not(:disabled) {
+  background: #b45309;
+  border-color: #b45309;
+}
