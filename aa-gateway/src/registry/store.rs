@@ -1118,6 +1118,26 @@ mod tree_tests {
     }
 
     #[test]
+    fn reparent_errors_not_found_for_missing_agents() {
+        let reg = AgentRegistry::new();
+        let known = [0x50u8; 16];
+        let missing = [0x51u8; 16];
+        reg.register(make_record(known, None, None, 0)).unwrap();
+
+        // Missing child.
+        match reg.reparent(&missing, &known) {
+            Err(RegistryError::NotFound(id)) => assert_eq!(id, missing),
+            other => panic!("expected NotFound(missing) child, got {other:?}"),
+        }
+
+        // Missing new_parent.
+        match reg.reparent(&known, &missing) {
+            Err(RegistryError::NotFound(id)) => assert_eq!(id, missing),
+            other => panic!("expected NotFound(missing) parent, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn reparent_is_idempotent_when_parent_unchanged() {
         let reg = AgentRegistry::new();
         let root = [0x40u8; 16];
