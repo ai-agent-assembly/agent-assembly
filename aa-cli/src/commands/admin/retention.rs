@@ -9,6 +9,9 @@ use std::process::ExitCode;
 
 use clap::Args;
 
+use crate::config::ResolvedContext;
+use crate::output::OutputFormat;
+
 /// Arguments for `aasm admin run-retention`.
 #[derive(Debug, Args)]
 pub struct RunRetentionArgs {
@@ -19,7 +22,11 @@ pub struct RunRetentionArgs {
 }
 
 /// Dispatch `aasm admin run-retention [--dry-run]`.
-pub fn dispatch(_args: RunRetentionArgs) -> ExitCode {
+///
+/// `ctx` and `output` were threaded through in this commit for Epic 18
+/// Story S-I.5 (AAASM-1872); the live transport wire-up that consumes
+/// them lands in the next commit.
+pub fn dispatch(_args: RunRetentionArgs, _ctx: &ResolvedContext, _output: OutputFormat) -> ExitCode {
     eprintln!(
         "aasm admin run-retention: gateway admin transport not yet wired \
          (tracked under AAASM-1590 / Story S-I). The retention engine \

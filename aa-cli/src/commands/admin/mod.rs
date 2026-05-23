@@ -10,6 +10,9 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 
+use crate::config::ResolvedContext;
+use crate::output::OutputFormat;
+
 /// Subcommands for `aasm admin`.
 #[derive(Debug, Subcommand)]
 pub enum AdminCommands {
@@ -25,9 +28,13 @@ pub struct AdminArgs {
 }
 
 /// Dispatch an `aasm admin` subcommand.
-pub fn dispatch(args: AdminArgs) -> ExitCode {
+///
+/// `ctx` and `output` were threaded through in Epic 18 Story S-I.5
+/// (AAASM-1872) so admin subcommands can reach the gateway via the
+/// shared HTTP client and respect the global `--output` selection.
+pub fn dispatch(args: AdminArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     match args.command {
-        AdminCommands::RunRetention(a) => retention::dispatch(a),
+        AdminCommands::RunRetention(a) => retention::dispatch(a, ctx, output),
     }
 }
 
