@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | Token-count tracking (`limit_tokens: 1000`) | USD amounts via `record_raw_spend` | `BudgetTracker` tracks USD spend, not raw tokens |
 //! | Python SDK driver + mock LLM server | In-process `record_raw_spend` seeding | No HTTP route for spend ingestion; same pattern as `api_costs.rs` |
-//! | Sub-day window (`window: "5s"`) | TC-4 marked `#[ignore]` | `BudgetTracker` resets at midnight UTC only; sub-day windows not in v0.0.1 |
+//! | Sub-day window (`window: "5s"`) | TC-4 exercised at 150 ms via `start_with_team_budget_window` | `BudgetTracker` supports sub-day rollover as of AAASM-1600; the integration test uses a 150 ms window to keep the suite fast |
 //! | `BudgetExhaustedError` from SDK | `BudgetStatus::LimitExceeded` from tracker | No SDK layer in integration harness |
 //!
 //! ## Seeding strategy
@@ -182,19 +182,64 @@ async fn budget_exhausted_request_is_rejected_at_tracking_layer() {
     );
 }
 
-// ── TC-4: sub-day window rollover (ignored — not implemented in v0.0.1) ───────
+// ── TC-4: sub-day window rollover (AAASM-1600) ────────────────────────────────
 
-/// Budget spend resets after the configured time window elapses.
+/// Budget spend resets after the configured sub-day window elapses.
 ///
-/// Marked `#[ignore]` because `BudgetTracker` only resets at midnight UTC;
-/// sub-day budget windows (e.g. `window: "5s"`) are not supported in v0.0.1.
-/// Remove the `#[ignore]` and implement once a configurable flush interval is
-/// added to `BudgetTracker`.
-#[ignore = "blocked on AAASM-1600: BudgetTracker sub-day window flush interval not implemented"]
+/// Exercises `BudgetWindow::Duration` end-to-end: pre-window spend
+/// accumulates, the wall-clock window elapses, post-window spend reflects
+/// only the new amount (proof the previous accumulator was zeroed by
+/// `maybe_reset_window` on the next `record_*` call). Uses a 150 ms window
+/// so the assertion fires in under a second of suite time.
 #[tokio::test(flavor = "multi_thread")]
 async fn budget_resets_after_daily_window() {
-    unimplemented!(
-        "sub-day budget window rollover not supported in v0.0.1 (BudgetTracker resets at midnight UTC only)"
+    use std::time::Duration as StdDuration;
+    let window = StdDuration::from_millis(150);
+    let env = TopologyTestEnv::start_with_team_budget_window(Decimal::new(500, 2), window)
+        .await
+        .expect("harness should start with sub-day budget window");
+    let agent = AgentId::from_bytes(BUDGET_AGENT_A);
+
+    // Pre-window: record some spend; assert it accumulated.
+    env.budget_tracker
+        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(200, 2)); // 2.00 USD
+    let before = env
+        .budget_tracker
+        .team_state(TEAM_A)
+        .expect("team state present after first spend");
+    assert_eq!(
+        before.spent_usd,
+        Decimal::new(200, 2),
+        "team should accumulate 2.00 USD before window elapses"
+    );
+
+    // Sleep past the window. The periodic flush task also runs; either it
+    // or the lazy reset on the next `record_raw_spend` will zero the
+    // accumulator — the assertion below works regardless of which fires
+    // first.
+    tokio::time::sleep(window + StdDuration::from_millis(100)).await;
+
+    // Post-window: a fresh spend triggers the window-aware reset, so the
+    // total reflects only the new amount.
+    let status = env
+        .budget_tracker
+        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(75, 2)); // 0.75 USD
+    let after = env
+        .budget_tracker
+        .team_state(TEAM_A)
+        .expect("team state present after window-elapsed spend");
+    assert_eq!(
+        after.spent_usd,
+        Decimal::new(75, 2),
+        "spend must zero and re-accumulate from the post-window record once the {} ms window elapses",
+        window.as_millis()
+    );
+    assert!(
+        matches!(
+            status,
+            BudgetStatus::WithinBudget { .. } | BudgetStatus::ThresholdAlert { .. }
+        ),
+        "0.75 USD spend after reset should be well within the 5.00 USD cap, got: {status:?}"
     );
 }
 
