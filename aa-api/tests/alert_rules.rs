@@ -217,3 +217,100 @@ async fn list_filters_by_enabled_query() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["name"], "off");
 }
+
+// ── AAASM-1658 — DELETE rule preserves snapshot on already-recorded alerts ──
+
+#[tokio::test]
+async fn delete_rule_preserves_snapshot_on_already_recorded_alerts() {
+    use aa_api::alerts::detail::{RoutingLogEntry, RuleSnapshot};
+    use aa_api::alerts::rules::types::{AlertRule, RuleMetric, RuleOperator, RuleSeverity};
+    use aa_api::alerts::RuleAlertSeed;
+    use std::sync::Arc;
+
+    let state = common::test_state();
+    // Hold a handle to alert_store so we can seed a rule alert *after*
+    // POSTing the rule (the route handler will assign the rule id).
+    let alert_store = Arc::clone(&state.alert_store);
+    let app = aa_api::server::build_app(state);
+
+    // 1) Create a rule via the public API.
+    let response = app
+        .clone()
+        .oneshot(post("/api/v1/alerts/rules", valid_rule_body()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = read_json(response).await;
+    let rule_id = created["id"].as_str().expect("id assigned").to_string();
+    let rule_name = created["name"].as_str().unwrap().to_string();
+
+    // 2) Record a rule-derived alert carrying the full AlertRule snapshot
+    //    — what the live evaluator does once a metric source fires.
+    let snapshot_rule = AlertRule {
+        id: rule_id.clone(),
+        name: rule_name.clone(),
+        description: "Fire CRITICAL when budget spend exceeds 90%".to_string(),
+        metric: RuleMetric::BudgetSpentPct,
+        operator: RuleOperator::Gt,
+        threshold: 90.0,
+        evaluation_window_seconds: 300,
+        severity: RuleSeverity::Critical,
+        destination_ids: vec!["slack-ops".to_string()],
+        dedup_window_seconds: 600,
+        suppression_labels: std::collections::HashMap::new(),
+        enabled: true,
+        created_at: "2026-05-13T09:00:00Z".to_string(),
+        updated_at: "2026-05-13T09:00:00Z".to_string(),
+    };
+    let alert_id = alert_store.record_rule_alert(&RuleAlertSeed {
+        agent_id: None,
+        team_id: None,
+        rule_id: rule_id.clone(),
+        rule_name: rule_name.clone(),
+        rule_snapshot: RuleSnapshot {
+            metric: "budget_spent_pct".to_string(),
+            operator: ">".to_string(),
+            threshold: 90.0,
+            evaluation_window_seconds: 300,
+            severity: "CRITICAL".to_string(),
+            dedup_window_seconds: 600,
+            suppression_labels: std::collections::BTreeMap::new(),
+        },
+        destination_ids: vec!["slack-ops".to_string()],
+        event_payload: serde_json::json!({ "metric_value": 92.3 }),
+        routing_log: vec![RoutingLogEntry {
+            destination_id: "slack-ops".to_string(),
+            delivered_at: "2026-05-20T09:00:01Z".to_string(),
+            status: "ok".to_string(),
+        }],
+        alert_rule: Some(snapshot_rule),
+    });
+
+    // 3) DELETE the rule out of the registry.
+    let response = app
+        .clone()
+        .oneshot(delete(&format!("/api/v1/alerts/rules/{rule_id}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/alerts/rules/{rule_id}")))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "rule must be gone after DELETE",
+    );
+
+    // 4) The already-recorded alert's ruleSnapshot must still carry the
+    //    full original AlertRule, so the dashboard detail view can render.
+    let response = app.oneshot(get(&format!("/api/v1/alerts/{alert_id}"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["ruleSnapshot"]["id"], rule_id);
+    assert_eq!(body["ruleSnapshot"]["name"], rule_name);
+    assert_eq!(body["ruleSnapshot"]["threshold"], 90.0);
+    assert_eq!(body["ruleSnapshot"]["metric"], "budget_spent_pct");
+}
