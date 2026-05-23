@@ -68,3 +68,50 @@ jobs:
             echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
             exit 1
           }
+
+  smoke-homebrew-linux:
+    name: Smoke — Homebrew (Linux x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Homebrew (Linuxbrew) on a clean Ubuntu runner
+        run: |
+          NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      - name: Install aasm via Homebrew tap
+        run: |
+          brew update
+          brew install agent-assembly/tap/aasm
+
+      - name: Verify aasm --version matches release tag
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          got=$(aasm --version)
+          want="aasm ${EXPECTED}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
+            exit 1
+          }
