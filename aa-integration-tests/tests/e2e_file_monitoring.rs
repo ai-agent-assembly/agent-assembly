@@ -161,6 +161,16 @@ fn load_file_io_bpf() -> Ebpf {
         "__x64_sys_unlink",
     );
     attach_kprobe_pair(&mut bpf, "aa_sys_rename", "aa_sys_rename_ret", "__x64_sys_renameat2");
+    // glibc on x86_64 routes `rename()` through `__NR_rename` —
+    // attach the legacy probe so the Python driver's `os.rename(a, b)`
+    // call fires the rename kretprobe via the legacy entry point.
+    // See AAASM-1574.
+    attach_kprobe_pair(
+        &mut bpf,
+        "aa_sys_rename_legacy",
+        "aa_sys_rename_legacy_ret",
+        "__x64_sys_rename",
+    );
     bpf
 }
 
