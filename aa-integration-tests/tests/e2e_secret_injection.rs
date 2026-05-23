@@ -177,3 +177,46 @@ async fn st_o_3_audit_log_contains_no_real_value() {
          at least one entry's args field contains PLACEHOLDER_DB_PASSWORD."
     );
 }
+
+// ── ST-O-4 — Unknown placeholder is an error, not a passthrough ──────────────
+
+/// **ST-O-4** — Dispatching a tool with a placeholder that is **not**
+/// registered in the `SecretsStore` must surface a structured error to the
+/// caller. The gateway must **not** silently forward the literal
+/// `${UNKNOWN_SECRET}` string through to the downstream tool.
+///
+/// This guards against a subtle failure mode: if unknown placeholders
+/// passed through silently, a typo (`${DB_PASWORD}`) would not just fail
+/// — it would mask the failure and ship the literal placeholder string to
+/// production tools, possibly trigger downstream parser errors, and rob
+/// operators of any signal that the secret never resolved.
+///
+/// Setup (once AAASM-1920 ships):
+///   * Same `TopologyTestEnv` + `SecretsStore` as ST-O-1.
+///   * The store has **no** entry for `${UNKNOWN_SECRET}`.
+///   * `MockLlmServer` bound as the downstream tool sink so we can confirm
+///     no request was forwarded.
+///
+/// Action:
+///   * Agent dispatches `call_database` with
+///     `{ "connection_string": "${UNKNOWN_SECRET}" }`.
+///
+/// Assertions:
+///   1. The `dispatch_tool` call returns an error (HTTP 4xx for the HTTP
+///      route, equivalent gRPC status for the gRPC route). The error code
+///      / reason references the unknown placeholder by name
+///      (`UNKNOWN_SECRET`).
+///   2. `mock_llm.request_count() == 0` — the downstream tool received
+///      nothing. The placeholder must not be silently forwarded.
+///   3. An audit entry exists for the failed attempt, recording the
+///      placeholder name (`${UNKNOWN_SECRET}`) and the failure reason.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1920: Secret Injection feature (SecretsStore + dispatch_tool + audit shape) not yet implemented"]
+async fn st_o_4_unknown_placeholder_returns_error() {
+    todo!(
+        "Wire TopologyTestEnv + SecretsStore + dispatch_tool once AAASM-1920 lands. \
+         Assertions: dispatch returns SecretInjectionError::UnknownPlaceholder {{ name: \"UNKNOWN_SECRET\" }}; \
+         mock_llm.request_count() == 0; \
+         audit entry records the placeholder name + failure reason."
+    );
+}
