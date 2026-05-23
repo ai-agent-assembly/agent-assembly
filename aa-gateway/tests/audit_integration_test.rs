@@ -356,6 +356,7 @@ async fn audit_service_populates_lineage_from_registry() {
             root_agent_id: Some(root_bytes),
             children: vec![],
             parent_key: None,
+            enforcement_mode: None,
         })
         .unwrap();
 

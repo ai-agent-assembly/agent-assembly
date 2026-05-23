@@ -111,19 +111,22 @@ async fn status_json_and_yaml_are_structurally_equivalent() {
     assert!(json_out.status.success() && yaml_out.status.success());
 
     // Parse both, then assert structural equality after normalizing the
-    // runtime.uptime_secs field — it counts wall-clock seconds since the
-    // gateway started and naturally drifts between the two back-to-back
-    // CLI invocations. All other section fields are deterministic given
-    // a fresh empty fixture.
+    // wall-clock uptime fields (`runtime.uptime_secs` and
+    // `deployment.uptime_secs`) — they count seconds since the gateway
+    // started and naturally drift between the two back-to-back CLI
+    // invocations. All other section fields are deterministic given a
+    // fresh empty fixture.
     let mut json_v = parse_json(&json_out.stdout);
     let yaml_as_json: serde_json::Value =
         serde_json::to_value(parse_yaml(&yaml_out.stdout)).expect("yaml should round-trip to JSON");
     let mut yaml_v = yaml_as_json;
-    if let Some(r) = json_v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
-        r.insert("uptime_secs".into(), serde_json::Value::from(0));
-    }
-    if let Some(r) = yaml_v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
-        r.insert("uptime_secs".into(), serde_json::Value::from(0));
+    for v in [&mut json_v, &mut yaml_v] {
+        if let Some(r) = v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
+            r.insert("uptime_secs".into(), serde_json::Value::from(0));
+        }
+        if let Some(d) = v.get_mut("deployment").and_then(|x| x.as_object_mut()) {
+            d.insert("uptime_secs".into(), serde_json::Value::from(0));
+        }
     }
     assert_eq!(
         json_v,
@@ -212,6 +215,7 @@ async fn status_exits_1_when_agent_has_policy_violations() {
         root_agent_id: None,
         children: vec![],
         parent_key: None,
+        enforcement_mode: None,
     };
     fixture
         .env
@@ -234,11 +238,12 @@ async fn status_exits_1_when_agent_has_policy_violations() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn status_exits_2_when_gateway_is_unreachable() {
+async fn status_exits_1_with_hint_when_gateway_is_unreachable() {
     // No `CliFixture::start()` — we point the CLI at a known-unbound port
-    // to exercise the unreachable-API exit code (2). Building Command by
-    // hand because `CliFixture::cmd()` always wires --api-url to the live
-    // fixture URL.
+    // to exercise the unreachable-gateway behaviour. Per AAASM-1579 AC the
+    // CLI now exits 1 (was 2) and writes a documented hint to stderr.
+    // Building Command by hand because `CliFixture::cmd()` always wires
+    // --api-url to the live fixture URL.
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args([
         "run",
@@ -253,13 +258,17 @@ async fn status_exits_2_when_gateway_is_unreachable() {
         "status",
     ]);
     let out = cmd.output().expect("aasm status should execute");
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert_eq!(
         out.status.code(),
-        Some(2),
-        "unreachable gateway should yield exit code 2; stdout:\n{}\nstderr:\n{}",
+        Some(1),
+        "unreachable gateway should yield exit code 1; stdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        stderr.contains("Error: gateway is not running. Start it with: aasm start"),
+        "unreachable gateway should print the documented stderr hint; stderr:\n{stderr}",
     );
 }
 

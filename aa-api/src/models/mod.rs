@@ -4,6 +4,7 @@ pub mod alert_ws_payloads;
 pub mod capability;
 pub mod event;
 pub mod event_type;
+pub mod retention;
 pub mod topology;
 pub mod trace;
 pub mod ws_payloads;

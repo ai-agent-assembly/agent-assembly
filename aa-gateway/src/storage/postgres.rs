@@ -22,6 +22,8 @@ use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
+use super::timescale::{has_timescaledb_extension, query_timescale_stats};
+use aa_core::config::TimescaleConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
 /// hyphenated form). Mirrors the SQLite backend's storage shape so the
@@ -250,6 +252,10 @@ fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
 /// later Epic-18 S-C sub-tasks.
 pub struct PostgresBackend {
     pool: PgPool,
+    /// TimescaleDB knobs captured from [`PostgresConfig::timescaledb`] at
+    /// connect time. Consumed by
+    /// [`PostgresBackend::apply_timescaledb_setup`] from inside `migrate()`.
+    timescale_config: TimescaleConfig,
 }
 
 impl PostgresBackend {
@@ -274,26 +280,73 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            timescale_config: config.timescaledb.clone(),
+        })
+    }
+
+    /// Gate the TimescaleDB hypertable setup based on `config.enabled` and
+    /// the presence of the `timescaledb` extension on the cluster.
+    ///
+    /// Three paths, all returning `Ok(())`:
+    /// * `config.enabled = false` → log `info`, skip — operator opted out
+    /// * extension absent on cluster → log `warn`, skip — graceful fallback
+    /// * extension present → log `info` — the `0002_timescaledb_hypertables.sql`
+    ///   migration (S-D #1) already created the hypertables; this method
+    ///   only governs runtime gating + observability
+    ///
+    /// Called from `migrate()` after `sqlx::migrate!` runs (wired in the
+    /// next commit of this SD-3 stack).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::QueryFailed`] only when the `pg_extension`
+    /// probe itself fails (transport / permission). The graceful-fallback
+    /// paths above never raise an error — production deployments must be
+    /// able to boot against plain PostgreSQL.
+    pub(crate) async fn apply_timescaledb_setup(&self, config: &TimescaleConfig) -> StorageResult<()> {
+        if !config.enabled {
+            tracing::info!("storage.postgres.timescaledb.enabled = false; skipping hypertable setup");
+            return Ok(());
+        }
+        if !has_timescaledb_extension(&self.pool).await? {
+            tracing::warn!(
+                "TimescaleDB extension not found — using standard PostgreSQL tables. \
+                 Install TimescaleDB for time-series query acceleration and auto-compression."
+            );
+            return Ok(());
+        }
+        tracing::info!("TimescaleDB extension active; hypertables governed by 0002_timescaledb_hypertables.sql");
+        Ok(())
     }
 }
 
 #[async_trait]
 impl StorageBackend for PostgresBackend {
-    /// Apply the embedded `migrations/postgres/*.sql` migrations.
+    /// Apply the embedded `migrations/postgres/*.sql` migrations and
+    /// then run TimescaleDB runtime gating via
+    /// [`PostgresBackend::apply_timescaledb_setup`].
     ///
     /// Idempotent — sqlx records applied versions in `_sqlx_migrations`,
     /// so calling this against an already-migrated database is a no-op.
+    /// `apply_timescaledb_setup` is also idempotent (it only logs +
+    /// branches on extension presence; the hypertable DDL is owned by
+    /// `0002_timescaledb_hypertables.sql`, which `IF NOT EXISTS`-guards
+    /// itself).
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::MigrationFailed`] when any migration fails
     /// to apply or sqlx cannot verify previously-applied versions.
+    /// Returns [`StorageError::QueryFailed`] when the extension probe in
+    /// `apply_timescaledb_setup` fails (transport / permission).
     async fn migrate(&self) -> StorageResult<()> {
         sqlx::migrate!("./migrations/postgres")
             .run(&self.pool)
             .await
-            .map_err(|e| StorageError::MigrationFailed(e.to_string()))
+            .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
+        self.apply_timescaledb_setup(&self.timescale_config).await
     }
 
     /// Persist a single audit event.
@@ -842,6 +895,15 @@ impl StorageBackend for PostgresBackend {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
 
+        // Populate optional TimescaleDB rollup when the extension is
+        // present. Probe + stats failures degrade gracefully to `None`
+        // rather than failing the entire healthcheck — observability
+        // must not block on optional metadata.
+        let timescale = match has_timescaledb_extension(&self.pool).await {
+            Ok(true) => query_timescale_stats(&self.pool).await.ok(),
+            Ok(false) | Err(_) => None,
+        };
+
         let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
         let status = if latency_ms < 200 {
             HealthStatus::Ok
@@ -858,6 +920,7 @@ impl StorageBackend for PostgresBackend {
                 agents: agents as u64,
                 policy_versions: policy_versions as u64,
             },
+            timescale,
         })
     }
 }
@@ -905,6 +968,95 @@ mod tests {
             Err(other) => panic!("expected ConnectionFailed, got {other:?}"),
             Ok(_) => panic!("expected error when database_url is None"),
         }
+    }
+
+    /// `apply_timescaledb_setup` must return `Ok(())` immediately when
+    /// `config.enabled = false`, without touching the database. Exercises
+    /// the operator-opt-out path that lets deployments disable TimescaleDB
+    /// promotion even when the extension is installed.
+    ///
+    /// Runs whenever `AAASM_DATABASE_URL` is set — no TimescaleDB needed.
+    #[tokio::test]
+    async fn apply_timescaledb_setup_skips_when_disabled() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        let disabled = TimescaleConfig {
+            enabled: false,
+            ..TimescaleConfig::default()
+        };
+        backend
+            .apply_timescaledb_setup(&disabled)
+            .await
+            .expect("apply_timescaledb_setup must return Ok when enabled = false");
+    }
+
+    /// When `enabled = true` and the TimescaleDB extension is **absent**,
+    /// `apply_timescaledb_setup` must log a warning and return `Ok(())`
+    /// rather than raising — production deployments must boot against
+    /// plain PostgreSQL without crashing on startup.
+    ///
+    /// Runs against `AAASM_DATABASE_URL` when `TIMESCALEDB_AVAILABLE != "1"`
+    /// (the existing CI `Test` job's postgres:18-alpine service).
+    #[tokio::test]
+    async fn apply_timescaledb_setup_warns_when_extension_absent() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping extension-absent test: TIMESCALEDB_AVAILABLE=1 (see apply_timescaledb_setup_succeeds_when_extension_active)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        let enabled = TimescaleConfig::default();
+        assert!(enabled.enabled, "default must have enabled = true");
+
+        backend
+            .apply_timescaledb_setup(&enabled)
+            .await
+            .expect("apply_timescaledb_setup must return Ok via graceful fallback on plain PostgreSQL");
+
+        let present = super::super::timescale::has_timescaledb_extension(&backend.pool)
+            .await
+            .expect("probe");
+        assert!(
+            !present,
+            "this test asserts the extension-absent path; if your CI installed TimescaleDB, set TIMESCALEDB_AVAILABLE=1"
+        );
+    }
+
+    /// When `enabled = true` and the TimescaleDB extension **is** present,
+    /// `apply_timescaledb_setup` must return `Ok(())` and log at info
+    /// level — the hypertable DDL is already owned by migration 0002,
+    /// so this method only logs and returns.
+    ///
+    /// Env-gated on `TIMESCALEDB_AVAILABLE=1`; auto-runs once SD-5
+    /// (AAASM-1858) ships the `timescaledb-tests` CI job against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn apply_timescaledb_setup_succeeds_when_extension_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!("skipping extension-present test: TIMESCALEDB_AVAILABLE != 1");
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+
+        let present = super::super::timescale::has_timescaledb_extension(&backend.pool)
+            .await
+            .expect("probe");
+        assert!(
+            present,
+            "TIMESCALEDB_AVAILABLE=1 was set but the extension is not installed; \
+             check the docker image is timescale/timescaledb:latest-pg17"
+        );
+
+        backend
+            .apply_timescaledb_setup(&TimescaleConfig::default())
+            .await
+            .expect("apply_timescaledb_setup must return Ok when extension is active");
     }
 
     #[tokio::test]
@@ -1712,6 +1864,68 @@ mod tests {
             health.row_counts.audit_events >= 1,
             "audit_events count must include our fresh insert, got {}",
             health.row_counts.audit_events,
+        );
+    }
+
+    /// `healthcheck()` must return `timescale: None` on a vanilla
+    /// PostgreSQL cluster where the extension is not installed.
+    /// Runs against `AAASM_DATABASE_URL` when `TIMESCALEDB_AVAILABLE != "1"`
+    /// (the existing CI `Test` job's postgres:18-alpine service).
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_none_on_plain_postgres() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping plain-postgres healthcheck test: TIMESCALEDB_AVAILABLE=1 (see healthcheck_reports_timescale_stats_when_extension_active)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        assert!(
+            health.timescale.is_none(),
+            "expected timescale = None on plain PostgreSQL; got {:?}",
+            health.timescale,
+        );
+    }
+
+    /// `healthcheck()` must return `Some(TimescaleStats)` on a cluster
+    /// where the TimescaleDB extension is installed. After `migrate()`
+    /// creates the hypertables and one audit event is appended, the
+    /// rollup should report at least one chunk.
+    ///
+    /// Env-gated on `TIMESCALEDB_AVAILABLE=1`. Auto-runs once SD-5
+    /// (AAASM-1858) ships the `timescaledb-tests` CI job against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_stats_when_extension_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!("skipping extension-present healthcheck test: TIMESCALEDB_AVAILABLE != 1");
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Insert one event so audit_events has at least one chunk.
+        let agent_id = fresh_agent_id();
+        backend
+            .append_audit_event(&sample_event(agent_id, now_micros()))
+            .await
+            .expect("append");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        let stats = health
+            .timescale
+            .expect("expected Some(TimescaleStats) when TimescaleDB extension is active");
+        assert!(
+            stats.total_chunks >= 1,
+            "expected at least one chunk after inserting an audit event, got {}",
+            stats.total_chunks,
         );
     }
 }

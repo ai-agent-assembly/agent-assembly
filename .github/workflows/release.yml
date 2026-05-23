@@ -158,3 +158,84 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: cargo publish -p aa-cli
+
+  update-homebrew-tap:
+    name: Update Homebrew tap formula
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Extract per-platform sha256
+        id: shas
+        shell: bash
+        run: |
+          cd artifacts
+          if [ ! -f SHA256SUMS ]; then
+            sha256sum aasm-*.tar.gz > SHA256SUMS
+          fi
+          {
+            echo "darwin_arm=$(awk '$2=="aasm-aarch64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
+            echo "darwin_intel=$(awk '$2=="aasm-x86_64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
+            echo "linux_arm=$(awk '$2=="aasm-aarch64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
+            echo "linux_intel=$(awk '$2=="aasm-x86_64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract release version from tag
+        id: version
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # github.ref_name is the tag (e.g. v0.0.1); strip the leading "v".
+          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-agent-assembly tap
+        uses: actions/checkout@v6
+        with:
+          repository: AI-agent-assembly/homebrew-agent-assembly
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Rewrite Formula/aasm.rb with new version + shas
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DARWIN_ARM: ${{ steps.shas.outputs.darwin_arm }}
+          DARWIN_INTEL: ${{ steps.shas.outputs.darwin_intel }}
+          LINUX_ARM: ${{ steps.shas.outputs.linux_arm }}
+          LINUX_INTEL: ${{ steps.shas.outputs.linux_intel }}
+        run: |
+          cd tap
+          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/aasm.rb
+          sed -i "/aasm-aarch64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_ARM}\"|}" Formula/aasm.rb
+          sed -i "/aasm-x86_64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_INTEL}\"|}" Formula/aasm.rb
+          sed -i "/aasm-aarch64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM}\"|}" Formula/aasm.rb
+          sed -i "/aasm-x86_64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_INTEL}\"|}" Formula/aasm.rb
+          git -C . diff -- Formula/aasm.rb || true
+
+      - name: Open tap PR via peter-evans/create-pull-request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          path: tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          branch: bot/aasm-${{ steps.version.outputs.version }}
+          base: master
+          delete-branch: true
+          commit-message: "🤖 (formula): Update aasm to ${{ steps.version.outputs.version }}"
+          title: "🤖 (formula): aasm ${{ steps.version.outputs.version }}"
+          body: |
+            Auto-update from agent-assembly release `${{ github.ref_name }}`.
+
+            Bumps `version` and refreshes the four per-platform `sha256` values in
+            `Formula/aasm.rb` from the `SHA256SUMS` published with the release.
+
+            Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -47,7 +47,6 @@ impl StatusClient {
     /// `aa-gateway::routes::healthz::healthz` regardless of deployment mode.
     /// Returns an error when the gateway is unreachable or returns a body the
     /// client cannot decode; callers map that to `health = "unreachable"`.
-    #[allow(dead_code)]
     pub async fn check_healthz(&self) -> Result<HealthzResponse, CliError> {
         let resp = self.http.get(self.url("/healthz")).send().await?;
         let body = resp.json::<HealthzResponse>().await?;

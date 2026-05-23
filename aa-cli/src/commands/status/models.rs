@@ -89,6 +89,36 @@ pub struct HealthzResponse {
     pub database_url: Option<String>,
 }
 
+/// Display model for the `aasm status` deployment-overview header.
+///
+/// The serialised shape is the JSON contract for `aasm status --json` — field
+/// names must stay in lockstep with the AAASM-1579 story description so
+/// scripting and CI consumers can rely on them. `storage_path` and
+/// `database_url_redacted` are `Option` to allow them to be omitted in the
+/// minimum `/healthz` body case rather than emitted as `null`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DeploymentOverview {
+    /// Deployment mode label: `"local"` or `"remote"` (or `"unknown"` when unreachable).
+    pub mode: String,
+    /// Gateway base URL the CLI was configured to talk to.
+    pub gateway_url: String,
+    /// Storage backend label: `"sqlite"`, `"postgres"`, `"memory"`, or `"unknown"`.
+    pub storage_backend: String,
+    /// Local-mode SQLite file path, when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_path: Option<String>,
+    /// PostgreSQL connection URL with the password segment replaced by `***`,
+    /// when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_url_redacted: Option<String>,
+    /// Gateway crate version.
+    pub version: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Overall health label: `"ok"` when the gateway responded, `"unreachable"` otherwise.
+    pub health: String,
+}
+
 /// Computed runtime health for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
@@ -231,6 +261,8 @@ pub struct PaginatedResponse<T> {
 /// Complete status snapshot combining all sections.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusSnapshot {
+    /// Deployment-overview header: mode, gateway URL, storage backend, version, uptime, health.
+    pub deployment: DeploymentOverview,
     pub runtime: RuntimeHealth,
     pub agents: Vec<AgentRow>,
     pub approvals: ApprovalsSummary,
@@ -296,6 +328,30 @@ mod tests {
         for input in ["~/.aasm/local.db", "not-a-url", "://no-scheme", ""] {
             assert_eq!(redact_database_url(input), input, "input: {input:?}");
         }
+    }
+
+    #[test]
+    fn deployment_overview_serialises_with_documented_field_names() {
+        let overview = DeploymentOverview {
+            mode: "remote".to_string(),
+            gateway_url: "https://cp.company.internal:7391".to_string(),
+            storage_backend: "postgres".to_string(),
+            storage_path: None,
+            database_url_redacted: Some("postgresql://aasm:***@aasm-db:5432/aasm".to_string()),
+            version: "0.0.1".to_string(),
+            uptime_secs: 8133,
+            health: "ok".to_string(),
+        };
+        let json = serde_json::to_value(&overview).expect("DeploymentOverview must serialise");
+        assert_eq!(json["mode"], "remote");
+        assert_eq!(json["gateway_url"], "https://cp.company.internal:7391");
+        assert_eq!(json["storage_backend"], "postgres");
+        assert_eq!(json["database_url_redacted"], "postgresql://aasm:***@aasm-db:5432/aasm");
+        assert_eq!(json["version"], "0.0.1");
+        assert_eq!(json["uptime_secs"], 8133);
+        assert_eq!(json["health"], "ok");
+        // storage_path = None must be omitted, not serialised as null.
+        assert!(json.get("storage_path").is_none(), "Option::None must be skipped");
     }
 
     #[test]

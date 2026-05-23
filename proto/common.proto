@@ -73,3 +73,24 @@ enum RiskTier {
   // Critical risk: immediate kill + incident escalation.
   CRITICAL         = 4;
 }
+
+// ── Enforcement mode ──────────────────────────────────────────────────────────
+
+// EnforcementMode controls whether policy decisions are applied to agent
+// actions or only observed (dry-run / sandbox mode). Used at both the policy
+// document level and as a per-agent override on RegisterRequest.
+//
+// Resolution order on the gateway, per evaluation:
+//   1. RegisterRequest.enforcement_mode (if set / non-UNSPECIFIED)
+//   2. Policy document enforcement_mode (parsed from YAML body)
+//   3. Server-wide default: ENFORCE
+enum EnforcementMode {
+  // Sentinel; resolves to ENFORCE on the server side.
+  ENFORCEMENT_MODE_UNSPECIFIED = 0;
+  // Default: deny blocks, redact strips, pending halts execution.
+  ENFORCE                      = 1;
+  // Dry-run / sandbox: decisions computed and audited; no enforcement applied.
+  OBSERVE                      = 2;
+  // Policy evaluation disabled entirely. Only valid in hermetic test environments.
+  DISABLED                     = 3;
+}

@@ -24,6 +24,7 @@
 
 pub mod agent;
 pub mod audit;
+pub mod audit_bridge;
 pub mod backend;
 pub mod boot;
 pub mod cache;
@@ -35,12 +36,15 @@ pub mod policy;
 pub mod postgres;
 pub mod postgres_config;
 pub mod retention;
+pub mod retention_boot;
 pub mod retention_config;
 pub mod retention_engine;
 pub mod sqlite;
+pub mod timescale;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
+pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;
 pub use boot::{open_postgres_backend, open_sqlite_backend};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
@@ -51,6 +55,8 @@ pub use policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 pub use postgres::PostgresBackend;
 pub use postgres_config::PostgresConfig;
 pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
+pub use retention_boot::spawn_retention_engine;
 pub use retention_config::{RetentionConfig, RetentionConfigError};
 pub use retention_engine::RetentionEngine;
 pub use sqlite::{SqliteBackend, SqliteConfig};
+pub use timescale::TimescaleStats;

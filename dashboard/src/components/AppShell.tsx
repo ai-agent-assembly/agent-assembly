@@ -109,6 +109,14 @@ export function AppShell() {
           <div className="appshell__user">
             <ApprovalsBellButton />
             <span data-testid="appshell-user">{token ?? ''}</span>
+            <NavLink
+              to="/settings"
+              className="appshell__settings-link"
+              data-testid="topbar-settings-link"
+              aria-label="Settings"
+            >
+              ⚙ Settings
+            </NavLink>
             <button
               className="appshell__logout"
               data-testid="logout-btn"
