@@ -1866,4 +1866,29 @@ mod tests {
             health.row_counts.audit_events,
         );
     }
+
+    /// `healthcheck()` must return `timescale: None` on a vanilla
+    /// PostgreSQL cluster where the extension is not installed.
+    /// Runs against `AAASM_DATABASE_URL` when `TIMESCALEDB_AVAILABLE != "1"`
+    /// (the existing CI `Test` job's postgres:18-alpine service).
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_none_on_plain_postgres() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping plain-postgres healthcheck test: TIMESCALEDB_AVAILABLE=1 (see healthcheck_reports_timescale_stats_when_extension_active)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        assert!(
+            health.timescale.is_none(),
+            "expected timescale = None on plain PostgreSQL; got {:?}",
+            health.timescale,
+        );
+    }
 }
