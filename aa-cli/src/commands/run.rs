@@ -862,6 +862,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_child_env_omits_aa_enforcement_mode_when_enforce() {
+        // Pre-feature behaviour: an enforce-mode launch must not introduce
+        // any new env var so tools that env-sniff don't pick up a phantom
+        // posture marker.
+        let handle = stub_handle(None, None);
+        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
+        assert!(
+            !env.contains_key("AA_ENFORCEMENT_MODE"),
+            "AA_ENFORCEMENT_MODE must be absent in plain enforce-mode launches"
+        );
+    }
+
+    #[test]
+    fn build_child_env_sets_aa_enforcement_mode_for_observe_and_disabled() {
+        // The downstream tool / SDK reads this env var to decide whether to
+        // surface a "running under observe mode" badge / banner in its own
+        // UX. Locks in the snake_case wire form.
+        let handle = stub_handle(None, None);
+        let observe_env = build_child_env(&handle, false, aa_core::EnforcementMode::Observe);
+        assert_eq!(
+            observe_env.get("AA_ENFORCEMENT_MODE").map(String::as_str),
+            Some("observe")
+        );
+
+        let disabled_env = build_child_env(&handle, false, aa_core::EnforcementMode::Disabled);
+        assert_eq!(
+            disabled_env.get("AA_ENFORCEMENT_MODE").map(String::as_str),
+            Some("disabled")
+        );
+    }
+
     // --- register_with_gateway tests ---
 
     #[tokio::test]
