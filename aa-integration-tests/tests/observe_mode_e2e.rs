@@ -413,3 +413,62 @@ async fn st_r_4_enforce_mode_deny_still_blocks_and_emits_no_shadow_event() {
         "ST-R-4: enforce-mode audit entry must not carry shadow_decision, got: {payload}",
     );
 }
+
+// ── ST-R-5 ──────────────────────────────────────────────────────────────────
+
+/// **ST-R-5** — Per-agent override isolation. Two agents share one
+/// bash-deny policy. The "experimental" agent registers with
+/// `enforcement_mode: Observe`; the "trusted" agent registers with no
+/// override. Each must resolve to its own mode independently — observe
+/// mode for one agent must not leak across to other agents under the
+/// same policy. This is the AC that makes gradual observe-mode rollouts
+/// safe: tag a single agent, validate, expand.
+#[tokio::test]
+async fn st_r_5_per_agent_override_isolates_observe_from_enforce_under_one_policy() {
+    let (addr, registry, _audit_rx) = start_gateway_with_policy_fixture("policies/bash_deny.yaml").await;
+
+    let experimental_id = ProtoAgentId {
+        org_id: "org-st-r-5".into(),
+        team_id: "team-st-r-5".into(),
+        agent_id: "experimental-agent".into(),
+    };
+    let trusted_id = ProtoAgentId {
+        org_id: "org-st-r-5".into(),
+        team_id: "team-st-r-5".into(),
+        agent_id: "trusted-agent".into(),
+    };
+    register_agent_with_mode(
+        &registry,
+        "experimental-agent",
+        &experimental_id,
+        Some(aa_core::EnforcementMode::Observe),
+    );
+    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, None);
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to PolicyService");
+
+    let experimental_resp = client
+        .check_action(tool_call_request_for(&experimental_id, "bash"))
+        .await
+        .expect("check_action RPC (experimental)")
+        .into_inner();
+    let trusted_resp = client
+        .check_action(tool_call_request_for(&trusted_id, "bash"))
+        .await
+        .expect("check_action RPC (trusted)")
+        .into_inner();
+
+    assert_eq!(
+        experimental_resp.decision,
+        Decision::Allow as i32,
+        "ST-R-5: experimental agent (observe override) must proceed under the bash-deny policy",
+    );
+    assert_eq!(
+        trusted_resp.decision,
+        Decision::Deny as i32,
+        "ST-R-5: trusted agent (no override) must remain blocked by the same policy (reason={:?})",
+        trusted_resp.reason,
+    );
+}
