@@ -48,6 +48,10 @@ pub struct BudgetPolicy {
     pub timezone: Option<String>,
     /// Action when budget is exceeded: deny individual requests or suspend agent.
     pub action_on_exceed: ActionOnExceed,
+    /// Optional sub-day rollover window parsed from the YAML `window:` field.
+    /// `None` preserves the historical calendar-day rollover behaviour.
+    /// AAASM-1600.
+    pub window: Option<std::time::Duration>,
 }
 
 /// Action to take when the credential / sensitive-data scanner produces

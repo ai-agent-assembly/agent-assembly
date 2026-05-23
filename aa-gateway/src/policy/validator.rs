@@ -284,11 +284,35 @@ impl PolicyValidator {
             }
         };
 
+        // Validate sub-day window if provided (AAASM-1600). Parses
+        // humantime strings; rejects zero-or-negative or unparseable values.
+        let window = match raw.window.as_deref() {
+            None => None,
+            Some(s) => match humantime::parse_duration(s) {
+                Ok(d) if d.is_zero() => {
+                    errors.push(ValidationError::new(
+                        "budget.window",
+                        "must be a positive duration (e.g. '5s', '30m', '1h')",
+                    ));
+                    None
+                }
+                Ok(d) => Some(d),
+                Err(e) => {
+                    errors.push(ValidationError::new(
+                        "budget.window",
+                        format!("'{s}' is not a valid humantime duration: {e}"),
+                    ));
+                    None
+                }
+            },
+        };
+
         Some(BudgetPolicy {
             daily_limit_usd: raw.daily_limit_usd,
             monthly_limit_usd: raw.monthly_limit_usd,
             timezone: raw.timezone,
             action_on_exceed,
+            window,
         })
     }
 
