@@ -102,3 +102,41 @@ async fn st_o_1_placeholder_substituted_at_dispatch() {
          (2) audit entry args field contains PLACEHOLDER_DB_PASSWORD, not REAL_DB_PASSWORD."
     );
 }
+
+// ── ST-O-2 — Real secret absent from any LLM-facing traffic ──────────────────
+
+/// **ST-O-2** — Across every LLM-bound request the agent makes during the
+/// scenario, the real secret value `REAL_DB_PASSWORD` appears **zero** times.
+/// The LLM only ever sees the placeholder `${DB_PASSWORD}` or a redacted form
+/// — never the resolved credential.
+///
+/// This is the central product guarantee of Secret Injection (`.ai/spec/
+/// about_ai-agent-assembly_born.md:7246`): the LLM's context window is
+/// provably free of the real credential, even though tool dispatches succeed
+/// against the real value.
+///
+/// Setup (once AAASM-1920 ships):
+///   * Same `TopologyTestEnv` + `SecretsStore` as ST-O-1.
+///   * A `MockLlmServer` (AAASM-1547, Done) bound as the LLM upstream so
+///     every LLM-bound request body is captured for inspection.
+///
+/// Action:
+///   * Agent runs a short scenario: a prompt round-trip to the LLM, then a
+///     `dispatch_tool` call that references `${DB_PASSWORD}`.
+///
+/// Assertions:
+///   1. `mock_llm.history()` is non-empty (the LLM was actually exercised).
+///   2. For every `RecordedRequest` in `mock_llm.history()`, the request body
+///      contains zero occurrences of `REAL_DB_PASSWORD`.
+///   3. At least one request body contains either `PLACEHOLDER_DB_PASSWORD`
+///      verbatim or a `[REDACTED:*]` marker — confirming the placeholder
+///      form (or its redaction) is what the LLM saw.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1920: Secret Injection feature (SecretsStore + dispatch_tool + audit shape) not yet implemented"]
+async fn st_o_2_real_secret_absent_from_llm_traffic() {
+    todo!(
+        "Wire TopologyTestEnv + SecretsStore + MockLlmServer once AAASM-1920 lands. \
+         Assertions: for every recorded LLM request body, REAL_DB_PASSWORD count == 0; \
+         at least one body carries PLACEHOLDER_DB_PASSWORD or a [REDACTED:*] marker."
+    );
+}
