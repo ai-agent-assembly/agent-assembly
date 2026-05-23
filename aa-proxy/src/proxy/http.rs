@@ -104,6 +104,38 @@ where
     }))
 }
 
+/// Re-serialise an [`HttpRequest`] with a replacement body, rewriting the
+/// `Content-Length` header to match the new body length.
+///
+/// All other headers are emitted verbatim in their original order; any
+/// existing `Content-Length` header is dropped and re-appended with the
+/// new value so the upstream sees one — and only one — accurate length.
+/// `Transfer-Encoding` is stripped to keep the framing unambiguous.
+pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(req.body.len() + new_body.len() + 256);
+    out.extend_from_slice(req.method.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(req.target.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(req.version.as_bytes());
+    out.extend_from_slice(b"\r\n");
+
+    for (k, v) in &req.headers {
+        if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"Content-Length: ");
+    out.extend_from_slice(new_body.len().to_string().as_bytes());
+    out.extend_from_slice(b"\r\n\r\n");
+    out.extend_from_slice(new_body);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +186,47 @@ mod tests {
         let req = read_http_request(&mut reader).await.unwrap().unwrap();
         assert_eq!(req.header("x-custom"), Some("v"));
         assert_eq!(req.header("X-CUSTOM"), Some("v"));
+    }
+
+    #[tokio::test]
+    async fn serialize_rewrites_content_length_for_smaller_body() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Content-Type: application/json\r\n\
+                    Content-Length: 20\r\n\
+                    \r\n\
+                    01234567890123456789";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+
+        let new_body = b"short";
+        let wire = serialize_http_request(&req, new_body);
+        let text = std::str::from_utf8(&wire).unwrap();
+
+        assert!(text.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+        assert!(text.contains("Host: api.openai.com\r\n"));
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        // Old length is dropped; only the new value appears, exactly once.
+        assert_eq!(text.matches("Content-Length: 5\r\n").count(), 1);
+        assert!(!text.contains("Content-Length: 20"));
+        // Body is the new bytes after the blank line.
+        assert!(text.ends_with("\r\n\r\nshort"));
+    }
+
+    #[tokio::test]
+    async fn serialize_drops_transfer_encoding_header() {
+        let raw = b"POST / HTTP/1.1\r\n\
+                    Host: x.example.com\r\n\
+                    Transfer-Encoding: chunked\r\n\
+                    \r\n";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+        let wire = serialize_http_request(&req, b"hi");
+        let text = std::str::from_utf8(&wire).unwrap();
+        assert!(
+            !text.to_ascii_lowercase().contains("transfer-encoding"),
+            "serialized request must drop Transfer-Encoding when replacing body, got: {text}",
+        );
+        assert!(text.contains("Content-Length: 2\r\n"));
     }
 }
