@@ -16,6 +16,89 @@ servers:
 - url: http://localhost:7700
   description: Local development gateway
 paths:
+  /api/v1/admin/retention-policy:
+    get:
+      tags:
+      - admin
+      summary: Get the live retention policy + last-run stats
+      description: Returns the gateway's currently-active retention configuration plus the most recent successful run's statistics. The `last_run` field is `null` until the engine has completed at least one pass.
+      operationId: get_retention_policy
+      responses:
+        '200':
+          description: Current retention policy document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionPolicyDocument'
+        '503':
+          description: Retention engine not configured (gateway started without storage section)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+    put:
+      tags:
+      - admin
+      summary: Hot-reload the retention policy thresholds
+      description: Atomically replaces the gateway's active retention configuration. Validation runs both client-side in the dashboard and server-side here; on validation failure the active config is preserved. The cron schedule is read-only at runtime — only thresholds and the cold action can be changed without a restart.
+      operationId: update_retention_policy
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRetentionPolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Configuration applied; updated document returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionPolicyDocument'
+        '400':
+          description: Invalid request body (validation failure)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Retention engine not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/admin/retention-policy/run:
+    post:
+      tags:
+      - admin
+      summary: Run the retention engine once immediately
+      description: Triggers `RetentionEngine::run_once` with the live config, optionally forcing dry-run mode for this single invocation. Returns the resulting `RetentionStats` so the dashboard's "Last retention run" panel can refresh inline.
+      operationId: run_retention_policy
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRetentionRequest'
+        required: true
+      responses:
+        '200':
+          description: Run completed; stats returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionRunStatsDto'
+        '500':
+          description: Backend retention pass failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Retention engine not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/agents:
     get:
       tags:
@@ -3239,6 +3322,16 @@ components:
         spent_usd:
           type: string
           description: USD spent by this child on the given date (string-encoded Decimal).
+    ColdActionDto:
+      type: string
+      description: |-
+        Cold-tier action chosen by the admin.
+
+        Wire-level enum kept lowercase (`drop` / `archive`) so the JSON body
+        is identical to the YAML config key and the dashboard dropdown value.
+      enum:
+      - drop
+      - archive
     ConnectorFailedBody:
       type: object
       description: Response body for a failed test-fire (502).
@@ -4277,6 +4370,106 @@ components:
         previous_status:
           type: string
           description: Agent status before the resume operation.
+    RetentionPolicyDocument:
+      type: object
+      description: |-
+        Snapshot of the active retention configuration plus the most recent
+        run's stats. Body of `GET /api/v1/admin/retention-policy`.
+      required:
+      - hot_days
+      - warm_days
+      - cold_action
+      - dry_run
+      - schedule
+      properties:
+        archive_url:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Archive destination (e.g. `s3://bucket/path`). Required when
+            `cold_action == "archive"`; `None` otherwise.
+        cold_action:
+          $ref: '#/components/schemas/ColdActionDto'
+          description: Action applied to rows older than `warm_days`.
+        dry_run:
+          type: boolean
+          description: |-
+            When true, the engine logs the work it *would* perform without
+            taking action.
+        hot_days:
+          type: integer
+          format: int32
+          description: Days a row stays indexed and queryable in the hot tier.
+          minimum: 0
+        last_run:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/RetentionRunStatsDto'
+            description: |-
+              Stats from the most recent successful run. `None` when the engine
+              has not yet completed a pass.
+        schedule:
+          type: string
+          description: |-
+            Cron schedule (UTC) on which the background task fires. Read-only
+            — schedule changes still require a gateway restart.
+        warm_days:
+          type: integer
+          format: int32
+          description: |-
+            Days a row stays in the warm tier (compressed where supported)
+            before the cold action runs.
+          minimum: 0
+    RetentionRunStatsDto:
+      type: object
+      description: |-
+        Wire representation of [`aa_gateway::storage::RetentionStats`].
+
+        Used both inline on [`RetentionPolicyDocument`] (`last_run`) and as
+        the body of `POST /api/v1/admin/retention-policy/run`.
+      required:
+      - ran_at
+      - hot_rows
+      - compressed_rows
+      - archived_rows
+      - dropped_rows
+      - freed_bytes
+      - dry_run
+      properties:
+        archived_rows:
+          type: integer
+          format: int64
+          description: Rows archived during the run.
+          minimum: 0
+        compressed_rows:
+          type: integer
+          format: int64
+          description: Rows compressed into warm tier during the run.
+          minimum: 0
+        dropped_rows:
+          type: integer
+          format: int64
+          description: Rows dropped during the run.
+          minimum: 0
+        dry_run:
+          type: boolean
+          description: |-
+            Whether the run executed in dry-run mode (logged work without
+            actually deleting / compressing).
+        freed_bytes:
+          type: integer
+          format: int64
+          description: Bytes freed from primary storage by compression or drop.
+          minimum: 0
+        hot_rows:
+          type: integer
+          format: int64
+          description: Rows remaining in the hot tier after the run.
+          minimum: 0
+        ran_at:
+          type: string
+          description: Timestamp (UTC) at which the run completed (ISO 8601).
     RoutingHistoryEntry:
       type: object
       description: One step in the routing history of an approval request.
@@ -4448,6 +4641,15 @@ components:
           type: number
           format: double
           description: Numeric threshold the metric is compared against.
+    RunRetentionRequest:
+      type: object
+      description: Body of `POST /api/v1/admin/retention-policy/run`.
+      properties:
+        dry_run:
+          type: boolean
+          description: |-
+            When true, the run logs the work it *would* perform without
+            taking action. Defaults to `false`.
     SampleCall:
       type: object
       description: |-
@@ -5042,6 +5244,39 @@ components:
 
         All fields are optional — supplying just `enabled` toggles dispatch
         without touching the configuration payload.
+    UpdateRetentionPolicyRequest:
+      type: object
+      description: |-
+        Body of `PUT /api/v1/admin/retention-policy` — partial update of the
+        runtime retention configuration. Each field must be present; the
+        server-side validation matches the dashboard's client-side rules
+        (hot_days &ge; 1, warm_days &gt; hot_days, archive_url required when
+        `cold_action == "archive"`).
+      required:
+      - hot_days
+      - warm_days
+      - cold_action
+      properties:
+        archive_url:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Archive destination. Required when `cold_action == "archive"`;
+            must start with `s3://` or `gs://`.
+        cold_action:
+          $ref: '#/components/schemas/ColdActionDto'
+          description: New cold-tier action.
+        hot_days:
+          type: integer
+          format: int32
+          description: New value for `hot_days`. Must be &ge; 1.
+          minimum: 0
+        warm_days:
+          type: integer
+          format: int32
+          description: New value for `warm_days`. Must be strictly greater than `hot_days`.
+          minimum: 0
     Verb:
       type: string
       description: Verb a capability cell scopes its decision to.
@@ -5256,3 +5491,5 @@ tags:
   description: Identity & Access — API key list / generate / revoke / rotate
 - name: audit
   description: Audit log aggregations — violation heatmaps and lineage analytics
+- name: admin
+  description: Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)

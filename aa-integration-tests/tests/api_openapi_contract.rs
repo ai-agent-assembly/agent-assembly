@@ -60,8 +60,8 @@ fn openapi_spec_loads_without_errors() {
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
     assert_eq!(
-        path_count, 48,
-        "openapi/v1.yaml must declare exactly 48 paths, found {path_count}"
+        path_count, 50,
+        "openapi/v1.yaml must declare exactly 50 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -92,6 +92,8 @@ fn openapi_spec_paths_match_implemented_routes() {
     yaml_paths.sort();
 
     let mut expected: Vec<&str> = vec![
+        "/api/v1/admin/retention-policy",
+        "/api/v1/admin/retention-policy/run",
         "/api/v1/agents",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",
