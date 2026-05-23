@@ -14,6 +14,16 @@
 //! DDL lives in the `0002_timescaledb_hypertables.sql` migration (S-D #1).
 //! Keeping schema mutation in migrations and observability in Rust keeps
 //! the two concerns independently versioned.
+//!
+//! # CI contract
+//!
+//! Tests that require the extension to be loaded gate themselves on the
+//! `TIMESCALEDB_AVAILABLE` env var being set to `"1"`. The dedicated
+//! `timescaledb-tests` CI job (defined in `.github/workflows/ci.yml`,
+//! AAASM-1858) sets the var and spins up a
+//! `timescale/timescaledb:latest-pg17` service container. The regular
+//! `Test` job leaves the var unset and runs against vanilla
+//! `postgres:18-alpine`, so the same tests skip cleanly there.
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;

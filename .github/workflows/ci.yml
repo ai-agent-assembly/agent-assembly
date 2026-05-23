@@ -290,6 +290,49 @@ jobs:
           verbose: true
           fail_ci_if_error: false
 
+  # AAASM-1858: dedicated TimescaleDB job for env-gated tests in
+  # aa-gateway. Sibling tests (in storage::timescale::tests and
+  # storage::postgres::tests) check the `TIMESCALEDB_AVAILABLE` env
+  # var and either run-and-assert against a TimescaleDB-enabled
+  # cluster (this job) or skip (the regular `test` job above, which
+  # runs against vanilla postgres:18-alpine and leaves the env unset).
+  # The `timescale/timescaledb` image lags vanilla postgres by one
+  # major; pg17 is the latest published tag as of 2026-05.
+  timescaledb-tests:
+    name: TimescaleDB Tests
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg17
+        env:
+          POSTGRES_USER: aasm
+          POSTGRES_PASSWORD: aasm
+          POSTGRES_DB: aasm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run TimescaleDB tests
+        # The `timescale` substring filter matches all 9 env-gated tests
+        # across SD-1..SD-4: storage::timescale::tests::* (probe) plus
+        # storage::postgres::tests::{migrate_0002_*timescaledb*,
+        # apply_timescaledb_setup_*, healthcheck_reports_timescale_*}.
+        env:
+          AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
+          TIMESCALEDB_AVAILABLE: "1"
+        run: cargo nextest run -p aa-gateway timescale
+
   deny:
     name: Dependency checks
     runs-on: ubuntu-latest
