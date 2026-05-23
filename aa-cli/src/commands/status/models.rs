@@ -352,6 +352,12 @@ pub struct StatusSnapshot {
     pub agents: Vec<AgentRow>,
     pub approvals: ApprovalsSummary,
     pub budget: BudgetRow,
+    /// Storage health block from `/api/v1/admin/status`, present when the
+    /// gateway exposes the route (AAASM-1591). Older gateways that only
+    /// serve `/healthz` leave this `None` and the storage section is
+    /// omitted from the rendered output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_health: Option<AdminStorageHealthBlock>,
 }
 
 #[cfg(test)]

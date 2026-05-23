@@ -476,6 +476,7 @@ mod tests {
                 date: "2026-04-30".to_string(),
                 per_agent: vec![],
             },
+            storage_health: None,
         };
         let json = serde_json::to_string_pretty(&snapshot).unwrap();
         assert!(json.contains("\"deployment\""));

@@ -123,6 +123,7 @@ mod tests {
                 date: "2026-04-30".to_string(),
                 per_agent: vec![],
             },
+            storage_health: None,
         }
     }
 

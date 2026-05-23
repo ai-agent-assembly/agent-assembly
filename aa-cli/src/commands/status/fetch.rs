@@ -142,6 +142,11 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         agents,
         approvals,
         budget,
+        // AAASM-1909 populates this in a follow-up commit by calling
+        // StatusClient::fetch_admin_status; today the field is always
+        // None so older gateways without /api/v1/admin/status keep
+        // working.
+        storage_health: None,
     }
 }
 
