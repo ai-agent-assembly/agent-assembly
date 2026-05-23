@@ -47,7 +47,7 @@ tokio-util   = "0.7"
 parking_lot  = "0.12"
 utoipa       = { version = "5", features = ["axum_extras"] }
 axum         = "0.8"
-axum-server  = { version = "0.7", features = ["tls-rustls"] }
+axum-server  = { version = "0.8", features = ["tls-rustls"] }
 tower-http   = { version = "0.6", features = ["fs"] }
 x509-parser  = "0.18"
 redis        = { version = "1.2", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
