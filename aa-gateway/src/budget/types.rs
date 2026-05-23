@@ -42,6 +42,26 @@ pub enum BudgetKind {
     Global,
 }
 
+/// Rollover strategy for [`super::tracker::BudgetTracker`].
+///
+/// `Daily` (the default) zeroes accumulated spend at the calendar-day
+/// boundary in the tracker's configured timezone — historical behaviour
+/// preserved for every existing deployment.
+///
+/// `Duration` zeroes accumulated spend every elapsed wall-clock interval —
+/// driven by [`BudgetState::last_reset_at`]. Intended for test fixtures and
+/// short-cycle staging environments that need sub-day rollover (e.g. a
+/// 200 ms window for the `budget_resets_after_daily_window` integration
+/// test gated by AAASM-1600).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BudgetWindow {
+    /// Reset at midnight in the configured timezone.
+    #[default]
+    Daily,
+    /// Reset every `interval` of wall-clock time.
+    Duration(std::time::Duration),
+}
+
 /// Error returned by [`super::tracker::BudgetTracker::check_and_decrement`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum BudgetError {
