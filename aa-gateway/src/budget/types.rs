@@ -151,6 +151,51 @@ impl BudgetState {
             self.date = today;
         }
     }
+
+    /// Window-aware reset.
+    ///
+    /// For [`BudgetWindow::Daily`] this is equivalent to [`maybe_reset`] using
+    /// the calendar date of `now` in the supplied timezone.
+    ///
+    /// For [`BudgetWindow::Duration`] the daily accumulator is zeroed each time
+    /// `now - last_reset_at >= interval`. On the first call under a fresh state
+    /// `last_reset_at` is `None`, so we seed the anchor without zeroing —
+    /// existing spend (loaded from disk) is preserved across the upgrade path.
+    pub fn maybe_reset_window(&mut self, now: chrono::DateTime<chrono::Utc>, window: BudgetWindow, tz: chrono_tz::Tz) {
+        match window {
+            BudgetWindow::Daily => {
+                self.maybe_reset(now.with_timezone(&tz).date_naive());
+            }
+            BudgetWindow::Duration(interval) => {
+                let today = now.with_timezone(&tz).date_naive();
+                let current_month = Self::month_tag(today);
+                if current_month != self.month {
+                    self.monthly_spent_usd = self.monthly_spent_usd.map(|_| rust_decimal::Decimal::ZERO);
+                    self.month = current_month;
+                }
+                match self.last_reset_at {
+                    None => {
+                        // Seed the anchor on first observation under the
+                        // Duration window. Existing `spent_usd` (legacy or
+                        // mid-window) stays as-is — the rollover triggers only
+                        // once we have a baseline.
+                        self.last_reset_at = Some(now);
+                    }
+                    Some(anchor) => {
+                        let elapsed = now
+                            .signed_duration_since(anchor)
+                            .to_std()
+                            .unwrap_or(std::time::Duration::ZERO);
+                        if elapsed >= interval {
+                            self.spent_usd = rust_decimal::Decimal::ZERO;
+                            self.last_reset_at = Some(now);
+                            self.date = today;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Aggregate spend summary for an agent and its entire descendant subtree.
