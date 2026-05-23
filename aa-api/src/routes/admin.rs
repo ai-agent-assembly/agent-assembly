@@ -15,7 +15,7 @@ use aa_gateway::storage::{ColdAction, RetentionConfig, RetentionEngine, Retentio
 
 use crate::error::ProblemDetail;
 use crate::models::retention::{
-    ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, UpdateRetentionPolicyRequest,
+    ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, RunRetentionRequest, UpdateRetentionPolicyRequest,
 };
 use crate::state::AppState;
 
@@ -164,5 +164,59 @@ pub async fn update_retention_policy(
     let applied = engine.current_config();
     let last_run = engine.last_run_stats();
     Ok(Json(config_to_document(&applied, last_run)))
+}
+
+/// Trigger an immediate retention pass (optionally in dry-run mode).
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/retention-policy/run",
+    summary = "Run the retention engine once immediately",
+    description = "Triggers `RetentionEngine::run_once` with the live config, optionally forcing dry-run mode for this single invocation. Returns the resulting `RetentionStats` so the dashboard's \"Last retention run\" panel can refresh inline.",
+    request_body = RunRetentionRequest,
+    responses(
+        (status = 200, description = "Run completed; stats returned", body = RetentionRunStatsDto),
+        (status = 500, description = "Backend retention pass failed", body = ProblemDetail),
+        (status = 503, description = "Retention engine not configured", body = ProblemDetail),
+    ),
+    tag = "admin"
+)]
+pub async fn run_retention_policy(
+    Extension(state): Extension<AppState>,
+    Json(req): Json<RunRetentionRequest>,
+) -> Result<Json<RetentionRunStatsDto>, ProblemDetail> {
+    let engine = require_engine(&state)?;
+    if req.dry_run {
+        // Temporarily flip dry_run on so this pass logs work without
+        // taking action. The override is itself a hot_reload, so the
+        // active config snapshot rolls forward visibly — same path as
+        // any other admin write.
+        let mut current = engine.current_config();
+        let was_dry_run = current.dry_run;
+        current.dry_run = true;
+        engine.hot_reload(current.clone()).map_err(|e| {
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                .with_detail(e.to_string())
+                .with_error_code("retention_policy_dry_run_toggle_rejected")
+        })?;
+        let stats = engine.run_once().await.map_err(|e| {
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail(e.to_string())
+                .with_error_code("retention_run_failed")
+        })?;
+        // Restore the operator's dry_run preference.
+        current.dry_run = was_dry_run;
+        let _ = engine.hot_reload(current);
+        let mut dto = stats_to_dto(stats);
+        dto.dry_run = true;
+        return Ok(Json(dto));
+    }
+    let stats = engine.run_once().await.map_err(|e| {
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail(e.to_string())
+            .with_error_code("retention_run_failed")
+    })?;
+    let mut dto = stats_to_dto(stats);
+    dto.dry_run = engine.current_config().dry_run;
+    Ok(Json(dto))
 }
 
