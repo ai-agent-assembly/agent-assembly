@@ -1,0 +1,70 @@
+name: Smoke Test (Release Artifacts)
+
+# Runs after a GitHub Release is published and verifies that every distribution
+# channel installs and runs the published artifacts on a clean runner.
+#
+# Story:    AAASM-1235 (F119 — Post-release artifact smoke test)
+# Sub-task: AAASM-1250 (Homebrew + curl installer jobs)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to smoke-test, without the leading 'v' (e.g. 0.0.1). Defaults to the release tag that triggered the workflow."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+# Avoid concurrent smoke runs for the same release tag.
+concurrency:
+  group: smoke-test-${{ github.event.release.tag_name || github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke-homebrew-macos:
+    name: Smoke — Homebrew (macOS ARM64)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Expected aasm version: ${version}"
+
+      - name: Install aasm via Homebrew tap
+        run: |
+          brew update
+          brew install agent-assembly/tap/aasm
+
+      - name: Verify aasm --version matches release tag
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          got=$(aasm --version)
+          want="aasm ${EXPECTED}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
+            exit 1
+          }
