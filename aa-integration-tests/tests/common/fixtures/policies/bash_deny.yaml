@@ -1,0 +1,9 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-observe-bash-deny
+  version: "0.1.0"
+spec:
+  tools:
+    bash:
+      allow: false
