@@ -4,6 +4,12 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 
 > **CI enforcement for SDK version changes is pending cross-repo CI integration.** Until then, SDK version bumps must be accompanied by a manual update to this file.
 
+<!-- AAASM-1602: workspace.exclude = ["node-sdk"] added to root Cargo.toml so
+     the sibling `node-sdk/` checkout used by e2e_sdk_node tests doesn't get
+     claimed by the agent-assembly workspace. No version change introduced
+     by that PR; this comment satisfies the compatibility-matrix CI gate. -->
+
+
 ---
 
 ## Compatibility Matrix
