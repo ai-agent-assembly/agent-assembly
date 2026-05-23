@@ -85,6 +85,51 @@ impl BinaryGateway {
         self.child.as_ref().map(|c| c.id())
     }
 
+    /// Send `SIGTERM` to the child and wait for graceful exit (≤ `timeout`).
+    ///
+    /// Hard-kills the child via `Child::kill()` if it has not exited
+    /// within the timeout — prevents the test from hanging when the
+    /// gateway gets stuck in a shutdown handler. Returns an error in
+    /// the hard-kill case so the test can decide whether to fail.
+    ///
+    /// On non-Unix platforms (effectively only Windows) falls back to
+    /// the std `Child::kill()` non-graceful path; the audit-chain
+    /// scenario this fixture exists for runs on Linux + macOS only.
+    pub fn sigterm_and_wait(&mut self, timeout: Duration) -> Result<()> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        #[cfg(unix)]
+        {
+            let pid = child.id();
+            // SAFETY: `pid` is a valid PID we own — std::process::Child guarantees
+            // it has not been reaped yet (Self::take() is exclusive).
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait()? {
+                Some(_status) => return Ok(()),
+                None => {
+                    if Instant::now() > deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(anyhow!(
+                            "aa-gateway did not exit within {timeout:?} of SIGTERM; SIGKILL'd as a safety net",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
     fn await_ready(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
