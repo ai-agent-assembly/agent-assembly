@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use chrono::Utc;
+use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +21,16 @@ use super::retention_config::{RetentionConfig, RetentionConfigError};
 /// Owns the periodic retention task lifecycle.
 pub struct RetentionEngine {
     backend: Arc<dyn StorageBackend>,
-    config: RetentionConfig,
+    /// Active retention configuration. Held behind an [`ArcSwap`] so the
+    /// admin REST API (Story S-K) can hot-reload thresholds at runtime
+    /// without restarting the gateway, while concurrent `run_once` calls
+    /// see a stable snapshot for the duration of one pass.
+    config: Arc<ArcSwap<RetentionConfig>>,
+    /// Stats from the most recent successful [`run_once`]. `None` until
+    /// the engine has completed at least one pass. Surfaced by
+    /// [`last_run_stats`](Self::last_run_stats) for the admin GET handler
+    /// "Last retention run" panel.
+    last_run_stats: Arc<RwLock<Option<RetentionStats>>>,
 }
 
 impl RetentionEngine {
@@ -27,7 +38,51 @@ impl RetentionEngine {
     /// [`apply_retention`](StorageBackend::apply_retention) on `backend`
     /// using the policy derived from `config`.
     pub fn new(backend: Arc<dyn StorageBackend>, config: RetentionConfig) -> Self {
-        Self { backend, config }
+        Self {
+            backend,
+            config: Arc::new(ArcSwap::from_pointee(config)),
+            last_run_stats: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Return a snapshot of the active retention configuration.
+    ///
+    /// The admin REST API uses this for `GET /api/v1/admin/retention-policy`
+    /// and to render the current values back to the caller after a successful
+    /// `PUT`. The returned value is a clone, decoupled from any subsequent
+    /// [`hot_reload`](Self::hot_reload) so the caller can hold it without
+    /// blocking writers.
+    pub fn current_config(&self) -> RetentionConfig {
+        RetentionConfig::clone(&self.config.load())
+    }
+
+    /// Atomically replace the active retention configuration.
+    ///
+    /// Called by the admin REST `PUT /api/v1/admin/retention-policy` handler.
+    /// The new config is validated first (delegating to
+    /// [`RetentionConfig::validate`]); on validation failure the active
+    /// config is left untouched. On success, subsequent [`run_once`] calls
+    /// observe the new thresholds; the cron schedule captured by
+    /// [`start`](Self::start) is not affected — schedule changes still
+    /// require a restart.
+    ///
+    /// # Errors
+    ///
+    /// - Any [`RetentionConfigError`] from
+    ///   [`RetentionConfig::validate`] (missing archive_url, invalid
+    ///   schedule). The active config is preserved when an error is
+    ///   returned.
+    pub fn hot_reload(&self, new_config: RetentionConfig) -> Result<(), RetentionConfigError> {
+        new_config.validate()?;
+        tracing::info!(
+            hot_days = new_config.hot_days,
+            warm_days = new_config.warm_days,
+            cold_action = ?new_config.cold_action,
+            dry_run = new_config.dry_run,
+            "retention config hot-reloaded",
+        );
+        self.config.store(Arc::new(new_config));
+        Ok(())
     }
 
     /// Run one retention pass: build the [`RetentionPolicy`](super::RetentionPolicy)
@@ -43,7 +98,7 @@ impl RetentionEngine {
     /// Surfaces any [`StorageError`](super::StorageError) returned by
     /// [`apply_retention`](StorageBackend::apply_retention).
     pub async fn run_once(&self) -> StorageResult<RetentionStats> {
-        let policy = self.config.to_policy();
+        let policy = self.config.load().to_policy();
         let stats = self.backend.apply_retention(&policy).await?;
         tracing::info!(
             dry_run = policy.dry_run,
@@ -55,7 +110,17 @@ impl RetentionEngine {
             ran_at = %stats.ran_at,
             "retention run complete",
         );
+        *self.last_run_stats.write() = Some(stats.clone());
         Ok(stats)
+    }
+
+    /// Stats from the most recent successful [`run_once`], or `None` if
+    /// the engine has not completed a run yet.
+    ///
+    /// Powers the "Last retention run" panel on the dashboard admin UI
+    /// (AAASM-1592 S-K).
+    pub fn last_run_stats(&self) -> Option<RetentionStats> {
+        self.last_run_stats.read().clone()
     }
 
     /// Spawn the background retention task. Returns a [`JoinHandle`] for
@@ -73,7 +138,7 @@ impl RetentionEngine {
     ///   this case — fail-fast at startup rather than panic at the first
     ///   tick.
     pub fn start(self: Arc<Self>, shutdown: CancellationToken) -> Result<JoinHandle<()>, RetentionConfigError> {
-        let schedule = self.config.parsed_schedule()?;
+        let schedule = self.config.load().parsed_schedule()?;
         Ok(tokio::spawn(async move {
             loop {
                 let Some(next) = schedule.upcoming(Utc).next() else {
@@ -336,5 +401,96 @@ mod tests {
             .start(CancellationToken::new())
             .expect_err("invalid schedule must return Err, not panic");
         assert!(matches!(err, RetentionConfigError::InvalidSchedule { .. }));
+    }
+
+    #[tokio::test]
+    async fn current_config_returns_constructor_value() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let config = RetentionConfig {
+            hot_days: 7,
+            warm_days: 21,
+            cold_action: ColdAction::Archive,
+            archive_url: Some("s3://bucket/a/".to_string()),
+            dry_run: true,
+            ..RetentionConfig::default()
+        };
+        let engine = RetentionEngine::new(backend, config.clone());
+
+        assert_eq!(engine.current_config(), config);
+    }
+
+    #[tokio::test]
+    async fn hot_reload_swaps_active_config_observed_by_current_config() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        let new_config = RetentionConfig {
+            hot_days: 15,
+            warm_days: 60,
+            ..RetentionConfig::default()
+        };
+        engine.hot_reload(new_config.clone()).expect("valid config must swap");
+
+        assert_eq!(engine.current_config(), new_config);
+    }
+
+    #[tokio::test]
+    async fn hot_reload_is_visible_to_subsequent_run_once() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend.clone(), RetentionConfig::default());
+
+        let new_config = RetentionConfig {
+            hot_days: 7,
+            warm_days: 14,
+            dry_run: true,
+            ..RetentionConfig::default()
+        };
+        engine.hot_reload(new_config.clone()).expect("valid config must swap");
+        engine.run_once().await.expect("run_once should succeed");
+
+        let captured = backend
+            .captured_policy()
+            .expect("apply_retention should have been called");
+        assert_eq!(captured, new_config.to_policy());
+    }
+
+    #[tokio::test]
+    async fn hot_reload_validation_failure_preserves_active_config() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let initial = RetentionConfig::default();
+        let engine = RetentionEngine::new(backend, initial.clone());
+
+        // archive without archive_url fails RetentionConfig::validate
+        let invalid = RetentionConfig {
+            cold_action: ColdAction::Archive,
+            archive_url: None,
+            ..RetentionConfig::default()
+        };
+        let err = engine.hot_reload(invalid).expect_err("invalid config must be rejected");
+        assert_eq!(err, RetentionConfigError::MissingArchiveUrl);
+        assert_eq!(
+            engine.current_config(),
+            initial,
+            "active config must be untouched after a rejected hot_reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_run_stats_is_none_before_first_run_once() {
+        let backend = Arc::new(FakeBackend::new(canned_stats()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        assert!(engine.last_run_stats().is_none());
+    }
+
+    #[tokio::test]
+    async fn last_run_stats_populated_after_run_once() {
+        let canned = canned_stats();
+        let backend = Arc::new(FakeBackend::new(canned.clone()));
+        let engine = RetentionEngine::new(backend, RetentionConfig::default());
+
+        engine.run_once().await.expect("run_once should succeed");
+
+        assert_eq!(engine.last_run_stats(), Some(canned));
     }
 }
