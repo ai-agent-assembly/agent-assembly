@@ -28,6 +28,7 @@ use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::AgentRegistry;
+use aa_gateway::storage::RetentionEngine;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use axum::Router;
@@ -189,6 +190,16 @@ pub fn test_app() -> Router {
 pub fn test_state_with_destination_store(store: Arc<dyn aa_api::destinations::store::DestinationStore>) -> AppState {
     let mut state = test_state();
     state.destination_store = store;
+    state
+}
+
+/// Build an `AppState` whose retention_engine is populated. Used by the
+/// AAASM-1592 S-K admin route tests (`tests/admin.rs`) to drive the
+/// happy-path GET / PUT / POST behaviours.
+#[allow(dead_code)]
+pub fn test_state_with_retention_engine(engine: Arc<RetentionEngine>) -> AppState {
+    let mut state = test_state();
+    state.retention_engine = Some(engine);
     state
 }
 
