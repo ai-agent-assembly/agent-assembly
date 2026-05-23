@@ -1891,4 +1891,41 @@ mod tests {
             health.timescale,
         );
     }
+
+    /// `healthcheck()` must return `Some(TimescaleStats)` on a cluster
+    /// where the TimescaleDB extension is installed. After `migrate()`
+    /// creates the hypertables and one audit event is appended, the
+    /// rollup should report at least one chunk.
+    ///
+    /// Env-gated on `TIMESCALEDB_AVAILABLE=1`. Auto-runs once SD-5
+    /// (AAASM-1858) ships the `timescaledb-tests` CI job against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_stats_when_extension_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!("skipping extension-present healthcheck test: TIMESCALEDB_AVAILABLE != 1");
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Insert one event so audit_events has at least one chunk.
+        let agent_id = fresh_agent_id();
+        backend
+            .append_audit_event(&sample_event(agent_id, now_micros()))
+            .await
+            .expect("append");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        let stats = health
+            .timescale
+            .expect("expected Some(TimescaleStats) when TimescaleDB extension is active");
+        assert!(
+            stats.total_chunks >= 1,
+            "expected at least one chunk after inserting an audit event, got {}",
+            stats.total_chunks,
+        );
+    }
 }
