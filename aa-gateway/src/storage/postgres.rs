@@ -1016,6 +1016,39 @@ mod tests {
         );
     }
 
+    /// When `enabled = true` and the TimescaleDB extension **is** present,
+    /// `apply_timescaledb_setup` must return `Ok(())` and log at info
+    /// level — the hypertable DDL is already owned by migration 0002,
+    /// so this method only logs and returns.
+    ///
+    /// Env-gated on `TIMESCALEDB_AVAILABLE=1`; auto-runs once SD-5
+    /// (AAASM-1858) ships the `timescaledb-tests` CI job against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn apply_timescaledb_setup_succeeds_when_extension_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!("skipping extension-present test: TIMESCALEDB_AVAILABLE != 1");
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+
+        let present = super::super::timescale::has_timescaledb_extension(&backend.pool)
+            .await
+            .expect("probe");
+        assert!(
+            present,
+            "TIMESCALEDB_AVAILABLE=1 was set but the extension is not installed; \
+             check the docker image is timescale/timescaledb:latest-pg17"
+        );
+
+        backend
+            .apply_timescaledb_setup(&TimescaleConfig::default())
+            .await
+            .expect("apply_timescaledb_setup must return Ok when extension is active");
+    }
+
     #[tokio::test]
     async fn migrate_creates_expected_tables() {
         let Some(backend) = pg_backend_or_skip().await else {
