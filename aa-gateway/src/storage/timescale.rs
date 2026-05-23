@@ -120,4 +120,29 @@ mod tests {
             "expected probe to report false on plain PostgreSQL; if your CI installed TimescaleDB, set TIMESCALEDB_AVAILABLE=1"
         );
     }
+
+    /// `has_timescaledb_extension` must return `true` against a
+    /// TimescaleDB-enabled cluster. Env-gated on `TIMESCALEDB_AVAILABLE=1`;
+    /// the CI `timescaledb-tests` job (AAASM-1858 / SD-5) wires this
+    /// against the `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn probe_returns_true_on_timescaledb() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping timescaledb probe test: TIMESCALEDB_AVAILABLE != 1 (set it to 1 when AAASM_DATABASE_URL points at a TimescaleDB-enabled instance)"
+            );
+            return;
+        }
+        let Some(pool) = pool_or_skip().await else {
+            return;
+        };
+        let present = has_timescaledb_extension(&pool)
+            .await
+            .expect("probe must succeed on a TimescaleDB-enabled PostgreSQL");
+        assert!(
+            present,
+            "TIMESCALEDB_AVAILABLE=1 was set but the extension is not installed; \
+             check the docker image is timescale/timescaledb:latest-pg17"
+        );
+    }
 }
