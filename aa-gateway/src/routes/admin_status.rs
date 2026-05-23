@@ -10,9 +10,72 @@
 //! and is **not** intended for high-frequency load-balancer probes; mount
 //! it behind admin-only access (Epic 17 S-G IAM gating, to land).
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{HealthStatus, StorageHealth};
+use crate::storage::{HealthStatus, StorageBackend, StorageHealth};
+
+/// Top-level wire body returned by `GET /api/v1/admin/status`.
+///
+/// Field names form a stable contract — the `aasm status` CLI parses this
+/// shape, and the AAASM-1591 story description publishes it verbatim.
+/// Do not rename without a coordinated client update.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminStatusBody {
+    /// Deployment mode label: `"local"` or `"remote"`.
+    pub mode: String,
+    /// Gateway crate version.
+    pub version: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Storage health block (always present — `backend` discriminates
+    /// between sqlite / postgres / memory).
+    pub storage: StorageHealthBlock,
+}
+
+/// Axum `Extension` payload for the admin status handler.
+///
+/// Cloned on every request — keeping the storage handle behind an `Arc`
+/// is the existing workspace convention (see [`crate::AppState`]).
+#[derive(Clone)]
+pub struct AdminStatusState {
+    /// Deployment mode label propagated into [`AdminStatusBody::mode`].
+    pub mode: &'static str,
+    /// Gateway crate version propagated into [`AdminStatusBody::version`].
+    pub version: &'static str,
+    /// Instant the gateway became ready; drives `uptime_secs`.
+    pub started_at: Instant,
+    /// Local-mode SQLite file path, forwarded into the sqlite branch of
+    /// [`StorageHealthBlock::from_health`].
+    pub sqlite_path: Option<String>,
+    /// PostgreSQL connection URL — passed unredacted; the handler
+    /// redacts the password before serialising.
+    pub database_url: Option<String>,
+    /// Durable storage handle that backs the healthcheck probe.
+    pub storage: Arc<dyn StorageBackend>,
+}
+
+impl AdminStatusState {
+    /// Construct a state with `started_at = Instant::now()`. Used by
+    /// the remote-mode and local-mode boot paths.
+    pub fn new(
+        mode: &'static str,
+        storage: Arc<dyn StorageBackend>,
+        sqlite_path: Option<String>,
+        database_url: Option<String>,
+    ) -> Self {
+        Self {
+            mode,
+            version: env!("CARGO_PKG_VERSION"),
+            started_at: Instant::now(),
+            sqlite_path,
+            database_url,
+            storage,
+        }
+    }
+}
 
 /// Wire-contract storage health block returned under
 /// `body.storage` in the admin status response.
@@ -337,5 +400,30 @@ mod tests {
         health.status = HealthStatus::Unavailable;
         let block = StorageHealthBlock::from_health(&health, None, Some("postgresql://u:p@h/db"));
         assert_eq!(block.health, "unavailable");
+    }
+
+    #[test]
+    fn admin_status_body_serialises_with_documented_top_level_keys() {
+        let body = AdminStatusBody {
+            mode: "remote".into(),
+            version: "0.0.1".into(),
+            uptime_secs: 86_400,
+            storage: StorageHealthBlock::from_health(
+                &sample_health("postgres", None),
+                None,
+                Some("postgresql://aasm:secret@db.internal:5432/aasm"),
+            ),
+        };
+        let json = serde_json::to_value(&body).expect("AdminStatusBody must serialise");
+        for key in ["mode", "version", "uptime_secs", "storage"] {
+            assert!(json.get(key).is_some(), "missing top-level key {key:?}");
+        }
+        assert_eq!(json["mode"], "remote");
+        assert_eq!(json["uptime_secs"], 86_400);
+        assert_eq!(json["storage"]["backend"], "postgres");
+        assert_eq!(
+            json["storage"]["database_url"],
+            "postgresql://aasm:***@db.internal:5432/aasm"
+        );
     }
 }
