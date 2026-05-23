@@ -237,3 +237,42 @@ async fn e2e_hitl_timeout_with_deny_fallback() {
     assert_eq!(record.status, "timed_out");
     assert_eq!(record.decided_by, "timeout");
 }
+
+// =============================================================================
+// ST-P-4 — Timeout fallback `Allow`: no human action, waiter receives `TimedOut`
+//          carrying an Allow fallback (the genuinely uncovered scenario; the
+//          other approval tests in this workspace only exercise Deny fallback).
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_hitl_timeout_with_allow_fallback() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    let request = make_pending_request("send_marketing_email", 2, PolicyResult::Allow);
+    let (id, handle) = spawn_blocking_wait(&env, request);
+
+    // No human action — the queue resolves to `TimedOut { fallback: Allow }`
+    // after ~2 s. Production maps this to `PolicyResult::Allow` so the
+    // agent proceeds with the action (timeout_action: approve semantics).
+    let decision = tokio::time::timeout(RESOLVE_DEADLINE, handle)
+        .await
+        .expect("timeout fires within deadline")
+        .expect("waiter task did not panic");
+    match decision {
+        ApprovalDecision::TimedOut { fallback } => {
+            assert!(
+                matches!(fallback, PolicyResult::Allow),
+                "fallback must be Allow, got {fallback:?}"
+            );
+        }
+        other => panic!("expected TimedOut, got {other:?}"),
+    }
+
+    let resolved = env.approval_queue.list_resolved(Some("timed_out"), None);
+    assert_eq!(resolved.len(), 1);
+    let record = &resolved[0];
+    assert_eq!(record.request_id, id);
+    assert_eq!(record.action, "tool.send_marketing_email");
+    assert_eq!(record.status, "timed_out");
+    assert_eq!(record.decided_by, "timeout");
+}
