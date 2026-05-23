@@ -16,8 +16,8 @@ set -eu
 
 REPO="AI-agent-assembly/agent-assembly"
 BINARY="aasm"
-INSTALL_DIR="${AASM_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${AASM_VERSION:-}"
+# INSTALL_DIR is resolved in main() after pick_install_dir is in scope.
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,6 +107,8 @@ latest_release() {
 main() {
   need curl
   need tar
+
+  INSTALL_DIR="${AASM_INSTALL_DIR:-$(pick_install_dir)}"
 
   OS="$(detect_os)"
   ARCH="$(detect_arch)"
