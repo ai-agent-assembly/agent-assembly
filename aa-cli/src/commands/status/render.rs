@@ -97,15 +97,11 @@ pub fn format_storage_health(block: &AdminStorageHealthBlock) -> String {
     if let Some(url) = block.database_url.as_deref() {
         out.push_str(&format!("  DB:          {url}\n"));
     }
-    let (indicator, label_colored) = match block.health.as_str() {
-        "ok" => ("✓ ok".green().to_string(), "✓ ok"),
-        "degraded" => ("⚠ degraded".yellow().to_string(), "⚠ degraded"),
-        _ => ("✗ unavailable".red().to_string(), "✗ unavailable"),
+    let indicator = match block.health.as_str() {
+        "ok" => "✓ ok".green().to_string(),
+        "degraded" => "⚠ degraded".yellow().to_string(),
+        _ => "✗ unavailable".red().to_string(),
     };
-    // `label_colored` is unused as a binding but documents the bare
-    // label for readers — keep the variable name introduced for clarity
-    // without producing a warning.
-    let _ = label_colored;
     out.push_str(&format!("  DB Health:   {}  ({}ms)\n", indicator, block.latency_ms));
     out.push_str(&format!(
         "  Rows:        audit_events: {} hot\n",
