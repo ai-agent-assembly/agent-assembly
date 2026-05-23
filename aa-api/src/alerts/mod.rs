@@ -21,6 +21,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::alerts::detail::{RoutingLogEntry, RuleContext, RuleSnapshot};
+use crate::alerts::rules::types::AlertRule;
 
 /// Stored representation of an alert with metadata.
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +82,13 @@ pub struct StoredAlert {
     /// AAASM-1385 for the full schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_context: Option<RuleContext>,
+    /// Full snapshot of the originating [`AlertRule`] taken at fire
+    /// time. Populated when the alert was produced by the rule engine
+    /// so the dashboard alert-detail view can render the rule even
+    /// after the live rule has been edited or deleted (AAASM-1658).
+    /// `None` for legacy budget/secret alerts.
+    #[serde(rename = "ruleSnapshot", skip_serializing_if = "Option::is_none")]
+    pub rule_snapshot: Option<AlertRule>,
 }
 
 /// Alert severity level derived from the budget threshold percentage.
@@ -198,6 +206,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         first_fired_at: timestamp,
         resolved_at: None,
         rule_context: None,
+        rule_snapshot: None,
     }
 }
 
@@ -222,6 +231,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         first_fired_at: timestamp,
         resolved_at: None,
         rule_context: None,
+        rule_snapshot: None,
     }
 }
 
@@ -328,6 +338,7 @@ pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: String, timestamp: Strin
             dedup_occurrence_count: 1,
             dedup_window_expires_at: None,
         }),
+        rule_snapshot: None,
     }
 }
 
