@@ -70,3 +70,76 @@ fn spawn_blocking_wait(
 /// the timeout-fallback tests' upper bound without making them flaky.
 #[allow(dead_code)]
 const RESOLVE_DEADLINE: Duration = Duration::from_secs(10);
+
+// =============================================================================
+// ST-P-1 — Happy path: human approves; the blocked waiter receives `Approved`.
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_hitl_approve_releases_blocked_waiter() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+
+    let request = make_pending_request(
+        "send_email",
+        30,
+        PolicyResult::Deny {
+            reason: "fallback-deny (unused on approve path)".to_string(),
+        },
+    );
+    let (id, handle) = spawn_blocking_wait(&env, request);
+
+    // Pending listing observes the request before any decision arrives.
+    let pending: serde_json::Value = client
+        .get(format!("{}/api/v1/approvals?status=pending", env.base_url()))
+        .send()
+        .await
+        .expect("list pending succeeds")
+        .json()
+        .await
+        .expect("pending body is JSON");
+    assert_eq!(pending["total"], 1, "exactly one pending entry");
+    assert_eq!(pending["items"][0]["id"], id.to_string());
+
+    // The waiter has NOT resolved yet — confirm it stays pending until the
+    // operator decides. 200 ms is generous; the queue only resolves on
+    // `decide()` or timeout (30 s here, much later).
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!handle.is_finished(), "waiter must block until decide()");
+
+    // Operator approves via REST.
+    let resp = client
+        .post(format!("{}/api/v1/approvals/{}/approve", env.base_url(), id))
+        .json(&serde_json::json!({ "by": "ops-1", "reason": "approved by ST-P-1" }))
+        .send()
+        .await
+        .expect("approve POST succeeds");
+    assert_eq!(resp.status(), 200);
+
+    // The blocked waiter resolves with `Approved` carrying the operator's
+    // identity and reason — the exact handshake `policy_service.rs::
+    // maybe_submit_approval` maps back to `PolicyResult::Allow`.
+    let decision = tokio::time::timeout(RESOLVE_DEADLINE, handle)
+        .await
+        .expect("waiter resolves within deadline")
+        .expect("waiter task did not panic");
+    match decision {
+        ApprovalDecision::Approved { by, reason } => {
+            assert_eq!(by, "ops-1");
+            assert_eq!(reason.as_deref(), Some("approved by ST-P-1"));
+        }
+        other => panic!("expected Approved, got {other:?}"),
+    }
+
+    // Resolved-history book-keeping carries the AC-mandated fields
+    // (agent_id, action, status, decided_by, decision_reason).
+    let resolved = env.approval_queue.list_resolved(Some("approved"), None);
+    assert_eq!(resolved.len(), 1);
+    let record = &resolved[0];
+    assert_eq!(record.request_id, id);
+    assert_eq!(record.agent_id, "agent-st-p");
+    assert_eq!(record.action, "tool.send_email");
+    assert_eq!(record.status, "approved");
+    assert_eq!(record.decided_by, "ops-1");
+    assert_eq!(record.decision_reason.as_deref(), Some("approved by ST-P-1"));
+}
