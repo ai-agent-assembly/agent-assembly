@@ -290,6 +290,35 @@ jobs:
           verbose: true
           fail_ci_if_error: false
 
+  timescaledb-tests:
+    name: TimescaleDB Tests
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg17
+        env:
+          POSTGRES_USER: aasm
+          POSTGRES_PASSWORD: aasm
+          POSTGRES_DB: aasm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run TimescaleDB tests
+        env:
+          AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
+          TIMESCALEDB_AVAILABLE: "1"
+        run: cargo nextest run -p aa-gateway timescale
+
   deny:
     name: Dependency checks
     runs-on: ubuntu-latest
