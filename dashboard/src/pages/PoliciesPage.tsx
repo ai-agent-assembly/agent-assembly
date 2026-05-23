@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
-import { isSandboxSummaryEmpty, useSandboxSummaryQuery } from '../features/audit/api'
+import { useSandboxSummaryQuery } from '../features/audit/api'
+import { extractEnforcementMode } from '../features/policies/policyYamlHelpers'
+import { SandboxEnableLiveDialog } from '../features/policies/SandboxEnableLiveDialog'
 import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
 import { EmptyState, ErrorState } from '../components/states'
 import { OverlayHost } from '../components/OverlayHost'
@@ -138,22 +140,43 @@ export function PoliciesPage() {
   const [filter, setFilter] = useState<FilterTab>('all')
   const { openOverlay, closeOverlay } = useOverlay('policy-editor')
   const { toast } = useToast()
+  const { mutateAsync: createPolicy, isPending: enablingLive } = useCreatePolicy()
+  const [enableLiveOpen, setEnableLiveOpen] = useState(false)
 
-  // Only surface the SandboxSummaryCard when at least one count is non-zero;
-  // operators running fully in enforce mode shouldn't see an empty card.
-  const showSandboxBanner =
-    sandboxSummary !== undefined && !isSandboxSummaryEmpty(sandboxSummary)
+  // Observe-mode policies detected by parsing each policy_yaml client-side.
+  // The aa-api `PolicyResponse` doesn't expose `enforcement_mode` as a
+  // field today, so we read it out of the raw YAML; the helper tolerates
+  // empty / malformed bodies by returning null.
+  const observePolicies = useMemo(
+    () => (policies ?? []).filter((p) => extractEnforcementMode(p.policy_yaml) === 'observe'),
+    [policies],
+  )
+  const showSandboxBanner = observePolicies.length > 0
 
-  // The aa-api endpoint is global today (no per-policy filter), so the card
-  // carries an "All policies" label rather than a single policy name. When
-  // per-policy scoping lands on the endpoint, the label and the
-  // onEnableLiveEnforcement target can both narrow.
-  const enableLiveEnforcement = useCallback(() => {
-    toast(
-      'Open the policy you want to enforce live and set enforcement_mode: enforce',
-      'success',
-    )
-  }, [toast])
+  const openEnableLiveDialog = useCallback(() => {
+    setEnableLiveOpen(true)
+  }, [])
+
+  const closeEnableLiveDialog = useCallback(() => {
+    setEnableLiveOpen(false)
+  }, [])
+
+  // The aa-api endpoint is global today (no per-policy filter), so the
+  // banner displays "All policies" — counts are aggregate across every
+  // observe-mode policy in the deployment. Per-policy scoping is a
+  // separate follow-up (see ticket).
+  const confirmEnableLive = useCallback(
+    async (policy: Policy, modifiedYaml: string) => {
+      try {
+        await createPolicy({ policy_yaml: modifiedYaml })
+        toast(`Live enforcement enabled for ${policy.name}`, 'success')
+        setEnableLiveOpen(false)
+      } catch {
+        toast(`Failed to enable live enforcement for ${policy.name}`, 'error')
+      }
+    },
+    [createPolicy, toast],
+  )
 
   // Editor publishes its dirty state into this ref so the page can decide
   // whether Esc / backdrop / Cancel should prompt for confirmation.
@@ -210,22 +233,22 @@ export function PoliciesPage() {
         </button>
       </header>
 
-      {showSandboxBanner && sandboxSummary ? (
+      {showSandboxBanner ? (
         <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
           <SandboxSummaryCard
             policyName="All policies"
             windowLabel="last 24h"
             counts={{
-              wouldBeDenies: sandboxSummary.counts.would_be_denies,
-              wouldBeRedactions: sandboxSummary.counts.would_be_redactions,
-              wouldBePendingApprovals: sandboxSummary.counts.would_be_pending_approvals,
+              wouldBeDenies: sandboxSummary?.counts.would_be_denies ?? 0,
+              wouldBeRedactions: sandboxSummary?.counts.would_be_redactions ?? 0,
+              wouldBePendingApprovals: sandboxSummary?.counts.would_be_pending_approvals ?? 0,
             }}
             topRule={
-              sandboxSummary.top_rule
+              sandboxSummary?.top_rule
                 ? { id: sandboxSummary.top_rule.id, count: sandboxSummary.top_rule.count }
                 : undefined
             }
-            onEnableLiveEnforcement={enableLiveEnforcement}
+            onEnableLiveEnforcement={openEnableLiveDialog}
           />
         </div>
       ) : null}
@@ -329,6 +352,14 @@ export function PoliciesPage() {
         confirmVariant="danger"
         onConfirm={handleDiscardConfirm}
         onCancel={() => setConfirmDiscardOpen(false)}
+      />
+
+      <SandboxEnableLiveDialog
+        open={enableLiveOpen}
+        observePolicies={observePolicies}
+        onCancel={closeEnableLiveDialog}
+        onConfirm={confirmEnableLive}
+        submitting={enablingLive}
       />
     </main>
   )
