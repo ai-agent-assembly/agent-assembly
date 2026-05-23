@@ -235,11 +235,12 @@ async fn status_exits_1_when_agent_has_policy_violations() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn status_exits_2_when_gateway_is_unreachable() {
+async fn status_exits_1_with_hint_when_gateway_is_unreachable() {
     // No `CliFixture::start()` — we point the CLI at a known-unbound port
-    // to exercise the unreachable-API exit code (2). Building Command by
-    // hand because `CliFixture::cmd()` always wires --api-url to the live
-    // fixture URL.
+    // to exercise the unreachable-gateway behaviour. Per AAASM-1579 AC the
+    // CLI now exits 1 (was 2) and writes a documented hint to stderr.
+    // Building Command by hand because `CliFixture::cmd()` always wires
+    // --api-url to the live fixture URL.
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args([
         "run",
@@ -254,13 +255,17 @@ async fn status_exits_2_when_gateway_is_unreachable() {
         "status",
     ]);
     let out = cmd.output().expect("aasm status should execute");
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert_eq!(
         out.status.code(),
-        Some(2),
-        "unreachable gateway should yield exit code 2; stdout:\n{}\nstderr:\n{}",
+        Some(1),
+        "unreachable gateway should yield exit code 1; stdout:\n{}\nstderr:\n{stderr}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        stderr.contains("Error: gateway is not running. Start it with: aasm start"),
+        "unreachable gateway should print the documented stderr hint; stderr:\n{stderr}",
     );
 }
 
