@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   issues: write
+  packages: read
 
 # Avoid concurrent smoke runs for the same release tag.
 concurrency:
