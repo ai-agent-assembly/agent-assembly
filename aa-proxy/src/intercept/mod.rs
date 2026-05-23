@@ -13,11 +13,51 @@ use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::pipeline::event::{EnrichedEvent, EventSource};
 use aa_runtime::pipeline::PipelineEvent;
 
-use aa_core::CredentialScanner;
+use aa_core::{CredentialFinding, CredentialScanner};
+use bytes::Bytes;
 
+use crate::config::CredentialAction;
 use crate::error::ProxyError;
 use crate::intercept::detect::LlmApiPattern;
 use crate::intercept::extract::{extract_anthropic, extract_cohere, extract_openai, ExtractionError, LlmFields};
+
+/// What the proxy should do with an intercepted request body after the
+/// scanner has run.
+///
+/// Returned by [`Interceptor::intercept_request`]; the data path branches on
+/// `decision` and uses `redacted_body` when applicable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerdictDecision {
+    /// No findings — forward the original body unmodified.
+    Forward,
+    /// Findings detected and policy is `redact_only` — forward the bytes in
+    /// the `redacted_body` field instead of the original.
+    ForwardRedacted,
+    /// Findings detected and policy is `block` — return 403 to the client,
+    /// do not dial upstream.
+    Block,
+    /// Findings detected and policy is `alert_only` — forward the original
+    /// body and emit a critical alert side-effect.
+    AlertAndForward,
+}
+
+/// Output of [`Interceptor::intercept_request`].
+///
+/// Carries the policy-driven decision, the per-match scanner output (empty
+/// when clean), and the post-scan body (only populated when redaction took
+/// place). The data path consumes this to drive both upstream forwarding
+/// and audit emission.
+#[derive(Debug, Clone)]
+pub struct InterceptVerdict {
+    /// What the proxy should do with this request.
+    pub decision: VerdictDecision,
+    /// Per-match output from the credential scanner. Empty when no
+    /// credentials were detected.
+    pub findings: Vec<CredentialFinding>,
+    /// Post-scan body. `Some` only when `decision == ForwardRedacted` so the
+    /// data path can forward these bytes verbatim.
+    pub redacted_body: Option<Bytes>,
+}
 
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
 /// LLM API call, and extracts audit-relevant fields from the body.
@@ -30,6 +70,62 @@ pub struct Interceptor {
 }
 
 impl Interceptor {
+    /// Run the credential scanner against a flowing request body and decide
+    /// the data-path verdict according to the supplied [`CredentialAction`].
+    ///
+    /// Findings drive `decision`:
+    ///
+    /// * No findings → [`VerdictDecision::Forward`] (no redaction performed).
+    /// * Findings + [`CredentialAction::Block`] → [`VerdictDecision::Block`].
+    /// * Findings + [`CredentialAction::RedactOnly`] →
+    ///   [`VerdictDecision::ForwardRedacted`] with the redacted bytes
+    ///   populated.
+    /// * Findings + [`CredentialAction::AlertOnly`] →
+    ///   [`VerdictDecision::AlertAndForward`].
+    ///
+    /// When the proxy's scanner is disabled (constructed via
+    /// `with_scanner(None)`) this returns `Forward` with no findings.
+    pub fn intercept_request(&self, body: &[u8], action: CredentialAction) -> InterceptVerdict {
+        let Some(scanner) = self.scanner.as_ref() else {
+            return InterceptVerdict {
+                decision: VerdictDecision::Forward,
+                findings: Vec::new(),
+                redacted_body: None,
+            };
+        };
+
+        let text = String::from_utf8_lossy(body);
+        let scan = scanner.scan(&text);
+        if scan.is_clean() {
+            return InterceptVerdict {
+                decision: VerdictDecision::Forward,
+                findings: Vec::new(),
+                redacted_body: None,
+            };
+        }
+
+        match action {
+            CredentialAction::Block => InterceptVerdict {
+                decision: VerdictDecision::Block,
+                findings: scan.findings,
+                redacted_body: None,
+            },
+            CredentialAction::RedactOnly => {
+                let redacted = scan.redact(&text);
+                InterceptVerdict {
+                    decision: VerdictDecision::ForwardRedacted,
+                    findings: scan.findings,
+                    redacted_body: Some(Bytes::from(redacted)),
+                }
+            }
+            CredentialAction::AlertOnly => InterceptVerdict {
+                decision: VerdictDecision::AlertAndForward,
+                findings: scan.findings,
+                redacted_body: None,
+            },
+        }
+    }
+
     /// Create a new `Interceptor` with default credential scanning enabled.
     pub fn new(event_tx: broadcast::Sender<PipelineEvent>) -> Self {
         Self {
