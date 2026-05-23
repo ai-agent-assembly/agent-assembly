@@ -283,3 +283,78 @@ describe('AgentDetailPage drawer head action buttons', () => {
     expect(await screen.findByText(/Switched abc123 to shadow mode/)).toBeInTheDocument()
   })
 })
+
+describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
+  const liveLog: LogEntry = {
+    ...MOCK_LOG,
+    seq: 10,
+    payload: '{"decision":"Allow"}',
+  }
+  const sandboxLog: LogEntry = {
+    ...MOCK_LOG,
+    seq: 11,
+    session_id: 'session-sandboxxx',
+    payload: '{"dry_run":true,"shadow_decision":"deny"}',
+  }
+
+  function mockWithMixedEvents() {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+      mockQuery<Agent | undefined>({ data: MOCK_AGENT, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+      mockQuery<LogEntry[]>({ data: [liveLog, sandboxLog], isLoading: false, isError: false }),
+    )
+    vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+      mockQuery<agentsApi.EffectivePermissions>({
+        data: { allow: [], deny: [], sources: [] },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+  }
+
+  it('renders the amber "Would: X" badge only on dry-run rows', async () => {
+    mockWithMixedEvents()
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-events')
+    const badges = screen.getAllByTestId('event-sandbox-badge')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveTextContent(/Would: deny/i)
+  })
+
+  it('filters the events table down to dry-run rows when the toggle is on', async () => {
+    mockWithMixedEvents()
+    renderApp('/agents/abc123')
+    expect((await screen.findAllByTestId('event-row')).length).toBe(2)
+    fireEvent.click(screen.getByTestId('agent-events-sandbox-toggle'))
+    const filtered = screen.getAllByTestId('event-row')
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0]).toHaveTextContent(/Would: deny/i)
+  })
+
+  it('hides the toggle bar entirely when there are no events at all', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+      mockQuery<Agent | undefined>({ data: MOCK_AGENT, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+      mockQuery<LogEntry[]>({ data: [], isLoading: false, isError: false }),
+    )
+    vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+      mockQuery<agentsApi.EffectivePermissions>({
+        data: { allow: [], deny: [], sources: [] },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-events')
+    expect(screen.queryByTestId('agent-events-sandbox-bar')).not.toBeInTheDocument()
+  })
+})

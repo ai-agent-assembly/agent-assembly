@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { isSandboxSummaryEmpty, type SandboxSummaryResponse } from './api'
+import {
+  extractSandboxInfo,
+  isSandboxSummaryEmpty,
+  type SandboxSummaryResponse,
+} from './api'
 
 function summary(partial: Partial<SandboxSummaryResponse['counts']> = {}): SandboxSummaryResponse {
   return {
@@ -24,5 +28,32 @@ describe('isSandboxSummaryEmpty', () => {
     expect(isSandboxSummaryEmpty(summary({ would_be_denies: 1 }))).toBe(false)
     expect(isSandboxSummaryEmpty(summary({ would_be_redactions: 1 }))).toBe(false)
     expect(isSandboxSummaryEmpty(summary({ would_be_pending_approvals: 1 }))).toBe(false)
+  })
+})
+
+describe('extractSandboxInfo', () => {
+  it('returns dryRun=true and the shadow decision when payload carries them', () => {
+    const info = extractSandboxInfo('{"dry_run":true,"shadow_decision":"deny"}')
+    expect(info.dryRun).toBe(true)
+    expect(info.shadowDecision).toBe('deny')
+  })
+
+  it('returns dryRun=false when the payload omits dry_run', () => {
+    const info = extractSandboxInfo('{"decision":"Allow"}')
+    expect(info.dryRun).toBe(false)
+    expect(info.shadowDecision).toBeNull()
+  })
+
+  it('treats dry_run=false explicitly as live enforcement', () => {
+    const info = extractSandboxInfo('{"dry_run":false}')
+    expect(info.dryRun).toBe(false)
+  })
+
+  it('falls back to dryRun=false for malformed JSON', () => {
+    expect(extractSandboxInfo('not-json').dryRun).toBe(false)
+  })
+
+  it('treats empty-string shadow_decision as null', () => {
+    expect(extractSandboxInfo('{"dry_run":true,"shadow_decision":""}').shadowDecision).toBeNull()
   })
 })

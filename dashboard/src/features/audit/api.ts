@@ -49,3 +49,34 @@ export function isSandboxSummaryEmpty(summary: SandboxSummaryResponse): boolean 
   const c = summary.counts
   return c.would_be_denies === 0 && c.would_be_redactions === 0 && c.would_be_pending_approvals === 0
 }
+
+/**
+ * Sandbox metadata extracted from an audit `LogEntry.payload` JSON string.
+ *
+ * The gateway writes `dry_run` / `shadow_decision` / `shadow_reason` into
+ * the payload when observe-mode suppressed a non-Allow decision (see
+ * `aa-gateway::service::policy_service::record_audit`). Live enforce rows
+ * have `dryRun: false` and `shadowDecision: null`.
+ */
+export interface SandboxPayloadInfo {
+  readonly dryRun: boolean
+  readonly shadowDecision: string | null
+}
+
+/**
+ * Parse `LogEntry.payload` (a pre-serialized JSON string) and extract the
+ * observe-mode signal. Tolerates malformed payloads and missing fields by
+ * returning a `dryRun: false` value, matching the gateway's contract that
+ * absence of the field means live enforcement.
+ */
+export function extractSandboxInfo(payload: string): SandboxPayloadInfo {
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>
+    const dryRun = parsed['dry_run'] === true
+    const shadow = parsed['shadow_decision']
+    const shadowDecision = typeof shadow === 'string' && shadow.length > 0 ? shadow : null
+    return { dryRun, shadowDecision }
+  } catch {
+    return { dryRun: false, shadowDecision: null }
+  }
+}

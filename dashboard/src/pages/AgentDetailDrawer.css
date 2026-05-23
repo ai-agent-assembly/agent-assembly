@@ -392,3 +392,35 @@
   font-size: 11px;
   color: var(--ink-2);
 }
+
+/* Sandbox / observe-mode controls and badges (AAASM-1917). */
+
+.ad-events__sandbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.ad-events__sandbox-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* Reuses the same amber as the SandboxSummaryCard so the dashboard speaks
+   with one voice about observe-mode events. */
+.ad-events__sandbox-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background-color: #fef3c7;
+  color: #d97706;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
