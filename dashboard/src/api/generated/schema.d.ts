@@ -4,6 +4,50 @@
  */
 
 export interface paths {
+    "/api/v1/admin/retention-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the live retention policy + last-run stats
+         * @description Returns the gateway's currently-active retention configuration plus the most recent successful run's statistics. The `last_run` field is `null` until the engine has completed at least one pass.
+         */
+        get: operations["get_retention_policy"];
+        /**
+         * Hot-reload the retention policy thresholds
+         * @description Atomically replaces the gateway's active retention configuration. Validation runs both client-side in the dashboard and server-side here; on validation failure the active config is preserved. The cron schedule is read-only at runtime — only thresholds and the cold action can be changed without a restart.
+         */
+        put: operations["update_retention_policy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention-policy/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the retention engine once immediately
+         * @description Triggers `RetentionEngine::run_once` with the live config, optionally forcing dry-run mode for this single invocation. Returns the resulting `RetentionStats` so the dashboard's "Last retention run" panel can refresh inline.
+         */
+        post: operations["run_retention_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents": {
         parameters: {
             query?: never;
@@ -1878,6 +1922,14 @@ export interface components {
             /** @description USD spent by this child on the given date (string-encoded Decimal). */
             spent_usd: string;
         };
+        /**
+         * @description Cold-tier action chosen by the admin.
+         *
+         *     Wire-level enum kept lowercase (`drop` / `archive`) so the JSON body
+         *     is identical to the YAML config key and the dashboard dropdown value.
+         * @enum {string}
+         */
+        ColdActionDto: "drop" | "archive";
         /** @description Response body for a failed test-fire (502). */
         ConnectorFailedBody: {
             /**
@@ -2474,6 +2526,81 @@ export interface components {
             /** @description Agent status before the resume operation. */
             previous_status: string;
         };
+        /**
+         * @description Snapshot of the active retention configuration plus the most recent
+         *     run's stats. Body of `GET /api/v1/admin/retention-policy`.
+         */
+        RetentionPolicyDocument: {
+            /**
+             * @description Archive destination (e.g. `s3://bucket/path`). Required when
+             *     `cold_action == "archive"`; `None` otherwise.
+             */
+            archive_url?: string | null;
+            /** @description Action applied to rows older than `warm_days`. */
+            cold_action: components["schemas"]["ColdActionDto"];
+            /**
+             * @description When true, the engine logs the work it *would* perform without
+             *     taking action.
+             */
+            dry_run: boolean;
+            /**
+             * Format: int32
+             * @description Days a row stays indexed and queryable in the hot tier.
+             */
+            hot_days: number;
+            last_run?: null | components["schemas"]["RetentionRunStatsDto"];
+            /**
+             * @description Cron schedule (UTC) on which the background task fires. Read-only
+             *     — schedule changes still require a gateway restart.
+             */
+            schedule: string;
+            /**
+             * Format: int32
+             * @description Days a row stays in the warm tier (compressed where supported)
+             *     before the cold action runs.
+             */
+            warm_days: number;
+        };
+        /**
+         * @description Wire representation of [`aa_gateway::storage::RetentionStats`].
+         *
+         *     Used both inline on [`RetentionPolicyDocument`] (`last_run`) and as
+         *     the body of `POST /api/v1/admin/retention-policy/run`.
+         */
+        RetentionRunStatsDto: {
+            /**
+             * Format: int64
+             * @description Rows archived during the run.
+             */
+            archived_rows: number;
+            /**
+             * Format: int64
+             * @description Rows compressed into warm tier during the run.
+             */
+            compressed_rows: number;
+            /**
+             * Format: int64
+             * @description Rows dropped during the run.
+             */
+            dropped_rows: number;
+            /**
+             * @description Whether the run executed in dry-run mode (logged work without
+             *     actually deleting / compressing).
+             */
+            dry_run: boolean;
+            /**
+             * Format: int64
+             * @description Bytes freed from primary storage by compression or drop.
+             */
+            freed_bytes: number;
+            /**
+             * Format: int64
+             * @description Rows remaining in the hot tier after the run.
+             */
+            hot_rows: number;
+            /** @description Timestamp (UTC) at which the run completed (ISO 8601). */
+            ran_at: string;
+        };
         /** @description One step in the routing history of an approval request. */
         RoutingHistoryEntry: {
             /** @description Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`. */
@@ -2587,6 +2714,14 @@ export interface components {
              * @description Numeric threshold the metric is compared against.
              */
             threshold: number;
+        };
+        /** @description Body of `POST /api/v1/admin/retention-policy/run`. */
+        RunRetentionRequest: {
+            /**
+             * @description When true, the run logs the work it *would* perform without
+             *     taking action. Defaults to `false`.
+             */
+            dry_run?: boolean;
         };
         /**
          * @description A representative call sample shown alongside the matrix to explain the
@@ -2957,6 +3092,32 @@ export interface components {
             name?: string | null;
         };
         /**
+         * @description Body of `PUT /api/v1/admin/retention-policy` — partial update of the
+         *     runtime retention configuration. Each field must be present; the
+         *     server-side validation matches the dashboard's client-side rules
+         *     (hot_days &ge; 1, warm_days &gt; hot_days, archive_url required when
+         *     `cold_action == "archive"`).
+         */
+        UpdateRetentionPolicyRequest: {
+            /**
+             * @description Archive destination. Required when `cold_action == "archive"`;
+             *     must start with `s3://` or `gs://`.
+             */
+            archive_url?: string | null;
+            /** @description New cold-tier action. */
+            cold_action: components["schemas"]["ColdActionDto"];
+            /**
+             * Format: int32
+             * @description New value for `hot_days`. Must be &ge; 1.
+             */
+            hot_days: number;
+            /**
+             * Format: int32
+             * @description New value for `warm_days`. Must be strictly greater than `hot_days`.
+             */
+            warm_days: number;
+        };
+        /**
          * @description Verb a capability cell scopes its decision to.
          * @enum {string}
          */
@@ -3069,6 +3230,119 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_retention_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current retention policy document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicyDocument"];
+                };
+            };
+            /** @description Retention engine not configured (gateway started without storage section) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    update_retention_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRetentionPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Configuration applied; updated document returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicyDocument"];
+                };
+            };
+            /** @description Invalid request body (validation failure) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Retention engine not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    run_retention_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunRetentionRequest"];
+            };
+        };
+        responses: {
+            /** @description Run completed; stats returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionRunStatsDto"];
+                };
+            };
+            /** @description Backend retention pass failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Retention engine not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     list_agents: {
         parameters: {
             query?: {
