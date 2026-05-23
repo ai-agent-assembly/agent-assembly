@@ -177,22 +177,21 @@ jobs:
           pnpm build
       - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
-      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
-        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
-        run: pnpm install --frozen-lockfile
       - name: Build Node.js native binding + TS dist (e2e_sdk_node real_* tests, AAASM-1602)
-        # Run from the symlinked sibling path (created by the previous step),
-        # not the checkout under $GITHUB_WORKSPACE — cargo refuses to build
-        # node-sdk/native/aa-ffi-node from inside the agent-assembly workspace
-        # because of the unrelated outer Cargo.toml. `pnpm build` produces
-        # the dist/{esm,cjs,types} files that node-sdk's `exports` points
-        # at — without it the TS fixtures get ERR_MODULE_NOT_FOUND when
-        # they `import { initAssembly } from '@agent-assembly/sdk'`.
+        # MUST run BEFORE the fixture's `pnpm install` — pnpm's `file:`
+        # protocol copies the package contents at install time, so dist/
+        # and the napi `.node` must already exist when fixture install
+        # runs. Use the symlinked sibling path (created above) so cargo
+        # sees the inner Cargo.toml at its own root, not inside the
+        # agent-assembly workspace.
         run: |
           cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
           pnpm install --no-frozen-lockfile
           pnpm native:build
           pnpm build
+      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
+        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        run: pnpm install --frozen-lockfile
       - name: Run tests
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
         # unit tests. Validated by the dedicated ebpf-build job.
@@ -261,22 +260,21 @@ jobs:
           pnpm build
       - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
-      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
-        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
-        run: pnpm install --frozen-lockfile
       - name: Build Node.js native binding + TS dist (e2e_sdk_node real_* tests, AAASM-1602)
-        # Run from the symlinked sibling path (created by the previous step),
-        # not the checkout under $GITHUB_WORKSPACE — cargo refuses to build
-        # node-sdk/native/aa-ffi-node from inside the agent-assembly workspace
-        # because of the unrelated outer Cargo.toml. `pnpm build` produces
-        # the dist/{esm,cjs,types} files that node-sdk's `exports` points
-        # at — without it the TS fixtures get ERR_MODULE_NOT_FOUND when
-        # they `import { initAssembly } from '@agent-assembly/sdk'`.
+        # MUST run BEFORE the fixture's `pnpm install` — pnpm's `file:`
+        # protocol copies the package contents at install time, so dist/
+        # and the napi `.node` must already exist when fixture install
+        # runs. Use the symlinked sibling path (created above) so cargo
+        # sees the inner Cargo.toml at its own root, not inside the
+        # agent-assembly workspace.
         run: |
           cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
           pnpm install --no-frozen-lockfile
           pnpm native:build
           pnpm build
+      - name: Install TypeScript fixture dependencies (e2e_sdk_node)
+        working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        run: pnpm install --frozen-lockfile
       - name: Generate coverage report
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python dev headers for linking — excluded.
