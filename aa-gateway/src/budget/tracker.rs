@@ -626,6 +626,28 @@ impl BudgetTracker {
             .unwrap_or_else(|_| BudgetState::new_for_date(today_in_tz(self.timezone)))
     }
 
+    /// Re-evaluate the window-aware reset against every per-agent, per-team,
+    /// and global state. Used by the periodic flush task so sub-day rollovers
+    /// take effect even when no `record_cost` call has fired in the interval —
+    /// e.g. so dashboard reads see a zeroed accumulator the moment the window
+    /// elapses.
+    ///
+    /// No-op for [`BudgetWindow::Daily`] when the calendar date hasn't rolled
+    /// over (each state's `maybe_reset_window` short-circuits on the same-day
+    /// path).
+    pub fn flush_window(&self) {
+        let now = chrono::Utc::now();
+        for mut entry in self.per_agent.iter_mut() {
+            entry.maybe_reset_window(now, self.window, self.timezone);
+        }
+        for mut entry in self.team_budgets.iter_mut() {
+            entry.maybe_reset_window(now, self.window, self.timezone);
+        }
+        if let Ok(mut g) = self.global.lock() {
+            g.maybe_reset_window(now, self.window, self.timezone);
+        }
+    }
+
     /// Snapshot the full tracker state for disk persistence.
     pub fn snapshot(&self) -> crate::budget::persistence::PersistedBudget {
         let per_agent = self
