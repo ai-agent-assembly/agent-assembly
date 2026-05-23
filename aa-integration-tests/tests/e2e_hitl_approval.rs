@@ -194,3 +194,46 @@ async fn e2e_hitl_reject_returns_deny_with_reason() {
     assert_eq!(record.decided_by, "ops-2");
     assert_eq!(record.decision_reason.as_deref(), Some("not authorised"));
 }
+
+// =============================================================================
+// ST-P-3 — Timeout fallback `Deny`: no human action, waiter receives `TimedOut`
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_hitl_timeout_with_deny_fallback() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    let fallback_reason = "fallback-deny on timeout".to_string();
+    let request = make_pending_request(
+        "deploy_prod",
+        2,
+        PolicyResult::Deny {
+            reason: fallback_reason.clone(),
+        },
+    );
+    let (id, handle) = spawn_blocking_wait(&env, request);
+
+    // No human action — the queue's internal timeout spawner resolves the
+    // waiter to `TimedOut` after `timeout_secs`. RESOLVE_DEADLINE > 2 s.
+    let decision = tokio::time::timeout(RESOLVE_DEADLINE, handle)
+        .await
+        .expect("timeout fires within deadline")
+        .expect("waiter task did not panic");
+    match decision {
+        ApprovalDecision::TimedOut { fallback } => match fallback {
+            PolicyResult::Deny { reason } => assert_eq!(reason, fallback_reason),
+            other => panic!("expected Deny fallback, got {other:?}"),
+        },
+        other => panic!("expected TimedOut, got {other:?}"),
+    }
+
+    // Resolved-history records the timeout with operator id `"timeout"`
+    // (the sentinel the queue stamps for auto-expiry).
+    let resolved = env.approval_queue.list_resolved(Some("timed_out"), None);
+    assert_eq!(resolved.len(), 1);
+    let record = &resolved[0];
+    assert_eq!(record.request_id, id);
+    assert_eq!(record.action, "tool.deploy_prod");
+    assert_eq!(record.status, "timed_out");
+    assert_eq!(record.decided_by, "timeout");
+}
