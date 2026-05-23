@@ -9,14 +9,16 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use aa_core::config::LocalModeConfig;
 use axum::{routing::get, Extension, Router};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::routes::healthz::{healthz, HealthzState};
+use crate::storage::{SqliteBackend, SqliteConfig, StorageBackend, StorageError};
 
 /// Handle returned by `start_local()` once the local control plane is up.
 ///
@@ -46,6 +48,14 @@ pub struct LocalGatewayHandle {
     pub(crate) server_task: Option<tokio::task::JoinHandle<()>>,
     /// SQLite pool to close on shutdown. `None` on the shell-handle path.
     pub(crate) pool: Option<SqlitePool>,
+    /// Type-erased storage handle constructed alongside the SQLite pool
+    /// at boot. Carried on the handle so subsequent Sub-tasks of Epic 18
+    /// Story S-I (registry write-through, audit-event durability,
+    /// retention engine) can reach the trait object from the same
+    /// lifecycle owner that already manages the pool. `None` on the
+    /// shell-handle path (probe short-circuit) where no backend was
+    /// opened.
+    pub(crate) storage: Option<Arc<dyn StorageBackend>>,
     /// PID-file path to remove on shutdown. `None` on the shell-handle
     /// path (no PID was written for that branch).
     pub(crate) pid_path: Option<PathBuf>,
@@ -89,7 +99,10 @@ impl LocalGatewayHandle {
             let _ = std::fs::remove_file(pid_path);
         }
 
-        // 4. Close the SqlitePool.
+        // 4. Close the SqlitePool. Dropping `self.storage` is left to
+        //    Drop semantics — the SqliteBackend wraps another Arc to
+        //    the same pool, so we already explicitly close the pool here.
+        drop(self.storage);
         if let Some(pool) = self.pool {
             pool.close().await;
         }
@@ -192,6 +205,23 @@ pub enum LocalModeError {
     /// Installing the SIGTERM / SIGINT handler failed (Unix only).
     #[error("shutdown signal handler installation failed: {0}")]
     Signal(#[source] std::io::Error),
+    /// The durable storage backend (`SqliteBackend::open` /
+    /// `StorageBackend::migrate`) returned an error during boot.
+    ///
+    /// Distinct from [`LocalModeError::Storage`] so the underlying
+    /// `sqlx::Error` chain stays intact in the existing variant while
+    /// this one carries the richer
+    /// [`StorageError`](crate::storage::StorageError) surface introduced
+    /// by Epic 18 Story S-I.
+    #[error("storage backend error at {path}: {source}", path = path.display())]
+    StorageBackend {
+        /// The resolved on-disk path the gateway tried to open.
+        path: PathBuf,
+        /// Underlying [`StorageError`] from
+        /// `SqliteBackend::open` / `migrate`.
+        #[source]
+        source: StorageError,
+    },
 }
 
 /// Build the local-mode Axum router skeleton.
@@ -231,29 +261,45 @@ pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
     })
 }
 
-/// Open a SQLite connection pool backing the local control plane.
+/// Open the local-mode SQLite-backed [`StorageBackend`] and apply
+/// pending migrations.
 ///
 /// Calls [`ensure_storage_parent`] so `~/.aasm/` is created on first
-/// start, then opens `SqlitePool` with `create_if_missing(true)` so
-/// the SQLite file itself is materialised on the same call — the
-/// behaviour AAASM-1576 AC #3 requires (`SQLite file created at
-/// ~/.aasm/local.db on first start`).
+/// start, then constructs a [`SqliteBackend`] at `path` (which itself
+/// creates the file in WAL mode if absent) and runs
+/// [`StorageBackend::migrate`] to bring the schema up to date.
 ///
-/// Migrations are deliberately out of scope here — the durable
-/// storage layer (`E18 S-B`, AAASM-1574) owns the migration runner.
-/// Until that lands, the pool returned here is empty/schema-less; it
-/// satisfies the `/healthz` `"storage": "sqlite"` contract and lets
-/// the later sub-tasks (AAASM-1725, AAASM-1728) treat it as a real
-/// resource that must be opened and closed cleanly.
-pub(crate) async fn open_storage(path: &Path) -> Result<SqlitePool, LocalModeError> {
+/// Returns both the raw [`SqlitePool`] (so [`LocalGatewayHandle`] can
+/// still close it explicitly during shutdown — preserving the
+/// AAASM-1576 AC #8 guarantee that `aasm start` after a shutdown does
+/// not race against a not-yet-drained pool) and the type-erased
+/// [`Arc<dyn StorageBackend>`] consumed by the new
+/// [`crate::AppState`] introduced in Epic 18 Story S-I.1.
+///
+/// The two handles share the same underlying connection pool: every
+/// `SqlitePool` is internally `Arc<PoolInner>`, so `pool().clone()`
+/// produces a second view onto the existing pool rather than opening
+/// a second connection set.
+pub(crate) async fn open_storage(path: &Path) -> Result<(SqlitePool, Arc<dyn StorageBackend>), LocalModeError> {
     ensure_storage_parent(path)?;
-    let opts = SqliteConnectOptions::new().filename(path).create_if_missing(true);
-    SqlitePool::connect_with(opts)
+    let backend = SqliteBackend::open(&SqliteConfig {
+        path: path.to_path_buf(),
+    })
+    .await
+    .map_err(|source| LocalModeError::StorageBackend {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    backend
+        .migrate()
         .await
-        .map_err(|source| LocalModeError::Storage {
+        .map_err(|source| LocalModeError::StorageBackend {
             path: path.to_path_buf(),
             source,
-        })
+        })?;
+    let pool = backend.pool().clone();
+    let storage: Arc<dyn StorageBackend> = Arc::new(backend);
+    Ok((pool, storage))
 }
 
 /// Probe `GET http://127.0.0.1:{port}/healthz` with a 100 ms timeout.
@@ -382,14 +428,20 @@ pub(crate) async fn start_local_with_pid_path(
             shutdown_tx,
             server_task: None,
             pool: None,
+            storage: None,
             pid_path: None,
         });
     }
 
-    // 2. Storage (AAASM-1710). The pool now lives on the handle so
-    //    `LocalGatewayHandle::shutdown()` (next commit) can close it
-    //    explicitly with `pool.close().await` rather than relying on Drop.
-    let pool = open_storage(&config.storage_path).await?;
+    // 2. Storage (AAASM-1710 / AAASM-1859). `open_storage` now also
+    //    constructs the SQLite-backed `StorageBackend` and applies
+    //    pending schema migrations. The pool stays on the handle for
+    //    AAASM-1576 AC #8's explicit close-on-shutdown; the storage
+    //    Arc is carried alongside so later Sub-tasks of Epic 18
+    //    Story S-I (registry write-through, audit-event durability,
+    //    retention engine) can reach the trait object from this same
+    //    lifecycle owner.
+    let (pool, storage) = open_storage(&config.storage_path).await?;
 
     // 3. Bind 127.0.0.1:port (AC #6 — explicit Ipv4Addr::LOCALHOST,
     //    never 0.0.0.0).
@@ -429,6 +481,7 @@ pub(crate) async fn start_local_with_pid_path(
         shutdown_tx,
         server_task: Some(server_task),
         pool: Some(pool),
+        storage: Some(storage),
         pid_path: Some(pid_path.to_path_buf()),
     })
 }
@@ -514,13 +567,17 @@ mod tests {
         assert!(!db_path.parent().expect("parent").exists());
         assert!(!db_path.exists());
 
-        let pool = open_storage(&db_path).await.expect("open_storage");
+        let (pool, storage) = open_storage(&db_path).await.expect("open_storage");
 
         assert!(
             db_path.is_file(),
             "open_storage should materialise the SQLite file on disk"
         );
         assert!(!pool.is_closed(), "open_storage should return an open pool",);
+        // The companion StorageBackend handle must be a working trait
+        // object — a healthcheck round-trip exercises it through the
+        // dyn vtable.
+        storage.healthcheck().await.expect("healthcheck should succeed");
 
         pool.close().await;
     }

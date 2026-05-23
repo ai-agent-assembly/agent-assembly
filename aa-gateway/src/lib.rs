@@ -6,6 +6,7 @@
 
 pub mod alerts;
 pub mod anomaly;
+pub mod app_state;
 pub mod approval;
 pub mod audit;
 pub mod audit_reader;
@@ -26,6 +27,7 @@ pub mod service;
 pub mod simulation;
 pub mod storage;
 
+pub use app_state::AppState;
 pub use audit_reader::AuditReader;
 pub use engine::{EvaluationResult, PolicyEngine, PolicyLoadError};
 pub use registry::{AgentRecord, AgentRegistry, AgentStatus};

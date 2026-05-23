@@ -25,6 +25,7 @@
 pub mod agent;
 pub mod audit;
 pub mod backend;
+pub mod boot;
 pub mod cache;
 pub mod error;
 pub mod health;
@@ -41,6 +42,7 @@ pub mod sqlite;
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
 pub use backend::StorageBackend;
+pub use boot::{open_postgres_backend, open_sqlite_backend};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
 pub use error::{StorageError, StorageResult};
 pub use health::{HealthStatus, RowCounts, StorageHealth};

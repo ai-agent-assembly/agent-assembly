@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use thiserror::Error;
 
 use super::tls::TlsError;
+use crate::storage::StorageError;
 
 /// Failures emitted by `start_remote()` and friends.
 #[derive(Debug, Error)]
@@ -49,4 +50,11 @@ pub enum GatewayError {
     /// Installing the SIGTERM / SIGINT handler failed (Unix only).
     #[error("shutdown signal handler installation failed: {0}")]
     Signal(#[source] io::Error),
+
+    /// The PostgreSQL storage backend (`PostgresBackend::connect` /
+    /// `StorageBackend::migrate`) failed during boot. Introduced by
+    /// Epic 18 Story S-I.1: the remote control plane now opens its
+    /// durable backend before binding the listener.
+    #[error("storage backend error: {0}")]
+    Storage(#[source] StorageError),
 }
