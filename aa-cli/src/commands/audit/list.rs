@@ -37,6 +37,13 @@ pub struct ListArgs {
     /// Maximum number of entries to return.
     #[arg(long, default_value_t = 50)]
     pub limit: u32,
+
+    /// Show only sandbox / observe-mode shadow events — entries the gateway
+    /// recorded with `dry_run: true` because policy was evaluated in observe
+    /// mode (AAASM-1564). When this flag is OFF (the default), shadow events
+    /// are hidden so operators see only live enforcement decisions.
+    #[arg(long)]
+    pub dry_run_only: bool,
 }
 
 /// Build the query URL for `GET /api/v1/logs` with filter parameters.
@@ -72,6 +79,18 @@ pub fn extract_tool(entry: &AuditEntry) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// Extract the `dry_run` flag from the entry's payload JSON.
+///
+/// Returns `true` when the gateway tagged this entry as an observe-mode
+/// shadow event (AAASM-1564). Returns `false` for every other case —
+/// missing key, non-bool value, payload that isn't valid JSON.
+pub fn extract_dry_run(entry: &AuditEntry) -> bool {
+    serde_json::from_str::<serde_json::Value>(&entry.payload)
+        .ok()
+        .and_then(|v| v.get("dry_run").and_then(|d| d.as_bool()))
+        .unwrap_or(false)
+}
+
 /// Extract a policy name from the entry's payload JSON.
 pub fn extract_policy(entry: &AuditEntry) -> String {
     serde_json::from_str::<serde_json::Value>(&entry.payload)
@@ -88,7 +107,15 @@ fn matches_result_filter(entry: &AuditEntry, filter: &AuditResult) -> bool {
     }
 }
 
-/// Apply client-side filters (time range and result) to entries.
+/// Apply client-side filters (time range, result, dry-run) to entries.
+///
+/// `--dry-run-only` is an exclusive filter:
+///
+/// * OFF (default) → entries with `dry_run: true` are **hidden**, so the
+///   default `aa audit list` view shows live enforcement decisions only and
+///   doesn't get noisy as soon as anyone runs an agent under observe mode.
+/// * ON → entries with `dry_run: true` are **the only ones kept**, so an
+///   operator tuning a sandbox policy sees exactly the would-be violations.
 pub fn apply_filters(entries: &[AuditEntry], args: &ListArgs) -> Vec<AuditEntry> {
     let since = args.since.as_deref().and_then(parse_since);
     let until = args.until.as_deref().and_then(parse_until);
@@ -97,6 +124,13 @@ pub fn apply_filters(entries: &[AuditEntry], args: &ListArgs) -> Vec<AuditEntry>
         .iter()
         .filter(|e| is_within_time_range(&e.timestamp, since.as_ref(), until.as_ref()))
         .filter(|e| args.result.as_ref().map_or(true, |r| matches_result_filter(e, r)))
+        .filter(|e| {
+            if args.dry_run_only {
+                extract_dry_run(e)
+            } else {
+                !extract_dry_run(e)
+            }
+        })
         .cloned()
         .collect()
 }
@@ -282,6 +316,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 2);
@@ -301,6 +336,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 1);
@@ -322,6 +358,7 @@ mod tests {
             since: Some("2026-04-30T10:00:00Z".to_string()),
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 1);
@@ -342,6 +379,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let url = build_url(&ctx, &args);
         assert_eq!(url, "http://localhost:8080/api/v1/logs?per_page=50&page=1");
@@ -361,6 +399,7 @@ mod tests {
             since: None,
             until: None,
             limit: 25,
+            dry_run_only: false,
         };
         let url = build_url(&ctx, &args);
         assert!(url.contains("agent_id=aa001"));
