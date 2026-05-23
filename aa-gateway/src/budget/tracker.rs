@@ -12,7 +12,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use crate::budget::{
     pricing::PricingTable,
-    types::{BudgetAlert, BudgetState, BudgetStatus},
+    types::{BudgetAlert, BudgetState, BudgetStatus, BudgetWindow},
 };
 
 /// Per-agent daily limit entry stored in `BudgetTracker::agent_limits`.
@@ -80,6 +80,9 @@ pub struct BudgetTracker {
     pub(crate) spend_history: DashMap<AgentId, std::collections::BTreeMap<chrono::NaiveDate, Decimal>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
+    /// Rollover strategy. Defaults to [`BudgetWindow::Daily`]; override via
+    /// [`BudgetTracker::with_window`] to enable sub-day rollover (AAASM-1600).
+    window: BudgetWindow,
 }
 
 impl BudgetTracker {
@@ -119,6 +122,7 @@ impl BudgetTracker {
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
+            window: BudgetWindow::Daily,
         }
     }
 
@@ -193,7 +197,22 @@ impl BudgetTracker {
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
+            window: BudgetWindow::Daily,
         }
+    }
+
+    /// Override the rollover strategy. Defaults to [`BudgetWindow::Daily`] —
+    /// callers that need sub-day rollover (test fixtures, short-cycle staging)
+    /// pass `BudgetWindow::Duration(...)`.
+    pub fn with_window(mut self, window: BudgetWindow) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// Return the currently-configured rollover strategy.
+    #[allow(dead_code)]
+    pub fn window(&self) -> BudgetWindow {
+        self.window
     }
 
     /// Return an `Arc` wrapping the per-ancestor `parking_lot::Mutex`, creating it if absent.
