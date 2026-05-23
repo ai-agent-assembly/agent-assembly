@@ -151,7 +151,7 @@ main() {
       if [ "${AASM_NO_MODIFY_PATH:-0}" != "1" ]; then
         warn "${INSTALL_DIR} is not in your PATH."
         warn "Add the following to your shell profile:"
-        warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
       fi
       ;;
   esac
