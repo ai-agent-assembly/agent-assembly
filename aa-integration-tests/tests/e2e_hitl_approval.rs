@@ -276,3 +276,80 @@ async fn e2e_hitl_timeout_with_allow_fallback() {
     assert_eq!(record.status, "timed_out");
     assert_eq!(record.decided_by, "timeout");
 }
+
+// =============================================================================
+// ST-P-5 — REST list transitions: pending entry → approved entry after decide.
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_hitl_list_transitions_pending_to_approved() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let client = reqwest::Client::new();
+
+    let request = make_pending_request(
+        "wire_transfer",
+        60,
+        PolicyResult::Deny {
+            reason: "fallback unused".to_string(),
+        },
+    );
+    let (id, _handle) = spawn_blocking_wait(&env, request);
+
+    // Before any decision: the pending list returns the new entry.
+    let pending: serde_json::Value = client
+        .get(format!("{}/api/v1/approvals?status=pending", env.base_url()))
+        .send()
+        .await
+        .expect("list pending succeeds")
+        .json()
+        .await
+        .expect("pending body is JSON");
+    assert_eq!(pending["total"], 1, "one pending entry before approve");
+    assert_eq!(pending["items"][0]["id"], id.to_string());
+    assert_eq!(pending["items"][0]["agent_id"], "agent-st-p");
+    assert_eq!(pending["items"][0]["action"], "tool.wire_transfer");
+
+    // Approved list is empty before the decision.
+    let approved_empty: serde_json::Value = client
+        .get(format!("{}/api/v1/approvals?status=approved", env.base_url()))
+        .send()
+        .await
+        .expect("list approved succeeds")
+        .json()
+        .await
+        .expect("approved body is JSON");
+    assert_eq!(approved_empty["total"], 0, "no approved entries before decide");
+
+    // Operator approves.
+    let approve_resp = client
+        .post(format!("{}/api/v1/approvals/{}/approve", env.base_url(), id))
+        .json(&serde_json::json!({ "by": "ops-5", "reason": "transfer pre-authorised" }))
+        .send()
+        .await
+        .expect("approve POST succeeds");
+    assert_eq!(approve_resp.status(), 200);
+
+    // After decision: pending list is empty …
+    let pending_after: serde_json::Value = client
+        .get(format!("{}/api/v1/approvals?status=pending", env.base_url()))
+        .send()
+        .await
+        .expect("list pending after decide succeeds")
+        .json()
+        .await
+        .expect("pending body is JSON");
+    assert_eq!(pending_after["total"], 0, "no pending entries after approve");
+
+    // … and the same id now appears under `?status=approved`, satisfying the
+    // ticket AC: "After approval, entry moves to `approved` status in the list".
+    let approved_after: serde_json::Value = client
+        .get(format!("{}/api/v1/approvals?status=approved", env.base_url()))
+        .send()
+        .await
+        .expect("list approved after decide succeeds")
+        .json()
+        .await
+        .expect("approved body is JSON");
+    assert_eq!(approved_after["total"], 1, "one approved entry after decide");
+    assert_eq!(approved_after["items"][0]["id"], id.to_string());
+}
