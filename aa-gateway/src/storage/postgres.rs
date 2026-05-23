@@ -960,6 +960,27 @@ mod tests {
         }
     }
 
+    /// `apply_timescaledb_setup` must return `Ok(())` immediately when
+    /// `config.enabled = false`, without touching the database. Exercises
+    /// the operator-opt-out path that lets deployments disable TimescaleDB
+    /// promotion even when the extension is installed.
+    ///
+    /// Runs whenever `AAASM_DATABASE_URL` is set — no TimescaleDB needed.
+    #[tokio::test]
+    async fn apply_timescaledb_setup_skips_when_disabled() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        let disabled = TimescaleConfig {
+            enabled: false,
+            ..TimescaleConfig::default()
+        };
+        backend
+            .apply_timescaledb_setup(&disabled)
+            .await
+            .expect("apply_timescaledb_setup must return Ok when enabled = false");
+    }
+
     #[tokio::test]
     async fn migrate_creates_expected_tables() {
         let Some(backend) = pg_backend_or_skip().await else {
