@@ -260,3 +260,60 @@ jobs:
             echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
             exit 1
           }
+
+  smoke-npm:
+    name: Smoke — npm (@agent-assembly/sdk install + require)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js 20 LTS on a clean runner
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Install @agent-assembly/sdk from the public npm registry
+        run: |
+          # Smoke test runs from /tmp on a fresh runner so that no
+          # repo-local package.json can shadow the install.
+          mkdir -p /tmp/aa-npm-smoke
+          cd /tmp/aa-npm-smoke
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @agent-assembly/sdk
+
+      - name: Verify the package loads via require() without throwing
+        run: |
+          cd /tmp/aa-npm-smoke
+          node -e "require('@agent-assembly/sdk')"
+
+      - name: Verify installed package version matches release tag
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          cd /tmp/aa-npm-smoke
+          got=$(node -p "require('@agent-assembly/sdk/package.json').version")
+          want="${EXPECTED}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::@agent-assembly/sdk version mismatch — got '${got}', want '${want}'"
+            exit 1
+          }
