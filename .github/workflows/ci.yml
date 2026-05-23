@@ -181,8 +181,12 @@ jobs:
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
       - name: Build Node.js native binding (e2e_sdk_node real_* tests, AAASM-1602)
-        working-directory: node-sdk
+        # Run from the symlinked sibling path (created by the previous step),
+        # not the checkout under $GITHUB_WORKSPACE — cargo refuses to build
+        # node-sdk/native/aa-ffi-node from inside the agent-assembly workspace
+        # because of the unrelated outer Cargo.toml.
         run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
           pnpm install --no-frozen-lockfile
           pnpm native:build
       - name: Run tests
@@ -257,8 +261,12 @@ jobs:
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
       - name: Build Node.js native binding (e2e_sdk_node real_* tests, AAASM-1602)
-        working-directory: node-sdk
+        # Run from the symlinked sibling path (created by the previous step),
+        # not the checkout under $GITHUB_WORKSPACE — cargo refuses to build
+        # node-sdk/native/aa-ffi-node from inside the agent-assembly workspace
+        # because of the unrelated outer Cargo.toml.
         run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
           pnpm install --no-frozen-lockfile
           pnpm native:build
       - name: Generate coverage report
