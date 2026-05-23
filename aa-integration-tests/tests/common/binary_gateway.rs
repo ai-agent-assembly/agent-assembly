@@ -17,8 +17,6 @@
 //!    introduced under AAASM-1601) redirects the audit JSONL to a
 //!    per-test directory so multiple tests don't clobber each other.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
