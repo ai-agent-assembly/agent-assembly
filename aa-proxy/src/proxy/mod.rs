@@ -22,7 +22,8 @@ use crate::config::ProxyConfig;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::Interceptor;
+use crate::intercept::{Interceptor, VerdictDecision};
+use crate::proxy::http::{read_http_request, serialize_http_request};
 use crate::tls::{CaStore, CertCache};
 
 /// A TLS `ServerCertVerifier` that accepts any certificate.
@@ -134,6 +135,40 @@ impl ProxyServer {
         Ok(())
     }
 
+    /// Dial the upstream TLS endpoint (TCP connect + ClientHello).
+    async fn dial_upstream_tls(
+        self: &Arc<Self>,
+        host: &str,
+        target: &str,
+    ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
+        let upstream_tcp = TcpStream::connect(target).await?;
+        let client_config = if self.config.skip_upstream_tls_verify {
+            // Integration-test-only path: skip certificate verification so tests
+            // can use self-signed upstream servers without installing their CAs.
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
+                .with_no_client_auth()
+        } else {
+            let mut root_store = rustls::RootCertStore::empty();
+            let native = rustls_native_certs::load_native_certs();
+            for cert in native.certs {
+                let _ = root_store.add(cert);
+            }
+            rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from(host.to_string()).map_err(|e| ProxyError::Tls(e.to_string()))?;
+        let upstream_tls = connector
+            .connect(server_name, upstream_tcp)
+            .await
+            .map_err(|e| ProxyError::Tls(e.to_string()))?;
+        tracing::debug!(%host, "upstream TLS handshake complete");
+        Ok(upstream_tls)
+    }
+
     /// Handle a single accepted TCP connection.
     ///
     /// Reads the first HTTP request line to determine whether this is a
@@ -218,50 +253,84 @@ impl ProxyServer {
                 .await
                 .map_err(|e| ProxyError::Tls(e.to_string()))?;
 
-            // --- TLS client: connect to the real upstream ---
-            let upstream_tcp = TcpStream::connect(target).await?;
-            let client_config = if self.config.skip_upstream_tls_verify {
-                // Integration-test-only path: skip certificate verification so tests
-                // can use self-signed upstream servers without installing their CAs.
-                rustls::ClientConfig::builder()
-                    .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(NoCertVerifier))
-                    .with_no_client_auth()
-            } else {
-                let mut root_store = rustls::RootCertStore::empty();
-                let native = rustls_native_certs::load_native_certs();
-                for cert in native.certs {
-                    let _ = root_store.add(cert);
-                }
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth()
-            };
-            let connector = TlsConnector::from(Arc::new(client_config));
-            let server_name = ServerName::try_from(host.to_string()).map_err(|e| ProxyError::Tls(e.to_string()))?;
-            let upstream_tls = connector
-                .connect(server_name, upstream_tcp)
-                .await
-                .map_err(|e| ProxyError::Tls(e.to_string()))?;
+            tracing::debug!(%host, "TLS MitM (client side) handshake complete");
 
-            tracing::debug!(%host, "TLS MitM handshake complete");
-
-            // Emit interception event for this tunnelled connection.
             let pattern = detect_api(host);
+
+            // For LLM patterns, read the inbound HTTP request inside the
+            // tunnel so the credential scanner can run against the real
+            // body bytes before any byte reaches upstream. For non-LLM
+            // patterns we fall through to a raw bidirectional copy below.
             if pattern != LlmApiPattern::Unknown {
+                let mut client_reader = BufReader::new(client_tls);
+                let Some(req) = read_http_request(&mut client_reader).await? else {
+                    // Client closed without sending a request line — nothing
+                    // to do, just return cleanly.
+                    return Ok(());
+                };
+
+                let verdict = self
+                    .interceptor
+                    .intercept_request(&req.body, self.config.credential_action);
+
+                // Emit the legacy ProxyEvent for the audit broadcast — keeps
+                // existing subscribers wired up unchanged.
                 let event = ProxyEvent {
                     agent_id: None,
                     pattern,
-                    method: "CONNECT".into(),
-                    path: format!("tunnel to {target}"),
-                    request_body: None,
+                    method: req.method.clone(),
+                    path: req.target.clone(),
+                    request_body: Some(bytes::Bytes::copy_from_slice(&req.body)),
                     response_body: None,
                     timestamp: SystemTime::now(),
                 };
                 self.interceptor.intercept(&event).await?;
+
+                if verdict.decision == VerdictDecision::Block {
+                    tracing::info!(
+                        %host,
+                        findings = verdict.findings.len(),
+                        "credential_action=Block: refusing forward, returning 403",
+                    );
+                    let mut client_tls = client_reader.into_inner();
+                    client_tls
+                        .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                        .await?;
+                    let _ = client_tls.shutdown().await;
+                    return Ok(());
+                }
+
+                // Dial upstream only after we have decided not to block.
+                let upstream_tls = self.dial_upstream_tls(host, target).await?;
+
+                let outgoing_bytes = match verdict.decision {
+                    VerdictDecision::ForwardRedacted => {
+                        let body = verdict
+                            .redacted_body
+                            .as_deref()
+                            .expect("ForwardRedacted always carries redacted_body");
+                        serialize_http_request(&req, body)
+                    }
+                    _ => serialize_http_request(&req, &req.body),
+                };
+
+                let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
+                let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+
+                upstream_write.write_all(&outgoing_bytes).await?;
+
+                let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+                let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+                tokio::select! {
+                    r = client_to_upstream => { r?; }
+                    r = upstream_to_client => { r?; }
+                }
+                return Ok(());
             }
 
-            // Bidirectional copy between client and upstream.
+            // Non-LLM pattern: raw bidirectional copy (no body inspection).
+            let upstream_tls = self.dial_upstream_tls(host, target).await?;
             let (mut client_read, mut client_write) = tokio::io::split(client_tls);
             let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
 
