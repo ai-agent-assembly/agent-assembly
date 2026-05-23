@@ -53,6 +53,15 @@ const PROPOSED_POLICY: Policy = {
   policy_yaml: 'metadata:\n  name: experimental\nrules: []\n',
 }
 
+const OBSERVE_POLICY: Policy = {
+  name: 'observed-policy',
+  version: '1.2.0',
+  rule_count: 3,
+  active: true,
+  policy_yaml:
+    'metadata:\n  name: observed-policy\nenforcement_mode: observe\nrules: []\n',
+}
+
 function mockPolicies(partial: Partial<UseQueryResult<Policy[], Error>>) {
   return vi.spyOn(policiesApi, 'usePoliciesQuery').mockReturnValue(
     mockQuery<Policy[]>(partial),
@@ -428,22 +437,35 @@ describe('PoliciesPage — sandbox summary banner', () => {
     vi.restoreAllMocks()
   })
 
-  it('hides the SandboxSummaryCard banner when every count is zero', () => {
+  it('hides the SandboxSummaryCard banner when no policy is observe-mode', () => {
+    // ACTIVE_POLICY's YAML doesn't declare enforcement_mode, so it defaults
+    // to enforce — gate fires hidden regardless of summary counts.
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
-    mockSandboxSummary() // zero-state, default
+    mockSandboxSummary({
+      data: {
+        counts: {
+          would_be_denies: 7,
+          would_be_redactions: 2,
+          would_be_pending_approvals: 1,
+        },
+        top_rule: null,
+        window_secs: 86_400,
+        generated_at: '2026-05-23T00:00:00Z',
+      },
+    })
     render(<PoliciesPage />, { wrapper: Wrapper })
     expect(screen.queryByTestId('policies-sandbox-banner')).not.toBeInTheDocument()
   })
 
-  it('hides the banner while the sandbox summary query is loading', () => {
-    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
-    mockSandboxSummary({ data: undefined, isLoading: true })
+  it('renders the banner when at least one policy is observe-mode, even with zero counts', () => {
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockSandboxSummary() // zero counts
     render(<PoliciesPage />, { wrapper: Wrapper })
-    expect(screen.queryByTestId('policies-sandbox-banner')).not.toBeInTheDocument()
+    expect(screen.getByTestId('policies-sandbox-banner')).toBeInTheDocument()
   })
 
-  it('renders the banner with would-be counts and top rule when summary has activity', () => {
-    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+  it('passes API counts and top rule into the rendered card', () => {
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
     mockSandboxSummary({
       data: {
         counts: {
@@ -459,10 +481,6 @@ describe('PoliciesPage — sandbox summary banner', () => {
     render(<PoliciesPage />, { wrapper: Wrapper })
 
     const banner = screen.getByTestId('policies-sandbox-banner')
-    expect(banner).toBeInTheDocument()
-    // Counts and top rule come from the SandboxSummaryCard primitive — we
-    // assert the literal numbers + rule id reached the rendered card so the
-    // API → props mapping is wired in the right order.
     expect(banner).toHaveTextContent('7')
     expect(banner).toHaveTextContent('2')
     expect(banner).toHaveTextContent('1')
