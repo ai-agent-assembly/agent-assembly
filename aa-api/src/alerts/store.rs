@@ -296,6 +296,7 @@ mod tests {
                 delivered_at: "2026-05-13T09:12:01Z".to_string(),
                 status: "ok".to_string(),
             }],
+            alert_rule: None,
         }
     }
 

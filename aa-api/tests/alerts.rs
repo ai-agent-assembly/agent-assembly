@@ -374,6 +374,7 @@ fn test_rule_seed() -> RuleAlertSeed {
             delivered_at: "2026-05-20T09:00:01Z".to_string(),
             status: "ok".to_string(),
         }],
+        alert_rule: None,
     }
 }
 

@@ -278,6 +278,12 @@ pub struct RuleAlertSeed {
     pub event_payload: serde_json::Value,
     /// Connector-framework delivery log seeded with this fire's attempts.
     pub routing_log: Vec<RoutingLogEntry>,
+    /// Full [`AlertRule`] definition captured at fire time. Plumbed
+    /// through to [`StoredAlert::rule_snapshot`] so the dashboard's
+    /// alert-detail view can render the originating rule even after
+    /// it has been edited or deleted (AAASM-1658). `None` when the
+    /// caller does not have the live rule on hand.
+    pub alert_rule: Option<AlertRule>,
 }
 
 /// Map a rule-engine severity string to the existing `AlertSeverity` enum.
@@ -338,7 +344,7 @@ pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: String, timestamp: Strin
             dedup_occurrence_count: 1,
             dedup_window_expires_at: None,
         }),
-        rule_snapshot: None,
+        rule_snapshot: seed.alert_rule.clone(),
     }
 }
 
