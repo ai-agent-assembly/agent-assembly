@@ -37,6 +37,13 @@ pub struct ListArgs {
     /// Maximum number of entries to return.
     #[arg(long, default_value_t = 50)]
     pub limit: u32,
+
+    /// Show only sandbox / observe-mode shadow events — entries the gateway
+    /// recorded with `dry_run: true` because policy was evaluated in observe
+    /// mode (AAASM-1564). When this flag is OFF (the default), shadow events
+    /// are hidden so operators see only live enforcement decisions.
+    #[arg(long)]
+    pub dry_run_only: bool,
 }
 
 /// Build the query URL for `GET /api/v1/logs` with filter parameters.
@@ -72,6 +79,18 @@ pub fn extract_tool(entry: &AuditEntry) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// Extract the `dry_run` flag from the entry's payload JSON.
+///
+/// Returns `true` when the gateway tagged this entry as an observe-mode
+/// shadow event (AAASM-1564). Returns `false` for every other case —
+/// missing key, non-bool value, payload that isn't valid JSON.
+pub fn extract_dry_run(entry: &AuditEntry) -> bool {
+    serde_json::from_str::<serde_json::Value>(&entry.payload)
+        .ok()
+        .and_then(|v| v.get("dry_run").and_then(|d| d.as_bool()))
+        .unwrap_or(false)
+}
+
 /// Extract a policy name from the entry's payload JSON.
 pub fn extract_policy(entry: &AuditEntry) -> String {
     serde_json::from_str::<serde_json::Value>(&entry.payload)
@@ -88,7 +107,15 @@ fn matches_result_filter(entry: &AuditEntry, filter: &AuditResult) -> bool {
     }
 }
 
-/// Apply client-side filters (time range and result) to entries.
+/// Apply client-side filters (time range, result, dry-run) to entries.
+///
+/// `--dry-run-only` is an exclusive filter:
+///
+/// * OFF (default) → entries with `dry_run: true` are **hidden**, so the
+///   default `aa audit list` view shows live enforcement decisions only and
+///   doesn't get noisy as soon as anyone runs an agent under observe mode.
+/// * ON → entries with `dry_run: true` are **the only ones kept**, so an
+///   operator tuning a sandbox policy sees exactly the would-be violations.
 pub fn apply_filters(entries: &[AuditEntry], args: &ListArgs) -> Vec<AuditEntry> {
     let since = args.since.as_deref().and_then(parse_since);
     let until = args.until.as_deref().and_then(parse_until);
@@ -97,6 +124,13 @@ pub fn apply_filters(entries: &[AuditEntry], args: &ListArgs) -> Vec<AuditEntry>
         .iter()
         .filter(|e| is_within_time_range(&e.timestamp, since.as_ref(), until.as_ref()))
         .filter(|e| args.result.as_ref().map_or(true, |r| matches_result_filter(e, r)))
+        .filter(|e| {
+            if args.dry_run_only {
+                extract_dry_run(e)
+            } else {
+                !extract_dry_run(e)
+            }
+        })
         .cloned()
         .collect()
 }
@@ -282,6 +316,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 2);
@@ -301,6 +336,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 1);
@@ -322,6 +358,7 @@ mod tests {
             since: Some("2026-04-30T10:00:00Z".to_string()),
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let filtered = apply_filters(&entries, &args);
         assert_eq!(filtered.len(), 1);
@@ -342,6 +379,7 @@ mod tests {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let url = build_url(&ctx, &args);
         assert_eq!(url, "http://localhost:8080/api/v1/logs?per_page=50&page=1");
@@ -361,11 +399,121 @@ mod tests {
             since: None,
             until: None,
             limit: 25,
+            dry_run_only: false,
         };
         let url = build_url(&ctx, &args);
         assert!(url.contains("agent_id=aa001"));
         assert!(url.contains("event_type=PolicyViolation"));
         assert!(url.contains("per_page=25"));
+    }
+
+    // --- dry-run-only filter (AAASM-1559) ---
+
+    #[test]
+    fn extract_dry_run_reads_true_from_payload() {
+        // Mirrors the JSON shape that aa-gateway/policy_service.rs::record_audit
+        // produces when shadow events fire (see AAASM-1564).
+        let entry = sample_entry(
+            "ToolCallIntercepted",
+            r#"{"decision":1,"dry_run":true,"shadow_decision":"deny"}"#,
+        );
+        assert!(extract_dry_run(&entry));
+    }
+
+    #[test]
+    fn extract_dry_run_defaults_to_false_when_key_missing_or_wrong_type() {
+        // Live (non-observe) entries don't carry the key. Malformed entries
+        // must also report false rather than panic so a flaky producer
+        // doesn't drop the whole listing.
+        let live = sample_entry("PolicyViolation", r#"{"result":"deny"}"#);
+        assert!(!extract_dry_run(&live));
+
+        let wrong_type = sample_entry("ToolCallIntercepted", r#"{"dry_run":"true"}"#);
+        assert!(!extract_dry_run(&wrong_type));
+
+        let not_json = sample_entry("ToolCallIntercepted", "not even json");
+        assert!(!extract_dry_run(&not_json));
+    }
+
+    fn observe_entry() -> AuditEntry {
+        sample_entry(
+            "ToolCallIntercepted",
+            r#"{"decision":1,"dry_run":true,"shadow_decision":"deny","shadow_reason":"tool denied by policy"}"#,
+        )
+    }
+
+    fn live_entry() -> AuditEntry {
+        sample_entry("ToolCallIntercepted", r#"{"result":"allow"}"#)
+    }
+
+    #[test]
+    fn default_apply_filters_hides_dry_run_entries() {
+        // The whole point of making --dry-run-only an exclusive filter: the
+        // operator running `aa audit list` without flags must not see
+        // shadow events mixed in with their live enforcement decisions.
+        let entries = vec![live_entry(), observe_entry()];
+        let args = ListArgs {
+            agent: None,
+            action: None,
+            result: None,
+            since: None,
+            until: None,
+            limit: 50,
+            dry_run_only: false,
+        };
+        let filtered = apply_filters(&entries, &args);
+        assert_eq!(filtered.len(), 1);
+        assert!(!extract_dry_run(&filtered[0]));
+    }
+
+    #[test]
+    fn apply_filters_with_dry_run_only_keeps_only_shadow_entries() {
+        // The complementary case: --dry-run-only drops the live entries and
+        // surfaces just the would-be ones.
+        let entries = vec![live_entry(), observe_entry(), live_entry(), observe_entry()];
+        let args = ListArgs {
+            agent: None,
+            action: None,
+            result: None,
+            since: None,
+            until: None,
+            limit: 50,
+            dry_run_only: true,
+        };
+        let filtered = apply_filters(&entries, &args);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(extract_dry_run));
+    }
+
+    #[test]
+    fn dry_run_only_composes_with_since_filter() {
+        // --dry-run-only + --since must compose: the time window cuts first,
+        // then the dry-run filter, so a long-tail observe-mode audit log
+        // returns only the recent shadow events.
+        let mut old_shadow = observe_entry();
+        old_shadow.timestamp = "2026-04-30T08:00:00Z".to_string();
+        let mut recent_shadow = observe_entry();
+        recent_shadow.timestamp = "2026-04-30T12:00:00Z".to_string();
+        let mut recent_live = live_entry();
+        recent_live.timestamp = "2026-04-30T12:30:00Z".to_string();
+
+        let entries = vec![old_shadow, recent_shadow.clone(), recent_live];
+        let args = ListArgs {
+            agent: None,
+            action: None,
+            result: None,
+            since: Some("2026-04-30T10:00:00Z".to_string()),
+            until: None,
+            limit: 50,
+            dry_run_only: true,
+        };
+        let filtered = apply_filters(&entries, &args);
+        assert_eq!(
+            filtered.len(),
+            1,
+            "only the recent shadow entry should survive both filters"
+        );
+        assert_eq!(filtered[0].timestamp, recent_shadow.timestamp);
     }
 
     #[test]

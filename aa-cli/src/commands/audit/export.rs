@@ -65,6 +65,11 @@ impl ExportArgs {
             since: self.since.clone(),
             until: self.until.clone(),
             limit: self.limit,
+            // `aa audit export` reads the existing live audit corpus; observe-
+            // mode shadow events are surfaced through `aa audit list
+            // --dry-run-only` instead. Leaving this off here keeps export
+            // behaviour identical to before AAASM-1559.
+            dry_run_only: false,
         }
     }
 }
