@@ -254,9 +254,7 @@ pub struct PostgresBackend {
     pool: PgPool,
     /// TimescaleDB knobs captured from [`PostgresConfig::timescaledb`] at
     /// connect time. Consumed by
-    /// [`PostgresBackend::apply_timescaledb_setup`] from inside `migrate()`
-    /// (wired in Epic 18 S-D #3 commit 3 — `migrate()` consumer).
-    #[allow(dead_code)]
+    /// [`PostgresBackend::apply_timescaledb_setup`] from inside `migrate()`.
     timescale_config: TimescaleConfig,
 }
 
@@ -307,7 +305,6 @@ impl PostgresBackend {
     /// probe itself fails (transport / permission). The graceful-fallback
     /// paths above never raise an error — production deployments must be
     /// able to boot against plain PostgreSQL.
-    #[allow(dead_code)]
     pub(crate) async fn apply_timescaledb_setup(&self, config: &TimescaleConfig) -> StorageResult<()> {
         if !config.enabled {
             tracing::info!("storage.postgres.timescaledb.enabled = false; skipping hypertable setup");
@@ -327,20 +324,29 @@ impl PostgresBackend {
 
 #[async_trait]
 impl StorageBackend for PostgresBackend {
-    /// Apply the embedded `migrations/postgres/*.sql` migrations.
+    /// Apply the embedded `migrations/postgres/*.sql` migrations and
+    /// then run TimescaleDB runtime gating via
+    /// [`PostgresBackend::apply_timescaledb_setup`].
     ///
     /// Idempotent — sqlx records applied versions in `_sqlx_migrations`,
     /// so calling this against an already-migrated database is a no-op.
+    /// `apply_timescaledb_setup` is also idempotent (it only logs +
+    /// branches on extension presence; the hypertable DDL is owned by
+    /// `0002_timescaledb_hypertables.sql`, which `IF NOT EXISTS`-guards
+    /// itself).
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::MigrationFailed`] when any migration fails
     /// to apply or sqlx cannot verify previously-applied versions.
+    /// Returns [`StorageError::QueryFailed`] when the extension probe in
+    /// `apply_timescaledb_setup` fails (transport / permission).
     async fn migrate(&self) -> StorageResult<()> {
         sqlx::migrate!("./migrations/postgres")
             .run(&self.pool)
             .await
-            .map_err(|e| StorageError::MigrationFailed(e.to_string()))
+            .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
+        self.apply_timescaledb_setup(&self.timescale_config).await
     }
 
     /// Persist a single audit event.
