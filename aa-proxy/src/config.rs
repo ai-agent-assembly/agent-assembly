@@ -58,6 +58,14 @@ pub struct ProxyConfig {
     /// never enable in production.
     /// Env: `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` — default: `false`
     pub skip_upstream_tls_verify: bool,
+
+    /// Action to take when the in-path credential scanner detects a secret in
+    /// a flowing request body. Drives Layer 2 enforcement for LLM requests.
+    ///
+    /// Defaults to [`CredentialAction::RedactOnly`] which preserves the
+    /// historical behaviour (the proxy forwards but the audit chain carries
+    /// a redacted form).
+    pub credential_action: CredentialAction,
 }
 
 impl ProxyConfig {
@@ -112,6 +120,7 @@ impl ProxyConfig {
             llm_only,
             denied_hosts,
             skip_upstream_tls_verify,
+            credential_action: CredentialAction::default(),
         })
     }
 }
