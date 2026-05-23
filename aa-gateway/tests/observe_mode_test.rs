@@ -198,3 +198,47 @@ async fn st_sandbox_1_observe_mode_with_deny_rule_returns_allow_and_dry_run_audi
     assert_eq!(payload["dry_run"], serde_json::Value::Bool(true));
     assert_eq!(payload["shadow_decision"], "deny");
 }
+
+#[tokio::test]
+async fn st_sandbox_2_observe_mode_with_allow_decision_emits_no_shadow_metadata() {
+    // Observe mode must NOT fabricate shadow events for already-Allow
+    // decisions — otherwise audit-log shadow volume would mirror all traffic
+    // instead of just would-be violations. The response is Allow either way;
+    // the discriminator is whether `dry_run` appears in the audit payload.
+    let allow_policy = r#"
+version: "1"
+tools:
+  web_search:
+    allow: true
+"#;
+    let (addr, registry, mut audit_rx) = start_server_with_audit_rx(allow_policy).await;
+
+    let proto_id = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: "observe-clean-agent".into(),
+    };
+    register_agent_with_mode(
+        &registry,
+        "observe-clean-agent",
+        &proto_id,
+        Some(aa_core::EnforcementMode::Observe),
+    );
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let resp = client
+        .check_action(tool_call_request_for(&proto_id, "web_search"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.decision, Decision::Allow as i32);
+
+    let entries = drain_audit_entries(&mut audit_rx).await;
+    assert_eq!(entries.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(entries[0].payload()).expect("payload is valid JSON");
+    assert!(
+        payload.get("dry_run").is_none(),
+        "Allow decisions in observe mode must NOT include dry_run in the audit payload, got: {payload}"
+    );
+    assert!(payload.get("shadow_decision").is_none());
+}
