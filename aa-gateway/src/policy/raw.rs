@@ -49,6 +49,10 @@ pub struct RawBudgetPolicy {
     pub timezone: Option<String>,
     /// Action when budget is exceeded: `"deny"` (default) or `"suspend"`.
     pub action_on_exceed: Option<String>,
+    /// Optional sub-day rollover window expressed as a humantime duration
+    /// (e.g. `"5s"`, `"30m"`, `"1h30m"`). When absent the tracker rolls at the
+    /// calendar-day boundary (the historical default). AAASM-1600.
+    pub window: Option<String>,
     /// Unknown keys captured for warning emission.
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
