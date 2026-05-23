@@ -2543,6 +2543,15 @@ components:
           items:
             $ref: '#/components/schemas/RoutingLogEntry'
           description: Connector-framework delivery log. Empty for legacy alerts.
+        ruleSnapshot:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/AlertRule'
+            description: |-
+              Full [`AlertRule`] snapshot captured at fire time so the
+              alert-detail view can render the originating rule even after
+              the live rule has been edited or deleted (AAASM-1658). `null`
+              for legacy budget/secret alerts.
         rule_id:
           type:
           - string
@@ -2555,11 +2564,6 @@ components:
           - string
           - 'null'
           description: Human-readable rule name, or `null` for legacy alerts.
-        rule_snapshot:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/RuleSnapshot'
-            description: Rule snapshot at fire time. `null` for legacy alerts.
         severity:
           type: string
           description: Alert severity level (`info` / `warning` / `critical`).
@@ -4591,56 +4595,6 @@ components:
       - HIGH
       - MEDIUM
       - LOW
-    RuleSnapshot:
-      type: object
-      description: |-
-        Snapshot of the rule definition at the moment the alert fired.
-
-        Recording the rule inline keeps alert detail self-contained — operators
-        see the exact thresholds and windows that triggered the fire, even if
-        the underlying rule has since been edited.
-      required:
-      - metric
-      - operator
-      - threshold
-      - evaluation_window_seconds
-      - severity
-      - dedup_window_seconds
-      properties:
-        dedup_window_seconds:
-          type: integer
-          format: int32
-          description: |-
-            Window during which subsequent fires are deduplicated. `0`
-            disables deduplication.
-          minimum: 0
-        evaluation_window_seconds:
-          type: integer
-          format: int32
-          description: Window over which the metric is aggregated before evaluation.
-          minimum: 0
-        metric:
-          type: string
-          description: Metric the rule evaluates (e.g. `"budget_spent_pct"`).
-        operator:
-          type: string
-          description: Comparison operator (`">"`, `"<"`, `">="`, etc.).
-        severity:
-          type: string
-          description: Severity level emitted when the rule fires (e.g. `"CRITICAL"`).
-        suppression_labels:
-          type: object
-          description: |-
-            Label selectors used to suppress otherwise-matching alerts. The
-            `BTreeMap` ordering keeps OpenAPI examples deterministic.
-          additionalProperties:
-            type: string
-          propertyNames:
-            type: string
-        threshold:
-          type: number
-          format: double
-          description: Numeric threshold the metric is compared against.
     RunRetentionRequest:
       type: object
       description: Body of `POST /api/v1/admin/retention-policy/run`.

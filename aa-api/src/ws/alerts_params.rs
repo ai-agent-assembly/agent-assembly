@@ -252,6 +252,7 @@ mod tests {
             first_fired_at: "2026-05-20T00:00:00Z".to_string(),
             resolved_at: None,
             rule_context: None,
+            rule_snapshot: None,
         }
     }
 

@@ -1482,6 +1482,7 @@ export interface components {
             resolved_at?: string | null;
             /** @description Connector-framework delivery log. Empty for legacy alerts. */
             routing_log: components["schemas"]["RoutingLogEntry"][];
+            ruleSnapshot?: null | components["schemas"]["AlertRule"];
             /**
              * @description Identifier of the rule that produced the alert, or `null` for
              *     legacy budget/secret alerts.
@@ -1489,7 +1490,6 @@ export interface components {
             rule_id?: string | null;
             /** @description Human-readable rule name, or `null` for legacy alerts. */
             rule_name?: string | null;
-            rule_snapshot?: null | components["schemas"]["RuleSnapshot"];
             /** @description Alert severity level (`info` / `warning` / `critical`). */
             severity: string;
             silence?: null | components["schemas"]["Silence"];
@@ -2677,44 +2677,6 @@ export interface components {
          * @enum {string}
          */
         RuleSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-        /**
-         * @description Snapshot of the rule definition at the moment the alert fired.
-         *
-         *     Recording the rule inline keeps alert detail self-contained — operators
-         *     see the exact thresholds and windows that triggered the fire, even if
-         *     the underlying rule has since been edited.
-         */
-        RuleSnapshot: {
-            /**
-             * Format: int32
-             * @description Window during which subsequent fires are deduplicated. `0`
-             *     disables deduplication.
-             */
-            dedup_window_seconds: number;
-            /**
-             * Format: int32
-             * @description Window over which the metric is aggregated before evaluation.
-             */
-            evaluation_window_seconds: number;
-            /** @description Metric the rule evaluates (e.g. `"budget_spent_pct"`). */
-            metric: string;
-            /** @description Comparison operator (`">"`, `"<"`, `">="`, etc.). */
-            operator: string;
-            /** @description Severity level emitted when the rule fires (e.g. `"CRITICAL"`). */
-            severity: string;
-            /**
-             * @description Label selectors used to suppress otherwise-matching alerts. The
-             *     `BTreeMap` ordering keeps OpenAPI examples deterministic.
-             */
-            suppression_labels?: {
-                [key: string]: string;
-            };
-            /**
-             * Format: double
-             * @description Numeric threshold the metric is compared against.
-             */
-            threshold: number;
-        };
         /** @description Body of `POST /api/v1/admin/retention-policy/run`. */
         RunRetentionRequest: {
             /**
