@@ -2,7 +2,9 @@
 
 use reqwest::Client;
 
-use super::models::{AgentResponse, ApprovalResponse, CostResponse, HealthResponse, PaginatedResponse};
+use super::models::{
+    AgentResponse, ApprovalResponse, CostResponse, HealthResponse, HealthzResponse, PaginatedResponse,
+};
 use crate::error::CliError;
 
 /// Client for making status-related API requests.
@@ -35,6 +37,20 @@ impl StatusClient {
     pub async fn check_health(&self) -> Result<HealthResponse, CliError> {
         let resp = self.http.get(self.url("/api/v1/health")).send().await?;
         let body = resp.json::<HealthResponse>().await?;
+        Ok(body)
+    }
+
+    /// Fetch the lightweight gateway liveness probe via `GET /healthz`.
+    ///
+    /// Backs the deployment-overview section of `aasm status` — surfaces the
+    /// `mode`, `version`, `storage`, and `uptime_secs` fields published by
+    /// `aa-gateway::routes::healthz::healthz` regardless of deployment mode.
+    /// Returns an error when the gateway is unreachable or returns a body the
+    /// client cannot decode; callers map that to `health = "unreachable"`.
+    #[allow(dead_code)]
+    pub async fn check_healthz(&self) -> Result<HealthzResponse, CliError> {
+        let resp = self.http.get(self.url("/healthz")).send().await?;
+        let body = resp.json::<HealthzResponse>().await?;
         Ok(body)
     }
 
