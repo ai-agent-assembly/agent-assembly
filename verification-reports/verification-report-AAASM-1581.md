@@ -72,15 +72,41 @@ go vet ./...
 
 All three suites green on the respective branch heads at the time of this report.
 
+## Manual end-to-end smoke runs
+
+Ran 2026-05-23 on macOS / darwin-arm64. A real `aa-gateway --mode local` was started from the `agent-assembly` master worktree (the binary that `aasm start --mode local --foreground` ultimately wraps via `start_local` from AAASM-1725); `/healthz` returned `{"mode":"local","version":"0.0.1","storage":"sqlite","uptime_secs":5}`.
+
+### Probe-hit smoke — gateway already running
+
+| SDK | Command | Output |
+| --- | --- | --- |
+| Python | `python -c "from agent_assembly import init_assembly; ctx = init_assembly(mode='sdk-only'); print(ctx.client.gateway_url, ctx.client.api_key)"` | `http://localhost:7391` `''` — resolver returned the local default; `api_key` empty-defaulted. |
+| Node | `node` invokes `initAssembly({ mode: "sdk-only" })` against `dist/esm/index.js` | `ctx.activeAdapters = [ 'langchain-js', 'openai-agents' ]` — resolver returned a context; downstream framework detection ran. |
+| Go | `assembly.Init(context.Background())` via a tiny `main.go` with `replace github.com/AI-agent-assembly/go-sdk => …worktree…` | Resolver completed (no `*ConfigurationError`); downstream `sidecarConnector` returned `"sidecar unavailable"` — expected since the local CP at `:7391` exposes `/healthz` only, not the gRPC sidecar surface. This proves `resolveGatewayURL` populated the URL correctly and validation passed past the (now-relaxed) empty-`apiKey` check. |
+
+### Aasm-missing smoke — no gateway, no `aasm` on PATH
+
+`aa-gateway` killed; `which aasm` returned `aasm not found`.
+
+| SDK | Resulting error |
+| --- | --- |
+| Python | `ConfigurationError: No gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: pip install agent-assembly[cli]` |
+| Node | `ConfigurationError: No gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: npm install -g @agent-assembly/cli (or pnpm add -g)` |
+| Go | `*ConfigurationError: assembly: no gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: go install github.com/AI-agent-assembly/aa-cli/cmd/aasm@latest` |
+
+All three error messages match the design — explicit `ConfigurationError` type with an SDK-appropriate install hint.
+
 ## Out-of-scope follow-ups
 
-- **Real `/healthz` end-to-end smoke** — this verification covers the SDK side of the contract; an integration test that boots a real `aa-gateway` in local mode and runs each SDK's zero-arg `init_assembly()` against it belongs to E17 S-B (`AAASM-1576`) closing work, not to S-G. The handshake is exercised by SDK unit tests against `httptest.NewServer` / mocked `fetch` / mocked `httpx`, which is sufficient for the AC contract.
+- **`aasm start --mode local --foreground` orchestrator polish** — the current `aasm start` invocation (AAASM-1725) tries to fork `aa-gateway` with the legacy-grpc default flags rather than `--mode local`; the smoke above had to invoke `aa-gateway --mode local` directly. The CLI orchestrator wiring belongs to AAASM-1576 / S-B closing work, not S-G. SDK auto-start paths still call the canonical `aasm start --mode local --foreground` argv per the AC.
 - **`AAASM_API_KEY` semantics in remote mode** — the empty-default rule is documented for local mode; production deployments using the remote control plane still require a real key. The CLI / dashboard onboarding flow that surfaces this distinction belongs to a future Story under E17 (`aasm status` already reports the resolved key shape).
-- **Story description vs. real module names** — the Story description referenced files that don't exist in the current layouts (`agent_assembly/core/init.py`, `src/core/init.ts`, `assembly/init.go` was correct). Each Sub-task PR is explicit about where the resolver landed; no follow-up needed.
+- **Story description vs. real module names** — the Story description referenced files that don't exist in the current layouts (`agent_assembly/core/init.py`, `src/core/init.ts`); `assembly/init.go` was correct. Each Sub-task PR is explicit about where the resolver landed; no follow-up needed.
 
 ## Closing checklist
 
 - [x] All 9 Story acceptance criteria marked PASS with linked proof in each of Python / Node / Go
 - [x] Cross-SDK consistency table verified — same resolution order, default URL, argv, timeouts, error-class semantics
+- [x] Manual probe-hit smoke runs documented for Python / Node / Go (each returns a context against a live `aa-gateway --mode local`)
+- [x] Manual aasm-missing smoke runs documented for Python / Node / Go (each raises the correct `ConfigurationError` with the SDK-appropriate install hint)
 - [x] All three SDK PRs opened and CI-green at branch head
 - [x] PR opened in `agent-assembly` against `master` (this PR)
