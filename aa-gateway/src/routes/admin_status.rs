@@ -13,9 +13,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{HealthStatus, StorageBackend, StorageHealth};
+use crate::storage::{HealthStatus, RowCounts, StorageBackend, StorageHealth};
 
 /// Top-level wire body returned by `GET /api/v1/admin/status`.
 ///
@@ -75,6 +76,58 @@ impl AdminStatusState {
             storage,
         }
     }
+}
+
+/// `GET /api/v1/admin/status` — gateway admin status with storage health.
+///
+/// Always responds with HTTP `200 OK` so the `aasm status` CLI can parse
+/// a structured body in both healthy and degraded cases. When the
+/// backend probe fails (transport error, query failure), the storage
+/// block carries `health = "unavailable"`, `latency_ms = 0`, and
+/// zero-filled row counts; the CLI maps this to a non-zero exit code.
+///
+/// Returning a 5xx instead would force the CLI to distinguish transport
+/// failures from logical health failures — splitting one signal into two
+/// for no operator benefit.
+pub async fn admin_status(Extension(state): Extension<AdminStatusState>) -> Json<AdminStatusBody> {
+    let storage_block = match state.storage.healthcheck().await {
+        Ok(health) => {
+            StorageHealthBlock::from_health(&health, state.sqlite_path.as_deref(), state.database_url.as_deref())
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "storage healthcheck failed; reporting unavailable in admin status"
+            );
+            StorageHealthBlock::from_health(
+                &StorageHealth {
+                    status: HealthStatus::Unavailable,
+                    // backend label is best-effort: prefer the type the
+                    // operator configured (visible via sqlite_path /
+                    // database_url) over the storage-trait label we
+                    // could not retrieve.
+                    backend: if state.sqlite_path.is_some() {
+                        "sqlite"
+                    } else if state.database_url.is_some() {
+                        "postgres"
+                    } else {
+                        "unknown"
+                    },
+                    latency_ms: 0,
+                    row_counts: RowCounts::default(),
+                    timescale: None,
+                },
+                state.sqlite_path.as_deref(),
+                state.database_url.as_deref(),
+            )
+        }
+    };
+    Json(AdminStatusBody {
+        mode: state.mode.to_string(),
+        version: state.version.to_string(),
+        uptime_secs: state.started_at.elapsed().as_secs(),
+        storage: storage_block,
+    })
 }
 
 /// Wire-contract storage health block returned under
@@ -400,6 +453,50 @@ mod tests {
         health.status = HealthStatus::Unavailable;
         let block = StorageHealthBlock::from_health(&health, None, Some("postgresql://u:p@h/db"));
         assert_eq!(block.health, "unavailable");
+    }
+
+    /// Bootstrap a real SQLite-backed StorageBackend pointed at a
+    /// per-test tempdir. Returns the handle + the path string for
+    /// assertions; the tempdir lives for the test's lifetime via the
+    /// stored `TempDir`.
+    async fn sqlite_state() -> (tempfile::TempDir, AdminStatusState) {
+        use crate::storage::{SqliteBackend, SqliteConfig};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("local.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path: path.clone() })
+            .await
+            .expect("open sqlite backend");
+        backend.migrate().await.expect("migrate");
+        let state = AdminStatusState::new(
+            "local",
+            Arc::new(backend),
+            Some(path.to_string_lossy().into_owned()),
+            None,
+        );
+        (tmp, state)
+    }
+
+    #[tokio::test]
+    async fn handler_returns_documented_body_against_sqlite_backend() {
+        let (_tmp, state) = sqlite_state().await;
+        let Json(body) = admin_status(Extension(state.clone())).await;
+        assert_eq!(body.mode, "local");
+        assert_eq!(body.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(body.storage.backend, "sqlite");
+        assert_eq!(body.storage.health, "ok");
+        assert!(body.storage.path.is_some(), "sqlite path must be reported");
+        assert!(body.storage.database_url.is_none(), "no postgres URL on sqlite");
+        assert!(body.storage.timescaledb.is_none(), "no timescaledb on sqlite");
+    }
+
+    #[tokio::test]
+    async fn handler_uptime_reflects_started_at() {
+        let (_tmp, mut state) = sqlite_state().await;
+        // Back-date started_at so uptime_secs is non-zero without sleeping.
+        state.started_at = Instant::now() - std::time::Duration::from_secs(5);
+        let Json(body) = admin_status(Extension(state)).await;
+        assert!(body.uptime_secs >= 5, "expected uptime ≥ 5s, got {}", body.uptime_secs);
     }
 
     #[test]
