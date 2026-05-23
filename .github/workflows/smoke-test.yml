@@ -318,3 +318,51 @@ jobs:
             echo "::error::@agent-assembly/sdk version mismatch — got '${got}', want '${want}'"
             exit 1
           }
+
+  smoke-docker:
+    name: Smoke — Docker (ghcr.io/agent-assembly/python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        # GITHUB_TOKEN gets packages:read from the workflow-level
+        # permission grant; this works for both public and private
+        # tags so the workflow doesn't have to change if visibility
+        # ever flips.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Run aasm --version inside ghcr.io/agent-assembly/python
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          image="ghcr.io/agent-assembly/python:${EXPECTED}"
+          got=$(docker run --rm "${image}" aasm --version)
+          want="aasm ${EXPECTED}"
+          echo "Image:     ${image}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::Container aasm --version mismatch for ${image} — got '${got}', want '${want}'"
+            exit 1
+          }
