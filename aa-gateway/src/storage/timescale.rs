@@ -68,3 +68,56 @@ pub struct TimescaleStats {
     /// no chunks exist yet.
     pub oldest_chunk_age_days: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    /// Build a pool against `AAASM_DATABASE_URL`, or return `None` after
+    /// printing a skip notice. Mirrors `postgres::tests::pg_backend_or_skip`
+    /// but works directly with a `PgPool` since the probe helper does not
+    /// need a full `PostgresBackend`.
+    async fn pool_or_skip() -> Option<PgPool> {
+        let url = match std::env::var("AAASM_DATABASE_URL") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "skipping postgres test: AAASM_DATABASE_URL not set (CI provides this via services: postgres)"
+                );
+                return None;
+            }
+        };
+        Some(
+            PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect to AAASM_DATABASE_URL"),
+        )
+    }
+
+    /// `has_timescaledb_extension` must return `false` against a plain
+    /// PostgreSQL cluster — `pg_extension` has no `timescaledb` row.
+    /// Exercises the false branch via the existing `Test` CI job
+    /// (postgres:18-alpine service).
+    #[tokio::test]
+    async fn probe_returns_false_on_plain_postgres() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping plain-postgres probe test: TIMESCALEDB_AVAILABLE=1 (see probe_returns_true_on_timescaledb)"
+            );
+            return;
+        }
+        let Some(pool) = pool_or_skip().await else {
+            return;
+        };
+        let present = has_timescaledb_extension(&pool)
+            .await
+            .expect("probe must succeed on plain PostgreSQL");
+        assert!(
+            !present,
+            "expected probe to report false on plain PostgreSQL; if your CI installed TimescaleDB, set TIMESCALEDB_AVAILABLE=1"
+        );
+    }
+}
