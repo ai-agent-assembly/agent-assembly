@@ -34,9 +34,14 @@ use aya_ebpf::{
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
 
-/// PID filter: only emit events for processes whose tgid is in this map.
-/// Value 0 = monitor this PID and its descendants.
-/// An empty map means "monitor all processes".
+/// PID filter for exec events. Keys are tgids that should be traced;
+/// the value is unused (only presence matters).
+///
+/// Key `0u32` is reserved as a wildcard — when present the probe emits
+/// every exec event regardless of tgid. Any other key matches that
+/// specific tgid. An empty map filters everything out and the probe
+/// emits nothing, so userspace must insert either a specific tgid or
+/// the wildcard before relying on events.
 #[map]
 static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
