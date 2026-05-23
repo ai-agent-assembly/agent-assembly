@@ -5,6 +5,8 @@
 //! S-H ships, the canonical type moves to `aa-core::config` and this module
 //! is expected to re-export it.
 
+use aa_core::config::TimescaleConfig;
+
 /// PostgreSQL connection settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostgresConfig {
@@ -20,6 +22,10 @@ pub struct PostgresConfig {
     pub min_connections: u32,
     /// Seconds before `acquire` from the pool times out.
     pub connect_timeout_secs: u64,
+    /// TimescaleDB-specific knobs. `enabled = false` skips the hypertable
+    /// setup step in [`PostgresBackend::apply_timescaledb_setup`] (Epic 18
+    /// S-D #3); see [`aa_core::config::TimescaleConfig`].
+    pub timescaledb: TimescaleConfig,
 }
 
 impl Default for PostgresConfig {
@@ -29,6 +35,7 @@ impl Default for PostgresConfig {
             max_connections: 20,
             min_connections: 2,
             connect_timeout_secs: 10,
+            timescaledb: TimescaleConfig::default(),
         }
     }
 }
@@ -44,5 +51,6 @@ mod tests {
         assert_eq!(cfg.max_connections, 20);
         assert_eq!(cfg.min_connections, 2);
         assert_eq!(cfg.connect_timeout_secs, 10);
+        assert!(cfg.timescaledb.enabled, "timescaledb defaults to enabled");
     }
 }

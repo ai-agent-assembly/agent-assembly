@@ -22,6 +22,7 @@ use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
+use aa_core::config::TimescaleConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
 /// hyphenated form). Mirrors the SQLite backend's storage shape so the
@@ -250,6 +251,12 @@ fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
 /// later Epic-18 S-C sub-tasks.
 pub struct PostgresBackend {
     pool: PgPool,
+    /// TimescaleDB knobs captured from [`PostgresConfig::timescaledb`] at
+    /// connect time. Consumed by
+    /// [`PostgresBackend::apply_timescaledb_setup`] from inside `migrate()`
+    /// (wired in Epic 18 S-D #3 commit 3 — `migrate()` consumer).
+    #[allow(dead_code)]
+    timescale_config: TimescaleConfig,
 }
 
 impl PostgresBackend {
@@ -274,7 +281,10 @@ impl PostgresBackend {
             .await
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            timescale_config: config.timescaledb.clone(),
+        })
     }
 }
 
