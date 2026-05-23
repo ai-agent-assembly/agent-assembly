@@ -29,6 +29,20 @@ need() {
   command -v "$1" >/dev/null 2>&1 || err "required tool not found: $1 — install it and retry"
 }
 
+pick_install_dir() {
+  # Choose install dir based on write permission:
+  #   1. /usr/local/bin if it (or its parent) is writable to the current user
+  #   2. otherwise ~/.local/bin (always user-writable, no sudo needed)
+  # AASM_INSTALL_DIR (if set) overrides this entirely; see main().
+  if [ -w /usr/local/bin ] 2>/dev/null; then
+    echo "/usr/local/bin"
+  elif [ ! -e /usr/local/bin ] && [ -w /usr/local ] 2>/dev/null; then
+    echo "/usr/local/bin"
+  else
+    echo "${HOME}/.local/bin"
+  fi
+}
+
 # ── detect platform ───────────────────────────────────────────────────────────
 
 detect_os() {
