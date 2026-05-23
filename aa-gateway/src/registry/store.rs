@@ -1118,6 +1118,29 @@ mod tree_tests {
     }
 
     #[test]
+    fn reparent_under_own_descendant_is_rejected_as_cycle() {
+        let reg = AgentRegistry::new();
+        let root = [0x30u8; 16];
+        let child = [0x31u8; 16];
+        let grandchild = [0x32u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(root), None, 1)).unwrap();
+        reg.register(make_record(grandchild, Some(child), None, 2)).unwrap();
+
+        // Re-parenting root under its own grandchild would invert the chain.
+        let err = reg.reparent(&root, &grandchild).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::Lineage(LineageError::CircularDelegation { .. })
+        ));
+
+        // Tree is unchanged after the rejected attempt.
+        assert_eq!(reg.get(&root).unwrap().parent_key, None);
+        assert_eq!(reg.children_of(&root), vec![child]);
+    }
+
+    #[test]
     fn reparent_to_self_is_rejected_as_cycle() {
         let reg = AgentRegistry::new();
         let agent = [0x77u8; 16];
