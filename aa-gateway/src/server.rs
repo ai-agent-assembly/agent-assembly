@@ -27,8 +27,10 @@ use crate::approval::clock::SystemClock;
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::NoopAuditSink;
-use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer};
-use crate::budget::{BudgetAlert, BudgetTracker};
+use crate::budget::persistence::{
+    default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer, start_window_flush_task,
+};
+use crate::budget::{BudgetAlert, BudgetTracker, BudgetWindow};
 use tokio_util::sync::CancellationToken;
 
 /// Default audit directory relative to the system data directory (`~/.aa/audit`).
@@ -135,6 +137,24 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     tracing::info!(path = %budget_path.display(), "budget state loaded");
 
     (tracker, budget_path)
+}
+
+/// Spawn a periodic flush task when the tracker is configured with a
+/// sub-day rollover window; return `None` for the default `Daily` window
+/// (lazy reset in `record_cost` is sufficient there). The returned handle
+/// is kept alive by the caller so the task is dropped on gateway shutdown.
+fn maybe_spawn_window_flush(tracker: Arc<BudgetTracker>) -> Option<tokio::task::JoinHandle<()>> {
+    match tracker.window() {
+        BudgetWindow::Daily => None,
+        BudgetWindow::Duration(interval) => {
+            // Tick at roughly one-quarter of the configured window so the
+            // background flush is reactive without busy-spinning. Floor at
+            // 50 ms — anything shorter is the test-fixture domain and the
+            // lazy reset in `record_cost` covers it.
+            let flush_interval = std::cmp::max(interval / 4, std::time::Duration::from_millis(50));
+            Some(start_window_flush_task(tracker, flush_interval))
+        }
+    }
 }
 
 /// Spawn the [`EscalationScheduler`] background task and return the `Arc<EscalationScheduler>`.
@@ -328,6 +348,7 @@ pub async fn serve_tcp(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let engine = Arc::new(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?,
@@ -392,6 +413,7 @@ pub async fn serve_uds(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let engine = Arc::new(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?,
