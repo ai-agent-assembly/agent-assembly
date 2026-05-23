@@ -212,6 +212,7 @@ async fn status_exits_1_when_agent_has_policy_violations() {
         root_agent_id: None,
         children: vec![],
         parent_key: None,
+        enforcement_mode: None,
     };
     fixture
         .env

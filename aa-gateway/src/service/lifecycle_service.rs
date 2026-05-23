@@ -168,6 +168,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             root_agent_id,
             children: Vec::new(),
             parent_key: resolved_parent_key,
+            enforcement_mode: aa_core::EnforcementMode::from_proto_i32(req.enforcement_mode),
         };
 
         self.registry.register_persisted(record).await.map_err(|e| match e {

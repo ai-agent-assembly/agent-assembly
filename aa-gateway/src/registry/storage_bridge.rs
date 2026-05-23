@@ -119,6 +119,7 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
         root_agent_id: Some(*agent_id.as_bytes()),
         children: Vec::new(),
         parent_key: None,
+        enforcement_mode: None,
     }
 }
 
@@ -161,6 +162,7 @@ mod tests {
             root_agent_id: Some(agent_id),
             children: Vec::new(),
             parent_key: None,
+            enforcement_mode: None,
         }
     }
 

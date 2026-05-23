@@ -124,6 +124,13 @@ pub struct AgentRecord {
     pub children: Vec<[u8; 16]>,
     /// Registry key of the parent that spawned this agent; `None` for root agents.
     pub parent_key: Option<[u8; 16]>,
+    /// Per-agent enforcement-mode override (AAASM-1557).
+    ///
+    /// `Some(_)` means the agent registered with an explicit override that
+    /// takes precedence over the policy document's enforcement_mode field.
+    /// `None` means inherit — the resolver falls through to the policy
+    /// document and finally to `Enforce` as the server-wide default.
+    pub enforcement_mode: Option<aa_core::EnforcementMode>,
 }
 
 /// Channel sender type for pushing [`ControlCommand`]s to an agent's control stream.
@@ -883,6 +890,7 @@ mod tree_tests {
             root_agent_id: None,
             children: vec![],
             parent_key,
+            enforcement_mode: None,
         }
     }
 
@@ -1024,6 +1032,7 @@ mod lineage_tests {
             root_agent_id: None,
             children: vec![],
             parent_key,
+            enforcement_mode: None,
         }
     }
 
@@ -1163,6 +1172,7 @@ mod cascade_tests {
             root_agent_id: None,
             children: vec![],
             parent_key,
+            enforcement_mode: None,
         }
     }
 
@@ -1328,6 +1338,7 @@ mod orphan_mode_tests {
             root_agent_id: None,
             children: vec![],
             parent_key,
+            enforcement_mode: None,
         }
     }
 
@@ -1537,6 +1548,7 @@ mod cross_mode_integration {
             root_agent_id: None,
             children: vec![],
             parent_key,
+            enforcement_mode: None,
         }
     }
 
@@ -1680,6 +1692,7 @@ mod sweep_aged_agents_tests {
             root_agent_id: None,
             children: vec![],
             parent_key: None,
+            enforcement_mode: None,
         }
     }
 
