@@ -100,6 +100,14 @@ pub struct BudgetState {
     /// Total USD spent this calendar month. `None` when monthly tracking is unused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monthly_spent_usd: Option<rust_decimal::Decimal>,
+    /// Wall-clock instant of the last sub-day reset.
+    ///
+    /// `None` preserves the historical date-only reset path (and the
+    /// back-compat for `budget.json` files written before AAASM-1600);
+    /// `Some(t)` is populated by [`maybe_reset_window`] when the tracker
+    /// is configured with [`BudgetWindow::Duration`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reset_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl BudgetState {
@@ -116,6 +124,7 @@ impl BudgetState {
             date,
             month: Self::month_tag(date),
             monthly_spent_usd: None,
+            last_reset_at: None,
         }
     }
 
@@ -126,6 +135,7 @@ impl BudgetState {
             date,
             month: Self::month_tag(date),
             monthly_spent_usd: None,
+            last_reset_at: None,
         }
     }
 
@@ -233,6 +243,7 @@ mod tests {
             date: yesterday,
             month: BudgetState::month_tag(yesterday),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         state.maybe_reset(Utc::now().date_naive());
         assert_eq!(state.spent_usd, Decimal::ZERO);
@@ -250,6 +261,7 @@ mod tests {
             date: today,
             month: BudgetState::month_tag(today),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         state.maybe_reset(Utc::now().date_naive());
         assert_eq!(state.spent_usd, amount);
@@ -265,6 +277,7 @@ mod tests {
             date: jan1,
             month: BudgetState::month_tag(jan1),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         // Inject a specific "today" that is after state.date
         let injected_today = NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
@@ -283,6 +296,7 @@ mod tests {
             date: jan31,
             month: BudgetState::month_tag(jan31),
             monthly_spent_usd: Some(Decimal::new(10000, 2)), // 100.00
+            last_reset_at: None,
         };
         let feb1 = NaiveDate::from_ymd_opt(2024, 2, 1).unwrap();
         state.maybe_reset(feb1);
@@ -303,6 +317,7 @@ mod tests {
             date: jan1,
             month: BudgetState::month_tag(jan1),
             monthly_spent_usd: Some(monthly),
+            last_reset_at: None,
         };
         let jan2 = NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
         state.maybe_reset(jan2);
@@ -322,6 +337,7 @@ mod tests {
             date: dec31,
             month: BudgetState::month_tag(dec31),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         let jan1 = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
         state.maybe_reset(jan1);

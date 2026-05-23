@@ -821,6 +821,7 @@ mod tests {
             date: today,
             month: today.year() as u32 * 100 + today.month(),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         let persisted = PersistedBudget {
             per_agent: vec![PersistedAgentEntry {
