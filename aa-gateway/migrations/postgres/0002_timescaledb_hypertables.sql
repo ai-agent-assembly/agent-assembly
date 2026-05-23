@@ -32,9 +32,18 @@ EXCEPTION
                       acceleration and auto-compression.', SQLERRM;
 END $$;
 
--- Step 2: promote audit_events and metrics to hypertables and attach
--- compression policies. If step 1 failed silently the create_hypertable()
--- function will not exist, raising undefined_function — also caught.
+-- Step 2: promote audit_events and metrics to hypertables, enable the
+-- columnstore (TimescaleDB's storage mode that compression policies act
+-- on — required since TimescaleDB 2.18), and attach the compression
+-- policies.
+--
+-- EXCEPTION is `WHEN OTHERS` on purpose: the body can fail on plain
+-- PostgreSQL with several distinct SQLSTATEs (undefined_function from
+-- create_hypertable, invalid_parameter_value from the timescaledb.compress
+-- storage parameter, feature_not_supported for the policy call, etc.).
+-- On a TimescaleDB-enabled cluster every statement succeeds so the
+-- catch-all only fires on plain-PG paths where graceful skip is the
+-- documented intent.
 DO $$
 BEGIN
     PERFORM create_hypertable(
@@ -42,6 +51,7 @@ BEGIN
         chunk_time_interval => INTERVAL '7 days',
         if_not_exists       => TRUE
     );
+    ALTER TABLE audit_events SET (timescaledb.compress = true);
     PERFORM add_compression_policy(
         'audit_events',
         INTERVAL '30 days',
@@ -53,12 +63,13 @@ BEGIN
         chunk_time_interval => INTERVAL '1 day',
         if_not_exists       => TRUE
     );
+    ALTER TABLE metrics SET (timescaledb.compress = true);
     PERFORM add_compression_policy(
         'metrics',
         INTERVAL '7 days',
         if_not_exists => TRUE
     );
 EXCEPTION
-    WHEN undefined_function THEN
-        RAISE NOTICE 'TimescaleDB functions unavailable; hypertables not created (plain PostgreSQL fallback)';
+    WHEN OTHERS THEN
+        RAISE NOTICE 'TimescaleDB functions/parameters unavailable; hypertables not created (plain PostgreSQL fallback): %', SQLERRM;
 END $$;
