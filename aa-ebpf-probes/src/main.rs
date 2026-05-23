@@ -549,6 +549,45 @@ fn try_sys_rename_ret(ctx: &RetProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+/// kprobe on the legacy `sys_rename` — captures the source pathname
+/// from `rename(const char *oldpath, const char *newpath)`, where
+/// oldpath is the **first** syscall argument (rdi) rather than the
+/// second.
+///
+/// glibc on x86_64 routes the libc `rename()` call through `__NR_rename`
+/// (syscall 82), bypassing the `__x64_sys_renameat2` probe above; this
+/// hook covers that path. AAASM-1574.
+#[kprobe]
+pub fn aa_sys_rename_legacy(ctx: ProbeContext) -> u32 {
+    match try_sys_rename_legacy(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_sys_rename_legacy(ctx: &ProbeContext) -> Result<u32, u32> {
+    let (tgid, _pid) = get_pid_tgid();
+    if !should_monitor(tgid) {
+        return Ok(0);
+    }
+
+    // rename(const char *oldpath, const char *newpath) — oldpath is arg 0 (rdi).
+    let oldpath_ptr: *const u8 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(0).ok_or(1u32)?;
+
+    let mut buf = [0u8; MAX_PATH_LEN];
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(oldpath_ptr, &mut buf);
+    }
+
+    let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
+    let _ = RENAME_TMP.insert(&pid_tgid, &buf, 0);
+
+    let entry_ts = unsafe { bpf_ktime_get_ns() };
+    let _ = RENAME_ENTRY_TS.insert(&pid_tgid, &entry_ts, 0);
+
+    Ok(0)
+}
+
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
