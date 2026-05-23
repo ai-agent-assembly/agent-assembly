@@ -15,23 +15,34 @@ use axum_server::Handle;
 
 use super::error::GatewayError;
 use super::tls::{self, TlsValidation};
+use crate::routes::admin_status::{admin_status, AdminStatusState};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{open_postgres_backend, PostgresConfig, StorageBackend};
 
 /// Build the remote-mode Axum router.
 ///
-/// Mounts only `/healthz` today via [`crate::routes::healthz::healthz`].
-/// Later sub-tasks (cross-mode API routes wired by AAASM-1731, dashboard
-/// SPA opt-in in AAASM-1580) merge into this same router.
+/// Always mounts `/healthz` via [`crate::routes::healthz::healthz`].
+/// When `storage` is `Some`, additionally mounts
+/// `/api/v1/admin/status` via
+/// [`crate::routes::admin_status::admin_status`] — the deeper readiness
+/// signal that backs `aasm status` (AAASM-1591 / Epic 18 S-J).
 ///
-/// The injected `HealthzState::new("remote", "memory")` layer supplies
-/// the labels the shared `/healthz` handler reads, so the response body
-/// carries `mode: "remote"` and `storage: "memory"`. The `"memory"`
-/// label is a stub until E18 S-C (AAASM-1719 PostgreSQL backend) wires
-/// the real storage label through `RemoteModeConfig`.
-pub fn router() -> Router {
-    let state = HealthzState::new("remote", "memory");
-    Router::new().route("/healthz", get(healthz)).layer(Extension(state))
+/// `HealthzState`'s `"storage"` label tracks the chosen backend so the
+/// minimal `/healthz` body still surfaces `"memory"` vs `"postgres"`
+/// without requiring a backend round-trip.
+pub fn router(storage: Option<Arc<dyn StorageBackend>>, database_url: Option<String>) -> Router {
+    let storage_label = if storage.is_some() { "postgres" } else { "memory" };
+    let healthz_state = HealthzState::new("remote", storage_label);
+    let mut app = Router::new()
+        .route("/healthz", get(healthz))
+        .layer(Extension(healthz_state));
+    if let Some(backend) = storage {
+        let admin_state = AdminStatusState::new("remote", backend, None, database_url);
+        app = app
+            .route("/api/v1/admin/status", get(admin_status))
+            .layer(Extension(admin_state));
+    }
+    app
 }
 
 /// Print the operator-facing startup banner via `tracing::info!`.
@@ -124,12 +135,14 @@ pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<Soc
     // configured, open the PostgreSQL backend and apply pending
     // migrations before binding the listener. The handle stays in
     // scope for the lifetime of the serve loop so the connection
-    // pool is not dropped mid-request; future Sub-tasks of the same
-    // Story pass it through AppState to handlers.
+    // pool is not dropped mid-request.
     //
-    // When `database_url` is `None`, remote mode keeps its pre-S-I.1
-    // behaviour: no backend is opened, healthz reports `storage: memory`.
-    let _storage: Option<Arc<dyn StorageBackend>> = if let Some(url) = cfg.database_url.as_ref() {
+    // AAASM-1908 (Epic 18 S-J #1): the storage handle is now passed
+    // into `router(...)` so it can mount `/api/v1/admin/status` against
+    // the real backend. When `database_url` is `None`, the route is
+    // omitted and remote mode keeps its pre-S-I.1 behaviour: no backend
+    // is opened, healthz reports `storage: memory`.
+    let storage: Option<Arc<dyn StorageBackend>> = if let Some(url) = cfg.database_url.as_ref() {
         let pg = PostgresConfig {
             database_url: Some(url.clone()),
             ..PostgresConfig::default()
@@ -139,7 +152,7 @@ pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<Soc
         None
     };
 
-    let app = router().into_make_service();
+    let app = router(storage, cfg.database_url.clone()).into_make_service();
 
     if let Some(tls_cfg) = &cfg.tls {
         // Pre-flight cert + key (existence, readability, PEM parse, expiry).
