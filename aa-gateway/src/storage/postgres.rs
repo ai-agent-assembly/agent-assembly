@@ -981,6 +981,41 @@ mod tests {
             .expect("apply_timescaledb_setup must return Ok when enabled = false");
     }
 
+    /// When `enabled = true` and the TimescaleDB extension is **absent**,
+    /// `apply_timescaledb_setup` must log a warning and return `Ok(())`
+    /// rather than raising — production deployments must boot against
+    /// plain PostgreSQL without crashing on startup.
+    ///
+    /// Runs against `AAASM_DATABASE_URL` when `TIMESCALEDB_AVAILABLE != "1"`
+    /// (the existing CI `Test` job's postgres:18-alpine service).
+    #[tokio::test]
+    async fn apply_timescaledb_setup_warns_when_extension_absent() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping extension-absent test: TIMESCALEDB_AVAILABLE=1 (see apply_timescaledb_setup_succeeds_when_extension_active)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        let enabled = TimescaleConfig::default();
+        assert!(enabled.enabled, "default must have enabled = true");
+
+        backend
+            .apply_timescaledb_setup(&enabled)
+            .await
+            .expect("apply_timescaledb_setup must return Ok via graceful fallback on plain PostgreSQL");
+
+        let present = super::super::timescale::has_timescaledb_extension(&backend.pool)
+            .await
+            .expect("probe");
+        assert!(
+            !present,
+            "this test asserts the extension-absent path; if your CI installed TimescaleDB, set TIMESCALEDB_AVAILABLE=1"
+        );
+    }
+
     #[tokio::test]
     async fn migrate_creates_expected_tables() {
         let Some(backend) = pg_backend_or_skip().await else {
