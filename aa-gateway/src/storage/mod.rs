@@ -38,6 +38,7 @@ pub mod retention;
 pub mod retention_config;
 pub mod retention_engine;
 pub mod sqlite;
+pub mod timescale;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
@@ -54,3 +55,4 @@ pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
 pub use retention_config::{RetentionConfig, RetentionConfigError};
 pub use retention_engine::RetentionEngine;
 pub use sqlite::{SqliteBackend, SqliteConfig};
+pub use timescale::TimescaleStats;
