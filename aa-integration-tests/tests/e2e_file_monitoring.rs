@@ -150,6 +150,16 @@ fn load_file_io_bpf() -> Ebpf {
     attach_kprobe_pair(&mut bpf, "aa_sys_read", "aa_sys_read_ret", "__x64_sys_read");
     attach_kprobe_pair(&mut bpf, "aa_sys_write", "aa_sys_write_ret", "__x64_sys_write");
     attach_kprobe_pair(&mut bpf, "aa_sys_unlink", "aa_sys_unlink_ret", "__x64_sys_unlinkat");
+    // glibc on x86_64 routes `unlink()` through `__NR_unlink` —
+    // attach the legacy probe so the Python driver's `os.unlink(p)`
+    // call fires the unlink kretprobe via the legacy entry point.
+    // See AAASM-1574.
+    attach_kprobe_pair(
+        &mut bpf,
+        "aa_sys_unlink_legacy",
+        "aa_sys_unlink_legacy_ret",
+        "__x64_sys_unlink",
+    );
     attach_kprobe_pair(&mut bpf, "aa_sys_rename", "aa_sys_rename_ret", "__x64_sys_renameat2");
     bpf
 }
