@@ -1118,6 +1118,19 @@ mod tree_tests {
     }
 
     #[test]
+    fn reparent_to_self_is_rejected_as_cycle() {
+        let reg = AgentRegistry::new();
+        let agent = [0x77u8; 16];
+        reg.register(make_record(agent, None, None, 0)).unwrap();
+
+        let err = reg.reparent(&agent, &agent).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::Lineage(LineageError::CircularDelegation { .. })
+        ));
+    }
+
+    #[test]
     fn reparent_recalculates_depth_for_descendants() {
         let reg = AgentRegistry::new();
         let root_a = [0x10u8; 16];
