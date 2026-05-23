@@ -268,6 +268,36 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Register an agent **and** write through to durable storage.
+    ///
+    /// Async wrapper around [`register`](Self::register) that, on a
+    /// successful in-memory insert, also calls
+    /// [`StorageBackend::upsert_agent`](crate::storage::StorageBackend::upsert_agent).
+    /// If the storage write fails, the in-memory insert is rolled back so
+    /// the registry never diverges from the durable state.
+    ///
+    /// When no storage handle is attached (e.g. `AgentRegistry::new()`
+    /// without `with_storage`), behaves identically to
+    /// [`register`](Self::register).
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn register_persisted(&self, record: AgentRecord) -> Result<(), RegistryError> {
+        let agent_id = record.agent_id;
+        let storage_record = self
+            .storage
+            .as_ref()
+            .map(|_| super::storage_bridge::runtime_to_storage(&record));
+        self.register(record)?;
+        if let (Some(storage), Some(durable)) = (self.storage.as_ref(), storage_record) {
+            if let Err(err) = storage.upsert_agent(durable).await {
+                // Roll back the in-memory insert so the two views stay in sync.
+                let _ = self.deregister(&agent_id, OrphanMode::Suspend);
+                return Err(RegistryError::Storage(err));
+            }
+        }
+        Ok(())
+    }
+
     /// Look up an agent by ID. Returns `None` if not found.
     pub fn get(&self, agent_id: &[u8; 16]) -> Option<AgentRecord> {
         self.agents.get(agent_id).map(|r| r.clone())
