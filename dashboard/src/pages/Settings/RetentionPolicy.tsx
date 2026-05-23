@@ -76,10 +76,12 @@ export function RetentionPolicyPage({ client = retentionPolicyClient }: Retentio
   const [statusMsg, setStatusMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [lastRun, setLastRun] = useState<RetentionRunStatsDto | null>(null)
 
-  // Initial load
+  // Initial load. `loading` starts true (initial state) so the loading
+  // panel renders before this effect resolves. We intentionally do not
+  // set it back to true on client-prop changes — the live singleton
+  // never changes mid-mount; tests re-mount the component to swap.
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
     client
       .get()
       .then((d) => {
