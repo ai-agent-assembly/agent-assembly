@@ -353,3 +353,47 @@ async fn e2e_hitl_list_transitions_pending_to_approved() {
     assert_eq!(approved_after["total"], 1, "one approved entry after decide");
     assert_eq!(approved_after["items"][0]["id"], id.to_string());
 }
+
+// =============================================================================
+// External fixture: long-running test that boots a real gateway and idles.
+// Invoked by `dashboard/tests/e2e/global-setup.ts` to give the Playwright
+// spec (`hitl-approval.spec.ts`) a live `/api/v1/approvals/*` surface to
+// proxy through `page.route()`. Marked `#[ignore]` so `cargo nextest run`
+// skips it by default; runs only via `--run-ignored only` or `-- --ignored`.
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "long-running fixture spawned by the Playwright globalSetup; idles until killed"]
+async fn e2e_fixture_main() {
+    use std::io::Write;
+
+    let env = TopologyTestEnv::start().await.expect("fixture: harness should start");
+
+    // Seed two pending approvals so the Playwright spec can both observe
+    // a row and approve one to assert the transition.
+    let long_timeout = 3600_u64;
+    let _ = env.approval_queue.submit(make_pending_request(
+        "send_email",
+        long_timeout,
+        PolicyResult::Deny {
+            reason: "fallback unused".to_string(),
+        },
+    ));
+    let _ = env.approval_queue.submit(make_pending_request(
+        "wire_transfer",
+        long_timeout,
+        PolicyResult::Deny {
+            reason: "fallback unused".to_string(),
+        },
+    ));
+
+    // Single READY line on stdout, flushed immediately, so the Node-side
+    // globalSetup can parse the URL via the spawned child's stdout pipe.
+    println!("READY {}", env.base_url());
+    std::io::stdout().flush().expect("flush stdout");
+
+    // Idle until killed (Playwright globalSetup terminates this process at
+    // teardown). Production graceful shutdown is unneeded — the harness's
+    // `Drop` impl tears down the axum task on process exit.
+    tokio::signal::ctrl_c().await.expect("listen for SIGINT");
+}
