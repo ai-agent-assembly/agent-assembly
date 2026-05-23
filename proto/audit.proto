@@ -78,6 +78,24 @@ message AuditEvent {
   // Renders inline beneath an expanded Live Ops row in the dashboard.
   // Empty (default) when the producer did not record a stack.
   repeated CallStackNode call_stack = 28;
+
+  // ── Sandbox / observe-mode shadow event (AAASM-1553) ────────────────────
+  // Populated only when the emitting agent ran under EnforcementMode::OBSERVE
+  // and the policy engine would have produced a non-Allow decision. The event
+  // is emitted INSTEAD OF blocking — the agent proceeds, the audit log records
+  // what would have happened.
+
+  // True when this event represents a shadow / would-have decision rather
+  // than a live enforcement outcome. Default false leaves enforce-mode
+  // events unchanged.
+  bool   dry_run         = 30;
+  // The decision the policy engine would have applied if enforcement were
+  // active. One of "deny" / "redact" / "pending" / "budget_block". Empty
+  // when dry_run = false.
+  string shadow_decision = 31;
+  // Identifier of the policy rule that produced shadow_decision. Empty
+  // when dry_run = false or when no specific rule matched.
+  string matched_rule_id = 32;
 }
 
 // ── Call stack ────────────────────────────────────────────────────────────────
