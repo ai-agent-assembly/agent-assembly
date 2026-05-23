@@ -113,6 +113,11 @@ impl ProxyConfig {
             Err(_) => false,
         };
 
+        let credential_action = match std::env::var("AA_PROXY_CREDENTIAL_ACTION") {
+            Ok(val) => parse_credential_action(&val)?,
+            Err(_) => CredentialAction::default(),
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
@@ -120,8 +125,23 @@ impl ProxyConfig {
             llm_only,
             denied_hosts,
             skip_upstream_tls_verify,
-            credential_action: CredentialAction::default(),
+            credential_action,
         })
+    }
+}
+
+/// Parse a credential action from its string representation.
+///
+/// Accepts `"block"`, `"redact_only"`, `"alert_only"` (case-insensitive).
+/// Returns [`ProxyError::Config`] for any other value.
+fn parse_credential_action(s: &str) -> Result<CredentialAction, ProxyError> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "block" => Ok(CredentialAction::Block),
+        "redact_only" => Ok(CredentialAction::RedactOnly),
+        "alert_only" => Ok(CredentialAction::AlertOnly),
+        other => Err(ProxyError::Config(format!(
+            "invalid AA_PROXY_CREDENTIAL_ACTION: {other:?} (expected block | redact_only | alert_only)"
+        ))),
     }
 }
 
@@ -141,6 +161,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_LLM_ONLY");
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
+        std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
     }
 
     #[test]
