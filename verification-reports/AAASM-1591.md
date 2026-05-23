@@ -83,6 +83,11 @@ The hot-tier focus is intentional: warm/cold counts require backend-specific rol
 
 ✅ **Verified**. `aa-cli::commands::status::render::format_storage_health` produces the `STORAGE` section, and `render_all` calls it between the deployment-overview header and the runtime-health section. The gating logic `if let Some(storage_health) = snapshot.storage_health.as_ref()` ensures older gateways without `/api/v1/admin/status` keep their pre-AAASM-1591 output verbatim.
 
+The route is mounted in **both** deployment modes so the CLI sees a storage section regardless of how the gateway was started:
+
+- Remote mode: `aa-gateway::remote_mode::server::router(Some(storage), database_url)` mounts the route — pinned by `aa-gateway::admin_status_e2e::admin_status_returns_documented_storage_block_through_router`.
+- Local mode: `aa-gateway::local_mode::router(config, Some(storage))` mounts the route — pinned by `aa-gateway::local_mode::tests::router_serves_admin_status_when_storage_is_wired` and the gate-test `router_omits_admin_status_when_storage_is_none` for the no-storage path.
+
 Captured rendered output (from `format_storage_health_renders_postgres_block_with_redacted_url_and_timescaledb`, with ANSI codes stripped):
 
 ```text
@@ -145,7 +150,7 @@ Starting 16 tests across 44 binaries (994 tests skipped)
 Summary [   0.045s] 16 tests run: 16 passed, 994 skipped
 ```
 
-Full gateway suite also green (PR #762 evidence): `1011 tests run: 1011 passed (2 leaky), 0 skipped`. Note: 2 "leaky" labels are unrelated to this branch — they refer to pre-existing background tasks in unrelated test crates.
+Full gateway suite also green: `1013 tests run: 1013 passed, 0 skipped` (the +2 tests over master are the two new local-mode router tests landed by the AAASM-1908 follow-up commit `🔧 (local_mode): Mount /api/v1/admin/status when storage is wired`).
 
 CLI side (PR #763 evidence): `cargo nextest run -p aa-cli` → `566 tests run: 566 passed, 0 skipped`.
 
