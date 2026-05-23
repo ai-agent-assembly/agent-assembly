@@ -358,3 +358,58 @@ fn st_r_3_aasm_run_observe_emits_banner_and_env_injection() {
         "ST-R-3: dry-run plan must show AA_ENFORCEMENT_MODE=observe in the env section:\n{stdout}",
     );
 }
+
+// ── ST-R-4 ──────────────────────────────────────────────────────────────────
+
+/// **ST-R-4** — Regression guard: adding observe mode must not alter the
+/// enforce-mode behaviour for agents that did not opt in. Same bash-deny
+/// policy as ST-R-1, but the agent registers with `enforcement_mode: None`
+/// — the resolver falls back to the hardcoded `Enforce` default. The
+/// gateway must return `Deny`, and the resulting audit entry must NOT
+/// carry `dry_run` or `shadow_decision`. If anyone ever flips the resolver
+/// default, this assertion catches it before the next ST-R-1 run reports
+/// a misleading green.
+#[tokio::test]
+async fn st_r_4_enforce_mode_deny_still_blocks_and_emits_no_shadow_event() {
+    let (addr, registry, mut audit_rx) = start_gateway_with_policy_fixture("policies/bash_deny.yaml").await;
+
+    let proto_id = ProtoAgentId {
+        org_id: "org-st-r-4".into(),
+        team_id: "team-st-r-4".into(),
+        agent_id: "enforce-agent".into(),
+    };
+    register_agent_with_mode(&registry, "enforce-agent", &proto_id, None);
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to PolicyService");
+    let resp = client
+        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .await
+        .expect("check_action RPC")
+        .into_inner();
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "ST-R-4: enforce mode must still block deny rules (reason={:?})",
+        resp.reason,
+    );
+
+    let entries = drain_audit_entries(&mut audit_rx).await;
+    assert_eq!(
+        entries.len(),
+        1,
+        "ST-R-4: enforce + deny still produces one audit entry, got {}",
+        entries.len(),
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(entries[0].payload()).expect("ST-R-4: audit payload must be valid JSON");
+    assert!(
+        payload.get("dry_run").is_none(),
+        "ST-R-4: enforce-mode audit entry must not carry dry_run, got: {payload}",
+    );
+    assert!(
+        payload.get("shadow_decision").is_none(),
+        "ST-R-4: enforce-mode audit entry must not carry shadow_decision, got: {payload}",
+    );
+}
