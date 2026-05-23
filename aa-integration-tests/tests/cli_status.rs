@@ -111,19 +111,22 @@ async fn status_json_and_yaml_are_structurally_equivalent() {
     assert!(json_out.status.success() && yaml_out.status.success());
 
     // Parse both, then assert structural equality after normalizing the
-    // runtime.uptime_secs field — it counts wall-clock seconds since the
-    // gateway started and naturally drifts between the two back-to-back
-    // CLI invocations. All other section fields are deterministic given
-    // a fresh empty fixture.
+    // wall-clock uptime fields (`runtime.uptime_secs` and
+    // `deployment.uptime_secs`) — they count seconds since the gateway
+    // started and naturally drift between the two back-to-back CLI
+    // invocations. All other section fields are deterministic given a
+    // fresh empty fixture.
     let mut json_v = parse_json(&json_out.stdout);
     let yaml_as_json: serde_json::Value =
         serde_json::to_value(parse_yaml(&yaml_out.stdout)).expect("yaml should round-trip to JSON");
     let mut yaml_v = yaml_as_json;
-    if let Some(r) = json_v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
-        r.insert("uptime_secs".into(), serde_json::Value::from(0));
-    }
-    if let Some(r) = yaml_v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
-        r.insert("uptime_secs".into(), serde_json::Value::from(0));
+    for v in [&mut json_v, &mut yaml_v] {
+        if let Some(r) = v.get_mut("runtime").and_then(|x| x.as_object_mut()) {
+            r.insert("uptime_secs".into(), serde_json::Value::from(0));
+        }
+        if let Some(d) = v.get_mut("deployment").and_then(|x| x.as_object_mut()) {
+            d.insert("uptime_secs".into(), serde_json::Value::from(0));
+        }
     }
     assert_eq!(
         json_v,

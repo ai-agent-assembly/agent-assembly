@@ -68,6 +68,7 @@ use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::{AgentRegistry, OrphanMode};
+use aa_gateway::routes::healthz::{healthz, HealthzState};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use tokio::sync::oneshot;
@@ -169,7 +170,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -226,7 +227,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -286,7 +287,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -343,7 +344,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -398,7 +399,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -452,7 +453,7 @@ impl TopologyTestEnv {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
 
-        let app = build_app(state);
+        let app = build_app_with_healthz(state);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let server_handle = tokio::spawn(async move {
@@ -556,6 +557,22 @@ fn uuid_string(key: &[u8; 16]) -> String {
 }
 
 /// Build a minimal `AppState` for the harness. Adapted from
+/// Build the in-process test app and bolt the gateway's `/healthz` route on top.
+///
+/// `aa_api::server::build_app` exposes the `/api/v1/*` surface; in production
+/// the `/healthz` liveness probe lives in `aa-gateway` (`aa_gateway::routes::
+/// healthz`). The CLI consumes both — `aasm status` derives its deployment-
+/// overview / exit-code behaviour from `/healthz`, so the test fixture must
+/// serve it too. Mounts with neutral labels (`mode = "local"`, `storage = "memory"`)
+/// matching the in-memory `AppState` the fixture actually builds.
+fn build_app_with_healthz(state: AppState) -> axum::Router {
+    use axum::routing::get;
+    use axum::Extension;
+    build_app(state)
+        .route("/healthz", get(healthz))
+        .layer(Extension(HealthzState::new("local", "memory")))
+}
+
 /// `aa-api/tests/common/mod.rs::test_state_with_auth` to avoid pulling that
 /// crate's `dev-dependencies` test helpers across crate boundaries.
 ///
