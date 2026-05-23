@@ -1,14 +1,18 @@
-//! `aasm admin run-retention` — manually trigger one retention pass.
+//! `aasm admin run-retention` — manually trigger one retention pass
+//! against the running gateway.
 //!
-//! Until the gateway admin transport from Story S-I (AAASM-1590) lands,
-//! this subcommand parses its arguments and prints a clear stub message
-//! pointing at the in-flight wiring ticket; it exits 0 so end-to-end CI
-//! that exercises CLI help / arg parsing stays green.
+//! Posts to `POST /api/v1/admin/retention-policy/run` and prints the
+//! returned `RetentionRunStatsDto` to stdout. The transport landed in
+//! Epic 18 Story S-I.5 (AAASM-1872) — the matching aa-api handler,
+//! OpenAPI registration, and dashboard codegen were already in place
+//! from sibling stories AAASM-1850 / AAASM-1856 / AAASM-1861.
 
 use std::process::ExitCode;
 
 use clap::Args;
+use serde::{Deserialize, Serialize};
 
+use crate::client::post_json;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
@@ -21,18 +25,58 @@ pub struct RunRetentionArgs {
     pub dry_run: bool,
 }
 
+/// Request body sent to `POST /api/v1/admin/retention-policy/run`.
+///
+/// Mirrors `aa_api::models::retention::RunRetentionRequest`. Kept local
+/// to aa-cli so the CLI does not depend on the aa-api crate, matching
+/// the convention used elsewhere (e.g. `budget.rs`, `permissions.rs`).
+#[derive(Debug, Serialize)]
+struct RunRetentionRequest {
+    dry_run: bool,
+}
+
+/// Response body returned by `POST /api/v1/admin/retention-policy/run`.
+///
+/// Mirrors `aa_api::models::retention::RetentionRunStatsDto`.
+#[derive(Debug, Deserialize, Serialize)]
+struct RetentionRunStatsDto {
+    ran_at: String,
+    hot_rows: u64,
+    compressed_rows: u64,
+    archived_rows: u64,
+    dropped_rows: u64,
+    freed_bytes: u64,
+    dry_run: bool,
+}
+
+const ENDPOINT: &str = "/api/v1/admin/retention-policy/run";
+
 /// Dispatch `aasm admin run-retention [--dry-run]`.
 ///
-/// `ctx` and `output` were threaded through in this commit for Epic 18
-/// Story S-I.5 (AAASM-1872); the live transport wire-up that consumes
-/// them lands in the next commit.
-pub fn dispatch(_args: RunRetentionArgs, _ctx: &ResolvedContext, _output: OutputFormat) -> ExitCode {
-    eprintln!(
-        "aasm admin run-retention: gateway admin transport not yet wired \
-         (tracked under AAASM-1590 / Story S-I). The retention engine \
-         (Story S-F) is in place; once the admin transport lands this \
-         subcommand will trigger a manual retention pass against the \
-         running gateway."
-    );
+/// Honours `OutputFormat::Yaml` if selected; defaults to pretty JSON.
+/// Exits with `ExitCode::SUCCESS` on a successful pass, or
+/// `ExitCode::FAILURE` when the gateway is unreachable or returns a
+/// non-2xx status — the reqwest / HTTP error chain is printed to
+/// stderr so an operator running `aasm admin run-retention` can see
+/// exactly why the call failed.
+pub fn dispatch(args: RunRetentionArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let req = RunRetentionRequest { dry_run: args.dry_run };
+    let stats: RetentionRunStatsDto = match rt.block_on(post_json(ctx, ENDPOINT, &req)) {
+        Ok(stats) => stats,
+        Err(err) => {
+            eprintln!("aasm admin run-retention: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let rendered = match output {
+        OutputFormat::Yaml => serde_yaml::to_string(&stats).expect("serialize stats as YAML"),
+        // Table format on a single-record response is the same as JSON
+        // pretty-print for now; the dashboard renders the same shape.
+        OutputFormat::Table | OutputFormat::Json => {
+            serde_json::to_string_pretty(&stats).expect("serialize stats as JSON")
+        }
+    };
+    println!("{rendered}");
     ExitCode::SUCCESS
 }
