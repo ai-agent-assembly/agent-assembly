@@ -1118,6 +1118,33 @@ mod tree_tests {
     }
 
     #[test]
+    fn reparent_recalculates_depth_for_descendants() {
+        let reg = AgentRegistry::new();
+        let root_a = [0x10u8; 16];
+        let mid = [0x11u8; 16];
+        let leaf = [0x12u8; 16];
+        let root_x = [0x20u8; 16];
+
+        reg.register(make_record(root_a, None, None, 0)).unwrap();
+        reg.register(make_record(mid, Some(root_a), None, 1)).unwrap();
+        reg.register(make_record(leaf, Some(mid), None, 2)).unwrap();
+        reg.register(make_record(root_x, None, None, 0)).unwrap();
+
+        // Move the mid node (with leaf descendant) under root_x: depths shift -0
+        // because both old and new parent are at depth 0, but root_agent_id and
+        // parent links must still update on the entire subtree.
+        reg.reparent(&mid, &root_x).expect("reparent should succeed");
+
+        let mid_after = reg.get(&mid).unwrap();
+        let leaf_after = reg.get(&leaf).unwrap();
+        assert_eq!(mid_after.depth, 1);
+        assert_eq!(leaf_after.depth, 2);
+        assert_eq!(mid_after.root_agent_id, Some(root_x));
+        assert_eq!(leaf_after.root_agent_id, Some(root_x));
+        assert_eq!(leaf_after.parent_key, Some(mid));
+    }
+
+    #[test]
     fn reparent_moves_child_to_new_parent() {
         let reg = AgentRegistry::new();
         let old_root = [0xA0u8; 16];
