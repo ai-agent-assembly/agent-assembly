@@ -735,6 +735,7 @@ impl StorageBackend for SqliteBackend {
             backend: "sqlite",
             latency_ms,
             row_counts,
+            timescale: None,
         })
     }
 }

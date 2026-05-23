@@ -22,7 +22,7 @@ use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
-use super::timescale::has_timescaledb_extension;
+use super::timescale::{has_timescaledb_extension, query_timescale_stats};
 use aa_core::config::TimescaleConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
@@ -895,6 +895,15 @@ impl StorageBackend for PostgresBackend {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
 
+        // Populate optional TimescaleDB rollup when the extension is
+        // present. Probe + stats failures degrade gracefully to `None`
+        // rather than failing the entire healthcheck — observability
+        // must not block on optional metadata.
+        let timescale = match has_timescaledb_extension(&self.pool).await {
+            Ok(true) => query_timescale_stats(&self.pool).await.ok(),
+            Ok(false) | Err(_) => None,
+        };
+
         let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
         let status = if latency_ms < 200 {
             HealthStatus::Ok
@@ -911,6 +920,7 @@ impl StorageBackend for PostgresBackend {
                 agents: agents as u64,
                 policy_versions: policy_versions as u64,
             },
+            timescale,
         })
     }
 }
@@ -1854,6 +1864,68 @@ mod tests {
             health.row_counts.audit_events >= 1,
             "audit_events count must include our fresh insert, got {}",
             health.row_counts.audit_events,
+        );
+    }
+
+    /// `healthcheck()` must return `timescale: None` on a vanilla
+    /// PostgreSQL cluster where the extension is not installed.
+    /// Runs against `AAASM_DATABASE_URL` when `TIMESCALEDB_AVAILABLE != "1"`
+    /// (the existing CI `Test` job's postgres:18-alpine service).
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_none_on_plain_postgres() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping plain-postgres healthcheck test: TIMESCALEDB_AVAILABLE=1 (see healthcheck_reports_timescale_stats_when_extension_active)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        assert!(
+            health.timescale.is_none(),
+            "expected timescale = None on plain PostgreSQL; got {:?}",
+            health.timescale,
+        );
+    }
+
+    /// `healthcheck()` must return `Some(TimescaleStats)` on a cluster
+    /// where the TimescaleDB extension is installed. After `migrate()`
+    /// creates the hypertables and one audit event is appended, the
+    /// rollup should report at least one chunk.
+    ///
+    /// Env-gated on `TIMESCALEDB_AVAILABLE=1`. Auto-runs once SD-5
+    /// (AAASM-1858) ships the `timescaledb-tests` CI job against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn healthcheck_reports_timescale_stats_when_extension_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!("skipping extension-present healthcheck test: TIMESCALEDB_AVAILABLE != 1");
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        // Insert one event so audit_events has at least one chunk.
+        let agent_id = fresh_agent_id();
+        backend
+            .append_audit_event(&sample_event(agent_id, now_micros()))
+            .await
+            .expect("append");
+
+        let health = backend.healthcheck().await.expect("healthcheck");
+        let stats = health
+            .timescale
+            .expect("expected Some(TimescaleStats) when TimescaleDB extension is active");
+        assert!(
+            stats.total_chunks >= 1,
+            "expected at least one chunk after inserting an audit event, got {}",
+            stats.total_chunks,
         );
     }
 }
