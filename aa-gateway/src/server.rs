@@ -94,9 +94,10 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
         }
     });
 
-    // Extract limits from the policy YAML so the tracker enforces them.
+    // Extract limits and rollover window from the policy YAML so the tracker
+    // enforces them.
     let yaml = std::fs::read_to_string(policy_path).unwrap_or_default();
-    let (daily_limit, monthly_limit) = if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
+    let (daily_limit, monthly_limit, window) = if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
         let daily = output
             .document
             .budget
@@ -109,18 +110,27 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
             .as_ref()
             .and_then(|bp| bp.monthly_limit_usd)
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        (daily, monthly)
+        let window = output.document.budget.as_ref().and_then(|bp| bp.window);
+        (daily, monthly, window)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
-    let tracker = Arc::new(BudgetTracker::with_state_and_alert_sender(
+    let mut tracker = BudgetTracker::with_state_and_alert_sender(
         crate::budget::PricingTable::default_table(),
         daily_limit,
         monthly_limit,
         persisted,
         budget_alert_tx,
-    ));
+    );
+    if let Some(d) = window {
+        tracker = tracker.with_window(crate::budget::BudgetWindow::Duration(d));
+        tracing::info!(
+            window_ms = d.as_millis() as u64,
+            "budget sub-day rollover window configured"
+        );
+    }
+    let tracker = Arc::new(tracker);
 
     tracing::info!(path = %budget_path.display(), "budget state loaded");
 
