@@ -6,24 +6,25 @@
 pub mod http;
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use aa_runtime::pipeline::PipelineEvent;
 
+use crate::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry};
 use crate::config::ProxyConfig;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::{Interceptor, VerdictDecision};
-use crate::proxy::http::{read_http_request, serialize_http_request};
+use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
+use crate::proxy::http::{read_http_request, serialize_http_request, HttpRequest};
 use crate::tls::{CaStore, CertCache};
 
 /// A TLS `ServerCertVerifier` that accepts any certificate.
@@ -81,18 +82,36 @@ pub struct ProxyServer {
     ca: CaStore,
     certs: CertCache,
     interceptor: Interceptor,
+    /// Optional sink for [`ProxyAuditEntry`] records. When `Some`, the data
+    /// path emits one entry per intercepted LLM request that carried
+    /// credential findings (or that was blocked under `Block` policy).
+    /// `None` means no JSONL persistence — useful for unit tests that only
+    /// observe the broadcast event stream.
+    audit_jsonl_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
 }
 
 impl ProxyServer {
-    /// Construct a `ProxyServer` from a validated config, an initialised CA,
-    /// and a broadcast sender for emitting pipeline events.
+    /// Construct a `ProxyServer` without a JSONL audit sink. The legacy
+    /// pipeline-event broadcast still fires.
     pub fn new(config: ProxyConfig, ca: CaStore, event_tx: broadcast::Sender<PipelineEvent>) -> Arc<Self> {
+        Self::new_with_audit_sink(config, ca, event_tx, None)
+    }
+
+    /// Construct a `ProxyServer` that also persists `ProxyAuditEntry`
+    /// records on `audit_jsonl_tx` (typically owned by a [`crate::audit_jsonl::JsonlWriter`]).
+    pub fn new_with_audit_sink(
+        config: ProxyConfig,
+        ca: CaStore,
+        event_tx: broadcast::Sender<PipelineEvent>,
+        audit_jsonl_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
+    ) -> Arc<Self> {
         let certs = CertCache::new(config.cert_cache_capacity);
         Arc::new(Self {
             config,
             ca,
             certs,
             interceptor: Interceptor::new(event_tx),
+            audit_jsonl_tx,
         })
     }
 
@@ -133,6 +152,42 @@ impl ProxyServer {
         }
 
         Ok(())
+    }
+
+    /// Build and dispatch a [`ProxyAuditEntry`] over the configured sink.
+    ///
+    /// No-op when `audit_jsonl_tx` is `None`. `try_send` is intentional —
+    /// a slow JSONL writer must not stall the data path; a dropped entry
+    /// is preferable to back-pressuring the proxy.
+    async fn emit_audit_entry(
+        self: &Arc<Self>,
+        host: &str,
+        req: &HttpRequest,
+        verdict: &InterceptVerdict,
+        decision: ProxyAuditDecision,
+    ) {
+        let Some(tx) = self.audit_jsonl_tx.as_ref() else { return };
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let redacted_body = verdict
+            .redacted_body
+            .as_ref()
+            .and_then(|b| std::str::from_utf8(b).ok().map(|s| s.to_owned()));
+        let entry = ProxyAuditEntry {
+            ts_ms,
+            agent_id: None,
+            host: host.to_owned(),
+            method: req.method.clone(),
+            path: req.target.clone(),
+            decision,
+            credential_findings: verdict.findings.clone(),
+            redacted_body,
+        };
+        if let Err(e) = tx.try_send(entry) {
+            tracing::warn!(error = %e, "proxy audit jsonl channel full or closed, dropping entry");
+        }
     }
 
     /// Dial the upstream TLS endpoint (TCP connect + ClientHello).
@@ -292,6 +347,8 @@ impl ProxyServer {
                         findings = verdict.findings.len(),
                         "credential_action=Block: refusing forward, returning 403",
                     );
+                    self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Blocked)
+                        .await;
                     let mut client_tls = client_reader.into_inner();
                     client_tls
                         .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -309,7 +366,18 @@ impl ProxyServer {
                             .redacted_body
                             .as_deref()
                             .expect("ForwardRedacted always carries redacted_body");
-                        serialize_http_request(&req, body)
+                        let bytes = serialize_http_request(&req, body);
+                        self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
+                            .await;
+                        bytes
+                    }
+                    VerdictDecision::AlertAndForward => {
+                        let bytes = serialize_http_request(&req, &req.body);
+                        // Emit an audit entry so operators can see the alert-mode
+                        // decision (findings are still recorded, body is not).
+                        self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Forwarded)
+                            .await;
+                        bytes
                     }
                     _ => serialize_http_request(&req, &req.body),
                 };
