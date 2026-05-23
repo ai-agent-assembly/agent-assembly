@@ -428,9 +428,11 @@ fn real_langgraph_team_registers_coordinator_and_worker_with_gateway() {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_hierarchy_registers_root_planner_executor_with_gateway() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) = setup_real_test("real_langgraph_hierarchy_registers_root_planner_executor_with_gateway")
+    else {
+        return;
+    };
     let output = run_ts_script(
         "root_sub_agents/langgraph_hierarchy.ts",
         &[
