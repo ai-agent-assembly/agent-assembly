@@ -19,6 +19,14 @@ pub struct StatusArgs {
     /// Auto-refresh the status display every 5 seconds.
     #[arg(long)]
     pub watch: bool,
+
+    /// Print only the deployment-overview header as machine-readable JSON.
+    ///
+    /// Intended for scripting and CI integrations — the documented shape is
+    /// the JSON contract published in the AAASM-1579 story description.
+    /// Distinct from `--output json`, which serialises the full status snapshot.
+    #[arg(long)]
+    pub json: bool,
 }
 
 use models::StatusSnapshot;
@@ -26,11 +34,14 @@ use models::StatusSnapshot;
 /// Compute the process exit code from a status snapshot.
 ///
 /// - `0` — all healthy
-/// - `1` — at least one agent has violations
-/// - `2` — runtime API is unreachable
+/// - `1` — gateway is unreachable (`deployment.health == "unreachable"`) OR at
+///   least one agent has violations. Per the AAASM-1579 acceptance criteria,
+///   unreachable now maps to exit code 1 instead of the legacy exit code 2 so
+///   shell scripts can use a single non-zero check without distinguishing
+///   between failure modes.
 pub fn compute_exit_code(snapshot: &StatusSnapshot) -> ExitCode {
-    if !snapshot.runtime.reachable {
-        return ExitCode::from(2);
+    if snapshot.deployment.health == "unreachable" {
+        return ExitCode::from(1);
     }
     let has_violations = snapshot.agents.iter().any(|a| a.violations_today > 0);
     if has_violations {
@@ -50,7 +61,17 @@ pub fn dispatch(args: StatusArgs, ctx: &ResolvedContext, output: OutputFormat) -
             ExitCode::SUCCESS
         } else {
             let snapshot = fetch::fetch_all(&api_client).await;
-            render::render_all(&snapshot, output);
+            if args.json {
+                match serde_json::to_string_pretty(&snapshot.deployment) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => eprintln!("error serializing deployment overview to JSON: {e}"),
+                }
+            } else {
+                render::render_all(&snapshot, output);
+            }
+            if snapshot.deployment.health == "unreachable" {
+                eprintln!("Error: gateway is not running. Start it with: aasm start");
+            }
             compute_exit_code(&snapshot)
         }
     })
@@ -119,17 +140,45 @@ mod tests {
     }
 
     #[test]
-    fn exit_code_2_when_unreachable() {
+    fn exit_code_1_when_deployment_unreachable() {
         let mut snapshot = healthy_snapshot();
-        snapshot.runtime.reachable = false;
-        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(2));
+        snapshot.deployment.health = "unreachable".to_string();
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(1));
     }
 
     #[test]
-    fn exit_code_2_takes_precedence_over_violations() {
+    fn json_flag_output_contains_documented_top_level_keys() {
+        // The --json flag emits snapshot.deployment alone via
+        // serde_json::to_string_pretty — verify the resulting shape matches
+        // the AAASM-1579 documented contract.
+        let snapshot = healthy_snapshot();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&snapshot.deployment).expect("serialise deployment"))
+                .expect("parse deployment JSON");
+        for required_key in [
+            "mode",
+            "gateway_url",
+            "storage_backend",
+            "version",
+            "uptime_secs",
+            "health",
+        ] {
+            assert!(
+                json.get(required_key).is_some(),
+                "missing top-level key {required_key:?}"
+            );
+        }
+        assert_eq!(json["mode"], "local");
+        assert_eq!(json["gateway_url"], "http://localhost:7391");
+        assert_eq!(json["storage_backend"], "sqlite");
+        assert_eq!(json["health"], "ok");
+    }
+
+    #[test]
+    fn exit_code_1_when_deployment_unreachable_with_violations() {
         let mut snapshot = healthy_snapshot();
-        snapshot.runtime.reachable = false;
+        snapshot.deployment.health = "unreachable".to_string();
         snapshot.agents[0].violations_today = 5;
-        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(2));
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(1));
     }
 }
