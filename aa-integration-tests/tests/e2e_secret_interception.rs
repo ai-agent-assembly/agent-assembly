@@ -688,6 +688,58 @@ mod proxy_data_path {
 
         abort.abort();
     }
+
+    // ── Test 2 — block policy returns 403 and never dials upstream ───────
+
+    /// Under `CredentialAction::Block` the proxy refuses to forward a body
+    /// that contains a detected secret. Asserts both halves of the AC:
+    ///
+    /// 1. `TlsCapturingUpstream.request_count() == 0` — the proxy never
+    ///    dialled upstream.
+    /// 2. The inner HTTP response is `HTTP/1.1 403 Forbidden` (the proxy
+    ///    writes 403 to the client TLS stream after running the scanner).
+    ///
+    /// Drives AAASM-1566's `proxy_secret_block_policy_prevents_forwarding`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_secret_block_policy_prevents_forwarding() {
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ca = CaStore::load_or_create(dir.path()).await.expect("ca");
+        let client_config = Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+        let upstream = TlsCapturingUpstream::start(&ca).await;
+        let (proxy_addr, _rx, abort) = start_proxy(dir.path(), ca, CredentialAction::Block, upstream.addr, None).await;
+
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+            super::FAKE_AWS_ACCESS_KEY,
+        );
+        let result = send_through_proxy(proxy_addr, client_config, &body).await;
+
+        // CONNECT-level handshake still succeeds — the proxy only blocks
+        // after reading the inner request body inside the tunnel.
+        assert!(
+            result.connect_status.contains("200"),
+            "CONNECT must succeed (block fires inside the TLS tunnel); got: {}",
+            result.connect_status,
+        );
+
+        let inner = result.inner_response.expect("inner_response must be Some");
+        assert!(
+            inner.contains("403"),
+            "proxy must return 403 inside the tunnel under credential_action=Block; got: {inner:?}",
+        );
+
+        // Hard wait to give the upstream a chance to be (incorrectly) dialled.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            upstream.request_count(),
+            0,
+            "SECURITY INVARIANT: upstream must receive zero requests under Block policy",
+        );
+
+        abort.abort();
+    }
 }
 
 // ── Proxy-path scanner-only slice (AAASM-1549 / ST-N) ────────────────────────
