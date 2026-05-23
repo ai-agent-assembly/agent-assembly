@@ -28,7 +28,7 @@
 //! | # | Name | Status |
 //! |---|------|--------|
 //! | 1 | `ebpf_ssl_write_uprobe_captures_plaintext` | enabled (root + libssl) |
-//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | `#[ignore]` — blocked on AAASM-1567 (exec event not delivered) |
+//! | 2 | `ebpf_exec_probe_captures_subprocess_spawn` | enabled (root) |
 //! | 3 | `ebpf_catches_traffic_that_bypasses_proxy` | enabled (root + libssl) |
 //! | 4 | `ebpf_catches_traffic_without_sdk_init` | enabled (root + libssl) |
 //! | 5 | `ebpf_event_includes_pid_and_cgroup` | enabled (root) |
@@ -242,14 +242,7 @@ async fn ebpf_ssl_write_uprobe_captures_plaintext() {
 /// matches `ev.pid == child_pid` on the multiplexed ring buffer,
 /// which is the same approach the TLS uprobe tests already take with
 /// the system-wide `SSL_write` stream.
-///
-/// **Blocked on AAASM-1567**: the wildcard-based race-free formulation
-/// below replaces the original `pre_exec`-bridged test, but the test
-/// is kept `#[ignore]`'d until the AAASM-1567 fix has been observed
-/// green in CI ≥ 5 consecutive runs. Remove the `#[ignore]` once that
-/// confidence threshold is met.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1567: exec event for spawned subprocess never delivered to ring buffer"]
 async fn ebpf_exec_probe_captures_subprocess_spawn() {
     let mut bpf = Ebpf::load(AA_EXEC_BPF).expect("failed to load exec BPF object — run with sudo");
     let _mgr = TracepointManager::attach(&mut bpf).expect("failed to attach exec tracepoints");
