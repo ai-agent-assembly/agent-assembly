@@ -279,3 +279,54 @@ async fn st_sandbox_3_enforce_mode_with_deny_rule_still_blocks_agent() {
         "enforce-mode audit entry must not carry dry_run"
     );
 }
+
+#[tokio::test]
+async fn st_sandbox_4_per_agent_override_isolates_two_agents_under_one_policy() {
+    // Per-agent override AC: two agents share the same deny policy. One
+    // registers with EnforcementMode::Observe (experimental), the other
+    // without an override (trusted, defaults to Enforce). Each must resolve
+    // to its own mode independently on the request path.
+    let (addr, registry, _audit_rx) = start_server_with_audit_rx(DENY_BASH_POLICY).await;
+
+    let experimental_id = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: "experimental-agent".into(),
+    };
+    let trusted_id = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: "trusted-agent".into(),
+    };
+    register_agent_with_mode(
+        &registry,
+        "experimental-agent",
+        &experimental_id,
+        Some(aa_core::EnforcementMode::Observe),
+    );
+    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, None);
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let experimental_resp = client
+        .check_action(tool_call_request_for(&experimental_id, "bash"))
+        .await
+        .unwrap()
+        .into_inner();
+    let trusted_resp = client
+        .check_action(tool_call_request_for(&trusted_id, "bash"))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        experimental_resp.decision,
+        Decision::Allow as i32,
+        "experimental agent in observe mode must proceed",
+    );
+    assert_eq!(
+        trusted_resp.decision,
+        Decision::Deny as i32,
+        "trusted agent under same policy must still be blocked — got reason {:?}",
+        trusted_resp.reason,
+    );
+}
