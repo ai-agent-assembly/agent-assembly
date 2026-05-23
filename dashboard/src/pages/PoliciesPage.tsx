@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
+import { isSandboxSummaryEmpty, useSandboxSummaryQuery } from '../features/audit/api'
+import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
 import { EmptyState, ErrorState } from '../components/states'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
@@ -132,8 +134,26 @@ function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
 
 export function PoliciesPage() {
   const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
+  const { data: sandboxSummary } = useSandboxSummaryQuery({ window: '24h' })
   const [filter, setFilter] = useState<FilterTab>('all')
   const { openOverlay, closeOverlay } = useOverlay('policy-editor')
+  const { toast } = useToast()
+
+  // Only surface the SandboxSummaryCard when at least one count is non-zero;
+  // operators running fully in enforce mode shouldn't see an empty card.
+  const showSandboxBanner =
+    sandboxSummary !== undefined && !isSandboxSummaryEmpty(sandboxSummary)
+
+  // The aa-api endpoint is global today (no per-policy filter), so the card
+  // carries an "All policies" label rather than a single policy name. When
+  // per-policy scoping lands on the endpoint, the label and the
+  // onEnableLiveEnforcement target can both narrow.
+  const enableLiveEnforcement = useCallback(() => {
+    toast(
+      'Open the policy you want to enforce live and set enforcement_mode: enforce',
+      'success',
+    )
+  }, [toast])
 
   // Editor publishes its dirty state into this ref so the page can decide
   // whether Esc / backdrop / Cancel should prompt for confirmation.
@@ -189,6 +209,26 @@ export function PoliciesPage() {
           + new policy
         </button>
       </header>
+
+      {showSandboxBanner && sandboxSummary ? (
+        <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
+          <SandboxSummaryCard
+            policyName="All policies"
+            windowLabel="last 24h"
+            counts={{
+              wouldBeDenies: sandboxSummary.counts.would_be_denies,
+              wouldBeRedactions: sandboxSummary.counts.would_be_redactions,
+              wouldBePendingApprovals: sandboxSummary.counts.would_be_pending_approvals,
+            }}
+            topRule={
+              sandboxSummary.top_rule
+                ? { id: sandboxSummary.top_rule.id, count: sandboxSummary.top_rule.count }
+                : undefined
+            }
+            onEnableLiveEnforcement={enableLiveEnforcement}
+          />
+        </div>
+      ) : null}
 
       <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
         {FILTER_TABS.map((tab) => {

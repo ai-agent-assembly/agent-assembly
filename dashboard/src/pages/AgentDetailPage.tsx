@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
+import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { toFleetAgent } from '../features/agents/fleetTypes'
 import { Drawer } from '../components/Drawer'
@@ -181,6 +182,18 @@ export function AgentDetailPage() {
   const { data: events, isLoading: eventsLoading, isError: eventsError } = useAgentEventsQuery(id ?? '')
   const [tab, setTab] = useState<AgentDetailTab>('overview')
   const [showSuspendDialog, setShowSuspendDialog] = useState(false)
+  const [sandboxOnly, setSandboxOnly] = useState(false)
+
+  // Decorate each event row with its parsed sandbox metadata so the table
+  // can both filter (when the toggle is on) and render the amber badge
+  // without re-parsing the payload per render.
+  const decoratedEvents = useMemo(
+    () => (events ?? []).map((ev) => ({ ev, sandbox: extractSandboxInfo(ev.payload) })),
+    [events],
+  )
+  const visibleEvents = sandboxOnly
+    ? decoratedEvents.filter((row) => row.sandbox.dryRun)
+    : decoratedEvents
 
   const suspend = useSuspendAgent()
   const resume = useResumeAgent()
@@ -358,10 +371,34 @@ export function AgentDetailPage() {
                     <h2 className="ad-card__title">recent events</h2>
                     {eventsLoading && <p>Loading events…</p>}
                     {eventsError && <p style={{ color: 'var(--danger)' }}>Failed to load events.</p>}
-                    {!eventsLoading && !eventsError && (!events || events.length === 0) && (
+                    {!eventsLoading && !eventsError && decoratedEvents.length > 0 && (
+                      <div className="ad-events__sandbox-bar" data-testid="agent-events-sandbox-bar">
+                        <label className="ad-events__sandbox-toggle">
+                          <input
+                            type="checkbox"
+                            checked={sandboxOnly}
+                            onChange={(e) => setSandboxOnly(e.target.checked)}
+                            data-testid="agent-events-sandbox-toggle"
+                          />
+                          Sandbox events only
+                        </label>
+                      </div>
+                    )}
+                    {!eventsLoading && !eventsError && decoratedEvents.length === 0 && (
                       <p style={{ color: 'var(--ink-4)', fontSize: 12 }}>No events recorded for this agent.</p>
                     )}
-                    {events && events.length > 0 && (
+                    {!eventsLoading &&
+                      !eventsError &&
+                      decoratedEvents.length > 0 &&
+                      visibleEvents.length === 0 && (
+                        <p
+                          style={{ color: 'var(--ink-4)', fontSize: 12 }}
+                          data-testid="agent-events-sandbox-empty"
+                        >
+                          No sandbox events in this window.
+                        </p>
+                      )}
+                    {visibleEvents.length > 0 && (
                       <table className="ad-events">
                         <thead>
                           <tr>
@@ -371,10 +408,21 @@ export function AgentDetailPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {events.map((ev) => (
+                          {visibleEvents.map(({ ev, sandbox }) => (
                             <tr key={`${ev.seq}-${ev.session_id}`} data-testid="event-row">
                               <td>{ev.timestamp}</td>
-                              <td>{ev.event_type}</td>
+                              <td>
+                                {ev.event_type}
+                                {sandbox.dryRun ? (
+                                  <span
+                                    className="ad-events__sandbox-badge"
+                                    data-testid="event-sandbox-badge"
+                                    style={{ marginLeft: 6 }}
+                                  >
+                                    Would: {sandbox.shadowDecision ?? 'observe'}
+                                  </span>
+                                ) : null}
+                              </td>
                               <td>
                                 <code className="ad-events__code">{ev.session_id.slice(0, 12)}…</code>
                               </td>
