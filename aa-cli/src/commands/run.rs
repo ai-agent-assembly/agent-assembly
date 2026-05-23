@@ -956,6 +956,63 @@ mod tests {
         assert_eq!(body["agent_id"], "my-agent");
         assert_eq!(body["team_id"], "my-team");
         assert_eq!(body["governance_level"], "L2Enforce");
+        // Default invocation must still emit "enforce" so the gateway sees
+        // an explicit posture instead of a missing field on the legacy path.
+        assert_eq!(body["enforcement_mode"], "enforce");
+    }
+
+    #[tokio::test]
+    async fn register_with_gateway_sends_observe_when_flag_set() {
+        // Operator runs `aa run --observe claude` → registration body carries
+        // enforcement_mode = "observe". The gateway's REST → gRPC bridge then
+        // maps that onto RegisterRequest.enforcement_mode = OBSERVE so the
+        // per-agent override storage (AAASM-1557) records it.
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/agents"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "agent_id": "obs-agent",
+                "registration_id": "obs-reg",
+                "trace_id": "obs-trace",
+                "session_id": "obs-session"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let info = DevToolInfo {
+            kind: DevToolKind::ClaudeCode,
+            version: Some("1.0.0".into()),
+            install_path: PathBuf::from("/usr/local/bin/claude"),
+            governance_level: GovernanceLevel::L0Discover,
+            supports_mcp: true,
+            supports_managed_settings: true,
+        };
+        let args = RunArgs {
+            tool: "claude".into(),
+            tool_args: vec![],
+            agent_id: Some("my-agent".into()),
+            team_id: None,
+            root_agent: None,
+            governance_level: None,
+            no_proxy: false,
+            dry_run: false,
+            enforcement_mode: None,
+            observe: true, // shorthand path
+        };
+        let ctx = ResolvedContext {
+            name: None,
+            api_url: mock_server.uri(),
+            api_key: None,
+        };
+
+        register_with_gateway(&info, &args, &ctx).await.unwrap();
+
+        let reqs = mock_server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(
+            body["enforcement_mode"], "observe",
+            "registration body must carry the resolved enforcement_mode for the gateway",
+        );
     }
 
     // --- execute_with_adapters tests ---
