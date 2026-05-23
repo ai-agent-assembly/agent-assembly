@@ -1118,6 +1118,27 @@ mod tree_tests {
     }
 
     #[test]
+    fn reparent_is_idempotent_when_parent_unchanged() {
+        let reg = AgentRegistry::new();
+        let root = [0x40u8; 16];
+        let child = [0x41u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(root), None, 1)).unwrap();
+        let original_children = reg.children_of(&root);
+
+        // Calling reparent with the current parent is a no-op success.
+        reg.reparent(&child, &root).expect("idempotent reparent should succeed");
+
+        // Children list must not have duplicates and the child must keep its
+        // original parent link/depth.
+        assert_eq!(reg.children_of(&root), original_children);
+        let after = reg.get(&child).unwrap();
+        assert_eq!(after.parent_key, Some(root));
+        assert_eq!(after.depth, 1);
+    }
+
+    #[test]
     fn reparent_under_own_descendant_is_rejected_as_cycle() {
         let reg = AgentRegistry::new();
         let root = [0x30u8; 16];
