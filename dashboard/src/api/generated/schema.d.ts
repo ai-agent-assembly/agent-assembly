@@ -1482,6 +1482,7 @@ export interface components {
             resolved_at?: string | null;
             /** @description Connector-framework delivery log. Empty for legacy alerts. */
             routing_log: components["schemas"]["RoutingLogEntry"][];
+            ruleSnapshot?: null | components["schemas"]["AlertRule"];
             /**
              * @description Identifier of the rule that produced the alert, or `null` for
              *     legacy budget/secret alerts.
@@ -1489,7 +1490,6 @@ export interface components {
             rule_id?: string | null;
             /** @description Human-readable rule name, or `null` for legacy alerts. */
             rule_name?: string | null;
-            rule_snapshot?: null | components["schemas"]["RuleSnapshot"];
             /** @description Alert severity level (`info` / `warning` / `critical`). */
             severity: string;
             silence?: null | components["schemas"]["Silence"];
