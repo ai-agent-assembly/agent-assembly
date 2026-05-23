@@ -325,6 +325,7 @@ dependencies = [
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-gateway",
+ "aa-proto",
  "aa-proxy",
  "aa-runtime",
  "anyhow",
@@ -351,8 +352,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
+ "tonic",
  "uuid",
 ]
 
