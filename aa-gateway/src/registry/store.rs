@@ -1,7 +1,7 @@
 //! Agent registry store — `AgentRecord` and `AgentRegistry` backed by `DashMap`.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use aa_core::GovernanceLevel;
 use chrono::{DateTime, Utc};
@@ -14,6 +14,7 @@ use aa_proto::assembly::agent::v1::{ControlCommand, SuspendCommand};
 
 use super::orphan::{OrphanEffect, OrphanMode};
 use super::{AgentStatus, LineageError, RegistryError, SuspendReason};
+use crate::storage::StorageBackend;
 
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
@@ -150,6 +151,12 @@ pub struct AgentRegistry {
     /// Per-team maximum agent age in seconds. Agents older than this threshold
     /// are force-deregistered by `sweep_aged_agents`.
     team_max_age_secs: DashMap<String, u64>,
+    /// Optional durable [`StorageBackend`] for write-through persistence and
+    /// boot-time rehydrate. `None` means the registry is purely in-memory —
+    /// the legacy behaviour preserved for existing tests and any caller that
+    /// constructs an [`AgentRegistry::new`] without storage. Wired in by
+    /// Epic 18 Story S-I.2 (AAASM-1864).
+    storage: Option<Arc<dyn StorageBackend>>,
 }
 
 impl AgentRegistry {
@@ -162,7 +169,23 @@ impl AgentRegistry {
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
+            storage: None,
         }
+    }
+
+    /// Attach a durable [`StorageBackend`] for write-through persistence and
+    /// boot-time rehydrate. Builder-style — chains after `new()`:
+    ///
+    /// ```ignore
+    /// let registry = AgentRegistry::new().with_storage(storage_handle);
+    /// ```
+    ///
+    /// Without this call, the registry stays purely in-memory and the
+    /// `register_persisted` / `deregister_persisted` / `rehydrate_from_storage`
+    /// methods behave identically to their non-persisted counterparts.
+    pub fn with_storage(mut self, storage: Arc<dyn StorageBackend>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// Configure the maximum allowed age (in seconds) for agents belonging to `team_id`.
@@ -245,6 +268,36 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Register an agent **and** write through to durable storage.
+    ///
+    /// Async wrapper around [`register`](Self::register) that, on a
+    /// successful in-memory insert, also calls
+    /// [`StorageBackend::upsert_agent`](crate::storage::StorageBackend::upsert_agent).
+    /// If the storage write fails, the in-memory insert is rolled back so
+    /// the registry never diverges from the durable state.
+    ///
+    /// When no storage handle is attached (e.g. `AgentRegistry::new()`
+    /// without `with_storage`), behaves identically to
+    /// [`register`](Self::register).
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn register_persisted(&self, record: AgentRecord) -> Result<(), RegistryError> {
+        let agent_id = record.agent_id;
+        let storage_record = self
+            .storage
+            .as_ref()
+            .map(|_| super::storage_bridge::runtime_to_storage(&record));
+        self.register(record)?;
+        if let (Some(storage), Some(durable)) = (self.storage.as_ref(), storage_record) {
+            if let Err(err) = storage.upsert_agent(durable).await {
+                // Roll back the in-memory insert so the two views stay in sync.
+                let _ = self.deregister(&agent_id, OrphanMode::Suspend);
+                return Err(RegistryError::Storage(err));
+            }
+        }
+        Ok(())
+    }
+
     /// Look up an agent by ID. Returns `None` if not found.
     pub fn get(&self, agent_id: &[u8; 16]) -> Option<AgentRecord> {
         self.agents.get(agent_id).map(|r| r.clone())
@@ -285,6 +338,80 @@ impl AgentRegistry {
             self.apply_orphan_mode_recursive(child_key, mode, &mut effects);
         }
 
+        Ok((record, effects))
+    }
+
+    /// Replay durable storage rows back into the in-memory registry.
+    ///
+    /// Called once at gateway boot, after
+    /// [`StorageBackend::migrate`](crate::storage::StorageBackend::migrate)
+    /// runs and before any request is served. Reads every row from
+    /// `storage.list_agents(AgentFilter::default())`, converts each through
+    /// [`storage_bridge::storage_to_runtime`](super::storage_bridge::storage_to_runtime),
+    /// and calls the sync [`register`](Self::register) — restored entries
+    /// reappear as root-level agents with status
+    /// [`Active`](crate::registry::AgentStatus::Active); lineage is not
+    /// persisted in this Sub-task and the next agent connect is expected
+    /// to refresh credential tokens / parent links.
+    ///
+    /// Returns the number of agents rehydrated. A no-storage registry
+    /// returns `Ok(0)` immediately.
+    ///
+    /// Already-registered IDs (e.g. an agent that re-connected before
+    /// rehydrate finished) are logged at `tracing::warn!` and skipped —
+    /// the freshest in-memory record wins.
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn rehydrate_from_storage(&self) -> Result<usize, RegistryError> {
+        let Some(storage) = self.storage.as_ref() else {
+            return Ok(0);
+        };
+        let rows = storage.list_agents(crate::storage::AgentFilter::default()).await?;
+        let mut restored = 0usize;
+        for row in rows {
+            let runtime = super::storage_bridge::storage_to_runtime(row);
+            let agent_id = runtime.agent_id;
+            match self.register(runtime) {
+                Ok(()) => restored += 1,
+                Err(RegistryError::AlreadyRegistered(_)) => {
+                    tracing::warn!(
+                        ?agent_id,
+                        "rehydrate_from_storage: agent already registered in-memory, skipping"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(restored)
+    }
+
+    /// Deregister an agent **and** delete the durable storage row.
+    ///
+    /// Async wrapper around [`deregister`](Self::deregister) that, on a
+    /// successful in-memory removal, also calls
+    /// [`StorageBackend::delete_agent`](crate::storage::StorageBackend::delete_agent).
+    /// A storage [`NotFound`](crate::storage::StorageError::NotFound) result
+    /// is treated as success — the in-memory removal already happened and
+    /// best-effort cleanup is enough; any other backend error surfaces as
+    /// [`RegistryError::Storage`].
+    ///
+    /// When no storage handle is attached, behaves identically to
+    /// [`deregister`](Self::deregister).
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn deregister_persisted(
+        &self,
+        agent_id: &[u8; 16],
+        mode: OrphanMode,
+    ) -> Result<(AgentRecord, Vec<OrphanEffect>), RegistryError> {
+        let (record, effects) = self.deregister(agent_id, mode)?;
+        if let Some(storage) = self.storage.as_ref() {
+            let id = aa_core::identity::AgentId::from_bytes(*agent_id);
+            match storage.delete_agent(&id).await {
+                Ok(()) | Err(crate::storage::StorageError::NotFound(_)) => {}
+                Err(err) => return Err(RegistryError::Storage(err)),
+            }
+        }
         Ok((record, effects))
     }
 

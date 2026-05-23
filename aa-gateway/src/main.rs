@@ -111,6 +111,13 @@ async fn run_local() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Existing gRPC + policy serving path. Preserves the pre-Epic-17
 /// invocation contract `aasm-gateway --policy /path [--listen ...]`.
+///
+/// Epic 18 Story S-I.2 (AAASM-1864): the AgentRegistry is now backed by
+/// the durable SQLite [`StorageBackend`](aa_gateway::storage::StorageBackend)
+/// at `GatewayConfig.local.storage_path` (default `~/.aasm/local.db`).
+/// On boot, every previously-registered agent is replayed via
+/// `AgentRegistry::rehydrate_from_storage`; subsequent gRPC Register /
+/// Deregister calls write through to the same backend.
 async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let policy = cli
         .policy
@@ -120,7 +127,19 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(policy = %policy.display(), "loading policy");
 
-    let registry = Arc::new(aa_gateway::AgentRegistry::new());
+    // Open the durable SQLite-backed StorageBackend, applying migrations
+    // before the gRPC service comes up. Falls back to the file path from
+    // GatewayConfig (defaults to `~/.aasm/local.db` when no config file
+    // is present) so legacy callers get persistence without changing
+    // their CLI invocation.
+    let cfg = aa_core::config::GatewayConfig::load()?;
+    let storage = aa_gateway::storage::open_sqlite_backend(&cfg.local.storage_path).await?;
+
+    let registry = Arc::new(aa_gateway::AgentRegistry::new().with_storage(storage.clone()));
+    let restored = registry.rehydrate_from_storage().await?;
+    if restored > 0 {
+        tracing::info!(restored, "rehydrated agents from durable storage");
+    }
 
     // Create the approval queue — gateway-owned, shared with the runtime via gRPC.
     let approval_queue = aa_runtime::approval::ApprovalQueue::new();
