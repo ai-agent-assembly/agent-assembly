@@ -111,9 +111,10 @@ pub fn build_approvals_summary(approvals: &[ApprovalResponse]) -> ApprovalsSumma
 
 /// Fetch all status data from the gateway in parallel and compose a `StatusSnapshot`.
 pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
-    let (health_result, healthz_result, agents_result, approvals_result, costs_result) = tokio::join!(
+    let (health_result, healthz_result, admin_status_result, agents_result, approvals_result, costs_result) = tokio::join!(
         client.check_health(),
         client.check_healthz(),
+        client.fetch_admin_status(),
         client.list_agents(),
         client.list_approvals(),
         client.get_costs(),
@@ -136,17 +137,19 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
 
     let deployment = build_deployment_overview(client.base_url(), healthz_result.ok());
 
+    // AAASM-1591: surface the admin/status storage block when the
+    // gateway exposes it. A 404 / decode error from an older gateway
+    // is silently downgraded to None — the status section is omitted
+    // rather than turning the whole `aasm status` call into a failure.
+    let storage_health = admin_status_result.ok().map(|resp| resp.storage);
+
     StatusSnapshot {
         deployment,
         runtime,
         agents,
         approvals,
         budget,
-        // AAASM-1909 populates this in a follow-up commit by calling
-        // StatusClient::fetch_admin_status; today the field is always
-        // None so older gateways without /api/v1/admin/status keep
-        // working.
-        storage_health: None,
+        storage_health,
     }
 }
 
