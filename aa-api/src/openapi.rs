@@ -167,7 +167,6 @@ use crate::routes::{
         crate::alerts::rules::types::RuleOperator,
         crate::alerts::rules::types::RuleSeverity,
         AlertWsFrame,
-        crate::alerts::detail::RuleSnapshot,
         crate::alerts::detail::RoutingLogEntry,
         crate::alerts::detail::Silence,
         auth::TokenRequest,

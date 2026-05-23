@@ -11,10 +11,12 @@ use utoipa::ToSchema;
 
 /// Snapshot of the rule definition at the moment the alert fired.
 ///
-/// Recording the rule inline keeps alert detail self-contained — operators
-/// see the exact thresholds and windows that triggered the fire, even if
-/// the underlying rule has since been edited.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+/// Internal denormalized subset of the rule kept on `RuleContext` for
+/// dedup / connector-routing logic. Not exposed on the public API any
+/// more — `AlertDetailResponse.ruleSnapshot` now carries the full
+/// [`AlertRule`] instead (AAASM-1658), so this type intentionally has
+/// no `ToSchema` derive and does not appear in `openapi/v1.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuleSnapshot {
     /// Metric the rule evaluates (e.g. `"budget_spent_pct"`).
     pub metric: String,
@@ -54,11 +56,12 @@ pub struct RoutingLogEntry {
 
 /// Rich rule-based context attached to an alert.
 ///
-/// Populated when an alert was produced by the rule engine (rather than
-/// the legacy budget/secret-detection pipelines). The `GET /api/v1/alerts/{id}`
-/// endpoint surfaces this payload so the dashboard detail drawer can render
-/// the rule definition, routing log, and dedup state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+/// Internal denormalized payload used by the dedup state machine and
+/// connector routing. Not exposed on the public API surface —
+/// `AlertDetailResponse` flattens the relevant fields onto its top
+/// level (AAASM-1385), so this type does not derive `ToSchema` and is
+/// not emitted into `openapi/v1.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuleContext {
     /// Identifier of the rule that produced the alert.
     pub rule_id: String,
