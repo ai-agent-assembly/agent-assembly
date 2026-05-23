@@ -341,6 +341,36 @@ impl AgentRegistry {
         Ok((record, effects))
     }
 
+    /// Deregister an agent **and** delete the durable storage row.
+    ///
+    /// Async wrapper around [`deregister`](Self::deregister) that, on a
+    /// successful in-memory removal, also calls
+    /// [`StorageBackend::delete_agent`](crate::storage::StorageBackend::delete_agent).
+    /// A storage [`NotFound`](crate::storage::StorageError::NotFound) result
+    /// is treated as success — the in-memory removal already happened and
+    /// best-effort cleanup is enough; any other backend error surfaces as
+    /// [`RegistryError::Storage`].
+    ///
+    /// When no storage handle is attached, behaves identically to
+    /// [`deregister`](Self::deregister).
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn deregister_persisted(
+        &self,
+        agent_id: &[u8; 16],
+        mode: OrphanMode,
+    ) -> Result<(AgentRecord, Vec<OrphanEffect>), RegistryError> {
+        let (record, effects) = self.deregister(agent_id, mode)?;
+        if let Some(storage) = self.storage.as_ref() {
+            let id = aa_core::identity::AgentId::from_bytes(*agent_id);
+            match storage.delete_agent(&id).await {
+                Ok(()) | Err(crate::storage::StorageError::NotFound(_)) => {}
+                Err(err) => return Err(RegistryError::Storage(err)),
+            }
+        }
+        Ok((record, effects))
+    }
+
     /// Recursively apply `mode` to `child_key` and all its descendants.
     ///
     /// DashMap does not allow recursive locking — child keys are always collected
