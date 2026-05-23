@@ -284,7 +284,18 @@ mod tests {
 
     #[test]
     fn render_status_json_contains_all_keys() {
+        use super::super::models::DeploymentOverview;
         let snapshot = StatusSnapshot {
+            deployment: DeploymentOverview {
+                mode: "local".to_string(),
+                gateway_url: "http://localhost:7391".to_string(),
+                storage_backend: "sqlite".to_string(),
+                storage_path: None,
+                database_url_redacted: None,
+                version: "0.0.1".to_string(),
+                uptime_secs: 120,
+                health: "ok".to_string(),
+            },
             runtime: RuntimeHealth {
                 reachable: true,
                 status: "ok".to_string(),
@@ -307,6 +318,9 @@ mod tests {
             },
         };
         let json = serde_json::to_string_pretty(&snapshot).unwrap();
+        assert!(json.contains("\"deployment\""));
+        assert!(json.contains("\"gateway_url\""));
+        assert!(json.contains("\"storage_backend\""));
         assert!(json.contains("\"runtime\""));
         assert!(json.contains("\"agents\""));
         assert!(json.contains("\"approvals\""));

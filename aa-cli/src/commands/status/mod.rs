@@ -63,6 +63,16 @@ mod tests {
 
     fn healthy_snapshot() -> StatusSnapshot {
         StatusSnapshot {
+            deployment: DeploymentOverview {
+                mode: "local".to_string(),
+                gateway_url: "http://localhost:7391".to_string(),
+                storage_backend: "sqlite".to_string(),
+                storage_path: Some("~/.aasm/local.db".to_string()),
+                database_url_redacted: None,
+                version: "0.0.1".to_string(),
+                uptime_secs: 3600,
+                health: "ok".to_string(),
+            },
             runtime: RuntimeHealth {
                 reachable: true,
                 status: "ok".to_string(),

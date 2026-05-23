@@ -23,7 +23,6 @@ use super::models::{
 /// exception of `database_url`, which is run through [`redact_database_url`]
 /// before being assigned to `database_url_redacted`. The raw wire value never
 /// reaches the display layer.
-#[allow(dead_code)]
 pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzResponse>) -> DeploymentOverview {
     match healthz {
         Some(h) => DeploymentOverview {
@@ -112,8 +111,9 @@ pub fn build_approvals_summary(approvals: &[ApprovalResponse]) -> ApprovalsSumma
 
 /// Fetch all status data from the gateway in parallel and compose a `StatusSnapshot`.
 pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
-    let (health_result, agents_result, approvals_result, costs_result) = tokio::join!(
+    let (health_result, healthz_result, agents_result, approvals_result, costs_result) = tokio::join!(
         client.check_health(),
+        client.check_healthz(),
         client.list_agents(),
         client.list_approvals(),
         client.get_costs(),
@@ -134,7 +134,10 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         },
     };
 
+    let deployment = build_deployment_overview(client.base_url(), healthz_result.ok());
+
     StatusSnapshot {
+        deployment,
         runtime,
         agents,
         approvals,
