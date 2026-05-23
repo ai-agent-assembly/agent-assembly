@@ -13,11 +13,13 @@
 //! | 4 | `audit_entries_are_in_chronological_order` | enabled |
 //! | 5 | `audit_hash_chain_validates_against_known_good` | enabled |
 //! | 6 | `audit_chain_break_detected_when_entry_modified` | enabled |
-//! | 7 | `audit_chain_survives_gateway_restart` | `#[ignore]` — requires binary spawn |
+//! | 7 | `audit_chain_survives_gateway_restart` | enabled via `BinaryGateway` (AAASM-1601) |
 //!
 //! Tests 1-2 are scaffolded with `#[ignore]` pending AAASM-237 (the HTTP path
-//! in `aa-api` does not yet wire `AuditWriter` into handlers). Test 7 requires
-//! a binary gateway spawn + SIGTERM/restart fixture not yet available.
+//! in `aa-api` does not yet wire `AuditWriter` into handlers). Test 7 spawns
+//! the real `aa-gateway` binary via `common::binary_gateway::BinaryGateway`
+//! (AAASM-1601) and verifies the JSONL hash chain remains intact across a
+//! SIGTERM + respawn cycle.
 
 mod common;
 
@@ -241,17 +243,148 @@ async fn audit_chain_break_detected_when_entry_modified() {
 }
 
 // =============================================================================
-// Test 7 — restart persistence (blocked)
+// Test 7 — restart persistence (AAASM-1601)
 // =============================================================================
 
-/// After a gateway restart the chain must still validate: `AuditWriter`
-/// resumes from `read_last_hash` so the chain links across the restart
-/// boundary without a gap.
+/// After an `aa-gateway` process restart the chain must still validate:
+/// `AuditWriter::new` resumes from `read_last_hash` so the chain links
+/// across the restart boundary without a gap.
 ///
-/// Blocked: requires spawning the `aa-gateway` binary, sending SIGTERM, and
-/// restarting — infrastructure not yet available in the integration harness.
+/// Verifies that:
+/// 1. A spawned `aa-gateway` binary, given a pre-seeded JSONL file,
+///    boots cleanly and does **not** truncate or corrupt the file.
+/// 2. The post-spawn `read_last_hash` returns the expected hash from
+///    the seeded entries (the gateway picks up where the seed left off).
+/// 3. SIGTERM produces a clean shutdown.
+/// 4. A second spawn against the **same** audit dir replays
+///    `read_last_hash` correctly.
+/// 5. Final `verify_chain` shows an unbroken chain.
+///
+/// What this test does **not** yet exercise: gateway-internal audit
+/// writes between the spawns. The HTTP path is not yet wired into
+/// `AuditWriter` (AAASM-237); once that lands, this test should be
+/// extended to drive entries via the API between SIGTERM and respawn,
+/// then assert the new entries' `prev_hash` chains off the seed.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1601: binary gateway spawn + SIGTERM/restart test infrastructure not yet available"]
-async fn audit_chain_survives_gateway_restart() {
-    todo!("implement once binary-spawn harness is available")
+async fn audit_chain_survives_gateway_restart() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use common::binary_gateway::BinaryGateway;
+
+    // Skip cleanly when the binary isn't on disk — matches the
+    // `cli_gateway.rs` pattern so engineers running just one test
+    // crate get a clear hint instead of a confusing failure.
+    if !workspace_gateway_binary_locatable() {
+        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return Ok(());
+    }
+
+    // ── Setup: per-test temp dirs ───────────────────────────────────
+    let audit_tmp = tempdir()?;
+    let home_tmp = tempdir()?;
+    let policy_tmp = tempdir()?;
+
+    let audit_dir = audit_tmp.path().to_path_buf();
+    let home_dir = home_tmp.path().to_path_buf();
+    let policy_path = policy_tmp.path().join("policy.yaml");
+    std::fs::write(
+        &policy_path,
+        "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  rules: []\n",
+    )?;
+
+    // ── Seed: 3 valid chained audit entries on disk. ────────────────
+    // The seeded path matches the gateway's `audit_file_path` convention
+    // (`{audit_dir}/{agent_id}-{session_id}.jsonl`) with `agent_id="gateway"`
+    // and `session_id="default"` per `setup_audit("gateway", "default", ...)`
+    // in `aa-gateway/src/server.rs`.
+    let audit_file = audit_dir.join("gateway-default.jsonl");
+    let seeded = make_chain(3);
+    write_jsonl(&audit_file, &seeded);
+    let seeded_last_hash = *seeded[2].entry_hash();
+
+    // ── Phase 1: spawn gateway 1, verify it doesn't corrupt the file ──
+    let listen1 = format!("127.0.0.1:{}", free_port());
+    let mut gw1 = BinaryGateway::spawn(
+        audit_dir.clone(),
+        home_dir.clone(),
+        policy_path.clone(),
+        listen1.clone(),
+    )
+    .map_err(|e| anyhow::anyhow!("spawning gateway 1: {e}"))?;
+
+    let observed_during_gw1 = AuditWriter::read_last_hash(&audit_file).await?.unwrap_or([0u8; 32]);
+    assert_eq!(
+        observed_during_gw1, seeded_last_hash,
+        "post-spawn last_hash must match the seed — gateway 1 must not corrupt the chain",
+    );
+
+    gw1.sigterm_and_wait(Duration::from_secs(10))
+        .map_err(|e| anyhow::anyhow!("SIGTERM gateway 1: {e}"))?;
+
+    // ── Phase 2: spawn gateway 2 on a different port, same audit dir ──
+    let listen2 = format!("127.0.0.1:{}", free_port());
+    let mut gw2 = BinaryGateway::spawn(audit_dir.clone(), home_dir.clone(), policy_path.clone(), listen2)
+        .map_err(|e| anyhow::anyhow!("spawning gateway 2: {e}"))?;
+
+    let observed_after_restart = AuditWriter::read_last_hash(&audit_file).await?.unwrap_or([0u8; 32]);
+    assert_eq!(
+        observed_after_restart, seeded_last_hash,
+        "post-restart last_hash must still match the seed — chain survives the SIGTERM + respawn boundary",
+    );
+
+    gw2.sigterm_and_wait(Duration::from_secs(10))
+        .map_err(|e| anyhow::anyhow!("SIGTERM gateway 2: {e}"))?;
+
+    // ── Phase 3: end-to-end chain validation ────────────────────────
+    let result = AuditWriter::verify_chain(&audit_file).await?;
+    assert!(
+        result.is_valid,
+        "chain must remain valid across spawn + SIGTERM + respawn + SIGTERM cycle; first_invalid = {:?}",
+        result.first_invalid,
+    );
+    Ok(())
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind 127.0.0.1:0")
+        .local_addr()
+        .expect("local_addr")
+        .port()
+}
+
+/// Mirror `binary_gateway::locate_gateway_binary`'s discovery contract so
+/// the test skips cleanly when the binary is absent (rather than panicking
+/// inside `BinaryGateway::spawn`).
+fn workspace_gateway_binary_locatable() -> bool {
+    #[cfg(unix)]
+    fn runnable(p: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        p.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    fn runnable(p: &Path) -> bool {
+        p.exists()
+    }
+    let manifest = match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let root = match Path::new(&manifest).parent() {
+        Some(r) => r,
+        None => return false,
+    };
+    for profile in ["debug", "release"] {
+        if runnable(&root.join("target").join(profile).join("aa-gateway")) {
+            return true;
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for d in path_var.split(':') {
+            if runnable(&Path::new(d).join("aa-gateway")) {
+                return true;
+            }
+        }
+    }
+    false
 }
