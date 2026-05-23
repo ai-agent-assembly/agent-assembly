@@ -366,26 +366,40 @@ async fn e2e_hitl_list_transitions_pending_to_approved() {
 #[ignore = "long-running fixture spawned by the Playwright globalSetup; idles until killed"]
 async fn e2e_fixture_main() {
     use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     let env = TopologyTestEnv::start().await.expect("fixture: harness should start");
 
     // Seed two pending approvals so the Playwright spec can both observe
-    // a row and approve one to assert the transition.
+    // a row and approve one to assert the transition. Override
+    // `submitted_at` to "now" so the dashboard's `ApprovalCountdown`
+    // sees a positive remaining time — the unit-test default
+    // (1_700_000_000) is years in the past and would trip `onExpire`
+    // before the row could be rendered.
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock OK")
+        .as_secs();
     let long_timeout = 3600_u64;
-    let _ = env.approval_queue.submit(make_pending_request(
+    let mut req1 = make_pending_request(
         "send_email",
         long_timeout,
         PolicyResult::Deny {
             reason: "fallback unused".to_string(),
         },
-    ));
-    let _ = env.approval_queue.submit(make_pending_request(
+    );
+    req1.submitted_at = now_epoch;
+    let _ = env.approval_queue.submit(req1);
+
+    let mut req2 = make_pending_request(
         "wire_transfer",
         long_timeout,
         PolicyResult::Deny {
             reason: "fallback unused".to_string(),
         },
-    ));
+    );
+    req2.submitted_at = now_epoch;
+    let _ = env.approval_queue.submit(req2);
 
     // Single READY line on stdout, flushed immediately, so the Node-side
     // globalSetup can parse the URL via the spawned child's stdout pipe.
