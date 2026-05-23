@@ -302,9 +302,12 @@ fn setup_real_test(test_name: &str) -> Option<(LiveGateway, String)> {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langchain_single_agent_registers_with_gateway_and_emits_started_done() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) =
+        setup_real_test("real_langchain_single_agent_registers_with_gateway_and_emits_started_done")
+    else {
+        return;
+    };
     let output = run_ts_script(
         "single_agent/langchain_agent.ts",
         &[
