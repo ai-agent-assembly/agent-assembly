@@ -31,8 +31,21 @@ use crate::budget::persistence::{default_budget_path, load_from_disk, save_to_di
 use crate::budget::{BudgetAlert, BudgetTracker};
 use tokio_util::sync::CancellationToken;
 
-/// Default audit directory relative to the system data directory (`~/.aa/audit`).
+/// Default audit directory.
+///
+/// Resolves in this order:
+/// 1. `AA_AUDIT_DIR` environment variable, when set (used by integration
+///    tests that need per-test audit isolation — AAASM-1601).
+/// 2. `dirs::data_dir()/aa/audit` (e.g. `~/.local/share/aa/audit` on
+///    Linux, `~/Library/Application Support/aa/audit` on macOS).
+/// 3. `./aa/audit` if neither the env var nor a system data dir is
+///    available.
 fn default_audit_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("AA_AUDIT_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("aa")
