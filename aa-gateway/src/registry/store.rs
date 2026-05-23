@@ -341,6 +341,50 @@ impl AgentRegistry {
         Ok((record, effects))
     }
 
+    /// Replay durable storage rows back into the in-memory registry.
+    ///
+    /// Called once at gateway boot, after
+    /// [`StorageBackend::migrate`](crate::storage::StorageBackend::migrate)
+    /// runs and before any request is served. Reads every row from
+    /// `storage.list_agents(AgentFilter::default())`, converts each through
+    /// [`storage_bridge::storage_to_runtime`](super::storage_bridge::storage_to_runtime),
+    /// and calls the sync [`register`](Self::register) — restored entries
+    /// reappear as root-level agents with status
+    /// [`Active`](crate::registry::AgentStatus::Active); lineage is not
+    /// persisted in this Sub-task and the next agent connect is expected
+    /// to refresh credential tokens / parent links.
+    ///
+    /// Returns the number of agents rehydrated. A no-storage registry
+    /// returns `Ok(0)` immediately.
+    ///
+    /// Already-registered IDs (e.g. an agent that re-connected before
+    /// rehydrate finished) are logged at `tracing::warn!` and skipped —
+    /// the freshest in-memory record wins.
+    ///
+    /// Introduced by Epic 18 Story S-I.2 (AAASM-1864).
+    pub async fn rehydrate_from_storage(&self) -> Result<usize, RegistryError> {
+        let Some(storage) = self.storage.as_ref() else {
+            return Ok(0);
+        };
+        let rows = storage.list_agents(crate::storage::AgentFilter::default()).await?;
+        let mut restored = 0usize;
+        for row in rows {
+            let runtime = super::storage_bridge::storage_to_runtime(row);
+            let agent_id = runtime.agent_id;
+            match self.register(runtime) {
+                Ok(()) => restored += 1,
+                Err(RegistryError::AlreadyRegistered(_)) => {
+                    tracing::warn!(
+                        ?agent_id,
+                        "rehydrate_from_storage: agent already registered in-memory, skipping"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(restored)
+    }
+
     /// Deregister an agent **and** delete the durable storage row.
     ///
     /// Async wrapper around [`deregister`](Self::deregister) that, on a
