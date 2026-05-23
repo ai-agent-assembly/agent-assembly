@@ -11,6 +11,7 @@ pub mod approval;
 pub mod audit;
 pub mod audit_reader;
 pub mod budget;
+pub mod dashboard_server;
 pub mod edges;
 pub mod engine;
 pub mod events;
