@@ -934,6 +934,101 @@ mod tests {
         backend.migrate().await.expect("second migrate should be a no-op");
     }
 
+    /// Migration 0002 must apply cleanly on a plain PostgreSQL cluster that
+    /// has no TimescaleDB extension installed — both DO blocks in the
+    /// migration swallow the relevant SQLSTATE codes and emit NOTICEs.
+    /// Verifies the graceful-fallback path so that production deployments
+    /// without the extension do not fail at startup.
+    ///
+    /// Runs only when `AAASM_DATABASE_URL` points at a vanilla PostgreSQL
+    /// instance, i.e. `TIMESCALEDB_AVAILABLE` is not set to `1`. The CI
+    /// `Test` job (postgres:18-alpine service) exercises this path.
+    #[tokio::test]
+    async fn migrate_0002_succeeds_when_timescaledb_extension_absent() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() == Ok("1") {
+            eprintln!(
+                "skipping plain-postgres test: TIMESCALEDB_AVAILABLE=1 (see migrate_0002_creates_hypertables_when_timescaledb_active for the present-path test)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend
+            .migrate()
+            .await
+            .expect("migrate must not fail on plain PostgreSQL");
+
+        let has_extension: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')")
+                .fetch_one(&backend.pool)
+                .await
+                .expect("query pg_extension");
+        assert!(
+            !has_extension,
+            "this test asserts the extension-absent path; if your CI installed TimescaleDB, set TIMESCALEDB_AVAILABLE=1"
+        );
+
+        let hypertable_schema_present: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '_timescaledb_internal')",
+        )
+        .fetch_one(&backend.pool)
+        .await
+        .expect("query information_schema.schemata");
+        assert!(
+            !hypertable_schema_present,
+            "TimescaleDB internal schema must NOT exist when extension is absent"
+        );
+    }
+
+    /// Migration 0002 must promote `audit_events` and `metrics` to
+    /// TimescaleDB hypertables when the extension is available. Exercises
+    /// the present-path: hypertable rows appear in
+    /// `timescaledb_information.hypertables` for both tables.
+    ///
+    /// Runs only when `TIMESCALEDB_AVAILABLE=1` is set — the CI
+    /// `timescaledb-tests` job (AAASM-1858 / SD-5) wires this against the
+    /// `timescale/timescaledb:latest-pg17` service container.
+    #[tokio::test]
+    async fn migrate_0002_creates_hypertables_when_timescaledb_active() {
+        if std::env::var("TIMESCALEDB_AVAILABLE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping timescaledb present-path test: TIMESCALEDB_AVAILABLE != 1 (set to 1 when AAASM_DATABASE_URL points at a TimescaleDB-enabled instance)"
+            );
+            return;
+        }
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend
+            .migrate()
+            .await
+            .expect("migrate must not fail on a TimescaleDB-enabled PostgreSQL");
+
+        let has_extension: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')")
+                .fetch_one(&backend.pool)
+                .await
+                .expect("query pg_extension");
+        assert!(
+            has_extension,
+            "TIMESCALEDB_AVAILABLE=1 was set but the timescaledb extension is not installed; \
+             check the docker image is timescale/timescaledb:latest-pg17"
+        );
+
+        let hypertable_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM timescaledb_information.hypertables \
+             WHERE hypertable_name IN ('audit_events', 'metrics')",
+        )
+        .fetch_one(&backend.pool)
+        .await
+        .expect("query timescaledb_information.hypertables");
+        assert_eq!(
+            hypertable_count, 2,
+            "expected both audit_events and metrics to be promoted to hypertables, found {hypertable_count}"
+        );
+    }
+
     /// Mint a fresh, unique [`AgentId`] so every test can scope its
     /// inserts and assertions against an isolated key — necessary because
     /// the audit_events table is shared across all postgres tests when
