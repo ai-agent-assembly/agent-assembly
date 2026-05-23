@@ -219,4 +219,3 @@ pub async fn run_retention_policy(
     dto.dry_run = engine.current_config().dry_run;
     Ok(Json(dto))
 }
-
