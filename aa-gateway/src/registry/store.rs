@@ -1116,6 +1116,27 @@ mod tree_tests {
         // children_of child = [grandchild]
         assert_eq!(reg.children_of(&c), vec![g]);
     }
+
+    #[test]
+    fn reparent_moves_child_to_new_parent() {
+        let reg = AgentRegistry::new();
+        let old_root = [0xA0u8; 16];
+        let new_root = [0xB0u8; 16];
+        let child = [0xC0u8; 16];
+
+        reg.register(make_record(old_root, None, None, 0)).unwrap();
+        reg.register(make_record(new_root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(old_root), None, 1)).unwrap();
+
+        reg.reparent(&child, &new_root).expect("reparent should succeed");
+
+        let moved = reg.get(&child).unwrap();
+        assert_eq!(moved.parent_key, Some(new_root));
+        assert_eq!(moved.root_agent_id, Some(new_root));
+        assert_eq!(moved.depth, 1);
+        assert!(reg.children_of(&old_root).is_empty());
+        assert_eq!(reg.children_of(&new_root), vec![child]);
+    }
 }
 
 #[cfg(test)]
