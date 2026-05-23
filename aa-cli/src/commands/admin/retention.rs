@@ -80,3 +80,56 @@ pub fn dispatch(args: RunRetentionArgs, ctx: &ResolvedContext, output: OutputFor
     println!("{rendered}");
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the wire shape sent to `POST /api/v1/admin/retention-policy/run`.
+    /// The OpenAPI spec + the aa-api `RunRetentionRequest` deserializer
+    /// both expect a single field named exactly `dry_run`.
+    #[test]
+    fn request_serializes_dry_run_true() {
+        let body = serde_json::to_value(RunRetentionRequest { dry_run: true }).expect("serialize");
+        assert_eq!(body, serde_json::json!({"dry_run": true}));
+    }
+
+    /// Default flag → `dry_run: false` on the wire.
+    #[test]
+    fn request_serializes_dry_run_false() {
+        let body = serde_json::to_value(RunRetentionRequest { dry_run: false }).expect("serialize");
+        assert_eq!(body, serde_json::json!({"dry_run": false}));
+    }
+
+    /// Pins the response shape we deserialize from the gateway.
+    /// Mirrors the aa-api `RetentionRunStatsDto` exactly so a future
+    /// rename / field addition surfaces here.
+    #[test]
+    fn response_deserializes_full_stats() {
+        let payload = serde_json::json!({
+            "ran_at": "2026-05-23T12:34:56Z",
+            "hot_rows": 100,
+            "compressed_rows": 20,
+            "archived_rows": 5,
+            "dropped_rows": 3,
+            "freed_bytes": 4096,
+            "dry_run": false
+        });
+        let stats: RetentionRunStatsDto = serde_json::from_value(payload).expect("deserialize");
+        assert_eq!(stats.ran_at, "2026-05-23T12:34:56Z");
+        assert_eq!(stats.hot_rows, 100);
+        assert_eq!(stats.compressed_rows, 20);
+        assert_eq!(stats.archived_rows, 5);
+        assert_eq!(stats.dropped_rows, 3);
+        assert_eq!(stats.freed_bytes, 4096);
+        assert!(!stats.dry_run);
+    }
+
+    /// The endpoint path the CLI POSTs to must match what the aa-api
+    /// router mounts (`aa-api/src/routes/mod.rs`) and what
+    /// `openapi/v1.yaml` advertises.
+    #[test]
+    fn endpoint_matches_openapi_path() {
+        assert_eq!(ENDPOINT, "/api/v1/admin/retention-policy/run");
+    }
+}
