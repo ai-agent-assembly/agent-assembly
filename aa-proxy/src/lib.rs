@@ -17,6 +17,7 @@
 //! - **Library** (`aa_proxy::run()`): embeddable in-process for integration tests
 //!   or constrained environments where subprocess spawning is unavailable.
 
+pub mod audit_jsonl;
 pub mod config;
 pub mod error;
 pub mod intercept;

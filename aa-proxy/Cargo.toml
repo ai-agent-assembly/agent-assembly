@@ -14,7 +14,7 @@ name = "aa-proxy"
 path = "src/main.rs"
 
 [dependencies]
-aa-core = { path = "../aa-core" }
+aa-core = { path = "../aa-core", features = ["serde"] }
 aa-proto   = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 tokio      = { version = "1", features = ["full"] }
