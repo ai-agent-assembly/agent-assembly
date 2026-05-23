@@ -15,7 +15,7 @@ importers:
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@tanstack/react-query':
-        specifier: ^5.80.5
+        specifier: ^5.100.13
         version: 5.100.13(react@19.2.6)
       '@tanstack/react-table':
         specifier: ^8.21.3

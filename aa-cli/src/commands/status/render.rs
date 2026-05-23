@@ -3,8 +3,79 @@
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 
-use super::models::{AgentRow, ApprovalsSummary, BudgetRow, RuntimeHealth, StatusSnapshot};
+use super::models::{AgentRow, ApprovalsSummary, BudgetRow, DeploymentOverview, RuntimeHealth, StatusSnapshot};
 use crate::output::OutputFormat;
+
+/// Build the multi-line deployment-overview header block as a `String`.
+///
+/// Pure function so render tests can assert on the exact output without
+/// capturing stdout. The shape follows the AAASM-1579 story description:
+///
+/// ```text
+/// Agent Assembly Status
+/// ─────────────────────────────────────
+///   Mode:      local
+///   Gateway:   http://localhost:7391
+///   Storage:   sqlite  (~/.aasm/local.db)
+///   Version:   0.0.1
+///   Uptime:    2h 15m 33s
+///   Health:    ✓ ok
+/// ─────────────────────────────────────
+/// ```
+///
+/// When `overview.health == "unreachable"` the body collapses to just the
+/// `Gateway` and `Health` lines since the other fields are unknown:
+///
+/// ```text
+/// Agent Assembly Status
+/// ─────────────────────────────────────
+///   Gateway:   http://localhost:7391
+///   Health:    ✗ unreachable
+/// ─────────────────────────────────────
+/// ```
+///
+/// The Storage line prefers `storage_path` for sqlite, falls back to
+/// `database_url_redacted` for postgres, and shows just the backend label
+/// when neither is reported.
+pub fn format_deployment_overview(overview: &DeploymentOverview) -> String {
+    let separator = "─────────────────────────────────────";
+    let mut out = String::new();
+    out.push_str("Agent Assembly Status\n");
+    out.push_str(separator);
+    out.push('\n');
+
+    if overview.health == "unreachable" {
+        out.push_str(&format!("  Gateway:   {}\n", overview.gateway_url));
+        out.push_str(&format!("  Health:    {}\n", "✗ unreachable".red()));
+    } else {
+        let storage_detail = overview
+            .storage_path
+            .as_deref()
+            .or(overview.database_url_redacted.as_deref());
+        let storage_line = match storage_detail {
+            Some(detail) => format!("{}  ({detail})", overview.storage_backend),
+            None => overview.storage_backend.clone(),
+        };
+        out.push_str(&format!("  Mode:      {}\n", overview.mode));
+        out.push_str(&format!("  Gateway:   {}\n", overview.gateway_url));
+        out.push_str(&format!("  Storage:   {storage_line}\n"));
+        out.push_str(&format!("  Version:   {}\n", overview.version));
+        out.push_str(&format!("  Uptime:    {}\n", format_duration(overview.uptime_secs)));
+        out.push_str(&format!("  Health:    {}\n", "✓ ok".green()));
+    }
+
+    out.push_str(separator);
+    out.push('\n');
+    out
+}
+
+/// Print the deployment-overview header block to stdout.
+///
+/// Thin wrapper around [`format_deployment_overview`] so the function used by
+/// `render_all` mirrors the other `render_*` section helpers.
+pub fn render_deployment_overview(overview: &DeploymentOverview) {
+    println!("{}", format_deployment_overview(overview));
+}
 
 /// Render the Runtime Health section to stdout.
 pub fn render_runtime_health(health: &RuntimeHealth) {
@@ -190,6 +261,7 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
             Err(e) => eprintln!("error serializing status to YAML: {e}"),
         },
         OutputFormat::Table => {
+            render_deployment_overview(&snapshot.deployment);
             render_runtime_health(&snapshot.runtime);
             render_agents_table(&snapshot.agents);
             render_approvals_summary(&snapshot.approvals);
@@ -201,6 +273,94 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strip_ansi(s: &str) -> String {
+        // The renderer wraps the health indicator in ANSI colour codes via the
+        // `colored` crate. Strip a minimal subset (CSI escapes) so substring
+        // assertions don't have to encode escape sequences.
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for tail in chars.by_ref() {
+                    if tail == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn local_sqlite_overview() -> DeploymentOverview {
+        DeploymentOverview {
+            mode: "local".to_string(),
+            gateway_url: "http://localhost:7391".to_string(),
+            storage_backend: "sqlite".to_string(),
+            storage_path: Some("~/.aasm/local.db".to_string()),
+            database_url_redacted: None,
+            version: "0.0.1".to_string(),
+            uptime_secs: 8133,
+            health: "ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_deployment_overview_shows_unreachable_indicator_when_health_is_unreachable() {
+        let overview = DeploymentOverview {
+            mode: "unknown".to_string(),
+            gateway_url: "http://localhost:7391".to_string(),
+            storage_backend: "unknown".to_string(),
+            storage_path: None,
+            database_url_redacted: None,
+            version: String::new(),
+            uptime_secs: 0,
+            health: "unreachable".to_string(),
+        };
+        let rendered = strip_ansi(&format_deployment_overview(&overview));
+        assert!(rendered.contains("  Gateway:   http://localhost:7391\n"));
+        assert!(rendered.contains("  Health:    ✗ unreachable\n"));
+        // The unreachable body collapses — Mode/Storage/Version/Uptime lines are omitted.
+        assert!(!rendered.contains("Mode:"));
+        assert!(!rendered.contains("Storage:"));
+        assert!(!rendered.contains("Version:"));
+        assert!(!rendered.contains("Uptime:"));
+    }
+
+    #[test]
+    fn format_deployment_overview_shows_redacted_db_url_for_remote_postgres() {
+        let overview = DeploymentOverview {
+            mode: "remote".to_string(),
+            gateway_url: "https://cp.company.internal:7391".to_string(),
+            storage_backend: "postgres".to_string(),
+            storage_path: None,
+            database_url_redacted: Some("postgresql://aasm:***@aasm-db:5432/aasm".to_string()),
+            version: "0.0.1".to_string(),
+            uptime_secs: 1_234_567,
+            health: "ok".to_string(),
+        };
+        let rendered = strip_ansi(&format_deployment_overview(&overview));
+        assert!(rendered.contains("  Mode:      remote\n"));
+        assert!(rendered.contains("  Gateway:   https://cp.company.internal:7391\n"));
+        assert!(rendered.contains("  Storage:   postgres  (postgresql://aasm:***@aasm-db:5432/aasm)\n"));
+        // Raw secret must never appear in the rendered output.
+        assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
+    fn format_deployment_overview_renders_local_sqlite_header() {
+        let rendered = strip_ansi(&format_deployment_overview(&local_sqlite_overview()));
+        assert!(rendered.starts_with("Agent Assembly Status\n"));
+        assert!(rendered.contains("  Mode:      local\n"));
+        assert!(rendered.contains("  Gateway:   http://localhost:7391\n"));
+        assert!(rendered.contains("  Storage:   sqlite  (~/.aasm/local.db)\n"));
+        assert!(rendered.contains("  Version:   0.0.1\n"));
+        assert!(rendered.contains("  Uptime:    2h 15m 33s\n"));
+        assert!(rendered.contains("  Health:    ✓ ok\n"));
+    }
 
     #[test]
     fn bar_chart_at_zero_percent() {
@@ -284,7 +444,18 @@ mod tests {
 
     #[test]
     fn render_status_json_contains_all_keys() {
+        use super::super::models::DeploymentOverview;
         let snapshot = StatusSnapshot {
+            deployment: DeploymentOverview {
+                mode: "local".to_string(),
+                gateway_url: "http://localhost:7391".to_string(),
+                storage_backend: "sqlite".to_string(),
+                storage_path: None,
+                database_url_redacted: None,
+                version: "0.0.1".to_string(),
+                uptime_secs: 120,
+                health: "ok".to_string(),
+            },
             runtime: RuntimeHealth {
                 reachable: true,
                 status: "ok".to_string(),
@@ -307,6 +478,9 @@ mod tests {
             },
         };
         let json = serde_json::to_string_pretty(&snapshot).unwrap();
+        assert!(json.contains("\"deployment\""));
+        assert!(json.contains("\"gateway_url\""));
+        assert!(json.contains("\"storage_backend\""));
         assert!(json.contains("\"runtime\""));
         assert!(json.contains("\"agents\""));
         assert!(json.contains("\"approvals\""));

@@ -74,6 +74,7 @@ async fn generate_managed_settings_returns_valid_json() {
         version: 1,
         name: "sample-test-policy".into(),
         rules: vec![],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");

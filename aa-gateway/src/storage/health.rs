@@ -1,6 +1,8 @@
 //! Storage health-report value types returned by
 //! [`StorageBackend::healthcheck`](super::StorageBackend::healthcheck).
 
+use super::timescale::TimescaleStats;
+
 /// Coarse health state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
@@ -34,4 +36,9 @@ pub struct StorageHealth {
     pub latency_ms: u32,
     /// Row-count snapshot taken during the probe.
     pub row_counts: RowCounts,
+    /// TimescaleDB chunk + compression rollup for `audit_events` + `metrics`,
+    /// populated only when the PostgreSQL backend is connected to a cluster
+    /// with the `timescaledb` extension installed. `None` on SQLite and on
+    /// plain PostgreSQL deployments (Epic 18 S-D #4).
+    pub timescale: Option<TimescaleStats>,
 }

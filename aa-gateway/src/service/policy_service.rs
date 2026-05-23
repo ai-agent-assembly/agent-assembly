@@ -26,7 +26,9 @@ use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
-use crate::engine::{DenyAction, EvaluationResult, PolicyEngine};
+use crate::engine::{
+    resolve_enforcement_mode, transform_for_observe_mode, DenyAction, EvaluationResult, PolicyEngine, ShadowEvent,
+};
 use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
@@ -243,6 +245,21 @@ impl PolicyServiceImpl {
     pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.ops_publisher = Some(publisher);
         self
+    }
+
+    /// Look up the per-agent `enforcement_mode` override for the request's agent.
+    ///
+    /// Returns `Some(_)` when the request's agent is registered AND its record
+    /// carries an explicit override; `None` in every other case (no registry
+    /// attached, agent unregistered, agent registered with no override). The
+    /// resolver in [`crate::engine::resolve_enforcement_mode`] treats `None` as
+    /// "inherit from policy default", so an unknown / unregistered agent
+    /// transparently falls back to live enforcement.
+    fn lookup_agent_enforcement_override(&self, req: &CheckActionRequest) -> Option<aa_core::EnforcementMode> {
+        let registry = self.registry.as_ref()?;
+        let proto_agent = req.agent_id.as_ref()?;
+        let agent_key = proto_agent_id_to_key(proto_agent);
+        registry.get(&agent_key)?.enforcement_mode
     }
 
     /// Evaluate a single request against the engine, returning the raw
@@ -612,7 +629,18 @@ impl PolicyServiceImpl {
     /// Build an `AuditEntry` from a request and evaluation result, then fire-and-forget
     /// via `try_send`. Maintains the hash chain by reading and updating `last_hash`.
     /// Never blocks the caller beyond the brief mutex acquisition.
-    async fn record_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse, eval: &EvaluationResult) {
+    ///
+    /// When `shadow` is `Some`, observe-mode evaluation suppressed a non-Allow
+    /// decision; the payload carries `dry_run: true` plus the original
+    /// `shadow_decision` and matched rule so the audit reader can render the
+    /// would-be event distinctly from live enforcement records.
+    async fn record_audit(
+        &self,
+        req: &CheckActionRequest,
+        response: &CheckActionResponse,
+        eval: &EvaluationResult,
+        shadow: Option<&ShadowEvent>,
+    ) {
         let proto_agent = match req.agent_id.as_ref() {
             Some(a) => a,
             None => return, // No agent identity — cannot construct entry.
@@ -623,13 +651,25 @@ impl PolicyServiceImpl {
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
-        let payload = serde_json::json!({
-            "action_type": req.action_type,
-            "decision": response.decision,
-            "reason": &response.reason,
-            "policy_rule": &response.policy_rule,
-            "latency_us": response.decision_latency_us,
-        })
+        let payload = match shadow {
+            Some(s) => serde_json::json!({
+                "action_type": req.action_type,
+                "decision": response.decision,
+                "reason": &response.reason,
+                "policy_rule": &response.policy_rule,
+                "latency_us": response.decision_latency_us,
+                "dry_run": true,
+                "shadow_decision": &s.shadow_decision,
+                "shadow_reason": &s.reason,
+            }),
+            None => serde_json::json!({
+                "action_type": req.action_type,
+                "decision": response.decision,
+                "reason": &response.reason,
+                "policy_rule": &response.policy_rule,
+                "latency_us": response.decision_latency_us,
+            }),
+        }
         .to_string();
 
         let mut last_hash = self.last_hash.lock().await;
@@ -811,6 +851,15 @@ impl PolicyService for PolicyServiceImpl {
 
         let (eval, latency_us, policy_rule) = self.evaluate_one(&req)?;
         self.maybe_emit_secret_alert(&req, &eval);
+
+        // AAASM-1564: apply observe-mode transform before the response is
+        // constructed. Resolution order is agent override → policy default
+        // (Enforce). When the transform returns a ShadowEvent, the decision
+        // has been rewritten to Allow and the shadow metadata flows into
+        // record_audit so the audit log captures the would-be decision.
+        let agent_override = self.lookup_agent_enforcement_override(&req);
+        let effective_mode = resolve_enforcement_mode(agent_override, aa_core::EnforcementMode::Enforce);
+        let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
         let deny_action = eval.deny_action;
 
         // If RequiresApproval, submit to the queue and block until decided.
@@ -853,7 +902,7 @@ impl PolicyService for PolicyServiceImpl {
         self.maybe_suspend_agent(&req, deny_action).await;
 
         // Fire-and-forget audit entry — never blocks the response.
-        self.record_audit(&req, &response, &eval).await;
+        self.record_audit(&req, &response, &eval, shadow_event.as_ref()).await;
 
         Ok(Response::new(response))
     }
@@ -865,7 +914,15 @@ impl PolicyService for PolicyServiceImpl {
         for req in &batch.requests {
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
             self.maybe_emit_secret_alert(req, &eval);
+
+            // AAASM-1564: same observe-mode transform as check_action above,
+            // applied per-request inside the batch so each request honours its
+            // agent's mode independently.
+            let agent_override = self.lookup_agent_enforcement_override(req);
+            let effective_mode = resolve_enforcement_mode(agent_override, aa_core::EnforcementMode::Enforce);
+            let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
             let deny_action = eval.deny_action;
+
             let resp = if let Some(approval_response) =
                 self.maybe_submit_approval(req, &eval, latency_us, &policy_rule).await
             {
@@ -874,7 +931,7 @@ impl PolicyService for PolicyServiceImpl {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
             self.maybe_suspend_agent(req, deny_action).await;
-            self.record_audit(req, &resp, &eval).await;
+            self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
         }
 

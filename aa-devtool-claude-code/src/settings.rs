@@ -82,6 +82,7 @@ mod tests {
             version: 1,
             name: "test".to_string(),
             rules,
+            enforcement_mode: aa_core::EnforcementMode::default(),
         }
     }
 

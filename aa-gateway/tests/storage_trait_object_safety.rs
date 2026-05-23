@@ -95,6 +95,7 @@ impl StorageBackend for NoopStorage {
             backend: "noop",
             latency_ms: 0,
             row_counts: RowCounts::default(),
+            timescale: None,
         })
     }
 }
@@ -142,5 +143,6 @@ fn supporting_types_are_publicly_constructible() {
         backend: "noop",
         latency_ms: 0,
         row_counts: RowCounts::default(),
+        timescale: None,
     };
 }

@@ -54,6 +54,48 @@ pub enum PolicyDecision {
     RequireApproval,
 }
 
+/// Controls whether policy decisions are applied to agent actions or only observed.
+///
+/// Mirrors the proto `EnforcementMode` enum defined in `proto/policy.proto` so
+/// pure-Rust code can reason about the enforcement posture without a proto
+/// dependency.
+///
+/// | Mode       | Proto value | Effect on `Deny` / `Redact` / `Pending` / `BudgetBlock` |
+/// |------------|-------------|---------------------------------------------------------|
+/// | `Enforce`  | 1           | Decision applied; agent blocked / payload redacted.     |
+/// | `Observe`  | 2           | Decision recorded as a shadow audit event; agent proceeds. |
+/// | `Disabled` | 3           | Policy evaluation skipped entirely (test environments). |
+///
+/// `Enforce` is the default — omitting `enforcement_mode` from any
+/// policy document or registration payload leaves existing behavior unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum EnforcementMode {
+    /// Default: deny blocks, redact strips, pending halts execution.
+    #[default]
+    Enforce,
+    /// Dry-run / sandbox: decisions computed and audited; no enforcement applied.
+    Observe,
+    /// Policy evaluation disabled entirely. Only valid in hermetic test environments.
+    Disabled,
+}
+
+impl EnforcementMode {
+    /// Convert from the proto integer value (1=Enforce … 3=Disabled).
+    ///
+    /// Returns `None` for 0 (UNSPECIFIED) and any out-of-range value so callers
+    /// can fall back to a server-side default rather than silently coercing.
+    pub fn from_proto_i32(v: i32) -> Option<Self> {
+        match v {
+            1 => Some(Self::Enforce),
+            2 => Some(Self::Observe),
+            3 => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
 /// A single rule inside a `PolicyDocument`.
 ///
 /// Gated on `alloc` because `action_pattern` is a `String`.
@@ -83,6 +125,11 @@ pub struct PolicyDocument {
     pub name: alloc::string::String,
     /// Ordered list of rules evaluated top-to-bottom.
     pub rules: alloc::vec::Vec<PolicyRule>,
+    /// Enforcement posture for this policy. Defaults to `Enforce` when the
+    /// field is absent from the source document, preserving pre-feature
+    /// behavior for all existing policies.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub enforcement_mode: EnforcementMode,
 }
 
 /// The outcome of a `PolicyEvaluator::evaluate` call.
@@ -277,6 +324,42 @@ mod tests {
     }
 
     #[test]
+    fn enforcement_mode_default_is_enforce() {
+        // Pre-feature semantics: omitting the mode anywhere must resolve to Enforce.
+        assert_eq!(EnforcementMode::default(), EnforcementMode::Enforce);
+    }
+
+    #[test]
+    fn enforcement_mode_from_proto_i32_round_trips_known_values() {
+        // The proto reserves 0 for UNSPECIFIED — it must NOT silently coerce
+        // to Enforce here; only valid 1/2/3 produce Some(_). Server-side
+        // resolution is responsible for picking a default for unspecified.
+        assert_eq!(EnforcementMode::from_proto_i32(1), Some(EnforcementMode::Enforce));
+        assert_eq!(EnforcementMode::from_proto_i32(2), Some(EnforcementMode::Observe));
+        assert_eq!(EnforcementMode::from_proto_i32(3), Some(EnforcementMode::Disabled));
+        assert_eq!(EnforcementMode::from_proto_i32(0), None);
+        assert_eq!(EnforcementMode::from_proto_i32(-1), None);
+        assert_eq!(EnforcementMode::from_proto_i32(99), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn enforcement_mode_serde_snake_case_round_trip() {
+        // The wire / YAML representation must use lowercase tokens — operators
+        // type `enforcement_mode: observe`, not `Observe`.
+        for (mode, expected) in [
+            (EnforcementMode::Enforce, "\"enforce\""),
+            (EnforcementMode::Observe, "\"observe\""),
+            (EnforcementMode::Disabled, "\"disabled\""),
+        ] {
+            let json = serde_json::to_string(&mode).unwrap();
+            assert_eq!(json, expected, "{mode:?} must serialise as {expected}");
+            let back: EnforcementMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, mode, "{expected} must deserialise back to {mode:?}");
+        }
+    }
+
+    #[test]
     #[cfg(feature = "alloc")]
     fn policy_rule_field_access_clone_eq() {
         let rule = PolicyRule {
@@ -299,6 +382,7 @@ mod tests {
                 action_pattern: alloc::string::String::from("*"),
                 decision: PolicyDecision::Allow,
             }],
+            enforcement_mode: EnforcementMode::default(),
         };
         let cloned = doc.clone();
         assert_eq!(doc, cloned);
@@ -306,6 +390,26 @@ mod tests {
         assert_eq!(doc.name, "test-policy");
         assert_eq!(doc.rules.len(), 1);
         assert_eq!(doc.rules[0].decision, PolicyDecision::Allow);
+    }
+
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    #[test]
+    fn policy_document_enforcement_mode_parses_observe_from_yaml() {
+        // An operator-authored sandbox policy: `enforcement_mode: observe`
+        // at the document root must surface as EnforcementMode::Observe.
+        let yaml = "version: 1\nname: sandbox-policy\nenforcement_mode: observe\nrules: []\n";
+        let doc: PolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.enforcement_mode, EnforcementMode::Observe);
+    }
+
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    #[test]
+    fn policy_document_enforcement_mode_defaults_to_enforce_when_absent() {
+        // Backward compatibility: pre-feature YAML / JSON policy documents
+        // never had this field, so deserialising one must produce Enforce.
+        let yaml = "version: 1\nname: legacy-policy\nrules: []\n";
+        let doc: PolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(doc.enforcement_mode, EnforcementMode::Enforce);
     }
 
     #[test]

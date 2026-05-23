@@ -111,6 +111,13 @@ async fn run_local() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Existing gRPC + policy serving path. Preserves the pre-Epic-17
 /// invocation contract `aasm-gateway --policy /path [--listen ...]`.
+///
+/// Epic 18 Story S-I.2 (AAASM-1864): the AgentRegistry is now backed by
+/// the durable SQLite [`StorageBackend`](aa_gateway::storage::StorageBackend)
+/// at `GatewayConfig.local.storage_path` (default `~/.aasm/local.db`).
+/// On boot, every previously-registered agent is replayed via
+/// `AgentRegistry::rehydrate_from_storage`; subsequent gRPC Register /
+/// Deregister calls write through to the same backend.
 async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let policy = cli
         .policy
@@ -120,7 +127,50 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(policy = %policy.display(), "loading policy");
 
-    let registry = Arc::new(aa_gateway::AgentRegistry::new());
+    // Open the durable SQLite-backed StorageBackend, applying migrations
+    // before the gRPC service comes up. Falls back to the file path from
+    // GatewayConfig (defaults to `~/.aasm/local.db` when no config file
+    // is present) so legacy callers get persistence without changing
+    // their CLI invocation.
+    let cfg = aa_core::config::GatewayConfig::load()?;
+    let storage = aa_gateway::storage::open_sqlite_backend(&cfg.local.storage_path).await?;
+
+    let registry = Arc::new(aa_gateway::AgentRegistry::new().with_storage(storage.clone()));
+    let restored = registry.rehydrate_from_storage().await?;
+    if restored > 0 {
+        tracing::info!(restored, "rehydrated agents from durable storage");
+    }
+
+    // Epic 18 Story S-I.4 (AAASM-1870): spawn the durable retention
+    // engine background loop. The engine owns the hot/warm/cold sweep
+    // schedule from `cfg.storage.retention` and runs for the lifetime
+    // of the gateway process.
+    //
+    // Graceful failure semantics — if the retention config is invalid
+    // (e.g. aa-core's 5-field cron default that the parser rejects),
+    // log the error and continue without retention. The gateway is
+    // still useful without scheduled sweeps; the operator can fix
+    // their YAML and restart.
+    let retention_shutdown = tokio_util::sync::CancellationToken::new();
+    let _retention_handle = match aa_gateway::storage::spawn_retention_engine(
+        storage.clone(),
+        &cfg.storage.retention,
+        retention_shutdown.clone(),
+    ) {
+        Ok((_engine, handle)) => {
+            tracing::info!(
+                schedule = %cfg.storage.retention.schedule,
+                hot_days = cfg.storage.retention.hot_days,
+                warm_days = cfg.storage.retention.warm_days,
+                "retention engine started"
+            );
+            Some(handle)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "retention engine disabled — config rejected by validator");
+            None
+        }
+    };
 
     // Create the approval queue — gateway-owned, shared with the runtime via gRPC.
     let approval_queue = aa_runtime::approval::ApprovalQueue::new();
@@ -133,9 +183,25 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let _webhook_handle = aa_gateway::events::startup::maybe_spawn_webhook(&approval_queue, budget_alert_rx);
 
     if let Some(socket_path) = &cli.socket {
-        aa_gateway::server::serve_uds(&policy, socket_path, registry, approval_queue, budget_alert_tx).await
+        aa_gateway::server::serve_uds(
+            &policy,
+            socket_path,
+            registry,
+            approval_queue,
+            budget_alert_tx,
+            Some(storage),
+        )
+        .await
     } else {
-        aa_gateway::server::serve_tcp(&policy, &cli.listen, registry, approval_queue, budget_alert_tx).await
+        aa_gateway::server::serve_tcp(
+            &policy,
+            &cli.listen,
+            registry,
+            approval_queue,
+            budget_alert_tx,
+            Some(storage),
+        )
+        .await
     }
 }
 

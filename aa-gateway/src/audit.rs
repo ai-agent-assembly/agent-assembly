@@ -7,11 +7,14 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use aa_core::AuditEntry;
+
+use crate::storage::{audit_entry_to_storage_event, StorageBackend};
 
 /// Append-only JSONL audit writer backed by an mpsc channel.
 ///
@@ -21,6 +24,19 @@ pub struct AuditWriter {
     receiver: mpsc::Receiver<AuditEntry>,
     file: tokio::io::BufWriter<tokio::fs::File>,
     path: PathBuf,
+    /// Optional durable [`StorageBackend`] for the dual-sink path.
+    ///
+    /// When set, every successful JSONL write is followed by
+    /// `storage.append_audit_event(&storage_event)`. A storage write
+    /// failure is logged at `tracing::error!` but does not stop the
+    /// pipeline — JSONL stays the tamper-evident primary record, and a
+    /// subsequent restart can replay missed entries from the JSONL file.
+    ///
+    /// `None` is the legacy behaviour preserved for existing callers that
+    /// construct AuditWriter without storage.
+    ///
+    /// Introduced by Epic 18 Story S-I.3 (AAASM-1867).
+    storage: Option<Arc<dyn StorageBackend>>,
 }
 
 impl AuditWriter {
@@ -46,7 +62,24 @@ impl AuditWriter {
             .await?;
         let file = tokio::io::BufWriter::new(file);
 
-        Ok(Self { receiver, file, path })
+        Ok(Self {
+            receiver,
+            file,
+            path,
+            storage: None,
+        })
+    }
+
+    /// Attach a durable [`StorageBackend`] for the dual-sink path.
+    ///
+    /// After this builder is applied, every successful JSONL write is
+    /// followed by `storage.append_audit_event(...)`. Storage write
+    /// failures are logged but do not stop the JSONL pipeline.
+    ///
+    /// Introduced by Epic 18 Story S-I.3 (AAASM-1867).
+    pub fn with_storage(mut self, storage: Arc<dyn StorageBackend>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// Serialize one `AuditEntry` as a JSON line and append to the file.
@@ -62,6 +95,13 @@ impl AuditWriter {
     ///
     /// Drains the channel until the sender is dropped (server shutdown).
     /// Individual write failures are logged but do not kill the pipeline.
+    ///
+    /// When `with_storage` has been applied (Epic 18 Story S-I.3), each
+    /// successful JSONL write is followed by
+    /// `storage.append_audit_event(...)` so post-restart queries against
+    /// the StorageBackend see the same events the JSONL file holds. The
+    /// JSONL chain remains the tamper-evident primary record; a storage
+    /// failure logs at `tracing::error!` but does not halt the pipeline.
     pub async fn run(mut self) {
         tracing::info!(path = %self.path.display(), "audit writer started");
         while let Some(entry) = self.receiver.recv().await {
@@ -71,6 +111,20 @@ impl AuditWriter {
                     seq = entry.seq(),
                     "audit write failed"
                 );
+                // Skip the storage sink when the JSONL write itself failed —
+                // we don't want storage to diverge from the tamper-evident
+                // chain.
+                continue;
+            }
+            if let Some(storage) = self.storage.as_ref() {
+                let storage_event = audit_entry_to_storage_event(&entry);
+                if let Err(err) = storage.append_audit_event(&storage_event).await {
+                    tracing::error!(
+                        error = %err,
+                        seq = entry.seq(),
+                        "audit storage write failed (JSONL line persisted; replay from JSONL on restart)"
+                    );
+                }
             }
         }
         // Channel closed — sender dropped during shutdown. Flush remaining data.

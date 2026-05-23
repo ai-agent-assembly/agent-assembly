@@ -442,6 +442,7 @@ mod tests {
             version: 1,
             name: "test".to_string(),
             rules: vec![],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         }
     }
 
@@ -453,6 +454,7 @@ mod tests {
                 action_pattern: pattern.to_string(),
                 decision,
             }],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         }
     }
 
@@ -467,6 +469,7 @@ mod tests {
                     decision: PolicyDecision::Deny,
                 })
                 .collect(),
+            enforcement_mode: aa_core::EnforcementMode::default(),
         }
     }
 
@@ -580,6 +583,7 @@ mod tests {
                     decision: PolicyDecision::Deny,
                 },
             ],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         };
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();
@@ -732,6 +736,7 @@ mod tests {
                 action_pattern: "mcp_tool:filesystem:read_file".to_string(),
                 decision: PolicyDecision::RequireApproval,
             }],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         };
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();

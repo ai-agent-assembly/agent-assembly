@@ -4,9 +4,49 @@ use chrono::Utc;
 
 use super::client::StatusClient;
 use super::models::{
-    AgentResponse, AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, CostResponse, HealthResponse,
-    RuntimeHealth, StatusSnapshot,
+    redact_database_url, AgentResponse, AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, CostResponse,
+    DeploymentOverview, HealthResponse, HealthzResponse, RuntimeHealth, StatusSnapshot,
 };
+
+/// Compose the deployment-overview display model from a `/healthz` response.
+///
+/// `gateway_url` is propagated verbatim — it is the base URL the CLI was
+/// configured to reach (typically the user's `--gateway` flag or default
+/// `http://localhost:7391`).
+///
+/// When `healthz` is `None` (the gateway did not respond), the overview is
+/// populated with `health = "unreachable"` and `mode` / `storage_backend` set
+/// to `"unknown"`. `gateway_url` is still surfaced so the operator can see
+/// what address was probed.
+///
+/// When `healthz` is `Some`, the wire response is mapped 1-to-1 with the
+/// exception of `database_url`, which is run through [`redact_database_url`]
+/// before being assigned to `database_url_redacted`. The raw wire value never
+/// reaches the display layer.
+pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzResponse>) -> DeploymentOverview {
+    match healthz {
+        Some(h) => DeploymentOverview {
+            mode: h.mode,
+            gateway_url: gateway_url.to_string(),
+            storage_backend: h.storage,
+            storage_path: h.storage_path,
+            database_url_redacted: h.database_url.as_deref().map(redact_database_url),
+            version: h.version,
+            uptime_secs: h.uptime_secs,
+            health: "ok".to_string(),
+        },
+        None => DeploymentOverview {
+            mode: "unknown".to_string(),
+            gateway_url: gateway_url.to_string(),
+            storage_backend: "unknown".to_string(),
+            storage_path: None,
+            database_url_redacted: None,
+            version: String::new(),
+            uptime_secs: 0,
+            health: "unreachable".to_string(),
+        },
+    }
+}
 
 /// Convert a health API response into a display-ready `RuntimeHealth`.
 pub fn build_runtime_health(resp: Option<HealthResponse>) -> RuntimeHealth {
@@ -71,8 +111,9 @@ pub fn build_approvals_summary(approvals: &[ApprovalResponse]) -> ApprovalsSumma
 
 /// Fetch all status data from the gateway in parallel and compose a `StatusSnapshot`.
 pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
-    let (health_result, agents_result, approvals_result, costs_result) = tokio::join!(
+    let (health_result, healthz_result, agents_result, approvals_result, costs_result) = tokio::join!(
         client.check_health(),
+        client.check_healthz(),
         client.list_agents(),
         client.list_approvals(),
         client.get_costs(),
@@ -93,7 +134,10 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         },
     };
 
+    let deployment = build_deployment_overview(client.base_url(), healthz_result.ok());
+
     StatusSnapshot {
+        deployment,
         runtime,
         agents,
         approvals,
@@ -177,6 +221,61 @@ mod tests {
 
     use super::super::models::RecentEventResponse;
     use super::*;
+
+    #[test]
+    fn build_deployment_overview_marks_health_unreachable_when_healthz_absent() {
+        let overview = build_deployment_overview("http://localhost:7391", None);
+        assert_eq!(overview.gateway_url, "http://localhost:7391");
+        assert_eq!(overview.health, "unreachable");
+        assert_eq!(overview.mode, "unknown");
+        assert_eq!(overview.storage_backend, "unknown");
+        assert!(overview.storage_path.is_none());
+        assert!(overview.database_url_redacted.is_none());
+        assert_eq!(overview.uptime_secs, 0);
+        assert!(overview.version.is_empty());
+    }
+
+    #[test]
+    fn build_deployment_overview_redacts_database_url_for_remote_postgres() {
+        let healthz = HealthzResponse {
+            mode: "remote".to_string(),
+            version: "0.0.1".to_string(),
+            storage: "postgres".to_string(),
+            uptime_secs: 1_234_567,
+            storage_path: None,
+            database_url: Some("postgresql://aasm:secret@aasm-db:5432/aasm".to_string()),
+        };
+        let overview = build_deployment_overview("https://cp.company.internal:7391", Some(healthz));
+        assert_eq!(overview.mode, "remote");
+        assert_eq!(overview.storage_backend, "postgres");
+        assert!(overview.storage_path.is_none());
+        assert_eq!(
+            overview.database_url_redacted.as_deref(),
+            Some("postgresql://aasm:***@aasm-db:5432/aasm")
+        );
+        assert_eq!(overview.health, "ok");
+    }
+
+    #[test]
+    fn build_deployment_overview_populates_fields_from_local_sqlite_healthz() {
+        let healthz = HealthzResponse {
+            mode: "local".to_string(),
+            version: "0.0.1".to_string(),
+            storage: "sqlite".to_string(),
+            uptime_secs: 8133,
+            storage_path: Some("~/.aasm/local.db".to_string()),
+            database_url: None,
+        };
+        let overview = build_deployment_overview("http://localhost:7391", Some(healthz));
+        assert_eq!(overview.mode, "local");
+        assert_eq!(overview.gateway_url, "http://localhost:7391");
+        assert_eq!(overview.storage_backend, "sqlite");
+        assert_eq!(overview.storage_path.as_deref(), Some("~/.aasm/local.db"));
+        assert!(overview.database_url_redacted.is_none());
+        assert_eq!(overview.version, "0.0.1");
+        assert_eq!(overview.uptime_secs, 8133);
+        assert_eq!(overview.health, "ok");
+    }
 
     #[test]
     fn build_runtime_health_reachable() {
