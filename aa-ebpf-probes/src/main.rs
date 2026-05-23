@@ -588,6 +588,19 @@ fn try_sys_rename_legacy(ctx: &ProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+/// kretprobe paired with [`aa_sys_rename_legacy`] — emits the event
+/// using the source path stashed by the legacy entry kprobe.
+/// Delegates to the same handler as the at-variant retprobe because
+/// both share the `RENAME_TMP` / `RENAME_ENTRY_TS` maps keyed by
+/// `pid_tgid`.
+#[kretprobe]
+pub fn aa_sys_rename_legacy_ret(ctx: RetProbeContext) -> u32 {
+    match try_sys_rename_ret(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
