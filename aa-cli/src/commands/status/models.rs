@@ -89,6 +89,91 @@ pub struct HealthzResponse {
     pub database_url: Option<String>,
 }
 
+/// Hot-tier row-count snapshot returned inside the `/api/v1/admin/status`
+/// storage block (AAASM-1591 / Epic 18 S-J).
+///
+/// Field names mirror the server-side `aa_gateway::routes::admin_status::
+/// RowCountsBlock` wire contract verbatim. `#[serde(deny_unknown_fields)]`
+/// is intentionally omitted so future warm-/cold-tier counts can be added
+/// server-side without breaking older CLIs.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AdminRowCountsBlock {
+    /// Audit events in the hot tier (uncompressed, queryable).
+    pub audit_events_hot: u64,
+    /// Registered agents.
+    pub agents: u64,
+    /// Total policy versions across all policy names.
+    pub policy_versions: u64,
+}
+
+/// TimescaleDB chunk + compression rollup, present in the
+/// `/api/v1/admin/status` storage block only when the PostgreSQL backend
+/// is connected to a cluster with the TimescaleDB extension installed.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct AdminTimescaleDbBlock {
+    /// Always `true` when the block is present — present-but-disabled is
+    /// reserved for a future state.
+    pub enabled: bool,
+    /// Total number of chunks across the gateway's hypertables.
+    pub total_chunks: u32,
+    /// Subset of `total_chunks` already compressed by the auto-policy.
+    pub compressed_chunks: u32,
+    /// Aggregate uncompressed/compressed size ratio as a human-friendly
+    /// float (e.g. `11.4` = 11.4× size reduction).
+    pub compression_ratio: f32,
+}
+
+/// Storage health block returned under `body.storage` in the
+/// `/api/v1/admin/status` response (AAASM-1591 / Epic 18 S-J).
+///
+/// Mirrors the server-side `aa_gateway::routes::admin_status::
+/// StorageHealthBlock` wire contract. Per-backend optional fields
+/// follow the same shape: `path` only on sqlite, `database_url`
+/// (already redacted by the gateway) only on postgres, `timescaledb`
+/// only when the TimescaleDB extension is active.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct AdminStorageHealthBlock {
+    /// Static backend identifier — e.g. `"sqlite"`, `"postgres"`,
+    /// `"memory"`, or `"unknown"` when the probe itself failed.
+    pub backend: String,
+    /// Local-mode SQLite file path. Present only when
+    /// `backend == "sqlite"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// PostgreSQL connection URL — already redacted server-side, so the
+    /// CLI never sees the raw password. Present only when
+    /// `backend == "postgres"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_url: Option<String>,
+    /// Coarse health label: `"ok"`, `"degraded"`, or `"unavailable"`.
+    pub health: String,
+    /// Latency of the gateway's healthcheck probe in milliseconds.
+    pub latency_ms: u32,
+    /// Hot-tier row-count snapshot taken during the probe.
+    pub row_counts: AdminRowCountsBlock,
+    /// TimescaleDB rollup, present only when the extension is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timescaledb: Option<AdminTimescaleDbBlock>,
+}
+
+/// Top-level response from `GET /api/v1/admin/status`.
+///
+/// Mirrors `aa_gateway::routes::admin_status::AdminStatusBody`. The CLI
+/// only fetches and renders the `storage` block today; `mode`, `version`,
+/// and `uptime_secs` are deserialised so the response can be round-
+/// tripped if a future consumer needs them.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct AdminStatusResponse {
+    /// Deployment mode label: `"local"` or `"remote"`.
+    pub mode: String,
+    /// Gateway crate version.
+    pub version: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Storage health block.
+    pub storage: AdminStorageHealthBlock,
+}
+
 /// Display model for the `aasm status` deployment-overview header.
 ///
 /// The serialised shape is the JSON contract for `aasm status --json` — field
@@ -267,6 +352,12 @@ pub struct StatusSnapshot {
     pub agents: Vec<AgentRow>,
     pub approvals: ApprovalsSummary,
     pub budget: BudgetRow,
+    /// Storage health block from `/api/v1/admin/status`, present when the
+    /// gateway exposes the route (AAASM-1591). Older gateways that only
+    /// serve `/healthz` leave this `None` and the storage section is
+    /// omitted from the rendered output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_health: Option<AdminStorageHealthBlock>,
 }
 
 #[cfg(test)]
@@ -373,6 +464,110 @@ mod tests {
             resp.database_url.as_deref(),
             Some("postgresql://user:secret@aasm-db:5432/aasm")
         );
+    }
+
+    #[test]
+    fn admin_row_counts_block_deserialises_documented_keys() {
+        let json = r#"{"audit_events_hot": 14293, "agents": 8, "policy_versions": 3}"#;
+        let block: AdminRowCountsBlock = serde_json::from_str(json).unwrap();
+        assert_eq!(block.audit_events_hot, 14_293);
+        assert_eq!(block.agents, 8);
+        assert_eq!(block.policy_versions, 3);
+    }
+
+    #[test]
+    fn admin_row_counts_block_tolerates_extra_keys() {
+        // Future warm/cold tier additions must not break older clients.
+        let json = r#"{
+            "audit_events_hot": 1,
+            "audit_events_warm": 99,
+            "agents": 1,
+            "policy_versions": 1
+        }"#;
+        let block: AdminRowCountsBlock = serde_json::from_str(json).unwrap();
+        assert_eq!(block.audit_events_hot, 1);
+    }
+
+    #[test]
+    fn admin_status_response_deserialises_postgres_with_timescaledb() {
+        let json = r#"{
+            "mode": "remote",
+            "version": "0.0.1",
+            "uptime_secs": 86400,
+            "storage": {
+                "backend": "postgres",
+                "database_url": "postgresql://aasm:***@db.internal:5432/aasm",
+                "health": "ok",
+                "latency_ms": 3,
+                "row_counts": {
+                    "audit_events_hot": 14293,
+                    "agents": 8,
+                    "policy_versions": 3
+                },
+                "timescaledb": {
+                    "enabled": true,
+                    "total_chunks": 12,
+                    "compressed_chunks": 8,
+                    "compression_ratio": 11.4
+                }
+            }
+        }"#;
+        let resp: AdminStatusResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.mode, "remote");
+        assert_eq!(resp.storage.backend, "postgres");
+        assert_eq!(resp.storage.health, "ok");
+        assert_eq!(resp.storage.latency_ms, 3);
+        assert!(resp.storage.path.is_none(), "postgres branch must omit path");
+        assert_eq!(
+            resp.storage.database_url.as_deref(),
+            Some("postgresql://aasm:***@db.internal:5432/aasm")
+        );
+        let ts = resp.storage.timescaledb.expect("timescaledb block present");
+        assert_eq!(ts.total_chunks, 12);
+        assert_eq!(ts.compressed_chunks, 8);
+    }
+
+    #[test]
+    fn admin_status_response_deserialises_sqlite_without_timescaledb() {
+        let json = r#"{
+            "mode": "local",
+            "version": "0.0.1",
+            "uptime_secs": 60,
+            "storage": {
+                "backend": "sqlite",
+                "path": "~/.aasm/local.db",
+                "health": "ok",
+                "latency_ms": 1,
+                "row_counts": {
+                    "audit_events_hot": 47,
+                    "agents": 2,
+                    "policy_versions": 1
+                }
+            }
+        }"#;
+        let resp: AdminStatusResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.storage.backend, "sqlite");
+        assert_eq!(resp.storage.path.as_deref(), Some("~/.aasm/local.db"));
+        assert!(
+            resp.storage.database_url.is_none(),
+            "sqlite branch must omit database_url"
+        );
+        assert!(resp.storage.timescaledb.is_none(), "sqlite must omit timescaledb block");
+    }
+
+    #[test]
+    fn admin_timescaledb_block_deserialises_documented_keys() {
+        let json = r#"{
+            "enabled": true,
+            "total_chunks": 12,
+            "compressed_chunks": 8,
+            "compression_ratio": 11.4
+        }"#;
+        let block: AdminTimescaleDbBlock = serde_json::from_str(json).unwrap();
+        assert!(block.enabled);
+        assert_eq!(block.total_chunks, 12);
+        assert_eq!(block.compressed_chunks, 8);
+        assert!((block.compression_ratio - 11.4).abs() < 0.05);
     }
 
     #[test]

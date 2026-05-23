@@ -3,7 +3,9 @@
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 
-use super::models::{AgentRow, ApprovalsSummary, BudgetRow, DeploymentOverview, RuntimeHealth, StatusSnapshot};
+use super::models::{
+    AdminStorageHealthBlock, AgentRow, ApprovalsSummary, BudgetRow, DeploymentOverview, RuntimeHealth, StatusSnapshot,
+};
 use crate::output::OutputFormat;
 
 /// Build the multi-line deployment-overview header block as a `String`.
@@ -75,6 +77,68 @@ pub fn format_deployment_overview(overview: &DeploymentOverview) -> String {
 /// `render_all` mirrors the other `render_*` section helpers.
 pub fn render_deployment_overview(overview: &DeploymentOverview) {
     println!("{}", format_deployment_overview(overview));
+}
+
+/// Format the Storage health section as a `String`.
+///
+/// Pure function so unit tests can assert on the exact output without
+/// capturing stdout. Layout follows the AAASM-1591 story description
+/// — `Backend` first, then per-backend identifier (`Path` on sqlite,
+/// `DB` on postgres), then health + latency, row counts, and the
+/// optional TimescaleDB line.
+pub fn format_storage_health(block: &AdminStorageHealthBlock) -> String {
+    let mut out = String::new();
+    out.push_str("STORAGE\n");
+    out.push_str("───────\n");
+    out.push_str(&format!("  Backend:     {}\n", block.backend));
+    if let Some(path) = block.path.as_deref() {
+        out.push_str(&format!("  Path:        {path}\n"));
+    }
+    if let Some(url) = block.database_url.as_deref() {
+        out.push_str(&format!("  DB:          {url}\n"));
+    }
+    let indicator = match block.health.as_str() {
+        "ok" => "✓ ok".green().to_string(),
+        "degraded" => "⚠ degraded".yellow().to_string(),
+        _ => "✗ unavailable".red().to_string(),
+    };
+    out.push_str(&format!("  DB Health:   {}  ({}ms)\n", indicator, block.latency_ms));
+    out.push_str(&format!(
+        "  Rows:        audit_events: {} hot\n",
+        format_count(block.row_counts.audit_events_hot)
+    ));
+    out.push_str(&format!(
+        "               agents: {}  |  policies: {}\n",
+        format_count(block.row_counts.agents),
+        format_count(block.row_counts.policy_versions)
+    ));
+    if let Some(ts) = block.timescaledb.as_ref() {
+        let ts_indicator = "✓ active".green();
+        out.push_str(&format!(
+            "  TimescaleDB: {}  ({}/{} chunks compressed, {:.1}× ratio)\n",
+            ts_indicator, ts.compressed_chunks, ts.total_chunks, ts.compression_ratio,
+        ));
+    }
+    out
+}
+
+/// Print the Storage health section to stdout.
+pub fn render_storage_health(block: &AdminStorageHealthBlock) {
+    println!("{}", format_storage_health(block));
+}
+
+/// Format a `u64` row count with thousands separators (e.g. `14_293` → `"14,293"`).
+fn format_count(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(bytes.len() + bytes.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
 }
 
 /// Render the Runtime Health section to stdout.
@@ -262,6 +326,9 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
         },
         OutputFormat::Table => {
             render_deployment_overview(&snapshot.deployment);
+            if let Some(storage_health) = snapshot.storage_health.as_ref() {
+                render_storage_health(storage_health);
+            }
             render_runtime_health(&snapshot.runtime);
             render_agents_table(&snapshot.agents);
             render_approvals_summary(&snapshot.approvals);
@@ -306,6 +373,97 @@ mod tests {
             uptime_secs: 8133,
             health: "ok".to_string(),
         }
+    }
+
+    fn sqlite_storage_block() -> AdminStorageHealthBlock {
+        use super::super::models::AdminRowCountsBlock;
+        AdminStorageHealthBlock {
+            backend: "sqlite".into(),
+            path: Some("~/.aasm/local.db".into()),
+            database_url: None,
+            health: "ok".into(),
+            latency_ms: 1,
+            row_counts: AdminRowCountsBlock {
+                audit_events_hot: 47,
+                agents: 2,
+                policy_versions: 1,
+            },
+            timescaledb: None,
+        }
+    }
+
+    fn postgres_timescale_storage_block() -> AdminStorageHealthBlock {
+        use super::super::models::{AdminRowCountsBlock, AdminTimescaleDbBlock};
+        AdminStorageHealthBlock {
+            backend: "postgres".into(),
+            path: None,
+            database_url: Some("postgresql://aasm-user:***@db.internal:5432/aasm".into()),
+            health: "ok".into(),
+            latency_ms: 3,
+            row_counts: AdminRowCountsBlock {
+                audit_events_hot: 14_293,
+                agents: 8,
+                policy_versions: 3,
+            },
+            timescaledb: Some(AdminTimescaleDbBlock {
+                enabled: true,
+                total_chunks: 12,
+                compressed_chunks: 8,
+                compression_ratio: 11.4,
+            }),
+        }
+    }
+
+    #[test]
+    fn format_storage_health_renders_sqlite_block_without_timescaledb_line() {
+        let rendered = strip_ansi(&format_storage_health(&sqlite_storage_block()));
+        assert!(rendered.starts_with("STORAGE\n"));
+        assert!(rendered.contains("  Backend:     sqlite\n"));
+        assert!(rendered.contains("  Path:        ~/.aasm/local.db\n"));
+        assert!(rendered.contains("  DB Health:   ✓ ok  (1ms)\n"));
+        assert!(rendered.contains("  Rows:        audit_events: 47 hot\n"));
+        assert!(rendered.contains("               agents: 2  |  policies: 1\n"));
+        assert!(
+            !rendered.contains("TimescaleDB"),
+            "sqlite block must not render TimescaleDB line"
+        );
+        assert!(
+            !rendered.contains("DB:"),
+            "sqlite block must not render DB: (postgres-only) line"
+        );
+    }
+
+    #[test]
+    fn format_storage_health_renders_postgres_block_with_redacted_url_and_timescaledb() {
+        let rendered = strip_ansi(&format_storage_health(&postgres_timescale_storage_block()));
+        assert!(rendered.contains("  Backend:     postgres\n"));
+        assert!(rendered.contains("  DB:          postgresql://aasm-user:***@db.internal:5432/aasm\n"));
+        // Server-side redaction means the raw password must never appear.
+        assert!(!rendered.contains("secret"));
+        assert!(rendered.contains("  DB Health:   ✓ ok  (3ms)\n"));
+        // Thousands separator on the hot count.
+        assert!(rendered.contains("  Rows:        audit_events: 14,293 hot\n"));
+        assert!(rendered.contains("  TimescaleDB: ✓ active  (8/12 chunks compressed, 11.4× ratio)\n"));
+        // Postgres branch must not render the sqlite-only Path line.
+        assert!(!rendered.contains("Path:"));
+    }
+
+    #[test]
+    fn format_storage_health_renders_unavailable_indicator() {
+        let mut block = sqlite_storage_block();
+        block.health = "unavailable".into();
+        block.latency_ms = 0;
+        let rendered = strip_ansi(&format_storage_health(&block));
+        assert!(rendered.contains("  DB Health:   ✗ unavailable  (0ms)\n"));
+    }
+
+    #[test]
+    fn format_count_inserts_thousands_separators() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(7), "7");
+        assert_eq!(format_count(1_000), "1,000");
+        assert_eq!(format_count(14_293), "14,293");
+        assert_eq!(format_count(1_234_567), "1,234,567");
     }
 
     #[test]
@@ -476,6 +634,7 @@ mod tests {
                 date: "2026-04-30".to_string(),
                 per_agent: vec![],
             },
+            storage_health: None,
         };
         let json = serde_json::to_string_pretty(&snapshot).unwrap();
         assert!(json.contains("\"deployment\""));
