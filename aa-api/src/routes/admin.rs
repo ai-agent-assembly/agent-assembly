@@ -14,7 +14,9 @@ use axum::Json;
 use aa_gateway::storage::{ColdAction, RetentionConfig, RetentionEngine, RetentionStats};
 
 use crate::error::ProblemDetail;
-use crate::models::retention::{ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto};
+use crate::models::retention::{
+    ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, UpdateRetentionPolicyRequest,
+};
 use crate::state::AppState;
 
 /// Resolve the live `RetentionEngine` handle or surface a 503 to the
@@ -82,5 +84,85 @@ pub async fn get_retention_policy(
     let config = engine.current_config();
     let last_run = engine.last_run_stats();
     Ok(Json(config_to_document(&config, last_run)))
+}
+
+/// Validate the incoming DTO at the HTTP layer so callers get a
+/// field-level 400 before the gateway's `RetentionConfig::validate`
+/// runs. Mirrors the dashboard's client-side form rules.
+fn validate_update_request(req: &UpdateRetentionPolicyRequest) -> Result<(), ProblemDetail> {
+    if req.hot_days < 1 {
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("hot_days must be >= 1")
+            .with_error_code("retention_policy_invalid_hot_days"));
+    }
+    if req.warm_days <= req.hot_days {
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("warm_days must be strictly greater than hot_days")
+            .with_error_code("retention_policy_invalid_warm_days"));
+    }
+    if req.cold_action == ColdActionDto::Archive {
+        let url = req.archive_url.as_deref().unwrap_or("");
+        if url.is_empty() {
+            return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                .with_detail("archive_url is required when cold_action == \"archive\"")
+                .with_error_code("retention_policy_missing_archive_url"));
+        }
+        if !url.starts_with("s3://") && !url.starts_with("gs://") {
+            return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                .with_detail("archive_url must start with s3:// or gs://")
+                .with_error_code("retention_policy_invalid_archive_url"));
+        }
+    }
+    Ok(())
+}
+
+/// Build a fresh `RetentionConfig` from the live config (which carries
+/// the cron schedule we cannot change at runtime) and the validated DTO.
+fn merge_request_into_config(base: &RetentionConfig, req: &UpdateRetentionPolicyRequest) -> RetentionConfig {
+    RetentionConfig {
+        schedule: base.schedule.clone(),
+        hot_days: req.hot_days,
+        warm_days: req.warm_days,
+        cold_action: match req.cold_action {
+            ColdActionDto::Drop => ColdAction::Drop,
+            ColdActionDto::Archive => ColdAction::Archive,
+        },
+        archive_url: req.archive_url.clone(),
+        dry_run: base.dry_run,
+    }
+}
+
+/// Hot-reload the retention configuration. Returns the updated config
+/// + last-run stats so the caller can re-render the page without a
+/// follow-up GET.
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/retention-policy",
+    summary = "Hot-reload the retention policy thresholds",
+    description = "Atomically replaces the gateway's active retention configuration. Validation runs both client-side in the dashboard and server-side here; on validation failure the active config is preserved. The cron schedule is read-only at runtime — only thresholds and the cold action can be changed without a restart.",
+    request_body = UpdateRetentionPolicyRequest,
+    responses(
+        (status = 200, description = "Configuration applied; updated document returned", body = RetentionPolicyDocument),
+        (status = 400, description = "Invalid request body (validation failure)", body = ProblemDetail),
+        (status = 503, description = "Retention engine not configured", body = ProblemDetail),
+    ),
+    tag = "admin"
+)]
+pub async fn update_retention_policy(
+    Extension(state): Extension<AppState>,
+    Json(req): Json<UpdateRetentionPolicyRequest>,
+) -> Result<Json<RetentionPolicyDocument>, ProblemDetail> {
+    validate_update_request(&req)?;
+    let engine = require_engine(&state)?;
+    let current = engine.current_config();
+    let new_config = merge_request_into_config(&current, &req);
+    engine.hot_reload(new_config).map_err(|e| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail(e.to_string())
+            .with_error_code("retention_policy_gateway_rejected")
+    })?;
+    let applied = engine.current_config();
+    let last_run = engine.last_run_stats();
+    Ok(Json(config_to_document(&applied, last_run)))
 }
 
