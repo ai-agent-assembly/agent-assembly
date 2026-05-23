@@ -1,0 +1,183 @@
+/* Settings shell — two-column layout with a fixed-width left nav. */
+
+.settings-page {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  min-height: calc(100vh - 4rem);
+}
+
+.settings-page__nav {
+  border-right: 1px solid var(--color-border, #e2e2e7);
+  padding-right: 1rem;
+}
+
+.settings-page__nav-title {
+  margin: 0 0 1rem 0;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted, #6b6b76);
+}
+
+.settings-page__nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-page__nav-list li + li {
+  margin-top: 0.25rem;
+}
+
+.settings-page__nav-section {
+  margin: 1rem 0 0.25rem 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted, #6b6b76);
+}
+
+.settings-page__nav-link {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 0.95rem;
+}
+
+.settings-page__nav-link:hover {
+  background-color: var(--color-bg-hover, #f3f3f6);
+}
+
+.settings-page__nav-link--active {
+  background-color: var(--color-bg-active, #e7ecf2);
+  font-weight: 600;
+}
+
+.settings-page__panel {
+  padding: 0 0.5rem;
+}
+
+/* Retention Policy page — form layout. */
+
+.retention-policy {
+  max-width: 640px;
+}
+
+.retention-policy__field {
+  margin-bottom: 1.25rem;
+}
+
+.retention-policy__field-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.retention-policy__field-help {
+  color: var(--color-text-muted, #6b6b76);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0.5rem 0;
+}
+
+.retention-policy__input,
+.retention-policy__select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-border, #d4d4d8);
+  border-radius: 4px;
+  font-size: 0.95rem;
+  min-width: 14rem;
+}
+
+.retention-policy__input--error,
+.retention-policy__select--error {
+  border-color: var(--color-danger, #c54242);
+}
+
+.retention-policy__field-error {
+  color: var(--color-danger, #c54242);
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.retention-policy__actions {
+  display: flex;
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+
+.retention-policy__button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border, #d4d4d8);
+  border-radius: 4px;
+  background-color: var(--color-bg-button, #f6f6f9);
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.retention-policy__button--primary {
+  background-color: var(--color-primary, #2563eb);
+  color: white;
+  border-color: var(--color-primary, #2563eb);
+}
+
+.retention-policy__button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.retention-policy__last-run {
+  margin-top: 2rem;
+  border-top: 1px solid var(--color-border, #e2e2e7);
+  padding-top: 1rem;
+}
+
+.retention-policy__last-run-empty {
+  color: var(--color-text-muted, #6b6b76);
+  font-style: italic;
+}
+
+.retention-policy__stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem 1.5rem;
+  margin-top: 0.5rem;
+}
+
+.retention-policy__stat-label {
+  color: var(--color-text-muted, #6b6b76);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.retention-policy__stat-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
+}
+
+.retention-policy__status {
+  margin: 1rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.retention-policy__status--success {
+  background-color: var(--color-bg-success, #e7f6ec);
+  color: var(--color-success, #237a3b);
+}
+
+.retention-policy__status--error {
+  background-color: var(--color-bg-danger, #faecec);
+  color: var(--color-danger, #9d2222);
+}
+
+.retention-policy__loading {
+  color: var(--color-text-muted, #6b6b76);
+  font-style: italic;
+  padding: 1rem 0;
+}
