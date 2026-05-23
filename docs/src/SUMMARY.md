@@ -33,6 +33,7 @@
 # Operations
 
 - [In-Flight Ops Registry](operations/ops-registry-architecture.md)
+- [Sandbox / Dry-Run Mode](operations/sandbox-dry-run.md)
 
 # Benchmarks
 
