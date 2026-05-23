@@ -16,6 +16,32 @@
 //! the two concerns independently versioned.
 
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+
+use super::error::{StorageError, StorageResult};
+
+/// Returns `true` when the TimescaleDB extension is installed on the
+/// PostgreSQL cluster behind `pool`, `false` otherwise.
+///
+/// The check is a single round-trip against `pg_extension` and is safe
+/// to call on any PostgreSQL cluster — vanilla PG returns `false`,
+/// TimescaleDB-enabled PG returns `true`. Callers in
+/// `PostgresBackend::apply_timescaledb_setup` (S-D #3) and
+/// `PostgresBackend::healthcheck` (S-D #4) use this to branch between
+/// the plain-table and hypertable code paths.
+///
+/// # Errors
+///
+/// Returns [`StorageError::QueryFailed`] when the query against
+/// `pg_extension` cannot execute (transport failure, permission denied,
+/// etc.). Treat the failure as "extension status unknown" — the caller
+/// typically downgrades to the no-TimescaleDB code path.
+pub async fn has_timescaledb_extension(pool: &PgPool) -> StorageResult<bool> {
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(format!("pg_extension probe: {e}")))
+}
 
 /// Snapshot of TimescaleDB chunk and compression state for the gateway's
 /// hypertables (`audit_events` + `metrics`), surfaced through
