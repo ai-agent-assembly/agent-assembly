@@ -89,6 +89,31 @@ pub fn start_background_writer(
     })
 }
 
+/// Spawn a tokio task that calls `tracker.flush_window()` every `interval`.
+///
+/// Required when the tracker is configured with
+/// [`crate::budget::BudgetWindow::Duration`] so sub-day rollovers take
+/// effect even when no spend event has fired in the interval — dashboard
+/// reads see a zeroed accumulator immediately after the window elapses.
+/// Callers using the default `Daily` window can skip this task; the
+/// lazy reset in `record_cost` is sufficient.
+pub fn start_window_flush_task(
+    tracker: std::sync::Arc<crate::budget::tracker::BudgetTracker>,
+    interval: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        // First tick fires immediately; skip it so the loop body runs at
+        // `interval` boundaries instead of t=0 (which would race with any
+        // record_cost call that arrives just after spawn).
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            tracker.flush_window();
+        }
+    })
+}
+
 /// Encode an `AgentId` as a 32-char lowercase hex string.
 pub fn agent_id_to_hex(id: &aa_core::AgentId) -> String {
     id.as_bytes().iter().map(|b| format!("{:02x}", b)).collect()
