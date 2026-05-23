@@ -141,6 +141,37 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(restored, "rehydrated agents from durable storage");
     }
 
+    // Epic 18 Story S-I.4 (AAASM-1870): spawn the durable retention
+    // engine background loop. The engine owns the hot/warm/cold sweep
+    // schedule from `cfg.storage.retention` and runs for the lifetime
+    // of the gateway process.
+    //
+    // Graceful failure semantics — if the retention config is invalid
+    // (e.g. aa-core's 5-field cron default that the parser rejects),
+    // log the error and continue without retention. The gateway is
+    // still useful without scheduled sweeps; the operator can fix
+    // their YAML and restart.
+    let retention_shutdown = tokio_util::sync::CancellationToken::new();
+    let _retention_handle = match aa_gateway::storage::spawn_retention_engine(
+        storage.clone(),
+        &cfg.storage.retention,
+        retention_shutdown.clone(),
+    ) {
+        Ok((_engine, handle)) => {
+            tracing::info!(
+                schedule = %cfg.storage.retention.schedule,
+                hot_days = cfg.storage.retention.hot_days,
+                warm_days = cfg.storage.retention.warm_days,
+                "retention engine started"
+            );
+            Some(handle)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "retention engine disabled — config rejected by validator");
+            None
+        }
+    };
+
     // Create the approval queue — gateway-owned, shared with the runtime via gRPC.
     let approval_queue = aa_runtime::approval::ApprovalQueue::new();
 
