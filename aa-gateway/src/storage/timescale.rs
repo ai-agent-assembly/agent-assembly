@@ -69,6 +69,47 @@ pub struct TimescaleStats {
     pub oldest_chunk_age_days: u32,
 }
 
+/// Roll up chunk counts and oldest-chunk age across the gateway's
+/// hypertables (`audit_events` + `metrics`) and return a
+/// [`TimescaleStats`] snapshot.
+///
+/// Single round-trip against `timescaledb_information.chunks`. Caller
+/// must verify the extension is present first (via
+/// [`has_timescaledb_extension`]) — querying the schema on a vanilla
+/// PostgreSQL cluster raises an undefined-table error.
+///
+/// `compression_ratio_tenths` is left at `0` for the v1 implementation.
+/// Pulling the actual ratio requires per-hypertable
+/// `hypertable_compression_stats('<table>')` calls, which differ across
+/// TimescaleDB minor versions; the SD-K dashboard ticket can layer a
+/// version-aware fetcher on top when the storage panel needs it.
+///
+/// # Errors
+///
+/// Returns [`StorageError::QueryFailed`] when the chunks rollup query
+/// fails (transport / permission / extension uninstalled).
+#[allow(dead_code)]
+pub(crate) async fn query_timescale_stats(pool: &PgPool) -> StorageResult<TimescaleStats> {
+    let (total, compressed, oldest_age_days): (i64, i64, i32) = sqlx::query_as(
+        "SELECT \
+             COUNT(*)::bigint, \
+             COUNT(*) FILTER (WHERE is_compressed)::bigint, \
+             COALESCE(EXTRACT(DAY FROM NOW() - MIN(range_start))::int, 0) \
+         FROM timescaledb_information.chunks \
+         WHERE hypertable_name IN ('audit_events', 'metrics')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| StorageError::QueryFailed(format!("timescale chunks rollup: {e}")))?;
+
+    Ok(TimescaleStats {
+        total_chunks: u32::try_from(total).unwrap_or(u32::MAX),
+        compressed_chunks: u32::try_from(compressed).unwrap_or(u32::MAX),
+        compression_ratio_tenths: 0,
+        oldest_chunk_age_days: u32::try_from(oldest_age_days).unwrap_or(0),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
