@@ -24,6 +24,7 @@
 
 pub mod agent;
 pub mod audit;
+pub mod audit_bridge;
 pub mod backend;
 pub mod boot;
 pub mod cache;
@@ -42,6 +43,7 @@ pub mod timescale;
 
 pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
+pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;
 pub use boot::{open_postgres_backend, open_sqlite_backend};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
