@@ -191,12 +191,19 @@ impl ProxyServer {
     }
 
     /// Dial the upstream TLS endpoint (TCP connect + ClientHello).
+    ///
+    /// Honours [`ProxyConfig::upstream_override`] when set — used by
+    /// integration tests to redirect the dial to a local mock without
+    /// hijacking DNS or modifying the client's CONNECT line.
     async fn dial_upstream_tls(
         self: &Arc<Self>,
         host: &str,
         target: &str,
     ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
-        let upstream_tcp = TcpStream::connect(target).await?;
+        let upstream_tcp = match self.config.upstream_override {
+            Some(addr) => TcpStream::connect(addr).await?,
+            None => TcpStream::connect(target).await?,
+        };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
             // can use self-signed upstream servers without installing their CAs.

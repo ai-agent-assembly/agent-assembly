@@ -66,6 +66,16 @@ pub struct ProxyConfig {
     /// historical behaviour (the proxy forwards but the audit chain carries
     /// a redacted form).
     pub credential_action: CredentialAction,
+
+    /// Override the upstream socket address the proxy dials, regardless of
+    /// the CONNECT request's target host. Intended for integration tests
+    /// only — production deployments leave this `None` so the proxy dials
+    /// the real LLM endpoint resolved from the CONNECT line.
+    ///
+    /// When `Some`, the original hostname is still used for SNI and the
+    /// MitM certificate so the client's TLS verification continues to work
+    /// against the per-host CA chain.
+    pub upstream_override: Option<SocketAddr>,
 }
 
 impl ProxyConfig {
@@ -126,6 +136,7 @@ impl ProxyConfig {
             denied_hosts,
             skip_upstream_tls_verify,
             credential_action,
+            upstream_override: None,
         })
     }
 }

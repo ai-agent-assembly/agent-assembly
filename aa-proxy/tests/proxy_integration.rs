@@ -21,6 +21,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         denied_hosts: Vec::new(),
         skip_upstream_tls_verify: false,
         credential_action: CredentialAction::default(),
+        upstream_override: None,
     }
 }
 
