@@ -155,6 +155,8 @@ async fn run_command_exits_zero_and_deregisters() {
         governance_level: None,
         no_proxy: false,
         dry_run: false,
+        enforcement_mode: None,
+        observe: false,
     };
 
     let code = execute_with_adapters(&args, &ctx, &adapters).await.unwrap();
@@ -199,6 +201,8 @@ async fn run_command_propagates_nonzero_exit_and_deregisters() {
         governance_level: None,
         no_proxy: false,
         dry_run: false,
+        enforcement_mode: None,
+        observe: false,
     };
 
     let code = execute_with_adapters(&args, &ctx, &adapters).await.unwrap();
