@@ -3,7 +3,8 @@
 use reqwest::Client;
 
 use super::models::{
-    AgentResponse, ApprovalResponse, CostResponse, HealthResponse, HealthzResponse, PaginatedResponse,
+    AdminStatusResponse, AgentResponse, ApprovalResponse, CostResponse, HealthResponse, HealthzResponse,
+    PaginatedResponse,
 };
 use crate::error::CliError;
 
@@ -37,6 +38,21 @@ impl StatusClient {
     pub async fn check_health(&self) -> Result<HealthResponse, CliError> {
         let resp = self.http.get(self.url("/api/v1/health")).send().await?;
         let body = resp.json::<HealthResponse>().await?;
+        Ok(body)
+    }
+
+    /// Fetch the storage-aware admin status block via
+    /// `GET /api/v1/admin/status` (AAASM-1591 / Epic 18 S-J).
+    ///
+    /// Returns an error when the gateway is unreachable or returns a
+    /// body the CLI cannot decode; in particular, an older gateway that
+    /// does not yet expose this route will respond with a `404` whose
+    /// non-JSON body fails decoding. Callers map both failures to a
+    /// missing storage section in `aasm status` rather than surfacing
+    /// the error directly.
+    pub async fn fetch_admin_status(&self) -> Result<AdminStatusResponse, CliError> {
+        let resp = self.http.get(self.url("/api/v1/admin/status")).send().await?;
+        let body = resp.json::<AdminStatusResponse>().await?;
         Ok(body)
     }
 
