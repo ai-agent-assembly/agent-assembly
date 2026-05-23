@@ -33,14 +33,14 @@ BEGIN
         if_not_exists => TRUE
     );
 EXCEPTION
-    -- `undefined_function`     → plain PostgreSQL (no add_compression_policy)
-    -- `feature_not_supported`  → table is not a TimescaleDB hypertable
-    -- `undefined_parameter`    → TimescaleDB present but ALTER TABLE rejected
-    --                            the timescaledb.compress storage parameter
-    -- `undefined_object`       → either table missing in this database
-    WHEN undefined_function
-      OR feature_not_supported
-      OR undefined_parameter
-      OR undefined_object THEN
+    -- WHEN OTHERS — broad on purpose. The ALTER TABLE + add_compression_policy
+    -- pair can fail on plain PostgreSQL with several different SQLSTATEs that
+    -- are awkward to enumerate stably across PG versions, e.g.:
+    --   * 22023 (invalid_parameter_value) — "unrecognized parameter namespace timescaledb"
+    --   * 42883 (undefined_function)      — add_compression_policy doesn't exist
+    --   * 0A000 (feature_not_supported)   — table isn't a hypertable
+    -- On a TimescaleDB-enabled cluster the statements all succeed, so the
+    -- catch-all only runs on plain-PG paths where graceful skip is intended.
+    WHEN OTHERS THEN
         RAISE NOTICE 'Skipping columnstore + compression policy setup: %', SQLERRM;
 END $$;
