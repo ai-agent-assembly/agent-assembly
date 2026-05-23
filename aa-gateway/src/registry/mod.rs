@@ -27,6 +27,11 @@ pub enum RegistryError {
     /// A lineage validation check failed during registration.
     #[error("lineage validation failed: {0}")]
     Lineage(#[from] LineageError),
+    /// The durable [`StorageBackend`](crate::storage::StorageBackend) call
+    /// underlying `register_persisted` / `deregister_persisted` /
+    /// `rehydrate_from_storage` (Epic 18 Story S-I.2) returned an error.
+    #[error("storage backend error: {0}")]
+    Storage(#[from] crate::storage::StorageError),
 }
 
 /// Error returned when agent lineage validation fails during registration.
