@@ -123,6 +123,22 @@
   background: var(--shell-button-hover-bg);
 }
 
+.appshell__settings-link {
+  margin-left: 0.75rem;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--shell-button-border);
+  background: none;
+  cursor: pointer;
+  color: var(--shell-text-dim);
+  text-decoration: none;
+}
+
+.appshell__settings-link:hover {
+  background: var(--shell-button-hover-bg);
+}
+
 .appshell__content {
   flex: 1;
   overflow: auto;

@@ -102,6 +102,7 @@ mod tests {
             version: 1,
             name: "test".into(),
             rules: vec![],
+            enforcement_mode: aa_core::EnforcementMode::default(),
         };
         assert!(CodexAdapter.generate_managed_settings(&policy).await.is_err());
     }

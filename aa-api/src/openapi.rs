@@ -13,10 +13,13 @@ use crate::models::capability::{
 };
 use crate::models::event::GovernanceEvent;
 use crate::models::event_type::EventType;
+use crate::models::retention::{
+    ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, RunRetentionRequest, UpdateRetentionPolicyRequest,
+};
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops,
+    admin, agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops,
     policies, topology, traces,
 };
 
@@ -52,6 +55,7 @@ use crate::routes::{
         (name = "capability", description = "Dashboard Capability Matrix — agent × resource × verb × decision view"),
         (name = "iam", description = "Identity & Access — API key list / generate / revoke / rotate"),
         (name = "audit", description = "Audit log aggregations — violation heatmaps and lineage analytics"),
+        (name = "admin", description = "Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)"),
     ),
     paths(
         crate::routes::health::health,
@@ -113,6 +117,9 @@ use crate::routes::{
         iam::revoke_api_key,
         iam::rotate_api_key,
         audit::get_violations_by_lineage,
+        admin::get_retention_policy,
+        admin::update_retention_policy,
+        admin::run_retention_policy,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -214,6 +221,11 @@ use crate::routes::{
         iam::ApiKeyResponse,
         iam::GeneratedApiKeyResponse,
         iam::GenerateApiKeyRequest,
+        ColdActionDto,
+        RetentionPolicyDocument,
+        RetentionRunStatsDto,
+        RunRetentionRequest,
+        UpdateRetentionPolicyRequest,
     )),
     modifiers(&SecurityAddon, &AlertsWsSubprotocolAddon),
 )]

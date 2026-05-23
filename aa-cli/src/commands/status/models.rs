@@ -20,6 +20,105 @@ pub struct HealthResponse {
     pub pipeline_lag_ms: u64,
 }
 
+/// Redact the password component of a database connection URL.
+///
+/// Replaces the password segment of the userinfo portion of an authority-bearing
+/// URL with `***`. Used by the `aasm status` deployment overview so a postgres
+/// `database_url` can be displayed without leaking the credential.
+///
+/// Returns the input unchanged when:
+/// * the input is not a `scheme://...` URL,
+/// * the authority contains no `user:pass@` userinfo, or
+/// * the userinfo contains a username only (no `:password`).
+///
+/// The split point between userinfo and host is the rightmost `@` inside the
+/// authority — tolerating an `@` inside the password is intentional, since
+/// well-formed URLs percent-encode any such occurrence.
+pub fn redact_database_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|i| authority_start + i)
+        .unwrap_or(url.len());
+    let authority = &url[authority_start..authority_end];
+
+    let Some(at_idx) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let userinfo = &authority[..at_idx];
+    let Some(colon_idx) = userinfo.find(':') else {
+        return url.to_string();
+    };
+
+    let user = &userinfo[..colon_idx];
+    let host_and_rest = &url[authority_start + at_idx..];
+    format!("{}://{}:***{}", &url[..scheme_end], user, host_and_rest)
+}
+
+/// API response from `GET /healthz` — the lightweight gateway liveness probe.
+///
+/// Mirrors the wire contract published by `aa-gateway::routes::healthz::HealthzBody`
+/// (landed under AAASM-1577 ST-1). Field names are part of that contract — do
+/// not rename without a coordinated server-side update.
+///
+/// `storage_path` and `database_url` are reserved for the richer
+/// `GET /api/v1/admin/status` response (AAASM-1474) and remain `None` when the
+/// gateway exposes only the minimum `/healthz` body; the `aasm status`
+/// deployment overview opportunistically surfaces them when present.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HealthzResponse {
+    /// Deployment mode label: `"local"` or `"remote"`.
+    pub mode: String,
+    /// Gateway crate version.
+    pub version: String,
+    /// Storage backend label: `"sqlite"`, `"postgres"`, or `"memory"`.
+    pub storage: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Local-mode SQLite file path, when reported.
+    #[serde(default)]
+    pub storage_path: Option<String>,
+    /// Raw PostgreSQL connection URL, when reported.
+    ///
+    /// Password redaction is applied by the display-layer composer, not here —
+    /// this model preserves the wire shape the gateway sent.
+    #[serde(default)]
+    pub database_url: Option<String>,
+}
+
+/// Display model for the `aasm status` deployment-overview header.
+///
+/// The serialised shape is the JSON contract for `aasm status --json` — field
+/// names must stay in lockstep with the AAASM-1579 story description so
+/// scripting and CI consumers can rely on them. `storage_path` and
+/// `database_url_redacted` are `Option` to allow them to be omitted in the
+/// minimum `/healthz` body case rather than emitted as `null`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DeploymentOverview {
+    /// Deployment mode label: `"local"` or `"remote"` (or `"unknown"` when unreachable).
+    pub mode: String,
+    /// Gateway base URL the CLI was configured to talk to.
+    pub gateway_url: String,
+    /// Storage backend label: `"sqlite"`, `"postgres"`, `"memory"`, or `"unknown"`.
+    pub storage_backend: String,
+    /// Local-mode SQLite file path, when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_path: Option<String>,
+    /// PostgreSQL connection URL with the password segment replaced by `***`,
+    /// when reported by the gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_url_redacted: Option<String>,
+    /// Gateway crate version.
+    pub version: String,
+    /// Seconds elapsed since the gateway became ready to serve traffic.
+    pub uptime_secs: u64,
+    /// Overall health label: `"ok"` when the gateway responded, `"unreachable"` otherwise.
+    pub health: String,
+}
+
 /// Computed runtime health for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
@@ -162,6 +261,8 @@ pub struct PaginatedResponse<T> {
 /// Complete status snapshot combining all sections.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusSnapshot {
+    /// Deployment-overview header: mode, gateway URL, storage backend, version, uptime, health.
+    pub deployment: DeploymentOverview,
     pub runtime: RuntimeHealth,
     pub agents: Vec<AgentRow>,
     pub approvals: ApprovalsSummary,
@@ -190,6 +291,88 @@ mod tests {
         assert_eq!(resp.uptime_secs, 3600);
         assert_eq!(resp.active_connections, 5);
         assert_eq!(resp.pipeline_lag_ms, 12);
+    }
+
+    #[test]
+    fn healthz_response_deserializes_minimal_body() {
+        let json = r#"{"mode":"local","version":"0.0.1","storage":"sqlite","uptime_secs":0}"#;
+        let resp: HealthzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.mode, "local");
+        assert_eq!(resp.version, "0.0.1");
+        assert_eq!(resp.storage, "sqlite");
+        assert_eq!(resp.uptime_secs, 0);
+        assert!(resp.storage_path.is_none());
+        assert!(resp.database_url.is_none());
+    }
+
+    #[test]
+    fn redact_database_url_replaces_postgres_password() {
+        let redacted = redact_database_url("postgresql://aasm:secret@aasm-db:5432/aasm");
+        assert_eq!(redacted, "postgresql://aasm:***@aasm-db:5432/aasm");
+    }
+
+    #[test]
+    fn redact_database_url_leaves_no_password_url_unchanged() {
+        let input = "postgresql://aasm@aasm-db:5432/aasm";
+        assert_eq!(redact_database_url(input), input);
+    }
+
+    #[test]
+    fn redact_database_url_leaves_sqlite_url_unchanged() {
+        let input = "sqlite:///home/dev/.aasm/local.db";
+        assert_eq!(redact_database_url(input), input);
+    }
+
+    #[test]
+    fn redact_database_url_leaves_malformed_input_unchanged() {
+        for input in ["~/.aasm/local.db", "not-a-url", "://no-scheme", ""] {
+            assert_eq!(redact_database_url(input), input, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn deployment_overview_serialises_with_documented_field_names() {
+        let overview = DeploymentOverview {
+            mode: "remote".to_string(),
+            gateway_url: "https://cp.company.internal:7391".to_string(),
+            storage_backend: "postgres".to_string(),
+            storage_path: None,
+            database_url_redacted: Some("postgresql://aasm:***@aasm-db:5432/aasm".to_string()),
+            version: "0.0.1".to_string(),
+            uptime_secs: 8133,
+            health: "ok".to_string(),
+        };
+        let json = serde_json::to_value(&overview).expect("DeploymentOverview must serialise");
+        assert_eq!(json["mode"], "remote");
+        assert_eq!(json["gateway_url"], "https://cp.company.internal:7391");
+        assert_eq!(json["storage_backend"], "postgres");
+        assert_eq!(json["database_url_redacted"], "postgresql://aasm:***@aasm-db:5432/aasm");
+        assert_eq!(json["version"], "0.0.1");
+        assert_eq!(json["uptime_secs"], 8133);
+        assert_eq!(json["health"], "ok");
+        // storage_path = None must be omitted, not serialised as null.
+        assert!(json.get("storage_path").is_none(), "Option::None must be skipped");
+    }
+
+    #[test]
+    fn healthz_response_deserializes_with_storage_path_and_database_url() {
+        let json = r#"{
+            "mode": "remote",
+            "version": "0.0.1",
+            "storage": "postgres",
+            "uptime_secs": 8133,
+            "storage_path": "~/.aasm/local.db",
+            "database_url": "postgresql://user:secret@aasm-db:5432/aasm"
+        }"#;
+        let resp: HealthzResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.mode, "remote");
+        assert_eq!(resp.storage, "postgres");
+        assert_eq!(resp.uptime_secs, 8133);
+        assert_eq!(resp.storage_path.as_deref(), Some("~/.aasm/local.db"));
+        assert_eq!(
+            resp.database_url.as_deref(),
+            Some("postgresql://user:secret@aasm-db:5432/aasm")
+        );
     }
 
     #[test]

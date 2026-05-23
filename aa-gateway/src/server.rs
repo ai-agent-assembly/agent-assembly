@@ -46,9 +46,16 @@ fn audit_file_path(audit_dir: &Path, agent_id: &str, session_id: &str) -> PathBu
 
 /// Create the audit channel, spawn the background `AuditWriter`, and return
 /// the sender, drop counter, and the last persisted hash (for chain continuity).
+///
+/// Epic 18 Story S-I.3 (AAASM-1867): when `storage` is `Some`, the spawned
+/// `AuditWriter` runs in dual-sink mode — every entry is both appended to
+/// the JSONL chain and persisted through `storage.append_audit_event(...)`,
+/// so audit events written during the session are queryable after a
+/// gateway restart.
 async fn setup_audit(
     agent_id: &str,
     session_id: &str,
+    storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32]), Box<dyn std::error::Error>> {
     let audit_dir = default_audit_dir();
 
@@ -60,7 +67,10 @@ async fn setup_audit(
     let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<AuditEntry>(4096);
     let audit_drops = Arc::new(AtomicU64::new(0));
 
-    let writer = AuditWriter::new(audit_dir, agent_id, session_id, audit_rx).await?;
+    let mut writer = AuditWriter::new(audit_dir, agent_id, session_id, audit_rx).await?;
+    if let Some(storage) = storage {
+        writer = writer.with_storage(storage);
+    }
     tokio::spawn(writer.run());
 
     Ok((audit_tx, audit_drops, initial_hash))
@@ -304,6 +314,7 @@ pub async fn serve_tcp(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
@@ -311,7 +322,7 @@ pub async fn serve_tcp(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?,
     );
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
+    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
@@ -367,6 +378,7 @@ pub async fn serve_uds(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
@@ -374,7 +386,7 @@ pub async fn serve_uds(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?,
     );
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default").await?;
+    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;

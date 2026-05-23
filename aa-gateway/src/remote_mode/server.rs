@@ -4,6 +4,8 @@
 //! design rationale; the deeper architectural context lives in
 //! AAASM-1577 / E17 S-C.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use aa_core::config::RemoteModeConfig;
@@ -14,6 +16,7 @@ use axum_server::Handle;
 use super::error::GatewayError;
 use super::tls::{self, TlsValidation};
 use crate::routes::healthz::{healthz, HealthzState};
+use crate::storage::{open_postgres_backend, PostgresConfig, StorageBackend};
 
 /// Build the remote-mode Axum router.
 ///
@@ -114,8 +117,28 @@ async fn wait_for_shutdown_signal() -> Result<(), GatewayError> {
 /// and call `handle.graceful_shutdown(Some(_))` to exit cleanly; the
 /// production [`start_remote`] entrypoint wires the handle to a
 /// SIGTERM / SIGINT listener.
-pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle) -> Result<(), GatewayError> {
+pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<SocketAddr>) -> Result<(), GatewayError> {
     log_startup_banner(cfg);
+
+    // Epic 18 Story S-I.1 (AAASM-1859): when a database URL is
+    // configured, open the PostgreSQL backend and apply pending
+    // migrations before binding the listener. The handle stays in
+    // scope for the lifetime of the serve loop so the connection
+    // pool is not dropped mid-request; future Sub-tasks of the same
+    // Story pass it through AppState to handlers.
+    //
+    // When `database_url` is `None`, remote mode keeps its pre-S-I.1
+    // behaviour: no backend is opened, healthz reports `storage: memory`.
+    let _storage: Option<Arc<dyn StorageBackend>> = if let Some(url) = cfg.database_url.as_ref() {
+        let pg = PostgresConfig {
+            database_url: Some(url.clone()),
+            ..PostgresConfig::default()
+        };
+        Some(open_postgres_backend(&pg).await.map_err(GatewayError::Storage)?)
+    } else {
+        None
+    };
+
     let app = router().into_make_service();
 
     if let Some(tls_cfg) = &cfg.tls {

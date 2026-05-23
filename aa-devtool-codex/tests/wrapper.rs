@@ -60,6 +60,7 @@ fn fixture_policy() -> PolicyDocument {
                 decision: PolicyDecision::Allow,
             },
         ],
+        enforcement_mode: aa_core::EnforcementMode::default(),
     }
 }
 
@@ -114,6 +115,7 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     let allow_policy = PolicyDocument {
         version: 1,
         name: "allow-all".into(),
+        enforcement_mode: aa_core::EnforcementMode::default(),
         rules: vec![PolicyRule {
             action_pattern: "*".into(),
             decision: PolicyDecision::Allow,

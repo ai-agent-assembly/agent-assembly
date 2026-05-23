@@ -60,6 +60,7 @@ async fn audit_list_returns_success_with_mock_data() {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::audit::list::run(args, &ctx, aa_cli::output::OutputFormat::Table)
@@ -92,6 +93,7 @@ async fn audit_list_with_agent_filter_sends_query_param() {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::audit::list::run(args, &ctx, aa_cli::output::OutputFormat::Json)
@@ -123,6 +125,7 @@ async fn audit_list_fails_on_server_error() {
             since: None,
             until: None,
             limit: 50,
+            dry_run_only: false,
         };
         let ctx = make_context(&uri);
         aa_cli::commands::audit::list::run(args, &ctx, aa_cli::output::OutputFormat::Table)

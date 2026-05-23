@@ -14,6 +14,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::iam::IamApiKeyStore;
 use aa_gateway::policy::history::PolicyHistoryStore;
 use aa_gateway::registry::AgentRegistry;
+use aa_gateway::storage::RetentionEngine;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 
@@ -113,4 +114,8 @@ pub struct AppState {
     pub alert_rule_store: Arc<dyn AlertRuleStore>,
     /// Allow-set of destinations alert rules may target (AAASM-1386).
     pub destination_registry: Arc<DestinationRegistry>,
+    /// Retention engine backing the admin REST `/api/v1/admin/retention-policy`
+    /// handlers (AAASM-1592 S-K). `None` when the gateway is started without
+    /// a `storage` section — the handlers respond with 503 in that case.
+    pub retention_engine: Option<Arc<RetentionEngine>>,
 }

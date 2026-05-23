@@ -756,6 +756,7 @@ fn aged_record_for_test(
         root_agent_id: Some(agent_key),
         children: vec![],
         parent_key: None,
+        enforcement_mode: None,
     }
 }
 
@@ -883,4 +884,48 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
         "error must name the problem: {}",
         err.message()
     );
+}
+
+#[tokio::test]
+async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
+    // AAASM-1557 contract: RegisterRequest.enforcement_mode = OBSERVE (proto
+    // value 2) is parsed via EnforcementMode::from_proto_i32 and stored as
+    // Some(Observe) on the AgentRecord. Resolution layer (separate test)
+    // takes care of using it; this test asserts the storage side only.
+    use aa_proto::assembly::common::v1::EnforcementMode as ProtoMode;
+
+    let (addr, registry) = start_server().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let proto_id = ProtoAgentId {
+        org_id: "org-obs".into(),
+        team_id: "team-obs".into(),
+        agent_id: "experimental-agent-1".into(),
+    };
+
+    client
+        .register(RegisterRequest {
+            agent_id: Some(proto_id.clone()),
+            name: "experimental-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: test_ed25519_public_key_hex(),
+            metadata: Default::default(),
+            enforcement_mode: ProtoMode::Observe as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // Reach into the registry and confirm the override landed on the record.
+    let stored = registry
+        .list()
+        .into_iter()
+        .find(|r| r.name == "experimental-agent")
+        .expect("registered agent must be present in registry");
+    assert_eq!(stored.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
 }

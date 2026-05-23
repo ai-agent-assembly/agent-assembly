@@ -168,9 +168,10 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             root_agent_id,
             children: Vec::new(),
             parent_key: resolved_parent_key,
+            enforcement_mode: aa_core::EnforcementMode::from_proto_i32(req.enforcement_mode),
         };
 
-        self.registry.register(record).map_err(|e| match e {
+        self.registry.register_persisted(record).await.map_err(|e| match e {
             RegistryError::AlreadyRegistered(_) => Status::already_exists(e.to_string()),
             RegistryError::Lineage(LineageError::CircularDelegation { .. })
             | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. }) => Status::invalid_argument(e.to_string()),
@@ -278,7 +279,8 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
 
         let (_, effects) = self
             .registry
-            .deregister(&agent_key, OrphanMode::Suspend)
+            .deregister_persisted(&agent_key, OrphanMode::Suspend)
+            .await
             .map_err(|e| Status::not_found(e.to_string()))?;
 
         for effect in &effects {

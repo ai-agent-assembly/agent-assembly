@@ -20,6 +20,12 @@ import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
+import {
+  SettingsLayout,
+  SettingsGeneralPlaceholder,
+  SettingsApiKeysPlaceholder,
+} from './pages/Settings'
+import { RetentionPolicyPage } from './pages/Settings/RetentionPolicy'
 
 function App() {
   return (
@@ -62,6 +68,14 @@ function App() {
 
             {/* ── First-run onboarding wizard (AAASM-1351) ────────────────── */}
             <Route path="/onboarding" element={<OnboardingPage />} />
+
+            {/* ── Settings — AAASM-1592 S-K ─────────────────────────────── */}
+            <Route path="/settings" element={<SettingsLayout />}>
+              <Route index element={<SettingsGeneralPlaceholder />} />
+              <Route path="general" element={<SettingsGeneralPlaceholder />} />
+              <Route path="api-keys" element={<SettingsApiKeysPlaceholder />} />
+              <Route path="storage/retention" element={<RetentionPolicyPage />} />
+            </Route>
           </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
