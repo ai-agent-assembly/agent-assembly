@@ -405,6 +405,44 @@ fn try_sys_unlink_ret(ctx: &RetProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+/// kprobe on the legacy `sys_unlink` — captures the pathname from
+/// `unlink(const char *pathname)`, where the path is the **first**
+/// syscall argument (rdi) rather than the second.
+///
+/// glibc on x86_64 routes the libc `unlink()` call through `__NR_unlink`
+/// (syscall 87), bypassing the `__x64_sys_unlinkat` probe above; this
+/// hook covers that path. AAASM-1574.
+#[kprobe]
+pub fn aa_sys_unlink_legacy(ctx: ProbeContext) -> u32 {
+    match try_sys_unlink_legacy(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_sys_unlink_legacy(ctx: &ProbeContext) -> Result<u32, u32> {
+    let (tgid, _pid) = get_pid_tgid();
+    if !should_monitor(tgid) {
+        return Ok(0);
+    }
+
+    // unlink(const char *pathname) — pathname is arg 0 (rdi).
+    let filename_ptr: *const u8 = syscall_pt_regs(ctx).ok_or(1u32)?.arg(0).ok_or(1u32)?;
+
+    let mut buf = [0u8; MAX_PATH_LEN];
+    unsafe {
+        let _ = bpf_probe_read_user_str_bytes(filename_ptr, &mut buf);
+    }
+
+    let pid_tgid = aya_ebpf::helpers::bpf_get_current_pid_tgid();
+    let _ = UNLINK_TMP.insert(&pid_tgid, &buf, 0);
+
+    let entry_ts = unsafe { bpf_ktime_get_ns() };
+    let _ = UNLINK_ENTRY_TS.insert(&pid_tgid, &entry_ts, 0);
+
+    Ok(0)
+}
+
 /// kprobe on `sys_renameat2` — captures the source pathname from the
 /// syscall argument, stashes it + the entry timestamp keyed by
 /// `pid_tgid`, and defers event emission to the kretprobe.
