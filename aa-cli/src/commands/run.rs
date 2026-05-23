@@ -685,6 +685,83 @@ mod tests {
         }
     }
 
+    // --- enforcement-mode CLI parsing (AAASM-1558) ---
+
+    #[test]
+    fn parse_observe_flag_resolves_to_observe_mode() {
+        // --observe is the documented shorthand; resolves to Observe regardless
+        // of whether --enforcement-mode is present (it isn't here).
+        let cli = TestCli::try_parse_from(["aasm", "run", "claude", "--observe"]).unwrap();
+        match cli.command {
+            TestCommands::Run(args) => {
+                assert!(args.observe);
+                assert_eq!(args.enforcement_mode, None);
+                assert_eq!(args.resolved_enforcement_mode(), aa_core::EnforcementMode::Observe);
+            }
+        }
+    }
+
+    #[test]
+    fn parse_enforcement_mode_flag_accepts_all_three_modes() {
+        for (input, expected) in [
+            ("enforce", aa_core::EnforcementMode::Enforce),
+            ("observe", aa_core::EnforcementMode::Observe),
+            ("disabled", aa_core::EnforcementMode::Disabled),
+        ] {
+            let cli = TestCli::try_parse_from(["aasm", "run", "claude", "--enforcement-mode", input]).unwrap();
+            match cli.command {
+                TestCommands::Run(args) => {
+                    assert!(!args.observe, "input={input}");
+                    assert_eq!(args.resolved_enforcement_mode(), expected, "input={input}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_observe_and_enforcement_mode_together_is_rejected() {
+        // conflicts_with on --observe — both flags at once must error out so
+        // the source of truth stays unambiguous.
+        match TestCli::try_parse_from(["aasm", "run", "claude", "--observe", "--enforcement-mode", "enforce"]) {
+            Ok(_) => panic!("clap must reject --observe + --enforcement-mode together"),
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("cannot be used with") || msg.contains("conflict"),
+                    "expected conflicts_with error, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parse_dry_run_combined_with_observe_works() {
+        // --dry-run (preview-only) and --observe (governance posture) are
+        // orthogonal flags. Both must be allowed in one invocation.
+        let cli = TestCli::try_parse_from(["aasm", "run", "claude", "--dry-run", "--observe"]).unwrap();
+        match cli.command {
+            TestCommands::Run(args) => {
+                assert!(args.dry_run);
+                assert!(args.observe);
+                assert_eq!(args.resolved_enforcement_mode(), aa_core::EnforcementMode::Observe);
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_enforcement_mode_defaults_to_enforce_when_neither_flag_set() {
+        // The pre-feature default — and the path every existing `aa run`
+        // invocation takes today.
+        let cli = TestCli::try_parse_from(["aasm", "run", "claude"]).unwrap();
+        match cli.command {
+            TestCommands::Run(args) => {
+                assert!(!args.observe);
+                assert_eq!(args.enforcement_mode, None);
+                assert_eq!(args.resolved_enforcement_mode(), aa_core::EnforcementMode::Enforce);
+            }
+        }
+    }
+
     // --- adapter resolution tests ---
 
     #[test]
