@@ -115,3 +115,54 @@ jobs:
             echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
             exit 1
           }
+
+  smoke-curl-installer:
+    name: Smoke — curl installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install aasm via the curl installer
+        run: |
+          # Pipe-to-shell is the documented one-liner for this distribution
+          # channel; the installer drops `aasm` into a directory on $PATH for
+          # the current shell. Re-export common install locations so the
+          # subsequent step can find the binary regardless of which one the
+          # installer chose.
+          curl -fsSL https://get.agent-assembly.io | sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.agent-assembly/bin"
+            echo "/usr/local/bin"
+          } >> "$GITHUB_PATH"
+
+      - name: Verify aasm --version matches release tag
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          got=$(aasm --version)
+          want="aasm ${EXPECTED}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
+            exit 1
+          }
