@@ -3,6 +3,8 @@
 //! `ProxyServer` owns the bound TCP listener, the TLS context (CA + cert cache),
 //! and the interceptor. It is the top-level runtime object of the proxy.
 
+pub mod http;
+
 use std::sync::Arc;
 use std::time::SystemTime;
 
