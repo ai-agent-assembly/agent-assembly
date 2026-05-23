@@ -103,6 +103,15 @@ pub struct ViolationsParams {
     pub window: Option<String>,
 }
 
+/// Query parameters for the sandbox-summary endpoint.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct SandboxSummaryParams {
+    /// Hex-encoded root agent ID; scopes counts to that delegation subtree.
+    pub root: Option<String>,
+    /// Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`.
+    pub window: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -148,6 +157,55 @@ pub async fn get_violations_by_lineage(
         StatusCode::OK,
         Json(ViolationsByLineageResponse {
             nodes,
+            window_secs,
+            generated_at: Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+/// `GET /api/v1/audit/sandbox-summary` — observe-mode shadow-event aggregate.
+///
+/// Returns the dashboard SandboxSummaryCard breakdown — would-be denies,
+/// would-be redactions, and would-be pending approvals — across every audit
+/// entry the gateway recorded with `dry_run: true` in the requested window.
+/// Surfaces the single most-frequent `policy_rule` value as `top_rule`. The
+/// optional `root` parameter scopes the aggregate to one delegation subtree.
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/sandbox-summary",
+    params(SandboxSummaryParams),
+    responses(
+        (status = 200, description = "Sandbox / observe-mode aggregate counts", body = SandboxSummaryResponse),
+        (status = 400, description = "Invalid query parameter")
+    ),
+    tag = "audit"
+)]
+pub async fn get_sandbox_summary(
+    Extension(state): Extension<AppState>,
+    axum::extract::Query(params): axum::extract::Query<SandboxSummaryParams>,
+) -> impl IntoResponse {
+    let window_secs = parse_window(params.window.as_deref()).unwrap_or(86_400);
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let since_ns = now_ns.saturating_sub(window_secs * 1_000_000_000);
+
+    let root_agent: Option<AgentId> = params.root.as_deref().and_then(parse_agent_id);
+
+    let entries = state
+        .audit_reader
+        .list_dry_run(since_ns, root_agent)
+        .await
+        .unwrap_or_default();
+
+    let (counts, top_rule) = aggregate_sandbox_summary(&entries);
+
+    (
+        StatusCode::OK,
+        Json(SandboxSummaryResponse {
+            counts,
+            top_rule,
             window_secs,
             generated_at: Utc::now().to_rfc3339(),
         }),
@@ -233,7 +291,6 @@ pub(crate) fn aggregate_violations(entries: &[AuditEntry]) -> Vec<ViolationNode>
 /// non-empty `policy_rule` value across the input set; ties are broken by
 /// insertion order from the HashMap (deterministic enough for surfacing —
 /// callers can re-rank if they need a strict total order).
-#[allow(dead_code)] // Consumer added in the next commit (get_sandbox_summary handler).
 pub(crate) fn aggregate_sandbox_summary(
     entries: &[AuditEntry],
 ) -> (SandboxSummaryCounts, Option<SandboxSummaryTopRule>) {
