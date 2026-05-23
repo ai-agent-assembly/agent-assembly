@@ -54,6 +54,67 @@ pub struct RunArgs {
     /// Show the launch command and settings without executing.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Enforcement posture for this session — overrides the policy default for
+    /// this agent. Defaults to `enforce` (live enforcement). When set to
+    /// `observe`, policy decisions are recorded but never applied; the launched
+    /// tool sees Allow for every action and shadow events land in the audit log.
+    #[arg(long, value_enum)]
+    pub enforcement_mode: Option<EnforcementModeFlag>,
+
+    /// Shorthand for `--enforcement-mode observe`. Mutually exclusive with
+    /// `--enforcement-mode` so the source of truth stays unambiguous.
+    #[arg(long, conflicts_with = "enforcement_mode")]
+    pub observe: bool,
+}
+
+/// CLI surface for [`aa_core::EnforcementMode`]. Lives here (not in `aa-core`)
+/// to avoid pulling `clap` into the `no_std`-friendly core crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum EnforcementModeFlag {
+    /// Default — policy decisions are applied; deny blocks, redact strips.
+    Enforce,
+    /// Dry-run — decisions computed and audited; no enforcement applied.
+    Observe,
+    /// Policy evaluation disabled. Only valid in hermetic test environments.
+    Disabled,
+}
+
+impl From<EnforcementModeFlag> for aa_core::EnforcementMode {
+    fn from(flag: EnforcementModeFlag) -> Self {
+        match flag {
+            EnforcementModeFlag::Enforce => aa_core::EnforcementMode::Enforce,
+            EnforcementModeFlag::Observe => aa_core::EnforcementMode::Observe,
+            EnforcementModeFlag::Disabled => aa_core::EnforcementMode::Disabled,
+        }
+    }
+}
+
+impl RunArgs {
+    /// Resolve the user's intent across `--observe` (boolean shorthand) and
+    /// `--enforcement-mode` into a single `EnforcementMode`. Returns the
+    /// pre-feature default (`Enforce`) when neither flag is set.
+    pub fn resolved_enforcement_mode(&self) -> aa_core::EnforcementMode {
+        if self.observe {
+            aa_core::EnforcementMode::Observe
+        } else {
+            self.enforcement_mode
+                .map(Into::into)
+                .unwrap_or(aa_core::EnforcementMode::Enforce)
+        }
+    }
+}
+
+/// Stable string form of an [`aa_core::EnforcementMode`] used on the wire to
+/// the gateway and inside the `AA_ENFORCEMENT_MODE` child env var. Matches the
+/// `serde(rename_all = "snake_case")` encoding so a round-trip via YAML/JSON
+/// produces the same token.
+pub(crate) fn enforcement_mode_str(mode: aa_core::EnforcementMode) -> &'static str {
+    match mode {
+        aa_core::EnforcementMode::Enforce => "enforce",
+        aa_core::EnforcementMode::Observe => "observe",
+        aa_core::EnforcementMode::Disabled => "disabled",
+    }
 }
 
 // Placeholder until per-tool adapter crates (AAASM-201..205) are ready.
@@ -187,6 +248,12 @@ async fn register_with_gateway(
         "team_id": args.team_id,
         "root_agent": args.root_agent,
         "governance_level": info.governance_level.to_string(),
+        // AAASM-1558: per-agent enforcement_mode override; the gateway maps
+        // it onto RegisterRequest.enforcement_mode (proto enum) via its
+        // REST → gRPC bridge. Omitted from the JSON when the user is on
+        // the pre-feature default (Enforce) so legacy gateway routes that
+        // reject unknown keys stay quiet.
+        "enforcement_mode": enforcement_mode_str(args.resolved_enforcement_mode()),
     });
 
     let url = format!("{}/api/v1/agents", ctx.api_url.trim_end_matches('/'));
@@ -223,12 +290,30 @@ async fn register_with_gateway(
     })
 }
 
+/// Sandbox banner printed to stderr when `--observe` is in effect. The text is
+/// stable so audit / log scrapers can match on it; future copy changes should
+/// extend rather than replace the existing lines.
+fn emit_observe_banner() {
+    eprintln!("⚠️  [AAASM] Running in sandbox/observe mode.");
+    eprintln!("    Policy decisions are recorded but NOT enforced.");
+    eprintln!("    Review captured events: aa audit list --dry-run-only");
+}
+
 /// Build the environment map to be inherited by the child process.
 ///
 /// Starts from the current process environment, then overlays governance
 /// identity variables. `HTTPS_PROXY` / `HTTP_PROXY` are only injected when
 /// `handle.proxy_addr` is set and `no_proxy` is `false`.
-fn build_child_env(handle: &RegistrationHandle, no_proxy: bool) -> HashMap<String, String> {
+///
+/// `AA_ENFORCEMENT_MODE` is set whenever `mode` differs from the pre-feature
+/// default (`Enforce`) so tools that branch on the env var see the operator's
+/// explicit choice; the variable is omitted in plain enforce-mode launches to
+/// avoid surprising any tool that does best-effort env sniffing.
+fn build_child_env(
+    handle: &RegistrationHandle,
+    no_proxy: bool,
+    mode: aa_core::EnforcementMode,
+) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     env.insert("AA_AGENT_ID".into(), handle.agent_id.clone());
     env.insert("AA_TRACE_ID".into(), handle.trace_id.clone());
@@ -242,6 +327,9 @@ fn build_child_env(handle: &RegistrationHandle, no_proxy: bool) -> HashMap<Strin
             env.insert("HTTPS_PROXY".into(), proxy.clone());
             env.insert("HTTP_PROXY".into(), proxy.clone());
         }
+    }
+    if mode != aa_core::EnforcementMode::Enforce {
+        env.insert("AA_ENFORCEMENT_MODE".into(), enforcement_mode_str(mode).into());
     }
     env
 }
@@ -419,9 +507,19 @@ pub async fn execute_with_adapters(
         )
     })?;
 
+    let mode = args.resolved_enforcement_mode();
+
+    // AAASM-1558: surface observe-mode posture before any tool output so an
+    // operator immediately sees they're not under live enforcement. Emitted to
+    // stderr (stdout is reserved for tool output / dry-run payload). The
+    // banner fires whether or not --dry-run is also set — orthogonal flags.
+    if mode == aa_core::EnforcementMode::Observe {
+        emit_observe_banner();
+    }
+
     if args.dry_run {
         let handle = dry_run_handle(args);
-        let child_env = build_child_env(&handle, args.no_proxy);
+        let child_env = build_child_env(&handle, args.no_proxy, mode);
         let settings = "<dry-run: managed settings not generated>".to_string();
         let mut cmd = std::process::Command::new(&args.tool);
         cmd.args(&args.tool_args);
@@ -443,7 +541,7 @@ pub async fn execute_with_adapters(
     );
 
     let handle = register_with_gateway(&info, args, ctx).await?;
-    let child_env = build_child_env(&handle, args.no_proxy);
+    let child_env = build_child_env(&handle, args.no_proxy, mode);
 
     let policy = load_policy();
     let settings = adapter
@@ -639,7 +737,7 @@ mod tests {
     #[test]
     fn build_child_env_sets_proxy() {
         let handle = stub_handle(Some("http://proxy:8080"), None);
-        let env = build_child_env(&handle, false);
+        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
         assert_eq!(
             env.get("HTTPS_PROXY").map(String::as_str),
             Some("http://proxy:8080"),
@@ -659,7 +757,7 @@ mod tests {
     #[test]
     fn build_child_env_skips_proxy_when_no_proxy() {
         let handle = stub_handle(Some("http://proxy:8080"), None);
-        let env = build_child_env(&handle, true);
+        let env = build_child_env(&handle, true, aa_core::EnforcementMode::Enforce);
         assert!(
             !env.contains_key("HTTPS_PROXY"),
             "HTTPS_PROXY must not be set when no_proxy=true"
@@ -673,14 +771,14 @@ mod tests {
     #[test]
     fn build_child_env_sets_team_id_when_present() {
         let handle = stub_handle(None, Some("my-team"));
-        let env = build_child_env(&handle, false);
+        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
         assert_eq!(env.get("AA_TEAM_ID").map(String::as_str), Some("my-team"));
     }
 
     #[test]
     fn build_child_env_omits_team_id_when_absent() {
         let handle = stub_handle(None, None);
-        let env = build_child_env(&handle, false);
+        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
         assert!(
             !env.contains_key("AA_TEAM_ID"),
             "AA_TEAM_ID must not be set when team_id is None"
@@ -722,6 +820,8 @@ mod tests {
             governance_level: None,
             no_proxy: false,
             dry_run: false,
+            enforcement_mode: None,
+            observe: false,
         };
         let ctx = ResolvedContext {
             name: None,
@@ -880,6 +980,8 @@ mod tests {
             governance_level: None,
             no_proxy: false,
             dry_run: false,
+            enforcement_mode: None,
+            observe: false,
         }
     }
 
