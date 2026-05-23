@@ -421,4 +421,78 @@ mod tests {
         assert_eq!(alert.threshold_pct, 80);
         assert!((alert.spent_usd - 8.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn maybe_reset_window_daily_matches_maybe_reset() {
+        use chrono::Utc;
+        use rust_decimal::Decimal;
+        let yesterday = Utc::now().date_naive() - chrono::Duration::days(1);
+        let mut a = BudgetState::new_for_date(yesterday);
+        a.spent_usd = Decimal::new(500, 2);
+        let mut b = a.clone();
+        a.maybe_reset(Utc::now().date_naive());
+        b.maybe_reset_window(Utc::now(), BudgetWindow::Daily, chrono_tz::UTC);
+        assert_eq!(a.spent_usd, b.spent_usd);
+        assert_eq!(a.date, b.date);
+    }
+
+    #[test]
+    fn maybe_reset_window_duration_seeds_anchor_without_zeroing() {
+        use chrono::Utc;
+        use rust_decimal::Decimal;
+        let mut state = BudgetState::new_today();
+        state.spent_usd = Decimal::new(500, 2);
+        let before = state.spent_usd;
+        let now = Utc::now();
+        state.maybe_reset_window(
+            now,
+            BudgetWindow::Duration(std::time::Duration::from_secs(60)),
+            chrono_tz::UTC,
+        );
+        // First observation under Duration: anchor seeded, spend preserved.
+        assert_eq!(state.spent_usd, before);
+        assert_eq!(state.last_reset_at, Some(now));
+    }
+
+    #[test]
+    fn maybe_reset_window_duration_keeps_spend_inside_interval() {
+        use chrono::Utc;
+        use rust_decimal::Decimal;
+        let now = Utc::now();
+        let mut state = BudgetState::new_today();
+        state.spent_usd = Decimal::new(250, 2);
+        state.last_reset_at = Some(now);
+        // 100 ms later — well inside the 5 s window.
+        state.maybe_reset_window(
+            now + chrono::Duration::milliseconds(100),
+            BudgetWindow::Duration(std::time::Duration::from_secs(5)),
+            chrono_tz::UTC,
+        );
+        assert_eq!(state.spent_usd, Decimal::new(250, 2));
+        assert_eq!(state.last_reset_at, Some(now));
+    }
+
+    #[test]
+    fn maybe_reset_window_duration_zeroes_after_interval() {
+        use chrono::Utc;
+        use rust_decimal::Decimal;
+        let now = Utc::now();
+        let mut state = BudgetState::new_today();
+        state.spent_usd = Decimal::new(250, 2);
+        state.last_reset_at = Some(now);
+        // 200 ms later — well past the 100 ms window.
+        let later = now + chrono::Duration::milliseconds(200);
+        state.maybe_reset_window(
+            later,
+            BudgetWindow::Duration(std::time::Duration::from_millis(100)),
+            chrono_tz::UTC,
+        );
+        assert_eq!(state.spent_usd, Decimal::ZERO);
+        assert_eq!(state.last_reset_at, Some(later));
+    }
+
+    #[test]
+    fn budget_window_default_is_daily() {
+        assert_eq!(BudgetWindow::default(), BudgetWindow::Daily);
+    }
 }
