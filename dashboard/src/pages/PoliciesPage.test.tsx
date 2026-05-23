@@ -8,6 +8,8 @@ import { OverlayProvider } from '../components/OverlayProvider'
 import { ToastProvider } from '../components/ToastProvider'
 import * as policiesApi from '../features/policies/api'
 import type { CreatePolicyRequest, Policy } from '../features/policies/api'
+import * as auditApi from '../features/audit/api'
+import type { SandboxSummaryResponse } from '../features/audit/api'
 
 type UseCreatePolicyResult = ReturnType<typeof policiesApi.useCreatePolicy>
 
@@ -57,6 +59,24 @@ function mockPolicies(partial: Partial<UseQueryResult<Policy[], Error>>) {
   )
 }
 
+const EMPTY_SUMMARY: SandboxSummaryResponse = {
+  counts: { would_be_denies: 0, would_be_redactions: 0, would_be_pending_approvals: 0 },
+  top_rule: null,
+  window_secs: 86_400,
+  generated_at: '2026-05-23T00:00:00Z',
+}
+
+function mockSandboxSummary(
+  partial: Partial<UseQueryResult<SandboxSummaryResponse, Error>> = {},
+) {
+  const base = { data: EMPTY_SUMMARY, isLoading: false, isError: false }
+  return vi.spyOn(auditApi, 'useSandboxSummaryQuery').mockReturnValue(
+    mockQuery<SandboxSummaryResponse>(Object.assign({}, base, partial) as Partial<
+      UseQueryResult<SandboxSummaryResponse, Error>
+    >),
+  )
+}
+
 function mockMutation(partial: Partial<UseCreatePolicyResult>): UseCreatePolicyResult {
   return partial as unknown as UseCreatePolicyResult
 }
@@ -69,6 +89,13 @@ function mockCreatePolicy(
     mockMutation({ mutateAsync, isPending }),
   )
 }
+
+// All existing tests render PoliciesPage but pre-date the sandbox banner —
+// mock the new hook to a zero-state response so they don't fan out to the
+// real API and so the banner stays hidden, preserving their expectations.
+beforeEach(() => {
+  mockSandboxSummary()
+})
 
 describe('PoliciesPage — header and filter tabs', () => {
   afterEach(() => {
@@ -393,5 +420,52 @@ describe('PoliciesPage — unsaved-changes dismiss guard', () => {
       expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
     )
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('PoliciesPage — sandbox summary banner', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('hides the SandboxSummaryCard banner when every count is zero', () => {
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockSandboxSummary() // zero-state, default
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.queryByTestId('policies-sandbox-banner')).not.toBeInTheDocument()
+  })
+
+  it('hides the banner while the sandbox summary query is loading', () => {
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockSandboxSummary({ data: undefined, isLoading: true })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.queryByTestId('policies-sandbox-banner')).not.toBeInTheDocument()
+  })
+
+  it('renders the banner with would-be counts and top rule when summary has activity', () => {
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockSandboxSummary({
+      data: {
+        counts: {
+          would_be_denies: 7,
+          would_be_redactions: 2,
+          would_be_pending_approvals: 1,
+        },
+        top_rule: { id: 'block-secrets', count: 5 },
+        window_secs: 86_400,
+        generated_at: '2026-05-23T00:00:00Z',
+      },
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    const banner = screen.getByTestId('policies-sandbox-banner')
+    expect(banner).toBeInTheDocument()
+    // Counts and top rule come from the SandboxSummaryCard primitive — we
+    // assert the literal numbers + rule id reached the rendered card so the
+    // API → props mapping is wired in the right order.
+    expect(banner).toHaveTextContent('7')
+    expect(banner).toHaveTextContent('2')
+    expect(banner).toHaveTextContent('1')
+    expect(banner).toHaveTextContent('block-secrets')
   })
 })
