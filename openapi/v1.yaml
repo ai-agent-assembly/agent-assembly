@@ -2543,6 +2543,15 @@ components:
           items:
             $ref: '#/components/schemas/RoutingLogEntry'
           description: Connector-framework delivery log. Empty for legacy alerts.
+        ruleSnapshot:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/AlertRule'
+            description: |-
+              Full [`AlertRule`] snapshot captured at fire time so the
+              alert-detail view can render the originating rule even after
+              the live rule has been edited or deleted (AAASM-1658). `null`
+              for legacy budget/secret alerts.
         rule_id:
           type:
           - string
@@ -2555,11 +2564,6 @@ components:
           - string
           - 'null'
           description: Human-readable rule name, or `null` for legacy alerts.
-        rule_snapshot:
-          oneOf:
-          - type: 'null'
-          - $ref: '#/components/schemas/RuleSnapshot'
-            description: Rule snapshot at fire time. `null` for legacy alerts.
         severity:
           type: string
           description: Alert severity level (`info` / `warning` / `critical`).
