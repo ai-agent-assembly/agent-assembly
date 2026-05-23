@@ -88,7 +88,6 @@ pub struct TimescaleStats {
 ///
 /// Returns [`StorageError::QueryFailed`] when the chunks rollup query
 /// fails (transport / permission / extension uninstalled).
-#[allow(dead_code)]
 pub(crate) async fn query_timescale_stats(pool: &PgPool) -> StorageResult<TimescaleStats> {
     let (total, compressed, oldest_age_days): (i64, i64, i32) = sqlx::query_as(
         "SELECT \

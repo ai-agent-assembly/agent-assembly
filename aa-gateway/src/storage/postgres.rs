@@ -22,7 +22,7 @@ use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
 use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
-use super::timescale::has_timescaledb_extension;
+use super::timescale::{has_timescaledb_extension, query_timescale_stats};
 use aa_core::config::TimescaleConfig;
 
 /// Encode an [`AgentId`] for the `agent_id` TEXT column (canonical UUID
@@ -895,6 +895,15 @@ impl StorageBackend for PostgresBackend {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
 
+        // Populate optional TimescaleDB rollup when the extension is
+        // present. Probe + stats failures degrade gracefully to `None`
+        // rather than failing the entire healthcheck — observability
+        // must not block on optional metadata.
+        let timescale = match has_timescaledb_extension(&self.pool).await {
+            Ok(true) => query_timescale_stats(&self.pool).await.ok(),
+            Ok(false) | Err(_) => None,
+        };
+
         let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
         let status = if latency_ms < 200 {
             HealthStatus::Ok
@@ -911,7 +920,7 @@ impl StorageBackend for PostgresBackend {
                 agents: agents as u64,
                 policy_versions: policy_versions as u64,
             },
-            timescale: None,
+            timescale,
         })
     }
 }
