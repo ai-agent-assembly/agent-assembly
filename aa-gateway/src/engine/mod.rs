@@ -61,6 +61,68 @@ pub struct EvaluationResult {
     pub deny_action: Option<DenyAction>,
 }
 
+/// Metadata captured when observe-mode evaluation suppresses a non-Allow
+/// decision. Returned alongside the (now-Allow) `EvaluationResult` so the
+/// service layer can emit a `dry_run: true` audit event recording what
+/// would have happened under live enforcement.
+///
+/// The shadow event never carries the rejected payload itself — that lives
+/// in the surrounding `AuditEvent` constructed at the call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowEvent {
+    /// The decision the engine would have returned in `Enforce` mode.
+    /// One of `"deny"`, `"redact"`, `"pending"`. Mirrors the proto enum
+    /// `AuditEvent.shadow_decision`.
+    pub shadow_decision: String,
+    /// Reason carried by the original decision (e.g. "tool denied by policy").
+    /// Recorded so the audit reader can render the same explanation an
+    /// operator would have seen in enforce mode.
+    pub reason: String,
+}
+
+/// Transform an [`EvaluationResult`] according to the active enforcement mode.
+///
+/// In `Enforce` mode: returns the input unchanged with `None` shadow event.
+///
+/// In `Observe` mode: if the decision is non-`Allow`, rewrites it to
+/// `PolicyResult::Allow`, strips any deny-side-effect, and produces a
+/// `ShadowEvent` carrying the original decision string + reason. The caller
+/// is responsible for emitting an `AuditEvent { dry_run: true, ... }` from
+/// the returned metadata.
+///
+/// In `Disabled` mode: returns the input unchanged with `None` shadow event.
+/// Disabled is intended for hermetic test harnesses; production policy
+/// engines should not run with `Disabled` and `transform_for_observe_mode`
+/// makes no effort to mask its decisions.
+pub fn transform_for_observe_mode(
+    result: EvaluationResult,
+    mode: aa_core::EnforcementMode,
+) -> (EvaluationResult, Option<ShadowEvent>) {
+    if mode != aa_core::EnforcementMode::Observe {
+        return (result, None);
+    }
+
+    let (shadow_decision, reason) = match &result.decision {
+        aa_core::PolicyResult::Allow => return (result, None),
+        aa_core::PolicyResult::Deny { reason } => ("deny", reason.clone()),
+        aa_core::PolicyResult::RequiresApproval { .. } => ("pending", String::new()),
+    };
+
+    let shadow = ShadowEvent {
+        shadow_decision: shadow_decision.to_string(),
+        reason,
+    };
+
+    let transformed = EvaluationResult {
+        decision: aa_core::PolicyResult::Allow,
+        redacted_payload: None,
+        credential_findings: result.credential_findings,
+        deny_action: None,
+    };
+
+    (transformed, Some(shadow))
+}
+
 /// Summary of the currently active policy, returned by
 /// [`PolicyEngine::active_policy_info`].
 #[derive(Debug, Clone)]
@@ -2060,5 +2122,82 @@ mod tests {
         let (timeout, role) = engine.approval_escalation_overrides();
         assert_eq!(timeout, Some(120u64));
         assert_eq!(role, Some("org-admin".to_string()));
+    }
+
+    // ── observe-mode transform (AAASM-1556) ──────────────────────────────────
+
+    fn allow_result() -> EvaluationResult {
+        EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: None,
+        }
+    }
+
+    #[test]
+    fn observe_mode_passes_allow_through_with_no_shadow_event() {
+        // An Allow decision is already a no-op for enforcement — observe mode
+        // must NOT fabricate a shadow event for it (otherwise audit log
+        // sandbox-event volume would be 1:1 with all traffic, not 1:1 with
+        // would-be violations).
+        let (out, shadow) = transform_for_observe_mode(allow_result(), aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        assert!(shadow.is_none(), "no shadow event for Allow decisions");
+    }
+
+    fn deny_result(reason: &str) -> EvaluationResult {
+        EvaluationResult {
+            decision: PolicyResult::Deny {
+                reason: reason.to_string(),
+            },
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: Some(DenyAction::Block),
+        }
+    }
+
+    #[test]
+    fn enforce_mode_leaves_deny_unchanged_and_emits_no_shadow_event() {
+        // Backward-compat guard: pre-feature behaviour for every existing
+        // caller must be 100% preserved when enforcement_mode = Enforce.
+        let original = deny_result("tool denied by policy");
+        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Enforce);
+        match out.decision {
+            PolicyResult::Deny { reason } => assert_eq!(reason, "tool denied by policy"),
+            other => panic!("Enforce mode must preserve Deny; got {other:?}"),
+        }
+        assert_eq!(out.deny_action, Some(DenyAction::Block));
+        assert!(shadow.is_none(), "Enforce mode produces no shadow events");
+    }
+
+    #[test]
+    fn observe_mode_converts_requires_approval_to_allow_with_pending_shadow() {
+        // A RequiresApproval decision in Observe mode must NOT halt execution
+        // — the agent proceeds, and shadow_decision = "pending" is recorded.
+        let pending = EvaluationResult {
+            decision: PolicyResult::RequiresApproval { timeout_secs: 600 },
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: None,
+        };
+        let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        let shadow = shadow.expect("shadow event for RequiresApproval in Observe mode");
+        assert_eq!(shadow.shadow_decision, "pending");
+    }
+
+    #[test]
+    fn observe_mode_converts_deny_to_allow_and_emits_shadow_event() {
+        // The core observe-mode contract: a Deny decision is rewritten to
+        // Allow, the deny_action side-effect is dropped, and a ShadowEvent
+        // with shadow_decision = "deny" is produced for the audit sink.
+        let original = deny_result("tool denied by policy");
+        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Observe);
+        assert_eq!(out.decision, PolicyResult::Allow);
+        assert!(out.deny_action.is_none(), "deny side-effect must be dropped");
+        let shadow = shadow.expect("shadow event for Deny in Observe mode");
+        assert_eq!(shadow.shadow_decision, "deny");
+        assert_eq!(shadow.reason, "tool denied by policy");
     }
 }
