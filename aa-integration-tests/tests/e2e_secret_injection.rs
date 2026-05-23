@@ -140,3 +140,40 @@ async fn st_o_2_real_secret_absent_from_llm_traffic() {
          at least one body carries PLACEHOLDER_DB_PASSWORD or a [REDACTED:*] marker."
     );
 }
+
+// ── ST-O-3 — Raw audit JSONL contains no real value ──────────────────────────
+
+/// **ST-O-3** — The raw JSONL audit log contains zero occurrences of
+/// `REAL_DB_PASSWORD`. Audit records the placeholder name only.
+///
+/// This is the durability counterpart to ST-O-2: even after the agent
+/// process exits and the LLM transport closes, the operational record-of-
+/// truth (the audit log on disk) is provably free of the real credential.
+/// AAASM-1519 / ST-G uses the same grep-the-raw-JSONL pattern for the
+/// Secret Detection capability; ST-O-3 mirrors it for Secret Injection.
+///
+/// Setup (once AAASM-1920 ships):
+///   * Same `TopologyTestEnv` + `SecretsStore` as ST-O-1.
+///   * Reuse the env's on-disk `audit_dir`; no extra fixture required.
+///
+/// Action:
+///   * Agent dispatches `call_database` with `${DB_PASSWORD}` once.
+///
+/// Assertions:
+///   1. The audit dir contains at least one `*.jsonl` entry for this run.
+///   2. Reading every JSONL file in `audit_dir` and grepping the raw bytes
+///      for `REAL_DB_PASSWORD` returns **zero matches** — the substring must
+///      not appear in any field, including any nested args payload, header
+///      capture, or error message.
+///   3. At least one entry's args field contains `PLACEHOLDER_DB_PASSWORD`
+///      — confirming the placeholder is what was recorded, not the resolved
+///      value or an empty redaction.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "blocked on AAASM-1920: Secret Injection feature (SecretsStore + dispatch_tool + audit shape) not yet implemented"]
+async fn st_o_3_audit_log_contains_no_real_value() {
+    todo!(
+        "Wire TopologyTestEnv + SecretsStore + dispatch_tool + AuditWriter once AAASM-1920 lands. \
+         Assertions: grep every *.jsonl in env.audit_dir for REAL_DB_PASSWORD — count == 0; \
+         at least one entry's args field contains PLACEHOLDER_DB_PASSWORD."
+    );
+}
