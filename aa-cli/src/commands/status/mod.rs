@@ -34,17 +34,28 @@ use models::StatusSnapshot;
 /// Compute the process exit code from a status snapshot.
 ///
 /// - `0` — all healthy
-/// - `1` — gateway is unreachable (`deployment.health == "unreachable"`) OR at
-///   least one agent has violations. Per the AAASM-1579 acceptance criteria,
-///   unreachable now maps to exit code 1 instead of the legacy exit code 2 so
-///   shell scripts can use a single non-zero check without distinguishing
-///   between failure modes.
+/// - `1` — any of:
+///     - gateway is unreachable (`deployment.health == "unreachable"`),
+///     - at least one agent has violations,
+///     - the storage health probe reports `"unavailable"` (AAASM-1591 AC:
+///       "Non-zero exit code if DB health check fails").
+///
+/// Per the AAASM-1579 acceptance criteria, all of these collapse to a
+/// single non-zero check so shell scripts don't have to distinguish
+/// between failure modes.
 pub fn compute_exit_code(snapshot: &StatusSnapshot) -> ExitCode {
     if snapshot.deployment.health == "unreachable" {
         return ExitCode::from(1);
     }
     let has_violations = snapshot.agents.iter().any(|a| a.violations_today > 0);
     if has_violations {
+        return ExitCode::from(1);
+    }
+    if snapshot
+        .storage_health
+        .as_ref()
+        .is_some_and(|s| s.health == "unavailable")
+    {
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
@@ -173,6 +184,65 @@ mod tests {
         assert_eq!(json["gateway_url"], "http://localhost:7391");
         assert_eq!(json["storage_backend"], "sqlite");
         assert_eq!(json["health"], "ok");
+    }
+
+    #[test]
+    fn exit_code_1_when_storage_health_is_unavailable() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.storage_health = Some(AdminStorageHealthBlock {
+            backend: "postgres".into(),
+            path: None,
+            database_url: Some("postgresql://aasm:***@db:5432/aasm".into()),
+            health: "unavailable".into(),
+            latency_ms: 0,
+            row_counts: AdminRowCountsBlock {
+                audit_events_hot: 0,
+                agents: 0,
+                policy_versions: 0,
+            },
+            timescaledb: None,
+        });
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::from(1));
+    }
+
+    #[test]
+    fn exit_code_0_when_storage_health_is_ok() {
+        let mut snapshot = healthy_snapshot();
+        snapshot.storage_health = Some(AdminStorageHealthBlock {
+            backend: "sqlite".into(),
+            path: Some("~/.aasm/local.db".into()),
+            database_url: None,
+            health: "ok".into(),
+            latency_ms: 1,
+            row_counts: AdminRowCountsBlock {
+                audit_events_hot: 47,
+                agents: 2,
+                policy_versions: 1,
+            },
+            timescaledb: None,
+        });
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn exit_code_0_when_storage_health_is_degraded() {
+        // "degraded" is reachable; it must not collapse to a non-zero
+        // exit. Only "unavailable" triggers the failure path.
+        let mut snapshot = healthy_snapshot();
+        snapshot.storage_health = Some(AdminStorageHealthBlock {
+            backend: "postgres".into(),
+            path: None,
+            database_url: Some("postgresql://aasm:***@db:5432/aasm".into()),
+            health: "degraded".into(),
+            latency_ms: 250,
+            row_counts: AdminRowCountsBlock {
+                audit_events_hot: 0,
+                agents: 0,
+                policy_versions: 0,
+            },
+            timescaledb: None,
+        });
+        assert_eq!(compute_exit_code(&snapshot), ExitCode::SUCCESS);
     }
 
     #[test]
