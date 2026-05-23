@@ -290,6 +290,14 @@ jobs:
           verbose: true
           fail_ci_if_error: false
 
+  # AAASM-1858: dedicated TimescaleDB job for env-gated tests in
+  # aa-gateway. Sibling tests (in storage::timescale::tests and
+  # storage::postgres::tests) check the `TIMESCALEDB_AVAILABLE` env
+  # var and either run-and-assert against a TimescaleDB-enabled
+  # cluster (this job) or skip (the regular `test` job above, which
+  # runs against vanilla postgres:18-alpine and leaves the env unset).
+  # The `timescale/timescaledb` image lags vanilla postgres by one
+  # major; pg17 is the latest published tag as of 2026-05.
   timescaledb-tests:
     name: TimescaleDB Tests
     runs-on: ubuntu-latest
@@ -316,6 +324,10 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run TimescaleDB tests
+        # The `timescale` substring filter matches all 9 env-gated tests
+        # across SD-1..SD-4: storage::timescale::tests::* (probe) plus
+        # storage::postgres::tests::{migrate_0002_*timescaledb*,
+        # apply_timescaledb_setup_*, healthcheck_reports_timescale_*}.
         env:
           AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
           TIMESCALEDB_AVAILABLE: "1"
