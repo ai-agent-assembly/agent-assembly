@@ -11,7 +11,12 @@
 //! gateway observe different things; see the JSONL writer added in a later
 //! commit for how this struct reaches disk.
 
+use std::io;
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 use aa_core::CredentialFinding;
 
@@ -52,4 +57,63 @@ pub struct ProxyAuditEntry {
     pub credential_findings: Vec<CredentialFinding>,
     /// Post-scan body content. `None` when the proxy bypassed the scanner.
     pub redacted_body: Option<String>,
+}
+
+/// Append-only JSONL writer.
+///
+/// Construct with [`JsonlWriter::new`], drive with `tokio::spawn(writer.run())`.
+/// The task terminates when all senders drop and the channel closes.
+pub struct JsonlWriter {
+    receiver: mpsc::Receiver<ProxyAuditEntry>,
+    file: tokio::io::BufWriter<tokio::fs::File>,
+    path: PathBuf,
+}
+
+impl JsonlWriter {
+    /// Open `path` in append mode (creating it if missing) and bind the
+    /// supplied receiver. Parent directories must already exist.
+    pub async fn new(path: &Path, receiver: mpsc::Receiver<ProxyAuditEntry>) -> io::Result<Self> {
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+        Ok(Self {
+            receiver,
+            file: tokio::io::BufWriter::new(file),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Path the writer is appending to (useful for tests).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Background consumption loop.
+    ///
+    /// One entry per JSON line, flushed per write so external observers see
+    /// the line as soon as the proxy returns to the client. Per-entry write
+    /// failures are logged but do not stop the loop — losing one audit line
+    /// is preferable to silently halting subsequent requests.
+    pub async fn run(mut self) {
+        tracing::info!(path = %self.path.display(), "proxy audit jsonl writer started");
+        while let Some(entry) = self.receiver.recv().await {
+            if let Err(e) = self.append(&entry).await {
+                tracing::error!(error = %e, "proxy audit jsonl write failed");
+            }
+        }
+        if let Err(e) = self.file.flush().await {
+            tracing::error!(error = %e, "proxy audit jsonl final flush failed");
+        }
+        tracing::info!(path = %self.path.display(), "proxy audit jsonl writer stopped");
+    }
+
+    async fn append(&mut self, entry: &ProxyAuditEntry) -> io::Result<()> {
+        let json = serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        self.file.write_all(json.as_bytes()).await?;
+        self.file.write_all(b"\n").await?;
+        self.file.flush().await?;
+        Ok(())
+    }
 }
