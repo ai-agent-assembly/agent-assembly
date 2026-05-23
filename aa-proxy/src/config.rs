@@ -5,6 +5,27 @@ use std::path::PathBuf;
 
 use crate::error::ProxyError;
 
+/// Action the proxy takes when its `CredentialScanner` produces a finding
+/// inside a flowing request body.
+///
+/// Mirrors `aa_gateway::policy::document::CredentialAction` but lives in the
+/// proxy crate so the data path can enforce policy locally without taking
+/// a dependency on the gateway. The variants and their semantics are
+/// intentionally identical so a single YAML field can drive both layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialAction {
+    /// Refuse the request: the proxy returns 403 to the client and **never**
+    /// dials upstream. The credential never leaves the host.
+    Block,
+    /// Forward a redacted form of the body upstream (default; matches the
+    /// historical behaviour from before this enum existed).
+    #[default]
+    RedactOnly,
+    /// Forward the unmodified body and raise a critical alert as a
+    /// side-effect. Documented as a deliberate downgrade for audit-only modes.
+    AlertOnly,
+}
+
 /// Runtime configuration for the proxy sidecar.
 ///
 /// All fields can be overridden via environment variables.
