@@ -1136,6 +1136,44 @@ paths:
                 $ref: '#/components/schemas/ApprovalResponse'
         '404':
           description: Approval request not found
+  /api/v1/audit/sandbox-summary:
+    get:
+      tags:
+      - audit
+      summary: '`GET /api/v1/audit/sandbox-summary` — observe-mode shadow-event aggregate.'
+      description: |-
+        Returns the dashboard SandboxSummaryCard breakdown — would-be denies,
+        would-be redactions, and would-be pending approvals — across every audit
+        entry the gateway recorded with `dry_run: true` in the requested window.
+        Surfaces the single most-frequent `policy_rule` value as `top_rule`. The
+        optional `root` parameter scopes the aggregate to one delegation subtree.
+      operationId: get_sandbox_summary
+      parameters:
+      - name: root
+        in: query
+        description: Hex-encoded root agent ID; scopes counts to that delegation subtree.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: window
+        in: query
+        description: 'Time window as a duration string: `24h` (default), `1h`, `7d`, `30m`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Sandbox / observe-mode aggregate counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxSummaryResponse'
+        '400':
+          description: Invalid query parameter
   /api/v1/audit/violations-by-lineage:
     get:
       tags:
@@ -4643,6 +4681,80 @@ components:
           type: string
         verb:
           $ref: '#/components/schemas/Verb'
+    SandboxSummaryCounts:
+      type: object
+      description: |-
+        Aggregate counts for the dashboard SandboxSummaryCard.
+
+        Each field is the number of shadow audit events (entries whose payload
+        carries `dry_run: true`) that would have produced the named outcome under
+        live enforcement. `would_be_redactions` is the count of dry-run entries
+        that also carry one or more credential-scanner findings — those secrets
+        would have been redacted by the scanner under `enforcement_mode: enforce`.
+      required:
+      - would_be_denies
+      - would_be_redactions
+      - would_be_pending_approvals
+      properties:
+        would_be_denies:
+          type: integer
+          format: int64
+          description: Shadow-decision = `"deny"` count.
+          minimum: 0
+        would_be_pending_approvals:
+          type: integer
+          format: int64
+          description: Shadow-decision = `"pending"` count.
+          minimum: 0
+        would_be_redactions:
+          type: integer
+          format: int64
+          description: Dry-run entries with non-empty `credential_findings`.
+          minimum: 0
+    SandboxSummaryResponse:
+      type: object
+      description: Response for `GET /api/v1/audit/sandbox-summary`.
+      required:
+      - counts
+      - window_secs
+      - generated_at
+      properties:
+        counts:
+          $ref: '#/components/schemas/SandboxSummaryCounts'
+          description: Counts bucketed by the dashboard's wouldBe* categories.
+        generated_at:
+          type: string
+          description: ISO 8601 UTC timestamp when this response was generated.
+        top_rule:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/SandboxSummaryTopRule'
+            description: Top-ranked policy rule by shadow-event frequency, when one exists.
+        window_secs:
+          type: integer
+          format: int64
+          description: Time window used for aggregation, in seconds.
+          minimum: 0
+    SandboxSummaryTopRule:
+      type: object
+      description: |-
+        Most-frequent matched policy rule across the shadow events in the window.
+
+        Mirrors `policy_rule` field on the shadow payload (see
+        `aa-gateway::service::policy_service::record_audit`). Omitted from the
+        response when no shadow entry carried a non-empty `policy_rule`.
+      required:
+      - id
+      - count
+      properties:
+        count:
+          type: integer
+          format: int64
+          description: Number of shadow events in the window matched by this rule.
+          minimum: 0
+        id:
+          type: string
+          description: Rule identifier as recorded in the shadow payload's `policy_rule`.
     Scope:
       type: string
       description: |-
