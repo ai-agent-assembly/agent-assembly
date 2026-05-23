@@ -2,6 +2,7 @@
 //!
 //! All endpoints are nested under `/api/v1/`.
 
+pub mod admin;
 pub mod agents;
 pub mod alert_rules;
 pub mod alerts;
@@ -126,6 +127,12 @@ pub fn v1_router() -> Router {
         .route("/ops/{id}/terminate", post(ops::terminate_op))
         // Audit aggregations
         .route("/audit/violations-by-lineage", get(audit::get_violations_by_lineage))
+        // Admin — retention policy (AAASM-1592 S-K)
+        .route(
+            "/admin/retention-policy",
+            get(admin::get_retention_policy).put(admin::update_retention_policy),
+        )
+        .route("/admin/retention-policy/run", post(admin::run_retention_policy))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.
