@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::dashboard_server::{dashboard_router, find_dashboard_dist};
+use crate::routes::admin_status::{admin_status, AdminStatusState};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{SqliteBackend, SqliteConfig, StorageBackend, StorageError};
 
@@ -242,9 +243,9 @@ pub enum LocalModeError {
 /// and continues serving without the SPA — matches AAASM-1580 AC
 /// "Missing dashboard/dist/ → gateway starts successfully with
 /// warning (dashboard unavailable, gateway API still works)".
-pub(crate) fn router(config: &LocalModeConfig) -> Router {
+pub(crate) fn router(config: &LocalModeConfig, storage: Option<Arc<dyn StorageBackend>>) -> Router {
     let dist = if config.dashboard { find_dashboard_dist() } else { None };
-    router_with_resolved_dist(config, dist.as_deref())
+    router_with_resolved_dist(config, dist.as_deref(), storage)
 }
 
 /// Test-injectable router builder — keeps `router()` thin and lets
@@ -256,9 +257,24 @@ pub(crate) fn router(config: &LocalModeConfig) -> Router {
 /// When `config.dashboard` is `false`, `dist` is ignored — the router
 /// returns the healthz-only skeleton regardless of what the caller
 /// resolved.
-pub(crate) fn router_with_resolved_dist(config: &LocalModeConfig, dist: Option<&Path>) -> Router {
+pub(crate) fn router_with_resolved_dist(
+    config: &LocalModeConfig,
+    dist: Option<&Path>,
+    storage: Option<Arc<dyn StorageBackend>>,
+) -> Router {
     let state = HealthzState::new("local", "sqlite");
     let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
+    if let Some(backend) = storage {
+        let admin_state = AdminStatusState::new(
+            "local",
+            backend,
+            Some(config.storage_path.to_string_lossy().into_owned()),
+            None,
+        );
+        app = app
+            .route("/api/v1/admin/status", get(admin_status))
+            .layer(Extension(admin_state));
+    }
     if config.dashboard {
         match dist {
             Some(dist) => app = app.merge(dashboard_router(dist)),
@@ -503,7 +519,10 @@ pub(crate) async fn start_local_with_pid_path(
     //    The `JoinHandle` lives on the handle so `shutdown()` can await
     //    the task's completion after signalling shutdown_tx.
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let app = router(config);
+    // AAASM-1908: pass storage into the router so `/api/v1/admin/status`
+    // can probe it on each request and the CLI can surface DB health,
+    // latency, and row counts.
+    let app = router(config, Some(Arc::clone(&storage)));
     let server_task = tokio::spawn(async move {
         let _ = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -550,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn router_serves_healthz_with_local_mode_json() {
         let cfg = healthz_only_config();
-        let app = router(&cfg);
+        let app = router(&cfg, None);
         let request = Request::builder()
             .uri("/healthz")
             .body(Body::empty())
@@ -579,6 +598,73 @@ mod tests {
             body["uptime_secs"].is_u64(),
             "uptime_secs must be present and a u64; got {body}",
         );
+    }
+
+    /// AAASM-1591 / Epic 18 S-J: when a storage backend is wired into
+    /// the local-mode router, `GET /api/v1/admin/status` returns the
+    /// documented storage block (backend=sqlite, health=ok, row counts,
+    /// no TimescaleDB block, sqlite `path` echoed from
+    /// `LocalModeConfig.storage_path`).
+    #[tokio::test]
+    async fn router_serves_admin_status_when_storage_is_wired() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("local.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path: db_path.clone() })
+            .await
+            .expect("open sqlite backend");
+        backend.migrate().await.expect("migrate");
+        let storage: Arc<dyn StorageBackend> = Arc::new(backend);
+
+        let cfg = LocalModeConfig {
+            port: 0,
+            dashboard: false,
+            storage_path: db_path,
+        };
+
+        let app = router(&cfg, Some(Arc::clone(&storage)));
+        let request = Request::builder()
+            .uri("/api/v1/admin/status")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router.oneshot");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = to_bytes(response.into_body(), 16 * 1024).await.expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        assert_eq!(body["mode"], "local");
+        let storage_block = &body["storage"];
+        assert_eq!(storage_block["backend"], "sqlite");
+        assert_eq!(storage_block["health"], "ok");
+        assert!(storage_block["path"].is_string(), "sqlite path must be reported");
+        assert!(
+            storage_block.get("database_url").is_none(),
+            "sqlite branch must omit database_url",
+        );
+        assert!(
+            storage_block.get("timescaledb").is_none(),
+            "sqlite must omit timescaledb block",
+        );
+        assert!(storage_block["row_counts"]["audit_events_hot"].as_u64().is_some());
+        assert!(storage_block["row_counts"]["agents"].as_u64().is_some());
+        assert!(storage_block["row_counts"]["policy_versions"].as_u64().is_some());
+    }
+
+    /// AAASM-1591: when no storage is wired, the local-mode router must
+    /// still serve `/healthz` but must *not* mount `/api/v1/admin/status`
+    /// — a 404 is the right signal for older operators / tests that
+    /// build the router without a backend.
+    #[tokio::test]
+    async fn router_omits_admin_status_when_storage_is_none() {
+        let cfg = healthz_only_config();
+        let app = router(&cfg, None);
+        let request = Request::builder()
+            .uri("/api/v1/admin/status")
+            .body(Body::empty())
+            .expect("build request");
+        let response = app.oneshot(request).await.expect("router.oneshot");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Mirrors the developer's first `aasm start --mode local` —
@@ -674,7 +760,7 @@ mod tests {
 
         let cfg = healthz_only_config();
         let server = tokio::spawn(async move {
-            let _ = axum::serve(listener, router(&cfg)).await;
+            let _ = axum::serve(listener, router(&cfg, None)).await;
         });
 
         let alive = probe_running(port).await;
@@ -1000,7 +1086,7 @@ mod tests {
     #[tokio::test]
     async fn router_serves_dashboard_index_when_enabled_with_dist() {
         let dist = make_dashboard_stub_dist();
-        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()), None);
 
         let response = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).expect("build request"))
@@ -1022,7 +1108,7 @@ mod tests {
     #[tokio::test]
     async fn router_falls_back_to_index_on_unknown_spa_route() {
         let dist = make_dashboard_stub_dist();
-        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()), None);
 
         let response = app
             .oneshot(
@@ -1055,7 +1141,7 @@ mod tests {
     #[tokio::test]
     async fn router_preserves_healthz_when_dashboard_enabled() {
         let dist = make_dashboard_stub_dist();
-        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()));
+        let app = router_with_resolved_dist(&dashboard_on_config(), Some(dist.path()), None);
 
         let response = app
             .oneshot(
@@ -1094,7 +1180,7 @@ mod tests {
             dashboard: false,
             storage_path: std::path::PathBuf::from("/dev/null"),
         };
-        let app = router_with_resolved_dist(&cfg, Some(dist.path()));
+        let app = router_with_resolved_dist(&cfg, Some(dist.path()), None);
 
         let response = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).expect("build request"))
@@ -1117,7 +1203,7 @@ mod tests {
     /// and doesn't need a subscriber-capture assertion at this level.
     #[tokio::test]
     async fn router_serves_healthz_when_dashboard_enabled_but_dist_missing() {
-        let app = router_with_resolved_dist(&dashboard_on_config(), None);
+        let app = router_with_resolved_dist(&dashboard_on_config(), None, None);
 
         let healthz = app
             .clone()
