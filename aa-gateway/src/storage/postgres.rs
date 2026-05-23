@@ -911,6 +911,7 @@ impl StorageBackend for PostgresBackend {
                 agents: agents as u64,
                 policy_versions: policy_versions as u64,
             },
+            timescale: None,
         })
     }
 }
