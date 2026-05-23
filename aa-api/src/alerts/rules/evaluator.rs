@@ -260,4 +260,27 @@ mod tests {
         let fired = evaluate_once(&rules, &NullMetricSource, &alerts);
         assert_eq!(fired, 0);
     }
+
+    #[test]
+    fn fired_alert_carries_full_rule_snapshot() {
+        let rules = InMemoryAlertRuleStore::new();
+        let created = rules.create(rule(RuleOperator::Gt, 90.0)).expect("create");
+        let alerts = InMemoryAlertStore::new();
+
+        let fired = evaluate_once(&rules, &FixedMetric(95.0), &alerts);
+        assert_eq!(fired, 1);
+
+        let (items, _) = alerts.list(1, 0);
+        let stored = items.into_iter().next().expect("one alert recorded");
+
+        let snapshot = stored
+            .rule_snapshot
+            .as_ref()
+            .expect("rule_snapshot must be Some(AlertRule) after a rule fire");
+        assert_eq!(snapshot.id, created.id, "snapshot.id must echo the live rule id");
+        assert_eq!(snapshot.name, created.name);
+        assert_eq!(snapshot.threshold, 90.0);
+        assert_eq!(snapshot.operator, RuleOperator::Gt);
+        assert_eq!(snapshot.metric, RuleMetric::BudgetSpentPct);
+    }
 }
