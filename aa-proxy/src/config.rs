@@ -266,4 +266,47 @@ mod tests {
         let cfg = ProxyConfig::from_env().unwrap();
         assert!(!cfg.skip_upstream_tls_verify);
     }
+
+    #[test]
+    fn from_env_credential_action_defaults_to_redact_only() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::RedactOnly);
+    }
+
+    #[test]
+    fn from_env_credential_action_reads_block() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "block");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::Block);
+    }
+
+    #[test]
+    fn from_env_credential_action_reads_alert_only_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "ALERT_ONLY");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::AlertOnly);
+    }
+
+    #[test]
+    fn from_env_credential_action_invalid_returns_config_error() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "nope");
+
+        let err = ProxyConfig::from_env().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("AA_PROXY_CREDENTIAL_ACTION"),
+            "error must name the env var, got: {msg}"
+        );
+    }
 }
