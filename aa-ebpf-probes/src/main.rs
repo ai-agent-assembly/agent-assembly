@@ -443,6 +443,18 @@ fn try_sys_unlink_legacy(ctx: &ProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+/// kretprobe paired with [`aa_sys_unlink_legacy`] — emits the event
+/// using the path stashed by the legacy entry kprobe. Delegates to
+/// the same handler as the at-variant retprobe because both share the
+/// `UNLINK_TMP` / `UNLINK_ENTRY_TS` maps keyed by `pid_tgid`.
+#[kretprobe]
+pub fn aa_sys_unlink_legacy_ret(ctx: RetProbeContext) -> u32 {
+    match try_sys_unlink_ret(&ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
 /// kprobe on `sys_renameat2` — captures the source pathname from the
 /// syscall argument, stashes it + the entry timestamp keyed by
 /// `pid_tgid`, and defers event emission to the kretprobe.
