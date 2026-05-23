@@ -121,6 +121,7 @@ mod tests {
                     decision: dec,
                 })
                 .collect(),
+            enforcement_mode: aa_core::EnforcementMode::default(),
         }
     }
 

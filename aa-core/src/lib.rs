@@ -43,7 +43,7 @@ pub mod topology;
 
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
-pub use policy::{FileMode, PolicyDecision, PolicyError};
+pub use policy::{EnforcementMode, FileMode, PolicyDecision, PolicyError};
 pub use risk_tier::RiskTier;
 
 #[cfg(feature = "alloc")]
