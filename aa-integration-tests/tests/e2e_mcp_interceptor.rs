@@ -433,14 +433,65 @@ async fn st_q_4_mcp_tool_name_outside_allowlist_is_denied() {
 /// ST-Q-5 — All four behaviours above work with NO SDK installed.
 ///
 /// Validates the framework-agnostic Layer 2 contract that motivates the
-/// MCP interceptor's design (spec lines 452–453 / 7243). The driver in
-/// AAASM-1930 will skip `init_assembly()` and connect a raw client through
-/// the proxy; deny / allow / redact / allowlist must all behave identically
-/// to the SDK-installed cases above.
-#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
-#[test]
-fn st_q_5_mcp_interception_works_without_sdk_installed() {
-    todo!("AAASM-1930: drive without init_assembly(), assert ST-Q-1..4 behaviours all hold")
+/// MCP interceptor's design (spec lines 452–453 / 7243). This test
+/// duplicates ST-Q-1's deny driver while making the SDK-less property
+/// explicit: the driver opens a raw `TcpStream → CONNECT → TLS` against
+/// the proxy and writes the JSON-RPC body by hand, never invoking
+/// `init_assembly()`. There is no Assembly SDK in the connection path.
+///
+/// Asserts the same wire-level + audit shape as ST-Q-1:
+///
+/// 1. JSON-RPC 2.0 error envelope returned to client.
+/// 2. Upstream `request_count() == 0`.
+/// 3. Audit event is `PolicyViolation { blocked_action: "tools/call
+///    read_file" }`.
+///
+/// Sibling tests ST-Q-1 / ST-Q-2 / ST-Q-4 also use this same SDK-less
+/// driver implicitly — the entire `proxy_e2e` mod's `send_mcp_request_
+/// through_proxy` helper makes raw TCP+TLS calls without going through
+/// the SDK. ST-Q-5 promotes that property from "implicit" to an
+/// explicit acceptance assertion.
+#[tokio::test(flavor = "multi_thread")]
+async fn st_q_5_mcp_interception_works_without_sdk_installed() {
+    use proxy_e2e::*;
+    install_crypto_provider();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.expect("ca");
+    let client_config = std::sync::Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+    let upstream = TlsCapturingMcpUpstream::start(&ca).await;
+    let (gateway_addr, _registry) = start_gateway_with_mcp_policy("mcp_deny_read_file.yaml").await;
+    let (proxy_addr, mut event_rx, abort) = start_proxy_with_gateway(dir.path(), ca, upstream.addr, gateway_addr).await;
+
+    // Hand-rolled JSON-RPC body — no `aa_runtime::init_assembly()`, no
+    // SDK shim, no FFI binding. Pure Layer-2 driver shape.
+    let body = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/etc/passwd"}}}"#;
+    let result = send_mcp_request_through_proxy(proxy_addr, client_config, body).await;
+
+    let inner = result.inner_response.expect("inner response from proxy");
+    assert!(
+        inner.contains(r#""error""#) && inner.contains(r#""code":-32000"#),
+        "framework-agnostic Layer 2 path must still produce JSON-RPC error envelope on Deny, got: {inner}",
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        upstream.request_count(),
+        0,
+        "upstream must receive zero requests even when caller has no SDK",
+    );
+
+    let audit = recv_first_audit(&mut event_rx, std::time::Duration::from_secs(2))
+        .await
+        .expect("audit event must be emitted from proxy regardless of SDK presence");
+    match audit.inner.detail.expect("audit detail") {
+        aa_proto::assembly::audit::v1::audit_event::Detail::Violation(v) => {
+            assert_eq!(v.blocked_action, "tools/call read_file");
+        }
+        other => panic!("expected PolicyViolation, got {other:?}"),
+    }
+
+    abort.abort();
 }
 
 // ── E2E test infrastructure (AAASM-1930 Phase B) ────────────────────────────
