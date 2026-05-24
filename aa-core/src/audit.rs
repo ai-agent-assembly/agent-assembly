@@ -49,6 +49,12 @@ pub enum AuditEventType {
     AgentForceDeregistered = 11,
     /// An inter-team message was blocked because the target channel is not permitted by policy.
     MessageBlocked = 12,
+    /// A `dispatch_tool` call was processed by the gateway: the agent's
+    /// placeholder-form args were resolved via the `SecretsStore` and
+    /// forwarded to the tool sink. The audit `payload` carries the
+    /// **placeholder-form** args — the resolved credential value is never
+    /// recorded. (AAASM-1920 / Secret Injection.)
+    ToolDispatched = 13,
 }
 
 impl AuditEventType {
@@ -70,6 +76,7 @@ impl AuditEventType {
             Self::ApprovalEscalated => "ApprovalEscalated",
             Self::AgentForceDeregistered => "AgentForceDeregistered",
             Self::MessageBlocked => "MessageBlocked",
+            Self::ToolDispatched => "ToolDispatched",
         }
     }
 }
