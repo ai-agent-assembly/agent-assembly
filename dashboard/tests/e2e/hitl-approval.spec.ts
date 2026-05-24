@@ -12,7 +12,7 @@
 // blocking-waiter / timeout / list-transition semantics. This file is the
 // browser-level evidence the ticket AC requests.
 
-import { test, expect, type Route } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 
 import { type FixtureHandle, killFixture, spawnFixture } from './hitl-fixture'
 
@@ -45,12 +45,10 @@ test.describe('Approvals — AAASM-1571 ST-P-5: HITL gate via real gateway', () 
     await page.route('**/api/v1/ws/events*', (route) => route.abort())
 
     // Proxy `/api/v1/**` calls to the live gateway behind the fixture.
-    // Special-cases the list endpoint: the production handler returns a
-    // `PaginatedResponse { items, total, page, per_page }` while the OpenAPI
-    // schema declares `ApprovalResponse[]` (and the dashboard consumes an
-    // array). Unwrap `items` so the dashboard renders correctly until the
-    // contract drift is fixed in a follow-up ticket.
-    await page.route('**/api/v1/**', async (route: Route) => {
+    // AAASM-1922 aligned the `list_approvals` OpenAPI body with the
+    // runtime `PaginatedApprovalResponse` envelope, so the dashboard now
+    // reads `data.items` itself — no response transform needed here.
+    await page.route('**/api/v1/**', async (route) => {
       const url = new URL(route.request().url())
       const proxiedUrl = `${baseUrl}${url.pathname}${url.search}`
       const postData = route.request().postData()
@@ -61,26 +59,6 @@ test.describe('Approvals — AAASM-1571 ST-P-5: HITL gate via real gateway', () 
         headers: route.request().headers(),
         ...(postData !== null ? { postData } : {}),
       })
-
-      const isListApprovals = url.pathname === '/api/v1/approvals' && route.request().method() === 'GET'
-      if (isListApprovals) {
-        const text = await response.text()
-        try {
-          const parsed = JSON.parse(text) as unknown
-          const items =
-            Array.isArray(parsed)
-              ? parsed
-              : (parsed as { items?: unknown[] }).items ?? []
-          await route.fulfill({
-            status: response.status(),
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(items),
-          })
-          return
-        } catch {
-          /* fall through to default fulfill on parse error */
-        }
-      }
 
       await route.fulfill({ response })
     })

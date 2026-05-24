@@ -8,12 +8,12 @@ export type DecideRequest = components['schemas']['DecideRequest']
 export function useApprovalsQuery() {
   return useQuery({
     queryKey: ['approvals'],
-    queryFn: async () => {
+    queryFn: async (): Promise<Approval[]> => {
       const { data, error } = await api.GET('/api/v1/approvals', {
         params: { query: { per_page: 100 } },
       })
       if (error) throw new Error('Failed to fetch approvals')
-      return data ?? []
+      return data?.items ?? []
     },
   })
 }

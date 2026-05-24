@@ -11,7 +11,6 @@ use aa_runtime::approval::{ApprovalDecision, ApprovalError, ApprovalLookup, Pend
 use utoipa::IntoParams;
 
 use crate::error::ProblemDetail;
-use crate::pagination::PaginatedResponse;
 use crate::state::AppState;
 
 /// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
@@ -195,7 +194,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
     path = "/api/v1/approvals",
     params(ListApprovalsParams),
     responses(
-        (status = 200, description = "Paginated list of approvals", body = Vec<ApprovalResponse>)
+        (status = 200, description = "Paginated list of approvals", body = PaginatedApprovalResponse)
     ),
     tag = "approvals"
 )]
@@ -237,7 +236,7 @@ pub async fn list_approvals(
 
     (
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedApprovalResponse {
             items,
             page: params.page(),
             per_page: params.per_page(),
@@ -392,4 +391,27 @@ pub struct DecideRequest {
     pub by: Option<String>,
     /// Optional reason for the decision.
     pub reason: Option<String>,
+}
+
+/// Paginated wire-format envelope for `GET /api/v1/approvals`.
+///
+/// Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
+/// — `{items, page, per_page, total}` — but is declared as a concrete,
+/// non-generic type so utoipa can register it as a named component schema
+/// and downstream codegen (the dashboard `openapi-typescript` step) sees
+/// a typed envelope rather than a bare array. Introduced to close the
+/// drift between the handler's runtime body and the OpenAPI contract
+/// flagged by AAASM-1922; the other paginated list endpoints
+/// (`list_agents`, `list_alerts`, `list_policies`, `list_logs`) carry the
+/// same drift and will be addressed independently.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedApprovalResponse {
+    /// Items in the current page.
+    pub items: Vec<ApprovalResponse>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total number of items across all pages (after filters).
+    pub total: u64,
 }

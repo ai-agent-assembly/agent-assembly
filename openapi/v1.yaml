@@ -1048,9 +1048,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ApprovalResponse'
+                $ref: '#/components/schemas/PaginatedApprovalResponse'
   /api/v1/approvals/{id}:
     get:
       tags:
@@ -4100,6 +4098,46 @@ components:
         verb:
           $ref: '#/components/schemas/Verb'
           description: Verb within the cell that was changed.
+    PaginatedApprovalResponse:
+      type: object
+      description: |-
+        Paginated wire-format envelope for `GET /api/v1/approvals`.
+
+        Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
+        — `{items, page, per_page, total}` — but is declared as a concrete,
+        non-generic type so utoipa can register it as a named component schema
+        and downstream codegen (the dashboard `openapi-typescript` step) sees
+        a typed envelope rather than a bare array. Introduced to close the
+        drift between the handler's runtime body and the OpenAPI contract
+        flagged by AAASM-1922; the other paginated list endpoints
+        (`list_agents`, `list_alerts`, `list_policies`, `list_logs`) carry the
+        same drift and will be addressed independently.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalResponse'
+          description: Items in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total number of items across all pages (after filters).
+          minimum: 0
     PermissionSourceResponse:
       type: object
       description: Per-scope contribution to an agent's effective permissions.
