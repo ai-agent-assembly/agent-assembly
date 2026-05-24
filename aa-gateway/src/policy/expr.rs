@@ -2029,4 +2029,11 @@ mod tests {
         let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
         assert!(evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
     }
+
+    #[test]
+    fn args_starts_with_matches_etc_path_prefix() {
+        // The flagship AAASM-1930 ST-Q-1 predicate shape.
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
 }
