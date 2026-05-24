@@ -156,4 +156,70 @@ mod tests {
         assert_eq!(result.resolved, json!("real-secret-abc"));
         assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
     }
+
+    #[test]
+    fn embedded_placeholder_substitutes_in_place() {
+        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let result = resolve_placeholders(&json!("postgres://app:${DB_PASSWORD}@db:5432/prod"), &store).unwrap();
+        assert_eq!(result.resolved, json!("postgres://app:real-secret-abc@db:5432/prod"));
+        assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
+    }
+
+    #[test]
+    fn nested_object_recurses_into_leaves() {
+        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let input = json!({
+            "connection": {
+                "user": "app",
+                "password": "${DB_PASSWORD}"
+            }
+        });
+        let result = resolve_placeholders(&input, &store).unwrap();
+        assert_eq!(result.resolved["connection"]["password"], json!("real-secret-abc"));
+        assert_eq!(result.resolved["connection"]["user"], json!("app"));
+        assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
+    }
+
+    #[test]
+    fn nested_array_recurses_into_leaves() {
+        let store = store_with(&[("API_TOKEN", "real-token-1")]);
+        let input = json!(["GET", "/v1/users", "Authorization: Bearer ${API_TOKEN}"]);
+        let result = resolve_placeholders(&input, &store).unwrap();
+        assert_eq!(
+            result.resolved,
+            json!(["GET", "/v1/users", "Authorization: Bearer real-token-1"])
+        );
+        assert_eq!(result.names_substituted, vec!["API_TOKEN"]);
+    }
+
+    #[test]
+    fn multiple_placeholders_in_one_string_substitute_in_walk_order() {
+        let store = store_with(&[("USER", "alice"), ("PASS", "secret-123")]);
+        let result = resolve_placeholders(&json!("user=${USER}&pass=${PASS}&user=${USER}"), &store).unwrap();
+        assert_eq!(result.resolved, json!("user=alice&pass=secret-123&user=alice"));
+        // Each occurrence appears in walk order — caller can audit reference count.
+        assert_eq!(result.names_substituted, vec!["USER", "PASS", "USER"]);
+    }
+
+    #[test]
+    fn no_placeholder_passes_through_unchanged() {
+        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let input = json!({"tool": "noop", "args": [1, 2, true, null, "plain-string"]});
+        let result = resolve_placeholders(&input, &store).unwrap();
+        assert_eq!(result.resolved, input);
+        assert!(result.names_substituted.is_empty());
+    }
+
+    #[test]
+    fn unknown_placeholder_returns_unknown_placeholder_error() {
+        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let err = resolve_placeholders(&json!({"connection_string": "${UNKNOWN_SECRET}"}), &store)
+            .expect_err("unknown placeholder must surface");
+        assert_eq!(
+            err,
+            SecretInjectionError::UnknownPlaceholder {
+                name: "UNKNOWN_SECRET".to_owned()
+            }
+        );
+    }
 }
