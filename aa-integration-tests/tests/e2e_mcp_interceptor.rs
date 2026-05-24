@@ -126,3 +126,40 @@ fn parser_preserves_nested_arguments_object() {
         "JSON pointer walk through nested arguments must succeed for policy predicates",
     );
 }
+
+/// ST-Q detection — non-MCP JSON traffic flowing through the proxy must be
+/// rejected by `parse_mcp_request`. Critical invariant: the proxy data path
+/// (AAASM-1930) will call this primitive on every body it sees in the MitM
+/// tunnel; if an OpenAI chat-completions body or any plain JSON object
+/// matched, the policy engine would evaluate MCP rules against arbitrary
+/// LLM traffic.
+#[test]
+fn parser_rejects_non_mcp_json_traffic_seen_by_proxy() {
+    // OpenAI chat-completions body — the proxy sees this on every LLM call.
+    let openai = br#"{
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    assert!(
+        parse_mcp_request(openai).is_none(),
+        "OpenAI body must not match an MCP rule"
+    );
+
+    // Anthropic body — same risk.
+    let anthropic = br#"{
+        "model": "claude-3-opus-20240229",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "hi"}]
+    }"#;
+    assert!(
+        parse_mcp_request(anthropic).is_none(),
+        "Anthropic body must not match an MCP rule",
+    );
+
+    // Plain JSON object with no MCP envelope — generic webhook traffic etc.
+    let generic = br#"{"event": "ping", "ts": 1700000000}"#;
+    assert!(
+        parse_mcp_request(generic).is_none(),
+        "generic JSON must not match an MCP rule"
+    );
+}
