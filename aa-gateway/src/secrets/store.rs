@@ -133,4 +133,20 @@ mod tests {
         store.register(secret("DB_PASSWORD", "real-secret-1")).unwrap();
         assert_eq!(store.lookup("UNKNOWN"), None);
     }
+
+    #[test]
+    fn list_returns_only_names_sorted_lexicographically() {
+        let store = InMemorySecretsStore::new();
+        store.register(secret("STRIPE_KEY", "real-1")).unwrap();
+        store.register(secret("DB_PASSWORD", "real-2")).unwrap();
+        store.register(secret("API_TOKEN", "real-3")).unwrap();
+        let names = store.list();
+        assert_eq!(names, vec!["API_TOKEN", "DB_PASSWORD", "STRIPE_KEY"]);
+        for value in ["real-1", "real-2", "real-3"] {
+            assert!(
+                !names.iter().any(|n| n.contains(value)),
+                "list() must never expose credential values; found {value:?}"
+            );
+        }
+    }
 }
