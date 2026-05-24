@@ -290,3 +290,16 @@ fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
 fn st_q_4_mcp_tool_name_outside_allowlist_is_denied() {
     todo!("AAASM-1930: install mcp_allowlist.yaml, drive tools/call execute_bash, assert deny")
 }
+
+/// ST-Q-5 — All four behaviours above work with NO SDK installed.
+///
+/// Validates the framework-agnostic Layer 2 contract that motivates the
+/// MCP interceptor's design (spec lines 452–453 / 7243). The driver in
+/// AAASM-1930 will skip `init_assembly()` and connect a raw client through
+/// the proxy; deny / allow / redact / allowlist must all behave identically
+/// to the SDK-installed cases above.
+#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
+#[test]
+fn st_q_5_mcp_interception_works_without_sdk_installed() {
+    todo!("AAASM-1930: drive without init_assembly(), assert ST-Q-1..4 behaviours all hold")
+}
