@@ -75,6 +75,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::{AgentRegistry, OrphanMode};
 use aa_gateway::routes::healthz::{healthz, HealthzState};
+use aa_gateway::secrets::InMemorySecretsStore;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use tokio::sync::oneshot;
@@ -772,6 +773,7 @@ spec:
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
+            secrets_store: Arc::new(InMemorySecretsStore::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -908,6 +910,7 @@ spec:
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
+            secrets_store: Arc::new(InMemorySecretsStore::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1045,6 +1048,7 @@ spec:
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
+            secrets_store: Arc::new(InMemorySecretsStore::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1174,6 +1178,7 @@ spec:
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
+            secrets_store: Arc::new(InMemorySecretsStore::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1293,6 +1298,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
+            secrets_store: Arc::new(InMemorySecretsStore::new()),
         },
         audit_dir,
         alert_store_handle,

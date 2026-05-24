@@ -28,6 +28,7 @@ use aa_gateway::edges::InMemoryEdgeRepo;
 use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::AgentRegistry;
+use aa_gateway::secrets::InMemorySecretsStore;
 use aa_gateway::storage::RetentionEngine;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
@@ -174,6 +175,7 @@ spec:
         alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
         destination_registry: Arc::new(DestinationRegistry::seeded()),
         retention_engine: None,
+        secrets_store: Arc::new(InMemorySecretsStore::new()),
     }
 }
 
