@@ -164,4 +164,21 @@ mod tests {
         assert!(parse_mcp_request(b"{\"jsonrpc\":\"2.0\",\"method\":").is_none());
         assert!(parse_mcp_request(b"").is_none());
     }
+
+    #[test]
+    fn missing_arguments_defaults_to_json_null() {
+        // Tools that take no arguments (e.g. `tools/call` for a
+        // `list_workspace_files` no-arg tool) omit the `arguments` field
+        // entirely. The parser must accept these and surface
+        // `arguments == Value::Null` so callers can treat it uniformly.
+        let body = br#"{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "ping" }
+        }"#;
+        let call = parse_mcp_request(body).expect("missing arguments must still parse");
+        assert_eq!(call.tool_name, "ping");
+        assert_eq!(call.arguments, serde_json::Value::Null);
+    }
 }
