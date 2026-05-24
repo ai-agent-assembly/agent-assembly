@@ -34,9 +34,14 @@ use aya_ebpf::{
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
 
-/// PID filter: only emit events for processes whose tgid is in this map.
-/// Value 0 = monitor this PID and its descendants.
-/// An empty map means "monitor all processes".
+/// PID filter for exec events. Keys are tgids that should be traced;
+/// the value is unused (only presence matters).
+///
+/// Key `0u32` is reserved as a wildcard — when present the probe emits
+/// every exec event regardless of tgid. Any other key matches that
+/// specific tgid. An empty map filters everything out and the probe
+/// emits nothing, so userspace must insert either a specific tgid or
+/// the wildcard before relying on events.
 #[map]
 static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
@@ -46,11 +51,22 @@ static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
 /// Returns `true` when `tgid` should be traced.
 ///
-/// If the filter map is empty (no entries), all processes are monitored.
-/// Otherwise, only PIDs present in the map are monitored.
+/// Key `0u32` is reserved as a wildcard: if it is present in the filter
+/// map every tgid is allowed. Otherwise the lookup is a direct match on
+/// `tgid`. Both branches are constant-time and avoid map iteration so
+/// the BPF verifier accepts the program with no unbounded loop.
+///
+/// The wildcard lets userspace race-proof a test by inserting key `0`
+/// before forking, without needing to know the child's pid ahead of
+/// `spawn()` (AAASM-1567).
 #[inline(always)]
 fn pid_allowed(tgid: u32) -> bool {
-    unsafe { EXEC_PID_FILTER.get(&tgid).is_some() }
+    unsafe {
+        if EXEC_PID_FILTER.get(&0).is_some() {
+            return true;
+        }
+        EXEC_PID_FILTER.get(&tgid).is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
