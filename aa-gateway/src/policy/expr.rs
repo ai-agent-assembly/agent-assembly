@@ -1060,6 +1060,14 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 /// known variable is ≤ 2.
 pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
     for name in extract_field_names(expr) {
+        // `args.<key>` / `args.<key>.<nested>` is a structural identifier
+        // accepted by the lexer as `FieldRef::ToolArg`. There is no static
+        // list of valid keys (they're inspected against the live action's
+        // JSON-encoded args), so validation skips the membership check and
+        // defers null-safety to the runtime evaluator.
+        if name.starts_with("args.") && name.len() > "args.".len() {
+            continue;
+        }
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
             let suggestion = suggest_variable(&name).map(str::to_owned);
             let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
