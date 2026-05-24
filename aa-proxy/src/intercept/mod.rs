@@ -3,6 +3,7 @@
 pub mod detect;
 pub mod event;
 pub mod extract;
+pub mod mcp;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
