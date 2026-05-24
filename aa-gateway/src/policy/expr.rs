@@ -262,6 +262,21 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 }
             }
 
+            // `args.<key>` / `args.<key>.<nested>` — synthesise a
+            // `FieldRef::ToolArg(json_pointer)`. Translates the dotted
+            // identifier into a JSON pointer the evaluator walks against
+            // the ToolCall's `args` JSON object. Empty pointer (bare
+            // `args`) is rejected so policies must reference a concrete
+            // field.
+            if let Some(rest) = word.strip_prefix("args.") {
+                if rest.is_empty() {
+                    return None;
+                }
+                let pointer = format!("/{}", rest.replace('.', "/"));
+                tokens.push(Token::Field(FieldRef::ToolArg(pointer)));
+                continue;
+            }
+
             let token = match word.as_str() {
                 "AND" => Token::And,
                 "OR" => Token::Or,
