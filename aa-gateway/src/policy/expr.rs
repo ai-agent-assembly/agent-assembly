@@ -2055,4 +2055,12 @@ mod tests {
             None,
         ));
     }
+
+    #[test]
+    fn args_missing_key_is_null_safe_no_match() {
+        // Pointer doesn't resolve → no-match (NOT a fail-safe true).
+        let action = tool_with_args("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
 }
