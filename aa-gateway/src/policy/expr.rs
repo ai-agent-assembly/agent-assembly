@@ -1254,6 +1254,15 @@ mod tests {
         }
     }
 
+    /// Build a `ToolCall` whose `args` is a JSON-encoded body — used by the
+    /// `args.<key>` predicate tests below.
+    fn tool_with_args(name: &str, args: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.to_string(),
+            args: args.to_string(),
+        }
+    }
+
     fn file(path: &str) -> GovernanceAction {
         GovernanceAction::FileAccess {
             path: path.to_string(),
@@ -2011,5 +2020,13 @@ mod tests {
             None,
             Some(&ctx),
         ));
+    }
+
+    // ── FieldRef::ToolArg — args.<key> predicate tests ──────────────────────
+
+    #[test]
+    fn args_field_eq_matches_string_value() {
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
     }
 }
