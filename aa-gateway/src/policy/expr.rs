@@ -2093,4 +2093,33 @@ mod tests {
         let action = tool_with_args("invoke", r#"{"action": "execute_bash"}"#);
         assert!(evaluate(r#"args.action not_in ["read", "write"]"#, &action, None, None,));
     }
+
+    #[test]
+    fn args_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`) work against JSON number values.
+        let action = tool_with_args("rpc_call", r#"{"timeout_ms": 30000}"#);
+        assert!(evaluate("args.timeout_ms > 1000", &action, None, None));
+        assert!(evaluate("args.timeout_ms <= 30000", &action, None, None));
+        assert!(!evaluate("args.timeout_ms < 100", &action, None, None));
+    }
+
+    #[test]
+    fn args_predicate_against_non_toolcall_action_is_no_match() {
+        // A FileAccess action carries no `args` payload; the same expression
+        // that fires on a ToolCall must surface as no-match for non-ToolCall
+        // variants so policies don't leak across action types.
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &process("ls"), None, None));
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
+        ));
+    }
 }
