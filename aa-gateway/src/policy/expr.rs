@@ -2371,6 +2371,20 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_malformed_json_is_null_safe_no_match() {
+        // A result body that doesn't parse as JSON (default empty string,
+        // truncated, etc.) is no-match for dotted predicates — but the bare
+        // `tool_result contains "..."` still matches the raw bytes because
+        // it never parses the body.
+        let empty = tool_result_with_body("read_file", "");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &empty, None, None,));
+
+        let garbage = tool_result_with_body("read_file", "{not valid json");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &garbage, None, None,));
+        assert!(evaluate(r#"tool_result contains "not valid""#, &garbage, None, None));
+    }
+
+    #[test]
     fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
         // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
         // no `result` payload; tool_result predicates must surface as no-match
