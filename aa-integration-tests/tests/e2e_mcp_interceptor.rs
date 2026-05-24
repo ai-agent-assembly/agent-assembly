@@ -275,3 +275,18 @@ fn st_q_2_mcp_read_file_home_user_is_allowed() {
 fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
     todo!("AAASM-1930: install mcp_redact_secrets.yaml, drive a tool whose result carries sk-...")
 }
+
+/// ST-Q-4 — MCP tool name outside the allowlist is denied.
+///
+/// AAASM-1930 will assert:
+///
+/// 1. With `deny if tool_name not in [read_file, write_file]`, a
+///    `tools/call` for `execute_bash` is denied at the proxy.
+/// 2. The upstream MCP server's `request_count() == 0`.
+/// 3. The emitted audit event carries `tool_name == "execute_bash"`,
+///    `decision == Deny` with the allowlist reason.
+#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
+#[test]
+fn st_q_4_mcp_tool_name_outside_allowlist_is_denied() {
+    todo!("AAASM-1930: install mcp_allowlist.yaml, drive tools/call execute_bash, assert deny")
+}
