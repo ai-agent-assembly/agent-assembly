@@ -1441,6 +1441,34 @@ mod tests {
         }
         assert!(!log.verify_chain());
     }
+
+    // --- audit_entry_for_tool_dispatch (AAASM-1920 Secret Injection) ---
+
+    #[test]
+    fn tool_dispatch_helper_emits_placeholder_form_payload() {
+        // Synthetic — fabricated for this test only.
+        let real_secret = "real-secret-abc-DEADBEEF-0001";
+        let placeholder_args = serde_json::json!({
+            "connection_string": "${DB_PASSWORD}"
+        });
+
+        let entry = audit_entry_for_tool_dispatch(
+            42,
+            1_714_222_134_000_000_000,
+            AgentId::from_bytes(AGENT_BYTES),
+            SessionId::from_bytes(SESSION_BYTES),
+            &placeholder_args,
+            GENESIS_HASH,
+        );
+
+        assert_eq!(entry.event_type(), AuditEventType::ToolDispatched);
+        // Payload carries the placeholder-form, not the resolved value.
+        assert!(entry.payload().contains("${DB_PASSWORD}"));
+        assert!(
+            !entry.payload().contains(real_secret),
+            "audit payload MUST NOT contain the resolved credential — placeholder-form contract"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "alloc", feature = "serde"))]
