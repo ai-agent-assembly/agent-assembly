@@ -274,6 +274,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    fn governance_action_tool_result_serde_round_trip() {
+        // The audit pipeline serialises every GovernanceAction it sees; if the
+        // new variant fails to round-trip through serde, downstream audit
+        // entries silently lose response-side actions.
+        let action = GovernanceAction::ToolResult {
+            tool_name: alloc::string::String::from("read_file"),
+            result: alloc::string::String::from("{\"contents\":\"sk-test-abc\"}"),
+        };
+        let encoded = serde_json::to_string(&action).expect("serialize");
+        let decoded: GovernanceAction = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, action);
+    }
+
+    #[test]
     #[cfg(feature = "alloc")]
     fn governance_action_file_access() {
         let action = GovernanceAction::FileAccess {
