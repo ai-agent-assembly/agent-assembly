@@ -217,3 +217,29 @@ fn parser_does_not_leak_secret_bytes_outside_arguments_value() {
         "Debug of tool_name must not leak the secret — got {debug_repr}",
     );
 }
+
+// ── ST-Q-1..5 E2E placeholders (pending AAASM-1930) ─────────────────────────
+//
+// The five tests below mirror the ST-Q acceptance criteria 1:1. They are
+// `#[ignore]` because the proxy data path does not yet recognise MCP traffic,
+// has no gateway client, and cannot enforce allow/deny/redact on the wire.
+// Each test's docstring records the exact assertion AAASM-1930 will make
+// against a real running `ProxyServer` + mock MCP upstream, so when the
+// data-path work lands the engineer can replace `todo!()` with the
+// implementation and remove `#[ignore]`.
+
+/// ST-Q-1 — MCP `read_file /etc/passwd` is denied at the proxy.
+///
+/// AAASM-1930 will assert:
+///
+/// 1. The proxy returns a JSON-RPC 2.0 error envelope to the client
+///    (`error.code = -32000`, message carries the policy reason).
+/// 2. The upstream mock MCP server's `request_count() == 0` — the deny fires
+///    at the proxy, the call is never passed through.
+/// 3. The emitted `PipelineEvent::Audit` carries a structured `ToolCall`
+///    detail with `tool_name == "read_file"`, `decision == Deny`.
+#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
+#[test]
+fn st_q_1_mcp_read_file_etc_passwd_is_denied() {
+    todo!("AAASM-1930: drive a JSON-RPC tools/call through ProxyServer with mcp_deny_etc_paths.yaml")
+}
