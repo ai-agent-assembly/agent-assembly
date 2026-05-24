@@ -14,3 +14,7 @@
 //! reference credentials *by name* and the gateway substitutes the real
 //! value at dispatch time. The two capabilities are complementary, not
 //! alternatives.
+
+pub mod types;
+
+pub use types::Secret;
