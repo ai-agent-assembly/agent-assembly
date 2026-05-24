@@ -15,6 +15,8 @@
 //! value at dispatch time. The two capabilities are complementary, not
 //! alternatives.
 
+pub mod error;
 pub mod types;
 
+pub use error::SecretsError;
 pub use types::Secret;
