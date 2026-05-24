@@ -109,6 +109,18 @@ enum FieldRef {
     /// evaluator; null-safe no-match when the pointer cannot resolve or the
     /// `args` payload is not valid JSON.
     ToolArg(String),
+    /// `tool_result.<key>` / `tool_result.<key>.<nested>` — walks the `result`
+    /// JSON body on a `GovernanceAction::ToolResult` via the carried
+    /// JSON-pointer path. Mirrors `ToolArg`'s null-safety contract: non-
+    /// `ToolResult` actions, malformed `result` JSON, and unresolved
+    /// pointers all surface as no-match (false).
+    ToolResult(String),
+    /// Bare `tool_result` (no dotted path) — treats the entire serialised
+    /// `result` body of a `GovernanceAction::ToolResult` as one string for
+    /// regex-style `contains` / `starts_with` matches. Lets policies write
+    /// `tool_result contains "sk-"` without committing to a specific JSON
+    /// field shape, useful when the response body's schema is unknown.
+    ToolResultWhole,
 }
 
 #[derive(Debug, PartialEq)]
