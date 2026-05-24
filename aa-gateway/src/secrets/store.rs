@@ -135,6 +135,15 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_a_registered_secret() {
+        let store = InMemorySecretsStore::new();
+        store.register(secret("DB_PASSWORD", "real-secret-1")).unwrap();
+        store.delete("DB_PASSWORD").unwrap();
+        assert_eq!(store.lookup("DB_PASSWORD"), None);
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
     fn list_returns_only_names_sorted_lexicographically() {
         let store = InMemorySecretsStore::new();
         store.register(secret("STRIPE_KEY", "real-1")).unwrap();
