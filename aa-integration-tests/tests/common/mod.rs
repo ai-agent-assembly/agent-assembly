@@ -75,7 +75,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::{AgentRegistry, OrphanMode};
 use aa_gateway::routes::healthz::{healthz, HealthzState};
-use aa_gateway::secrets::InMemorySecretsStore;
+use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use tokio::sync::oneshot;
@@ -159,6 +159,76 @@ pub struct TopologyTestEnv {
 }
 
 impl TopologyTestEnv {
+    /// Spin up the harness with a pre-populated [`InMemorySecretsStore`]
+    /// (AAASM-1920 / Secret Injection).
+    ///
+    /// Each `(name, value)` tuple in `entries` is registered into a fresh
+    /// `InMemorySecretsStore`. The store replaces the empty one
+    /// `build_test_state` would otherwise install, so the
+    /// `POST /api/v1/dispatch_tool` route resolves the registered
+    /// placeholders.
+    ///
+    /// Returns the same `Self` shape as [`start`](Self::start).
+    #[allow(dead_code)]
+    pub async fn start_with_secrets_store(entries: &[(&str, &str)]) -> anyhow::Result<Self> {
+        let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
+
+        // Replace the empty store with one pre-populated for this scenario.
+        let populated = Arc::new(InMemorySecretsStore::new());
+        for (name, value) in entries {
+            (*populated).register(Secret {
+                name: (*name).to_owned(),
+                value: (*value).to_owned(),
+            })?;
+        }
+        state.secrets_store = populated as Arc<dyn SecretsStore>;
+
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app_with_healthz(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            ops_registry,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
     /// Spin up the harness: build the AppState, bind axum to a free port,
     /// spawn the server task, and poll `/api/v1/health` until ready.
     pub async fn start() -> anyhow::Result<Self> {
