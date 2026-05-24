@@ -2043,4 +2043,16 @@ mod tests {
         let action = tool_with_args("read_file", r#"{"path": "/home/user/file.txt"}"#);
         assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
     }
+
+    #[test]
+    fn args_walks_nested_json_pointer() {
+        // `args.headers.authorization` → JSON pointer "/headers/authorization".
+        let action = tool_with_args("http_fetch", r#"{"headers": {"authorization": "Bearer abc"}}"#);
+        assert!(evaluate(
+            r#"args.headers.authorization starts_with "Bearer""#,
+            &action,
+            None,
+            None,
+        ));
+    }
 }
