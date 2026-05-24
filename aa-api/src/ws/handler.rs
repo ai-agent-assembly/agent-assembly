@@ -353,6 +353,7 @@ fn action_type_label(raw: i32) -> Option<String> {
         ActionType::NetworkCall => "network",
         ActionType::ProcessExec => "process",
         ActionType::AgentSpawn => "spawn",
+        ActionType::ToolResult => "tool_result",
         ActionType::ActionUnspecified => return None,
     };
     Some(label.to_string())

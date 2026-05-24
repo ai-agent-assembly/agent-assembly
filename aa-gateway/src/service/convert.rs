@@ -92,6 +92,10 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
             name: tc.tool_name.clone(),
             args: String::from_utf8_lossy(&tc.args_json).into_owned(),
         },
+        Action::ToolResult(tr) => GovernanceAction::ToolResult {
+            tool_name: tr.tool_name.clone(),
+            result: String::from_utf8_lossy(&tr.result_json).into_owned(),
+        },
         Action::FileOp(fo) => {
             let mode = match fo.operation.as_str() {
                 "read" => FileMode::Read,
