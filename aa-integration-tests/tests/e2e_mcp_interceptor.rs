@@ -93,3 +93,36 @@ fn parser_extracts_tool_name_and_path_for_allow_match() {
         Some("/home/user/file.txt"),
     );
 }
+
+/// ST-Q detection — deeply nested `arguments` objects survive parsing intact.
+/// Real-world MCP tools use structured config blocks (e.g. an HTTP fetch tool
+/// with `arguments.request.headers.authorization`). The policy engine walks
+/// these via `FieldRef::Tool` + JSON-path predicates; the parser must hand
+/// the full sub-tree to the engine unchanged.
+#[test]
+fn parser_preserves_nested_arguments_object() {
+    let body = br#"{
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "http_fetch",
+            "arguments": {
+                "request": {
+                    "method": "GET",
+                    "headers": { "authorization": "Bearer placeholder" },
+                    "config": { "timeout_ms": 30000 }
+                }
+            }
+        }
+    }"#;
+    let call = parse_mcp_request(body).expect("MCP tools/call with nested args must parse");
+    assert_eq!(call.tool_name, "http_fetch");
+    assert_eq!(
+        call.arguments
+            .pointer("/request/config/timeout_ms")
+            .and_then(|v| v.as_u64()),
+        Some(30000),
+        "JSON pointer walk through nested arguments must succeed for policy predicates",
+    );
+}
