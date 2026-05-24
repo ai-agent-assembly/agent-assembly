@@ -2315,4 +2315,12 @@ mod tests {
         let action = tool_result_with_body("read_file", r#"{"contents": "hello"}"#);
         assert!(evaluate(r#"tool_result.contents == "hello""#, &action, None, None));
     }
+
+    #[test]
+    fn tool_result_field_contains_matches_substring_in_leaf() {
+        // The ST-Q-3 acceptance criterion's predicate shape — a credential
+        // pattern fragment inside a nested string field.
+        let action = tool_result_with_body("read_file", r#"{"contents": "key=sk-abc123"}"#);
+        assert!(evaluate(r#"tool_result.contents contains "sk-""#, &action, None, None));
+    }
 }
