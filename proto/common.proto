@@ -57,6 +57,9 @@ enum ActionType {
   PROCESS_EXEC       = 5;
   // Spawn a child agent.
   AGENT_SPAWN        = 6;
+  // Result body returned by a tool invocation — evaluated on the response
+  // path so policies can redact secrets in the body before the agent sees it.
+  TOOL_RESULT        = 7;
 }
 
 // ── Risk tier ─────────────────────────────────────────────────────────────────

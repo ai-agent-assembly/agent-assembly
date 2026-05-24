@@ -167,6 +167,19 @@ pub enum GovernanceAction {
         /// Pre-serialized JSON arguments passed to the tool.
         args: ArgsJson,
     },
+    /// Result returned by a tool invocation, evaluated on the response path
+    /// before the result is forwarded back to the agent.
+    ///
+    /// Carries the same shape as `ToolCall.args` — a pre-serialized JSON
+    /// string — so the policy engine can apply JSON-pointer-addressed
+    /// predicates (e.g. `tool_result.foo`) and credential-pattern scans
+    /// against the body the upstream tool emitted.
+    ToolResult {
+        /// Registered name of the tool that produced the result.
+        tool_name: alloc::string::String,
+        /// Pre-serialized JSON body of the tool's response.
+        result: ArgsJson,
+    },
     /// Read or write access to a file path.
     FileAccess {
         /// Absolute or relative path of the file being accessed.
@@ -248,6 +261,31 @@ mod tests {
             args: alloc::string::String::from("{\"dir\":\"/tmp\"}"),
         };
         assert_eq!(action.clone(), action);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn governance_action_tool_result() {
+        let action = GovernanceAction::ToolResult {
+            tool_name: alloc::string::String::from("list_files"),
+            result: alloc::string::String::from("{\"entries\":[\"a.txt\"]}"),
+        };
+        assert_eq!(action.clone(), action);
+    }
+
+    #[test]
+    #[cfg(all(feature = "alloc", feature = "serde"))]
+    fn governance_action_tool_result_serde_round_trip() {
+        // The audit pipeline serialises every GovernanceAction it sees; if the
+        // new variant fails to round-trip through serde, downstream audit
+        // entries silently lose response-side actions.
+        let action = GovernanceAction::ToolResult {
+            tool_name: alloc::string::String::from("read_file"),
+            result: alloc::string::String::from("{\"contents\":\"sk-test-abc\"}"),
+        };
+        let encoded = serde_json::to_string(&action).expect("serialize");
+        let decoded: GovernanceAction = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, action);
     }
 
     #[test]

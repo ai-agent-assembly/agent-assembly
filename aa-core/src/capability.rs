@@ -134,6 +134,7 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
     // mappings here to avoid silent policy bypasses.
     match action {
         GovernanceAction::ToolCall { name, .. } => Some(Capability::McpTool(name.clone())),
+        GovernanceAction::ToolResult { tool_name, .. } => Some(Capability::McpTool(tool_name.clone())),
         GovernanceAction::FileAccess {
             mode: FileMode::Read, ..
         } => Some(Capability::FileRead),

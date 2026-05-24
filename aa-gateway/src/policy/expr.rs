@@ -9,6 +9,8 @@
 //! combinator := "AND" | "OR"
 //! field      := "tool" | "path" | "url" | "method" | "command"
 //!             | "args." dotted_path        # walks ToolCall.args JSON
+//!             | "tool_result." dotted_path # walks ToolResult.result JSON
+//!             | "tool_result"              # whole ToolResult.result body
 //!             | (other identifiers — see KNOWN_VARIABLES)
 //! op         := "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "starts_with"
 //!             | "in" | "not_in"
@@ -25,6 +27,21 @@
 //! resolved numeric leaves accept `== != > >= < <=`. Non-`ToolCall`
 //! actions, malformed `args` JSON, and unresolved pointers all surface
 //! as no-match (false) — never fail-safe-true.
+//!
+//! ## `tool_result.<key>` predicates (response side)
+//!
+//! Response-side mirror of `args.<key>`: identifiers prefixed with
+//! `tool_result.` walk the JSON body on a
+//! [`GovernanceAction::ToolResult`]'s `result` field via the same
+//! JSON-pointer translation (`tool_result.foo` → `/foo`,
+//! `tool_result.payload.api_key` → `/payload/api_key`). Op coverage
+//! and null-safety match `args.<key>` exactly.
+//!
+//! The bare identifier `tool_result` (no dotted suffix) is a special
+//! shorthand that treats the entire serialised `result` body as one
+//! string. Only `contains` / `starts_with` against a string literal
+//! are meaningful here — useful for regex-style pattern matches like
+//! `tool_result contains "sk-"` when the body schema is unknown.
 //!
 //! **Fail-safe**: any parse/tokenization error returns `true`
 //! (triggers RequiresApproval — the safe default).
@@ -109,6 +126,18 @@ enum FieldRef {
     /// evaluator; null-safe no-match when the pointer cannot resolve or the
     /// `args` payload is not valid JSON.
     ToolArg(String),
+    /// `tool_result.<key>` / `tool_result.<key>.<nested>` — walks the `result`
+    /// JSON body on a `GovernanceAction::ToolResult` via the carried
+    /// JSON-pointer path. Mirrors `ToolArg`'s null-safety contract: non-
+    /// `ToolResult` actions, malformed `result` JSON, and unresolved
+    /// pointers all surface as no-match (false).
+    ToolResult(String),
+    /// Bare `tool_result` (no dotted path) — treats the entire serialised
+    /// `result` body of a `GovernanceAction::ToolResult` as one string for
+    /// regex-style `contains` / `starts_with` matches. Lets policies write
+    /// `tool_result contains "sk-"` without committing to a specific JSON
+    /// field shape, useful when the response body's schema is unknown.
+    ToolResultWhole,
 }
 
 #[derive(Debug, PartialEq)]
@@ -291,6 +320,24 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 continue;
             }
 
+            // `tool_result.<key>` / `tool_result.<key>.<nested>` — response-side
+            // mirror of `args.<key>`. Resolves to `FieldRef::ToolResult(pointer)`
+            // when a dotted path follows; the bare `tool_result` (no path) maps
+            // to `FieldRef::ToolResultWhole` so policies can match the entire
+            // serialised response as one string.
+            if let Some(rest) = word.strip_prefix("tool_result.") {
+                if rest.is_empty() {
+                    return None;
+                }
+                let pointer = format!("/{}", rest.replace('.', "/"));
+                tokens.push(Token::Field(FieldRef::ToolResult(pointer)));
+                continue;
+            }
+            if word == "tool_result" {
+                tokens.push(Token::Field(FieldRef::ToolResultWhole));
+                continue;
+            }
+
             let token = match word.as_str() {
                 "AND" => Token::And,
                 "OR" => Token::Or,
@@ -470,6 +517,114 @@ fn eval_clause_safe(
             OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
             OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
             _ => false,
+        };
+    }
+
+    // `tool_result.<key>` — JSON-pointer walk into the ToolResult's `result`
+    // payload, and the bare `tool_result` shorthand for matching the whole
+    // serialised body. Mirrors `args.<key>`'s null-safety contract: non-
+    // `ToolResult` actions, unparseable result JSON, and unresolved pointers
+    // all surface as no-match. The bare `tool_result` arm only accepts
+    // `contains` / `starts_with` against a string literal (regex-style
+    // pattern matching on the full body); equality / numeric / list ops
+    // don't have a sensible whole-body interpretation and fall through to
+    // false.
+    if matches!(field, FieldRef::ToolResult(_) | FieldRef::ToolResultWhole) {
+        let result_str = match action {
+            GovernanceAction::ToolResult { result, .. } => result.as_str(),
+            _ => return false,
+        };
+        if let FieldRef::ToolResultWhole = field {
+            let lit = match literal {
+                LiteralVal::Str(s) => s.as_str(),
+                _ => return false,
+            };
+            return match op {
+                OpKind::Contains => result_str.contains(lit),
+                OpKind::StartsWith => result_str.starts_with(lit),
+                _ => false,
+            };
+        }
+        let pointer = match field {
+            FieldRef::ToolResult(p) => p,
+            _ => unreachable!(),
+        };
+        let result_value: serde_json::Value = match serde_json::from_str(result_str) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let resolved = match result_value.pointer(pointer) {
+            Some(v) => v,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq | OpKind::Ne => match (resolved, literal) {
+                (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
+                    if matches!(op, OpKind::Eq) {
+                        s == lit
+                    } else {
+                        s != lit
+                    }
+                }
+                (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
+                    Some(v) => {
+                        if matches!(op, OpKind::Eq) {
+                            (v - *lit).abs() < f64::EPSILON
+                        } else {
+                            (v - *lit).abs() >= f64::EPSILON
+                        }
+                    }
+                    None => false,
+                },
+                _ => false,
+            },
+            OpKind::Contains | OpKind::StartsWith => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let lit = match literal {
+                    LiteralVal::Str(s) => s.as_str(),
+                    _ => return false,
+                };
+                if matches!(op, OpKind::Contains) {
+                    value.contains(lit)
+                } else {
+                    value.starts_with(lit)
+                }
+            }
+            OpKind::In | OpKind::NotIn => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let list = match literal {
+                    LiteralVal::StrList(items) => items,
+                    _ => return false,
+                };
+                if matches!(op, OpKind::In) {
+                    list.iter().any(|item| item == value)
+                } else {
+                    list.iter().all(|item| item != value)
+                }
+            }
+            OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => {
+                let lhs = match resolved.as_f64() {
+                    Some(n) => n,
+                    None => return false,
+                };
+                let rhs = match literal {
+                    LiteralVal::Num(n) => *n,
+                    _ => return false,
+                };
+                match op {
+                    OpKind::Gt => lhs > rhs,
+                    OpKind::Gte => lhs >= rhs,
+                    OpKind::Lt => lhs < rhs,
+                    OpKind::Lte => lhs <= rhs,
+                    _ => unreachable!(),
+                }
+            }
         };
     }
 
@@ -1172,6 +1327,12 @@ pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error:
         // JSON-encoded args), so validation skips the membership check and
         // defers null-safety to the runtime evaluator.
         if name.starts_with("args.") && name.len() > "args.".len() {
+            continue;
+        }
+        // Same shape applies to `tool_result.<key>` (response-side
+        // FieldRef::ToolResult) and the bare `tool_result` shorthand
+        // (FieldRef::ToolResultWhole) — neither sits in a static list.
+        if name == "tool_result" || (name.starts_with("tool_result.") && name.len() > "tool_result.".len()) {
             continue;
         }
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
@@ -2135,5 +2296,130 @@ mod tests {
             None,
             None,
         ));
+    }
+
+    // ── FieldRef::ToolResult — tool_result.<key> + bare tool_result tests ───
+
+    /// Build a `ToolResult` action against a known `tool_name` whose `result`
+    /// is a JSON-encoded body — used by the response-side predicate tests
+    /// below.
+    fn tool_result_with_body(tool_name: &str, body: &str) -> GovernanceAction {
+        GovernanceAction::ToolResult {
+            tool_name: tool_name.to_string(),
+            result: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn tool_result_field_eq_matches_string_leaf() {
+        let action = tool_result_with_body("read_file", r#"{"contents": "hello"}"#);
+        assert!(evaluate(r#"tool_result.contents == "hello""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_field_contains_matches_substring_in_leaf() {
+        // The ST-Q-3 acceptance criterion's predicate shape — a credential
+        // pattern fragment inside a nested string field.
+        let action = tool_result_with_body("read_file", r#"{"contents": "key=sk-abc123"}"#);
+        assert!(evaluate(r#"tool_result.contents contains "sk-""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_walks_nested_json_pointer() {
+        // `tool_result.payload.api_key` → JSON pointer "/payload/api_key".
+        let action = tool_result_with_body("http_fetch", r#"{"payload": {"api_key": "sk-test-xyz"}}"#);
+        assert!(evaluate(
+            r#"tool_result.payload.api_key starts_with "sk-""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn bare_tool_result_contains_pattern_in_whole_body() {
+        // The ST-Q-3 shorthand: `tool_result contains "sk-"` matches against
+        // the entire serialised result body — useful when the schema is
+        // unknown but the secret prefix is.
+        let action = tool_result_with_body(
+            "search",
+            r#"{"items": [{"snippet": "leaked key: sk-test-123 in log"}]}"#,
+        );
+        assert!(evaluate(r#"tool_result contains "sk-""#, &action, None, None));
+    }
+
+    #[test]
+    fn bare_tool_result_starts_with_against_whole_body() {
+        // Whole-body starts_with is rarer but sometimes useful — e.g. asserting
+        // a response is JSON-shaped (`{...}`) before any further predicate runs.
+        let action = tool_result_with_body("ping", r#"{"ok": true}"#);
+        assert!(evaluate(r#"tool_result starts_with "{""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_missing_key_is_null_safe_no_match() {
+        // The pointer fails to resolve — predicate must be no-match, NOT
+        // fail-safe true.
+        let action = tool_result_with_body("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &action, None, None,));
+        assert!(!evaluate(
+            r#"tool_result.contents starts_with "h""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn tool_result_malformed_json_is_null_safe_no_match() {
+        // A result body that doesn't parse as JSON (default empty string,
+        // truncated, etc.) is no-match for dotted predicates — but the bare
+        // `tool_result contains "..."` still matches the raw bytes because
+        // it never parses the body.
+        let empty = tool_result_with_body("read_file", "");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &empty, None, None,));
+
+        let garbage = tool_result_with_body("read_file", "{not valid json");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &garbage, None, None,));
+        assert!(evaluate(r#"tool_result contains "not valid""#, &garbage, None, None));
+    }
+
+    #[test]
+    fn tool_result_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`, ==, !=) work against JSON
+        // numbers — mirror of args.<key>'s numeric path so policies can
+        // gate on response-side numeric fields (counts, sizes, scores).
+        let action = tool_result_with_body("score", r#"{"score": 95}"#);
+        assert!(evaluate("tool_result.score > 90", &action, None, None));
+        assert!(evaluate("tool_result.score <= 95", &action, None, None));
+        assert!(!evaluate("tool_result.score < 50", &action, None, None));
+        assert!(evaluate("tool_result.score == 95", &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
+        // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
+        // no `result` payload; tool_result predicates must surface as no-match
+        // so policies don't leak across request/response sides. The same shape
+        // applies to the bare `tool_result` whole-body predicate.
+        assert!(!evaluate(
+            r#"tool_result.contents == "hello""#,
+            &tool("read_file"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(
+            r#"tool_result contains "sk-""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(
+            r#"tool_result.api_key starts_with "sk-""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(r#"tool_result contains "x""#, &process("ls"), None, None));
     }
 }
