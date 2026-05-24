@@ -900,6 +900,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalTimedOut.as_str(), "ApprovalTimedOut");
         assert_eq!(AuditEventType::ApprovalRouted.as_str(), "ApprovalRouted");
         assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
+        assert_eq!(AuditEventType::ToolDispatched.as_str(), "ToolDispatched");
     }
 
     #[test]
