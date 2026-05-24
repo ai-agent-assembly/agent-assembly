@@ -88,6 +88,13 @@ enum FieldRef {
     AgentChildrenCount,
     AgentIsRoot,
     AgentIsLeaf,
+    /// `args.<key>` / `args.<key>.<nested>` — walks the `args` JSON object on
+    /// a `GovernanceAction::ToolCall` via the carried JSON-pointer path
+    /// (e.g. `args.path` → `"/path"`, `args.config.timeout_ms` →
+    /// `"/config/timeout_ms"`). Surfaces a leaf scalar to the predicate
+    /// evaluator; null-safe no-match when the pointer cannot resolve or the
+    /// `args` payload is not valid JSON.
+    ToolArg(String),
 }
 
 #[derive(Debug, PartialEq)]
