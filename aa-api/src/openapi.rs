@@ -19,8 +19,8 @@ use crate::models::retention::{
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
-    admin, agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, edges, iam, logs, ops,
-    policies, topology, traces,
+    admin, agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, dispatch, edges, iam,
+    logs, ops, policies, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -56,6 +56,7 @@ use crate::routes::{
         (name = "iam", description = "Identity & Access — API key list / generate / revoke / rotate"),
         (name = "audit", description = "Audit log aggregations — violation heatmaps and lineage analytics"),
         (name = "admin", description = "Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)"),
+        (name = "dispatch", description = "Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)"),
     ),
     paths(
         crate::routes::health::health,
@@ -121,10 +122,13 @@ use crate::routes::{
         admin::get_retention_policy,
         admin::update_retention_policy,
         admin::run_retention_policy,
+        dispatch::dispatch_tool,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
         crate::error::ProblemDetail,
+        dispatch::DispatchToolRequest,
+        dispatch::DispatchToolResponse,
         agents::AgentResponse,
         agents::ActiveSessionResponse,
         agents::RecentEventResponse,
