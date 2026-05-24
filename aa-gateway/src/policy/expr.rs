@@ -2063,4 +2063,16 @@ mod tests {
         assert!(!evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
         assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
     }
+
+    #[test]
+    fn args_malformed_json_is_null_safe_no_match() {
+        // Args body that doesn't parse as JSON (default empty string, garbage,
+        // truncated, etc.) is treated as null-safe no-match — policies don't
+        // fire and policies don't fail-safe `true` either.
+        let empty = tool_with_args("read_file", "");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &empty, None, None));
+
+        let garbage = tool_with_args("read_file", "{not valid json");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &garbage, None, None));
+    }
 }
