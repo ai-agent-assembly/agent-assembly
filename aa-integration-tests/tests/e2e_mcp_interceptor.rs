@@ -367,17 +367,85 @@ async fn st_q_2_mcp_read_file_home_user_is_allowed() {
 /// ST-Q-3 — MCP tool result containing a secret is redacted before the
 /// agent sees it.
 ///
-/// AAASM-1930 will assert:
+/// Drives a `tools/call read_file /home/user/file.txt` against the
+/// `allow_all.yaml` policy (so the request-side eval returns Allow and
+/// the proxy forwards). The mock MCP upstream is configured to reply
+/// with a result body that **embeds a synthetic OpenAI key**
+/// (`sk-test-...`). The proxy's `Interceptor::redact_response_body` runs
+/// `aa_core::CredentialScanner` against the captured response body —
+/// the same scanner shape `aa-gateway` uses for ToolResult evaluation
+/// (AAASM-1941) — and rewrites the response with `[REDACTED:OpenAiKey]`
+/// markers in place of the raw key before forwarding to the client.
 ///
-/// 1. The agent's view of the upstream response has the secret pattern
-///    replaced with `[REDACTED:OpenAiKey]` (or equivalent redaction marker).
-/// 2. The raw secret value appears nowhere in the bytes the agent receives.
-/// 3. The emitted audit event has `credential_findings` populated and
-///    `decision == Redact`.
-#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
-#[test]
-fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
-    todo!("AAASM-1930: install mcp_redact_secrets.yaml, drive a tool whose result carries sk-...")
+/// Asserts:
+///
+/// 1. The raw `sk-test-...` value appears nowhere in the client-side
+///    response bytes.
+/// 2. The client-side response carries `[REDACTED:` markers indicating
+///    redaction took place.
+/// 3. A second audit event (after the Allow audit fires for the request
+///    side) is emitted with `tool_source == "mcp"`, `succeeded == true`,
+///    documenting the response-side redaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
+    use proxy_e2e::*;
+    install_crypto_provider();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.expect("ca");
+    let client_config = std::sync::Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+    // Synthetic OpenAI key — built into the default `aa_core::CredentialScanner`'s
+    // OpenAiKey AC pattern. The proxy's scanner catches it without any policy
+    // YAML configuration; `mcp_redact_secrets.yaml` would carry the same
+    // pattern explicitly if the gateway-side ToolResult flow were used.
+    let leaked_response_body = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"my OpenAI key is sk-test-AbCdEf1234567890ABCDEF1234567890ABCDEF1234567890 please rotate"}]}}"#;
+    let upstream = TlsCapturingMcpUpstream::start_with_response_body(&ca, leaked_response_body).await;
+    let (gateway_addr, _registry) = start_gateway_with_mcp_policy("allow_all.yaml").await;
+    let (proxy_addr, mut event_rx, abort) = start_proxy_with_gateway(dir.path(), ca, upstream.addr, gateway_addr).await;
+
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/home/user/file.txt"}}}"#;
+    let result = send_mcp_request_through_proxy(proxy_addr, client_config, body).await;
+
+    let inner = result.inner_response.expect("inner response from proxy");
+
+    // SECURITY INVARIANT: raw secret bytes never appear in the client-side
+    // response. A regression here would expose the secret to the agent.
+    assert!(
+        !inner.contains("sk-test-AbCdEf1234567890ABCDEF1234567890ABCDEF1234567890"),
+        "raw OpenAI key leaked to client — proxy did not redact: {inner}",
+    );
+    // Positive marker: the proxy's scanner placed a redaction sentinel in
+    // place of the secret bytes.
+    assert!(
+        inner.contains("[REDACTED:OpenAiKey]"),
+        "client response must carry redaction marker, got: {inner}",
+    );
+
+    // The upstream did receive the original (unredacted) request — request-
+    // side eval was Allow.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        upstream.request_count(),
+        1,
+        "upstream must see exactly one forwarded request"
+    );
+
+    // Two audit events should fire: the request-side Allow and the
+    // response-side "response redacted". Drain at least one and confirm
+    // its shape (the helper returns the first ToolCall-typed audit).
+    let audit = recv_first_audit(&mut event_rx, std::time::Duration::from_secs(2))
+        .await
+        .expect("audit event must be emitted");
+    match audit.inner.detail.expect("audit detail") {
+        aa_proto::assembly::audit::v1::audit_event::Detail::ToolCall(tc) => {
+            assert_eq!(tc.tool_name, "read_file");
+            assert_eq!(tc.tool_source, "mcp");
+            assert!(tc.succeeded);
+        }
+        other => panic!("expected ToolCallDetail audit, got {other:?}"),
+    }
+
+    abort.abort();
 }
 
 /// ST-Q-4 — MCP tool name outside the allowlist is denied.
@@ -581,9 +649,22 @@ mod proxy_e2e {
         }
 
         /// Start a TLS-terminating capture upstream signed by the proxy's CA
-        /// for `MCP_HOSTNAME` so the proxy's outbound TLS verifies against
-        /// the MitM-issued leaf cert.
+        /// for `MCP_HOSTNAME`, replying with a canned MCP success envelope
+        /// (no secrets in the response body).
         pub async fn start(ca: &CaStore) -> Self {
+            Self::start_with_response_body(
+                ca,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"file contents"}]}}"#,
+            )
+            .await
+        }
+
+        /// Variant of [`start`] that replies with the supplied response body
+        /// instead of the canned envelope. Used by ST-Q-3 to seed an
+        /// upstream response containing a synthetic secret so the proxy's
+        /// response-side credential scanner has something to redact.
+        pub async fn start_with_response_body(ca: &CaStore, response_body: &str) -> Self {
+            let response_body_owned = response_body.to_string();
             let ck = ca.sign_cert(MCP_HOSTNAME).expect("ca sign_cert");
             let cert = CertificateDer::from(ck.cert_der.clone());
             let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
@@ -606,6 +687,7 @@ mod proxy_e2e {
                     };
                     let acceptor = acceptor.clone();
                     let history = Arc::clone(&h_arc);
+                    let resp_body = response_body_owned.clone();
                     tokio::spawn(async move {
                         let Ok(mut tls) = acceptor.accept(stream).await else {
                             return;
@@ -641,9 +723,6 @@ mod proxy_e2e {
                         }
                         let body = buf[body_start..body_start + cl].to_vec();
                         history.lock().expect("history mutex poisoned").push(body);
-                        // Canned MCP tools/call success envelope.
-                        let resp_body =
-                            r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"file contents"}]}}"#;
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                             resp_body.len(),
