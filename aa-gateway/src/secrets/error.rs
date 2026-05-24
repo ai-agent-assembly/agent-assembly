@@ -27,3 +27,22 @@ pub enum SecretsError {
         name: String,
     },
 }
+
+/// Error returned by [`crate::secrets::resolver::resolve_placeholders`] when
+/// a `${NAME}` token is encountered whose name has no entry in the
+/// [`crate::secrets::SecretsStore`].
+///
+/// Distinct from [`SecretsError`] so the request-path error type does not
+/// expose store-internal CRUD failure modes that callers cannot do
+/// anything about.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SecretInjectionError {
+    /// The args carried a `${NAME}` token whose `NAME` is not registered.
+    /// The resolver refuses to silently pass the literal token through —
+    /// callers should map this to a 4xx / `FailedPrecondition` reply.
+    #[error("unknown placeholder: {name}")]
+    UnknownPlaceholder {
+        /// The placeholder name (no `${…}` wrapping) that was referenced.
+        name: String,
+    },
+}
