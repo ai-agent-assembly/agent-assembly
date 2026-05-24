@@ -13,6 +13,7 @@ pub mod capability;
 pub mod costs;
 pub mod destinations;
 pub mod devtools;
+pub mod dispatch;
 pub mod edges;
 pub mod health;
 pub mod iam;
@@ -37,6 +38,8 @@ pub fn v1_router() -> Router {
         .route("/ws/events", get(crate::ws::handler::ws_events_handler))
         // Auth
         .route("/auth/token", post(auth::issue_token))
+        // Secret Injection — tool dispatch (AAASM-1920)
+        .route("/dispatch_tool", post(dispatch::dispatch_tool))
         // Agents
         .route("/agents", get(agents::list_agents))
         .route("/agents/{id}", get(agents::get_agent).delete(agents::delete_agent))
