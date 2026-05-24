@@ -13,9 +13,10 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, Serve
 use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Mutex, OnceCell};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::pipeline::PipelineEvent;
 
 use crate::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry};
@@ -88,6 +89,15 @@ pub struct ProxyServer {
     /// `None` means no JSONL persistence — useful for unit tests that only
     /// observe the broadcast event stream.
     audit_jsonl_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
+    /// Lazily-initialised gRPC client for the `aa-gateway` PolicyService.
+    /// Populated at startup by [`ProxyServer::run`] when
+    /// [`ProxyConfig::gateway_endpoint`] is `Some`; stays empty otherwise.
+    ///
+    /// The inner `Mutex` serialises concurrent `check_action` RPCs from
+    /// connection tasks — the underlying tonic client is `&mut self`-keyed.
+    /// The outer `OnceCell` lets the connect step run inside `run()`'s
+    /// async context without requiring an async constructor.
+    gateway_client: OnceCell<Arc<Mutex<GatewayClient>>>,
 }
 
 impl ProxyServer {
@@ -112,6 +122,7 @@ impl ProxyServer {
             certs,
             interceptor: Interceptor::new(event_tx),
             audit_jsonl_tx,
+            gateway_client: OnceCell::new(),
         })
     }
 
@@ -120,6 +131,28 @@ impl ProxyServer {
     /// This future runs until the process is killed or an unrecoverable error
     /// occurs. It is called from [`crate::run`].
     pub async fn run(self: &Arc<Self>) -> Result<(), ProxyError> {
+        // Best-effort connect to the gateway when an endpoint is configured.
+        // A connection failure here is logged but does not fail startup —
+        // MCP enforcement simply stays disabled and the proxy continues to
+        // serve the credential-scanner path. This matches `aa-runtime`'s
+        // policy that a missing gateway is a soft degradation, not a fatal
+        // error.
+        if let Some(endpoint) = &self.config.gateway_endpoint {
+            match GatewayClient::connect(endpoint).await {
+                Ok(client) => {
+                    let _ = self.gateway_client.set(Arc::new(Mutex::new(client)));
+                    tracing::info!(%endpoint, "connected to aa-gateway PolicyService for MCP enforcement");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        %endpoint,
+                        error = %e,
+                        "failed to connect to aa-gateway; MCP enforcement disabled",
+                    );
+                }
+            }
+        }
+
         let listener = TcpListener::bind(self.config.bind_addr).await?;
         tracing::info!(addr = %self.config.bind_addr, "proxy listening");
 

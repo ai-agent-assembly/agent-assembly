@@ -24,10 +24,14 @@
 //!
 //! See AAASM-1930.
 
+use std::sync::Arc;
+
 use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
 use aa_proto::assembly::policy::v1::{
     action_context::Action, ActionContext, CheckActionRequest, CheckActionResponse, RedactInstructions, ToolCallContext,
 };
+use aa_runtime::gateway_client::GatewayClient;
+use tokio::sync::Mutex;
 
 use crate::intercept::mcp::McpToolCall;
 
@@ -127,6 +131,38 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
             reason: format!("unrecognised policy decision code {}", response.decision),
         },
     }
+}
+
+/// End-to-end evaluation: build a `CheckActionRequest` from the parsed MCP
+/// call, forward it over the supplied gateway client, and surface the
+/// resulting [`McpDecision`].
+///
+/// The proxy's data path holds the gateway client inside an
+/// `Arc<Mutex<GatewayClient>>` (the tonic-generated client's `check_action`
+/// is `&mut self`-keyed). This helper takes the same shape and serialises
+/// the RPC behind the mutex — concurrent connection tasks queue up briefly
+/// rather than sharing a connection lock-free.
+///
+/// Wraps the gateway's `tonic::Status` in an `anyhow::Error` (with the
+/// status code preserved in the message) so callers can `?`-propagate
+/// alongside other proxy data-path errors without taking a direct tonic
+/// dependency.
+pub async fn evaluate_mcp_call(
+    gateway: &Arc<Mutex<GatewayClient>>,
+    call: &McpToolCall,
+    target_url: &str,
+    trace_id: &str,
+    span_id: &str,
+) -> anyhow::Result<McpDecision> {
+    let request = build_check_action_request(call, target_url, trace_id, span_id);
+    let response = {
+        let mut client = gateway.lock().await;
+        client
+            .check_action(request)
+            .await
+            .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))?
+    };
+    Ok(decision_from_response(&response))
 }
 
 #[cfg(test)]
