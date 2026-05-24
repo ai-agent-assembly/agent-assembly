@@ -188,6 +188,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
+        std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
     }
 
     #[test]
@@ -334,5 +335,37 @@ mod tests {
             msg.contains("AA_PROXY_CREDENTIAL_ACTION"),
             "error must name the env var, got: {msg}"
         );
+    }
+
+    #[test]
+    fn from_env_gateway_endpoint_defaults_to_none() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.gateway_endpoint, None);
+    }
+
+    #[test]
+    fn from_env_reads_gateway_endpoint() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_GATEWAY_ENDPOINT", "http://127.0.0.1:50051");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.gateway_endpoint.as_deref(), Some("http://127.0.0.1:50051"));
+    }
+
+    #[test]
+    fn from_env_gateway_endpoint_empty_string_is_none() {
+        // Empty AA_PROXY_GATEWAY_ENDPOINT must be treated as "unset" so
+        // operators can disable MCP forwarding by clearing the variable
+        // without unsetting it (matches the AA_PROXY_DENIED_HOSTS pattern).
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_GATEWAY_ENDPOINT", "");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.gateway_endpoint, None);
     }
 }
