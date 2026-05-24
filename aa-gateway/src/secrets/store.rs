@@ -158,4 +158,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn register_duplicate_returns_already_registered() {
+        let store = InMemorySecretsStore::new();
+        store.register(secret("DB_PASSWORD", "real-secret-1")).unwrap();
+        let err = store
+            .register(secret("DB_PASSWORD", "real-secret-2"))
+            .expect_err("duplicate register must fail");
+        assert_eq!(
+            err,
+            SecretsError::AlreadyRegistered {
+                name: "DB_PASSWORD".to_owned()
+            }
+        );
+        // First registration is preserved — duplicate did not overwrite.
+        assert_eq!(store.lookup("DB_PASSWORD").as_deref(), Some("real-secret-1"));
+    }
+
+    #[test]
+    fn delete_missing_returns_not_found() {
+        let store = InMemorySecretsStore::new();
+        let err = store.delete("UNKNOWN").expect_err("delete of missing name must fail");
+        assert_eq!(
+            err,
+            SecretsError::NotFound {
+                name: "UNKNOWN".to_owned()
+            }
+        );
+    }
 }
