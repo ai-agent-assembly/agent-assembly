@@ -127,4 +127,17 @@ mod tests {
         }"#;
         assert!(parse_mcp_request(body).is_none());
     }
+
+    #[test]
+    fn returns_none_when_jsonrpc_version_is_wrong_or_missing() {
+        // Wrong version — JSON-RPC 1.0 or unspecified MUST be rejected so a
+        // legacy non-MCP payload cannot accidentally be matched.
+        let wrong_version = br#"{"jsonrpc":"1.0","id":1,"method":"tools/call","params":{"name":"x"}}"#;
+        assert!(parse_mcp_request(wrong_version).is_none());
+
+        // Missing entirely — non-MCP JSON-shaped traffic flowing through the
+        // proxy must not produce a false-positive McpToolCall.
+        let no_version = br#"{"id":1,"method":"tools/call","params":{"name":"x"}}"#;
+        assert!(parse_mcp_request(no_version).is_none());
+    }
 }
