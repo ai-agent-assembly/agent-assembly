@@ -23,6 +23,14 @@ members = [
     "aa-devtool-windsurf",
     "aa-integration-tests",
 ]
+# Exclude the sibling `node-sdk/` checkout from this workspace.
+# CI checks `node-sdk` out at `$GITHUB_WORKSPACE/node-sdk` (see
+# `.github/workflows/ci.yml`) so its `native/aa-ffi-node/Cargo.toml`
+# lands under the agent-assembly checkout. Without this exclusion,
+# `cargo metadata` fails to read the inner manifest because the outer
+# workspace claims the path without listing it as a member, which
+# breaks `pnpm native:build` (AAASM-1602).
+exclude = ["node-sdk"]
 resolver = "2"
 
 [workspace.package]

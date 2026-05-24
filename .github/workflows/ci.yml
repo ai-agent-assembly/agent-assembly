@@ -177,6 +177,18 @@ jobs:
           pnpm build
       - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+      - name: Build Node.js native binding + TS dist (e2e_sdk_node real_* tests, AAASM-1602)
+        # MUST run BEFORE the fixture's `pnpm install` — pnpm's `file:`
+        # protocol copies the package contents at install time, so dist/
+        # and the napi `.node` must already exist when fixture install
+        # runs. Use the symlinked sibling path (created above) so cargo
+        # sees the inner Cargo.toml at its own root, not inside the
+        # agent-assembly workspace.
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+          pnpm install --no-frozen-lockfile
+          pnpm native:build
+          pnpm build
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
@@ -248,6 +260,18 @@ jobs:
           pnpm build
       - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+      - name: Build Node.js native binding + TS dist (e2e_sdk_node real_* tests, AAASM-1602)
+        # MUST run BEFORE the fixture's `pnpm install` — pnpm's `file:`
+        # protocol copies the package contents at install time, so dist/
+        # and the napi `.node` must already exist when fixture install
+        # runs. Use the symlinked sibling path (created above) so cargo
+        # sees the inner Cargo.toml at its own root, not inside the
+        # agent-assembly workspace.
+        run: |
+          cd "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+          pnpm install --no-frozen-lockfile
+          pnpm native:build
+          pnpm build
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile

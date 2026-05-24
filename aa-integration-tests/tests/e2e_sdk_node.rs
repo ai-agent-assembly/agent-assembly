@@ -2,14 +2,21 @@
 //
 // Five hermetic selftest tests (no gateway, no native bindings) verify that
 // each TypeScript fixture script exits 0 and emits the expected JSON-line
-// contract.  Five companion tests marked `#[ignore]` cover the real
-// `initAssembly()` → gRPC-gateway path and require a running aa-gateway plus
-// native Node.js bindings; they are gated on AAASM-1514 follow-up work.
+// contract. Five companion tests cover the real `initAssembly()` → gRPC-gateway
+// path; they spawn an `aa-gateway` subprocess via `common::live_gateway` and
+// require the napi-rs native binding to be built in the sibling `node-sdk/`
+// checkout. Tests skip with `eprintln!` when either prerequisite is missing
+// (matches the `cli_gateway.rs` skip convention). AAASM-1602.
+
+mod common;
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::Value;
+
+use common::live_gateway::{gateway_binary_locatable, LiveGateway};
+use common::node_sdk::native_binding_ready;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -258,14 +265,49 @@ fn selftest_langgraph_hierarchy_exits_zero_and_emits_root_planner_executor_start
 
 // ---------------------------------------------------------------------------
 // Real tests — require aa-gateway (gRPC) + native Node.js bindings.
-// Blocked pending AAASM-1514 follow-up: native napi-rs build in CI +
-// aa-gateway gRPC listener wired into the integration-test harness.
+//
+// Each `real_*` test spawns an `aa-gateway` subprocess via
+// `LiveGateway::spawn` and uses its `addr()` for `AA_GATEWAY_ADDR`. The
+// sibling `node-sdk/` checkout must have the napi-rs `.node` artifact
+// built (`pnpm native:build`). Both prerequisites are probed by
+// `setup_real_test`; missing-prereq tests skip with `eprintln!` rather
+// than failing confusingly. AAASM-1602.
 // ---------------------------------------------------------------------------
 
+/// Returns `Some((live_gateway, addr_string))` when both the
+/// `aa-gateway` binary and the Node.js native binding are available,
+/// or `None` (after printing a skip message) when either is missing.
+///
+/// Caller keeps the returned `LiveGateway` alive for the duration of
+/// the test — Drop kills the spawned gateway.
+#[allow(dead_code)]
+fn setup_real_test(test_name: &str) -> Option<(LiveGateway, String)> {
+    if !gateway_binary_locatable() {
+        eprintln!("skip {test_name}: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        return None;
+    }
+    if let Err(e) = native_binding_ready() {
+        eprintln!("skip {test_name}: {e}");
+        return None;
+    }
+    let gw = match LiveGateway::spawn() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skip {test_name}: LiveGateway::spawn failed: {e}");
+            return None;
+        }
+    };
+    let addr = gw.addr().to_string();
+    Some((gw, addr))
+}
+
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langchain_single_agent_registers_with_gateway_and_emits_started_done() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) =
+        setup_real_test("real_langchain_single_agent_registers_with_gateway_and_emits_started_done")
+    else {
+        return;
+    };
     let output = run_ts_script(
         "single_agent/langchain_agent.ts",
         &[
@@ -289,9 +331,12 @@ fn real_langchain_single_agent_registers_with_gateway_and_emits_started_done() {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_single_agent_registers_with_gateway_and_emits_started_done() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) =
+        setup_real_test("real_langgraph_single_agent_registers_with_gateway_and_emits_started_done")
+    else {
+        return;
+    };
     let output = run_ts_script(
         "single_agent/langgraph_agent.ts",
         &[
@@ -315,9 +360,10 @@ fn real_langgraph_single_agent_registers_with_gateway_and_emits_started_done() {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langchain_team_registers_root_and_member_with_gateway() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) = setup_real_test("real_langchain_team_registers_root_and_member_with_gateway") else {
+        return;
+    };
     let output = run_ts_script(
         "agent_team/langchain_team.ts",
         &[
@@ -348,9 +394,10 @@ fn real_langchain_team_registers_root_and_member_with_gateway() {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_team_registers_coordinator_and_worker_with_gateway() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) = setup_real_test("real_langgraph_team_registers_coordinator_and_worker_with_gateway") else {
+        return;
+    };
     let output = run_ts_script(
         "agent_team/langgraph_team.ts",
         &[
@@ -381,9 +428,11 @@ fn real_langgraph_team_registers_coordinator_and_worker_with_gateway() {
 }
 
 #[test]
-#[ignore = "blocked on AAASM-1602: live-gateway + Node.js native-binding test fixture not yet available"]
 fn real_langgraph_hierarchy_registers_root_planner_executor_with_gateway() {
-    let addr = std::env::var("AA_GATEWAY_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let Some((_gw, addr)) = setup_real_test("real_langgraph_hierarchy_registers_root_planner_executor_with_gateway")
+    else {
+        return;
+    };
     let output = run_ts_script(
         "root_sub_agents/langgraph_hierarchy.ts",
         &[
