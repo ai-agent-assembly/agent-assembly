@@ -2357,6 +2357,20 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_missing_key_is_null_safe_no_match() {
+        // The pointer fails to resolve — predicate must be no-match, NOT
+        // fail-safe true.
+        let action = tool_result_with_body("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &action, None, None,));
+        assert!(!evaluate(
+            r#"tool_result.contents starts_with "h""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
     fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
         // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
         // no `result` payload; tool_result predicates must surface as no-match
