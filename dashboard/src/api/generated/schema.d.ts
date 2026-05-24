@@ -795,6 +795,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dispatch_tool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dispatch a tool with placeholder-form args.
+         * @description Resolves any `${NAME}` tokens in `args` via the registered
+         *     `SecretsStore`, emits an audit entry tagged
+         *     `AuditEventType::ToolDispatched` carrying the **placeholder-form**
+         *     payload (the resolved value is never recorded), and returns the
+         *     resolved args plus the list of substituted names.
+         */
+        post: operations["dispatch_tool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -2092,6 +2116,30 @@ export interface components {
             name: string;
             /** @description RFC 3339 last-mutation timestamp. */
             updated_at: string;
+        };
+        /** @description Request body for `POST /api/v1/dispatch_tool`. */
+        DispatchToolRequest: {
+            /**
+             * @description Placeholder-form args. May contain `${NAME}` tokens that the gateway
+             *     will resolve via the `SecretsStore` before audit + forwarding.
+             */
+            args: unknown;
+            /** @description Name of the tool the agent wants to dispatch (e.g. `"call_database"`). */
+            tool: string;
+        };
+        /** @description Response body for `POST /api/v1/dispatch_tool`. */
+        DispatchToolResponse: {
+            /**
+             * @description The placeholder names that were resolved during this call. Names
+             *     only — never the resolved values. Echoes the audit-log shape so
+             *     callers can correlate dispatches with audit entries.
+             */
+            names_substituted: string[];
+            /**
+             * @description Post-substitution args ready to forward to the tool sink. Contains
+             *     the *resolved* credential values; callers must not log these.
+             */
+            resolved_args: unknown;
         };
         /** @description Paginated list of directed edges for an agent. */
         EdgeListResponse: {
@@ -4764,6 +4812,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CostSummary"];
+                };
+            };
+        };
+    };
+    dispatch_tool: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchToolRequest"];
+            };
+        };
+        responses: {
+            /** @description Tool dispatch resolved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DispatchToolResponse"];
+                };
+            };
+            /** @description Unknown placeholder referenced in args */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Audit pipeline is not connected */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
         };
