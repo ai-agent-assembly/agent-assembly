@@ -2385,6 +2385,18 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`, ==, !=) work against JSON
+        // numbers — mirror of args.<key>'s numeric path so policies can
+        // gate on response-side numeric fields (counts, sizes, scores).
+        let action = tool_result_with_body("score", r#"{"score": 95}"#);
+        assert!(evaluate("tool_result.score > 90", &action, None, None));
+        assert!(evaluate("tool_result.score <= 95", &action, None, None));
+        assert!(!evaluate("tool_result.score < 50", &action, None, None));
+        assert!(evaluate("tool_result.score == 95", &action, None, None));
+    }
+
+    #[test]
     fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
         // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
         // no `result` payload; tool_result predicates must surface as no-match
