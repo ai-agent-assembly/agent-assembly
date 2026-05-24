@@ -21,6 +21,7 @@ pub mod audit_jsonl;
 pub mod config;
 pub mod error;
 pub mod intercept;
+pub mod mcp_enforce;
 pub mod proxy;
 pub mod tls;
 
