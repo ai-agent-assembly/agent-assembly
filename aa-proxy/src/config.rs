@@ -5,6 +5,27 @@ use std::path::PathBuf;
 
 use crate::error::ProxyError;
 
+/// Action the proxy takes when its `CredentialScanner` produces a finding
+/// inside a flowing request body.
+///
+/// Mirrors `aa_gateway::policy::document::CredentialAction` but lives in the
+/// proxy crate so the data path can enforce policy locally without taking
+/// a dependency on the gateway. The variants and their semantics are
+/// intentionally identical so a single YAML field can drive both layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialAction {
+    /// Refuse the request: the proxy returns 403 to the client and **never**
+    /// dials upstream. The credential never leaves the host.
+    Block,
+    /// Forward a redacted form of the body upstream (default; matches the
+    /// historical behaviour from before this enum existed).
+    #[default]
+    RedactOnly,
+    /// Forward the unmodified body and raise a critical alert as a
+    /// side-effect. Documented as a deliberate downgrade for audit-only modes.
+    AlertOnly,
+}
+
 /// Runtime configuration for the proxy sidecar.
 ///
 /// All fields can be overridden via environment variables.
@@ -37,6 +58,24 @@ pub struct ProxyConfig {
     /// never enable in production.
     /// Env: `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` — default: `false`
     pub skip_upstream_tls_verify: bool,
+
+    /// Action to take when the in-path credential scanner detects a secret in
+    /// a flowing request body. Drives Layer 2 enforcement for LLM requests.
+    ///
+    /// Defaults to [`CredentialAction::RedactOnly`] which preserves the
+    /// historical behaviour (the proxy forwards but the audit chain carries
+    /// a redacted form).
+    pub credential_action: CredentialAction,
+
+    /// Override the upstream socket address the proxy dials, regardless of
+    /// the CONNECT request's target host. Intended for integration tests
+    /// only — production deployments leave this `None` so the proxy dials
+    /// the real LLM endpoint resolved from the CONNECT line.
+    ///
+    /// When `Some`, the original hostname is still used for SNI and the
+    /// MitM certificate so the client's TLS verification continues to work
+    /// against the per-host CA chain.
+    pub upstream_override: Option<SocketAddr>,
 }
 
 impl ProxyConfig {
@@ -84,6 +123,11 @@ impl ProxyConfig {
             Err(_) => false,
         };
 
+        let credential_action = match std::env::var("AA_PROXY_CREDENTIAL_ACTION") {
+            Ok(val) => parse_credential_action(&val)?,
+            Err(_) => CredentialAction::default(),
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
@@ -91,7 +135,24 @@ impl ProxyConfig {
             llm_only,
             denied_hosts,
             skip_upstream_tls_verify,
+            credential_action,
+            upstream_override: None,
         })
+    }
+}
+
+/// Parse a credential action from its string representation.
+///
+/// Accepts `"block"`, `"redact_only"`, `"alert_only"` (case-insensitive).
+/// Returns [`ProxyError::Config`] for any other value.
+fn parse_credential_action(s: &str) -> Result<CredentialAction, ProxyError> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "block" => Ok(CredentialAction::Block),
+        "redact_only" => Ok(CredentialAction::RedactOnly),
+        "alert_only" => Ok(CredentialAction::AlertOnly),
+        other => Err(ProxyError::Config(format!(
+            "invalid AA_PROXY_CREDENTIAL_ACTION: {other:?} (expected block | redact_only | alert_only)"
+        ))),
     }
 }
 
@@ -111,6 +172,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_LLM_ONLY");
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
+        std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
     }
 
     #[test]
@@ -214,5 +276,48 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert!(!cfg.skip_upstream_tls_verify);
+    }
+
+    #[test]
+    fn from_env_credential_action_defaults_to_redact_only() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::RedactOnly);
+    }
+
+    #[test]
+    fn from_env_credential_action_reads_block() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "block");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::Block);
+    }
+
+    #[test]
+    fn from_env_credential_action_reads_alert_only_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "ALERT_ONLY");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.credential_action, CredentialAction::AlertOnly);
+    }
+
+    #[test]
+    fn from_env_credential_action_invalid_returns_config_error() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_CREDENTIAL_ACTION", "nope");
+
+        let err = ProxyConfig::from_env().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("AA_PROXY_CREDENTIAL_ACTION"),
+            "error must name the env var, got: {msg}"
+        );
     }
 }

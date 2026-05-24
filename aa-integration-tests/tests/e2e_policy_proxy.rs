@@ -14,7 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
-use aa_proxy::config::ProxyConfig;
+use aa_proxy::config::{CredentialAction, ProxyConfig};
 use aa_proxy::tls::CaStore;
 use aa_runtime::pipeline::PipelineEvent;
 
@@ -33,6 +33,8 @@ fn proxy_config(ca_dir: &std::path::Path, denied_hosts: Vec<String>) -> ProxyCon
         llm_only: false,
         denied_hosts,
         skip_upstream_tls_verify: true,
+        credential_action: CredentialAction::default(),
+        upstream_override: None,
     }
 }
 

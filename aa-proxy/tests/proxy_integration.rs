@@ -7,7 +7,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use tokio::sync::broadcast;
 
-use aa_proxy::config::ProxyConfig;
+use aa_proxy::config::{CredentialAction, ProxyConfig};
 use aa_proxy::tls::CaStore;
 use aa_runtime::pipeline::PipelineEvent;
 
@@ -20,6 +20,8 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         llm_only: false,
         denied_hosts: Vec::new(),
         skip_upstream_tls_verify: false,
+        credential_action: CredentialAction::default(),
+        upstream_override: None,
     }
 }
 

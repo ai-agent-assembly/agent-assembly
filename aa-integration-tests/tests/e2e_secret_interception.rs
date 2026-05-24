@@ -338,11 +338,500 @@ fn redacted_payload_never_contains_any_raw_secret() {
     );
 }
 
-// ── Proxy-path slice (AAASM-1549 / ST-N) ─────────────────────────────────────
+// ── Proxy data-path E2E (AAASM-1566) ─────────────────────────────────────────
 //
-// The tests above drive the gateway's `PolicyEngine` (Layer 1). ST-N covers the
-// equivalent **Layer 2** scanner integration carried by `aa_proxy::Interceptor`.
-// See the file-level scope note for what this slice does and does not assert.
+// These tests drive a real `aa_proxy::proxy::ProxyServer` end-to-end: a
+// reqwest-shaped client opens a CONNECT tunnel through the proxy to an LLM
+// hostname, the proxy MitM-terminates, runs `intercept_request` against the
+// real body bytes, and applies the configured `CredentialAction`. The
+// upstream is a small TLS-terminating mock the proxy dials via the
+// `upstream_override` test knob (so we don't have to hijack DNS to redirect
+// `api.openai.com:443` to `127.0.0.1:<port>`).
+//
+// The three tests below match AAASM-1566 acceptance criteria 1:1 — see the
+// ticket body for the spec.
+
+mod proxy_data_path {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use base64::Engine as _;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+    use rustls::{ClientConfig, RootCertStore, ServerConfig};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::{broadcast, mpsc};
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+    use aa_proxy::audit_jsonl::ProxyAuditEntry;
+    use aa_proxy::config::{CredentialAction, ProxyConfig};
+    use aa_proxy::proxy::ProxyServer;
+    use aa_proxy::tls::CaStore;
+    use aa_runtime::pipeline::PipelineEvent;
+
+    /// LLM hostname the client CONNECTs to. `detect_api` returns
+    /// `LlmApiPattern::OpenAi`, which is what triggers the proxy's
+    /// body-inspection branch.
+    const LLM_HOSTNAME: &str = "api.openai.com";
+
+    /// Install rustls's default crypto provider exactly once per process.
+    /// Both `aws-lc-rs` and `ring` are present transitively in this
+    /// workspace, so rustls 0.23 refuses to pick one automatically — see
+    /// `project_rustls_crypto_provider`.
+    fn install_crypto_provider() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    /// In-process TLS-terminating HTTP upstream that records inbound request
+    /// bodies and replies with a canned chat-completion envelope.
+    struct TlsCapturingUpstream {
+        addr: SocketAddr,
+        history: Arc<Mutex<Vec<Vec<u8>>>>,
+        _abort: tokio::task::AbortHandle,
+    }
+
+    impl TlsCapturingUpstream {
+        fn request_count(&self) -> usize {
+            self.history.lock().expect("history mutex poisoned").len()
+        }
+
+        fn last_body(&self) -> Option<String> {
+            self.history
+                .lock()
+                .expect("history mutex poisoned")
+                .last()
+                .and_then(|b| std::str::from_utf8(b).ok().map(String::from))
+        }
+
+        /// Start a TLS-terminating capture upstream signed by the proxy's CA.
+        ///
+        /// The certificate is signed for `LLM_HOSTNAME` so when the proxy's
+        /// client connects with `ServerName::try_from("api.openai.com")` the
+        /// server name matches the cert. Combined with the proxy's
+        /// `skip_upstream_tls_verify=true` this lets us assert end-to-end
+        /// flow without installing the test CA in the system trust store.
+        async fn start(ca: &CaStore) -> Self {
+            let ck = ca.sign_cert(LLM_HOSTNAME).expect("ca sign_cert");
+            let cert = CertificateDer::from(ck.cert_der.clone());
+            let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
+            let server_config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .expect("server config");
+            let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind upstream");
+            let addr = listener.local_addr().expect("local_addr");
+
+            let history: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+            let h_arc = Arc::clone(&history);
+
+            let handle = tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let acceptor = acceptor.clone();
+                    let history = Arc::clone(&h_arc);
+                    tokio::spawn(async move {
+                        let Ok(mut tls) = acceptor.accept(stream).await else {
+                            return;
+                        };
+                        let mut buf: Vec<u8> = Vec::new();
+                        let mut tmp = [0u8; 4096];
+                        // Read until \r\n\r\n separator.
+                        let head_end = loop {
+                            match tls.read(&mut tmp).await {
+                                Ok(0) => return,
+                                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                Err(_) => return,
+                            }
+                            if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break p;
+                            }
+                        };
+                        // Parse Content-Length.
+                        let head = std::str::from_utf8(&buf[..head_end]).unwrap_or("");
+                        let cl: usize = head
+                            .lines()
+                            .find_map(|line| {
+                                let lower = line.to_ascii_lowercase();
+                                lower
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse().ok())
+                            })
+                            .unwrap_or(0);
+                        let body_start = head_end + 4;
+                        // Read remaining body bytes.
+                        while buf.len() < body_start + cl {
+                            match tls.read(&mut tmp).await {
+                                Ok(0) => break,
+                                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                Err(_) => break,
+                            }
+                        }
+                        let body = buf[body_start..body_start + cl].to_vec();
+                        history.lock().expect("history mutex poisoned").push(body);
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: application/json\r\n\r\n{\"id\":\"mock\"}";
+                        let _ = tls.write_all(resp).await;
+                        let _ = tls.flush().await;
+                    });
+                }
+            });
+
+            Self {
+                addr,
+                history,
+                _abort: handle.abort_handle(),
+            }
+        }
+    }
+
+    /// Build a [`ClientConfig`] that trusts the proxy's per-host CA (so
+    /// `ServerName = LLM_HOSTNAME` verifies against the MitM-issued leaf cert).
+    async fn client_trust_proxy_ca(ca_dir: &std::path::Path) -> ClientConfig {
+        let pem = tokio::fs::read_to_string(ca_dir.join("ca-cert.pem"))
+            .await
+            .expect("read ca cert pem");
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        let der_bytes = base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .expect("decode ca pem base64");
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(der_bytes))
+            .expect("add ca cert to root store");
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth()
+    }
+
+    /// Spin up a `ProxyServer` with the supplied `credential_action` and
+    /// `upstream_override`, returning the proxy's bound address plus an
+    /// abort handle and the receive channel.
+    async fn start_proxy(
+        ca_dir: &std::path::Path,
+        ca: CaStore,
+        credential_action: CredentialAction,
+        upstream_override: SocketAddr,
+        audit_jsonl_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
+    ) -> (SocketAddr, broadcast::Receiver<PipelineEvent>, tokio::task::AbortHandle) {
+        let port = portpicker::pick_unused_port().expect("free port");
+        let config = ProxyConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            ca_dir: ca_dir.to_path_buf(),
+            cert_cache_capacity: 10,
+            llm_only: false,
+            denied_hosts: Vec::new(),
+            skip_upstream_tls_verify: true,
+            credential_action,
+            upstream_override: Some(upstream_override),
+        };
+        let bind_addr = config.bind_addr;
+        let (tx, rx) = broadcast::channel(64);
+        let server = ProxyServer::new_with_audit_sink(config, ca, tx, audit_jsonl_tx);
+        let jh = tokio::spawn(async move { server.run().await.unwrap() });
+        let abort = jh.abort_handle();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if TcpStream::connect(bind_addr).await.is_ok() {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("proxy did not start on {bind_addr}");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        (bind_addr, rx, abort)
+    }
+
+    /// Drive an HTTPS request through the proxy to the LLM hostname,
+    /// returning the CONNECT status line and (optionally) the inner response
+    /// status. Block-mode tests assert on the CONNECT response status line;
+    /// successful tests verify the upstream observed the call.
+    async fn send_through_proxy(
+        proxy_addr: SocketAddr,
+        client_config: Arc<ClientConfig>,
+        body: &str,
+    ) -> ProxyDriveResult {
+        let mut tcp = TcpStream::connect(proxy_addr).await.expect("connect to proxy");
+        let target_port = 443; // Arbitrary — upstream_override forwards regardless.
+        let target = format!("{LLM_HOSTNAME}:{target_port}");
+        let connect = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n");
+        tcp.write_all(connect.as_bytes()).await.expect("write CONNECT");
+
+        let mut reader = BufReader::new(tcp);
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).await.expect("read connect status");
+        // Drain headers.
+        loop {
+            let mut h = String::new();
+            reader.read_line(&mut h).await.expect("read header line");
+            if h.trim().is_empty() {
+                break;
+            }
+        }
+
+        // If the proxy returned a non-200 here (e.g. CONNECT-level deny), we
+        // never get to send the inner request — caller asserts on status.
+        if !status_line.contains("200") {
+            return ProxyDriveResult {
+                connect_status: status_line,
+                inner_response: None,
+            };
+        }
+
+        // TLS-wrap the tunnel using the proxy's CA.
+        let server_name = ServerName::try_from(LLM_HOSTNAME.to_string()).expect("server name");
+        let connector = TlsConnector::from(client_config);
+        let tcp = reader.into_inner();
+        let mut tls = match connector.connect(server_name, tcp).await {
+            Ok(t) => t,
+            Err(e) => {
+                return ProxyDriveResult {
+                    connect_status: status_line,
+                    inner_response: Some(format!("TLS error: {e}")),
+                };
+            }
+        };
+
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: {LLM_HOSTNAME}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        if let Err(e) = tls.write_all(req.as_bytes()).await {
+            return ProxyDriveResult {
+                connect_status: status_line,
+                inner_response: Some(format!("write error: {e}")),
+            };
+        }
+        // Read response (best-effort) — Block path never reaches here.
+        let mut response_buf = vec![0u8; 1024];
+        let _ = tokio::time::timeout(Duration::from_secs(2), tls.read(&mut response_buf)).await;
+        let response = String::from_utf8_lossy(&response_buf)
+            .trim_end_matches('\0')
+            .to_string();
+        ProxyDriveResult {
+            connect_status: status_line,
+            inner_response: Some(response),
+        }
+    }
+
+    /// Result of driving a request through the proxy.
+    struct ProxyDriveResult {
+        /// CONNECT response status line, e.g. `"HTTP/1.1 200 Connection Established"`.
+        connect_status: String,
+        /// Inner HTTP response, or `None` when the CONNECT itself was rejected.
+        ///
+        /// Read by `proxy_secret_block_policy_prevents_forwarding` in the
+        /// next commit; allow(dead_code) for the redact-only test that does
+        /// not consume it.
+        #[allow(dead_code)]
+        inner_response: Option<String>,
+    }
+
+    // ── Test 1 — redact_only forwards [REDACTED] form, never the raw key ─
+
+    /// `TlsCapturingUpstream::last_body()` contains `[REDACTED:AwsAccessKey]`,
+    /// never the raw key. Drives AAASM-1566 acceptance criterion
+    /// `proxy_aws_key_in_body_redacted_before_forwarding`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_aws_key_in_body_redacted_before_forwarding() {
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ca = CaStore::load_or_create(dir.path()).await.expect("ca");
+        let client_config = Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+        let upstream = TlsCapturingUpstream::start(&ca).await;
+        let (proxy_addr, _rx, abort) =
+            start_proxy(dir.path(), ca, CredentialAction::RedactOnly, upstream.addr, None).await;
+
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+            super::FAKE_AWS_ACCESS_KEY,
+        );
+        let result = send_through_proxy(proxy_addr, client_config, &body).await;
+        assert!(
+            result.connect_status.contains("200"),
+            "CONNECT must succeed for redact_only, got: {}",
+            result.connect_status,
+        );
+
+        // Allow the upstream a beat to capture the request.
+        for _ in 0..50 {
+            if upstream.request_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(
+            upstream.request_count(),
+            1,
+            "upstream must receive exactly one forwarded request",
+        );
+        let received = upstream.last_body().expect("upstream captured body");
+        assert!(
+            received.contains("[REDACTED:AwsAccessKey]"),
+            "forwarded body must carry the [REDACTED:AwsAccessKey] marker; got: {received}",
+        );
+        assert!(
+            !received.contains(super::FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT: raw AWS key reached upstream — got: {received}",
+        );
+
+        abort.abort();
+    }
+
+    // ── Test 2 — block policy returns 403 and never dials upstream ───────
+
+    /// Under `CredentialAction::Block` the proxy refuses to forward a body
+    /// that contains a detected secret. Asserts both halves of the AC:
+    ///
+    /// 1. `TlsCapturingUpstream.request_count() == 0` — the proxy never
+    ///    dialled upstream.
+    /// 2. The inner HTTP response is `HTTP/1.1 403 Forbidden` (the proxy
+    ///    writes 403 to the client TLS stream after running the scanner).
+    ///
+    /// Drives AAASM-1566's `proxy_secret_block_policy_prevents_forwarding`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_secret_block_policy_prevents_forwarding() {
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ca = CaStore::load_or_create(dir.path()).await.expect("ca");
+        let client_config = Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+        let upstream = TlsCapturingUpstream::start(&ca).await;
+        let (proxy_addr, _rx, abort) = start_proxy(dir.path(), ca, CredentialAction::Block, upstream.addr, None).await;
+
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+            super::FAKE_AWS_ACCESS_KEY,
+        );
+        let result = send_through_proxy(proxy_addr, client_config, &body).await;
+
+        // CONNECT-level handshake still succeeds — the proxy only blocks
+        // after reading the inner request body inside the tunnel.
+        assert!(
+            result.connect_status.contains("200"),
+            "CONNECT must succeed (block fires inside the TLS tunnel); got: {}",
+            result.connect_status,
+        );
+
+        let inner = result.inner_response.expect("inner_response must be Some");
+        assert!(
+            inner.contains("403"),
+            "proxy must return 403 inside the tunnel under credential_action=Block; got: {inner:?}",
+        );
+
+        // Hard wait to give the upstream a chance to be (incorrectly) dialled.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            upstream.request_count(),
+            0,
+            "SECURITY INVARIANT: upstream must receive zero requests under Block policy",
+        );
+
+        abort.abort();
+    }
+
+    // ── Test 3 — credential_findings reach the JSONL audit ───────────────
+
+    /// Drives AAASM-1566's third AC:
+    /// `proxy_secret_redact_only_credential_findings_in_audit`.
+    ///
+    /// Wires a `JsonlWriter` to the proxy via the `audit_jsonl_tx` channel,
+    /// sends a single request with a synthetic AWS key under
+    /// `CredentialAction::RedactOnly`, then reads the JSONL off disk and
+    /// asserts:
+    ///
+    /// 1. `credential_findings` field is present in the JSONL entry.
+    /// 2. The decision is `"forwarded_redacted"`.
+    /// 3. The raw AWS key string never appears anywhere in the JSONL file
+    ///    (grep returns 0 matches).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_secret_redact_only_credential_findings_in_audit() {
+        use aa_proxy::audit_jsonl::JsonlWriter;
+
+        install_crypto_provider();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let ca = CaStore::load_or_create(dir.path()).await.expect("ca");
+        let client_config = Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+        let upstream = TlsCapturingUpstream::start(&ca).await;
+
+        // Spin up the JSONL audit pipeline. The writer is owned by a
+        // background task; the proxy holds the mpsc::Sender half.
+        let jsonl_path = dir.path().join("proxy-audit.jsonl");
+        let (audit_tx, audit_rx) = mpsc::channel::<ProxyAuditEntry>(16);
+        let writer = JsonlWriter::new(&jsonl_path, audit_rx)
+            .await
+            .expect("open JSONL writer");
+        let writer_handle = tokio::spawn(writer.run());
+
+        let (proxy_addr, _rx, abort) = start_proxy(
+            dir.path(),
+            ca,
+            CredentialAction::RedactOnly,
+            upstream.addr,
+            Some(audit_tx.clone()),
+        )
+        .await;
+
+        let body = format!(
+            r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+            super::FAKE_AWS_ACCESS_KEY,
+        );
+        let result = send_through_proxy(proxy_addr, client_config, &body).await;
+        assert!(
+            result.connect_status.contains("200"),
+            "CONNECT must succeed for redact_only, got: {}",
+            result.connect_status,
+        );
+
+        // Wait for the upstream to have observed the request — then the
+        // audit entry has been sent by the proxy.
+        for _ in 0..50 {
+            if upstream.request_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Drop the proxy's sender clone so the writer can drain and exit.
+        drop(audit_tx);
+        abort.abort();
+        // Give the writer a moment to flush — bounded by writer task join.
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer_handle).await;
+
+        let on_disk = tokio::fs::read_to_string(&jsonl_path)
+            .await
+            .expect("read JSONL audit file");
+        assert!(
+            on_disk.contains("\"credential_findings\""),
+            "JSONL must carry the credential_findings field; got: {on_disk}",
+        );
+        assert!(
+            on_disk.contains("\"forwarded_redacted\""),
+            "JSONL must record decision=forwarded_redacted for redact_only path; got: {on_disk}",
+        );
+        assert!(
+            !on_disk.contains(super::FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT: raw AWS key appears in audit JSONL on disk: {on_disk}",
+        );
+    }
+}
+
+// ── Proxy-path scanner-only slice (AAASM-1549 / ST-N) ────────────────────────
+//
+// The mod above is the full data-path E2E. The mod below is the older
+// scanner-only slice that drives `aa_proxy::Interceptor` directly.
 
 mod proxy_path {
     use std::time::SystemTime;
