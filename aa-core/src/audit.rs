@@ -916,6 +916,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalTimedOut as u32, 8);
         assert_eq!(AuditEventType::ApprovalRouted as u32, 9);
         assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
+        assert_eq!(AuditEventType::ToolDispatched as u32, 13);
     }
 
     #[test]
