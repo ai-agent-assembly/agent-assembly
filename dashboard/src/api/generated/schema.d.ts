@@ -2375,6 +2375,38 @@ export interface components {
             /** @description Verb within the cell that was changed. */
             verb: components["schemas"]["Verb"];
         };
+        /**
+         * @description Paginated wire-format envelope for `GET /api/v1/approvals`.
+         *
+         *     Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
+         *     — `{items, page, per_page, total}` — but is declared as a concrete,
+         *     non-generic type so utoipa can register it as a named component schema
+         *     and downstream codegen (the dashboard `openapi-typescript` step) sees
+         *     a typed envelope rather than a bare array. Introduced to close the
+         *     drift between the handler's runtime body and the OpenAPI contract
+         *     flagged by AAASM-1922; the other paginated list endpoints
+         *     (`list_agents`, `list_alerts`, `list_policies`, `list_logs`) carry the
+         *     same drift and will be addressed independently.
+         */
+        PaginatedApprovalResponse: {
+            /** @description Items in the current page. */
+            items: components["schemas"]["ApprovalResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total number of items across all pages (after filters).
+             */
+            total: number;
+        };
         /** @description Per-scope contribution to an agent's effective permissions. */
         PermissionSourceResponse: {
             /** @description Capability identifiers this scope explicitly allows. */
@@ -4370,7 +4402,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApprovalResponse"][];
+                    "application/json": components["schemas"]["PaginatedApprovalResponse"];
                 };
             };
         };
