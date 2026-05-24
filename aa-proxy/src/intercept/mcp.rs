@@ -140,4 +140,18 @@ mod tests {
         let no_version = br#"{"id":1,"method":"tools/call","params":{"name":"x"}}"#;
         assert!(parse_mcp_request(no_version).is_none());
     }
+
+    #[test]
+    fn returns_none_when_params_name_is_missing() {
+        // A `tools/call` request without a `name` cannot drive any tool — the
+        // policy engine would have nothing to match against, so the parser
+        // rejects it before any policy evaluation happens.
+        let body = br#"{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "arguments": { "path": "/etc/passwd" } }
+        }"#;
+        assert!(parse_mcp_request(body).is_none());
+    }
 }
