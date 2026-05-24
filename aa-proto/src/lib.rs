@@ -63,4 +63,10 @@ pub mod assembly {
             tonic::include_proto!("assembly.topology.v1");
         }
     }
+
+    pub mod secrets {
+        pub mod v1 {
+            tonic::include_proto!("assembly.secrets.v1");
+        }
+    }
 }

@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("event.proto"),
         proto_root.join("approval.proto"),
         proto_root.join("topology.proto"),
+        proto_root.join("secrets.proto"),
     ];
 
     // Re-run this build script if any proto file changes.
