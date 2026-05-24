@@ -21,6 +21,8 @@
 //! policy enforcement. Module-level docs in [`mock_llm`] cover usage.
 
 #[allow(dead_code)]
+pub mod binary_gateway;
+#[allow(dead_code)]
 pub mod cli;
 #[allow(dead_code)]
 pub mod format;
