@@ -10,14 +10,17 @@ use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
 use crate::registry::AgentRegistry;
+use crate::secrets::InMemorySecretsStore;
 use crate::service::{
-    AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, TopologyServiceImpl,
+    AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, SecretsServiceImpl,
+    TopologyServiceImpl,
 };
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;
 use aa_proto::assembly::audit::v1::audit_service_server::AuditServiceServer;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
+use aa_proto::assembly::secrets::v1::secrets_service_server::SecretsServiceServer;
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyServiceServer;
 use tokio::sync::broadcast;
 
@@ -389,6 +392,7 @@ pub async fn serve_tcp(
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
+    let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     let addr = listen_addr.parse()?;
     tracing::info!(%addr, "starting gRPC server on TCP");
@@ -399,6 +403,7 @@ pub async fn serve_tcp(
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
+        .add_service(SecretsServiceServer::new(secrets_svc))
         .serve_with_shutdown(addr, async move {
             shutdown_signal().await;
             db_token.cancel();
@@ -454,6 +459,7 @@ pub async fn serve_uds(
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
+    let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS");
 
@@ -470,6 +476,7 @@ pub async fn serve_uds(
         .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
+        .add_service(SecretsServiceServer::new(secrets_svc))
         .serve_with_incoming_shutdown(incoming, async move {
             shutdown_signal().await;
             db_token.cancel();
