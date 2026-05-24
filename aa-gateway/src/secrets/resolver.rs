@@ -129,3 +129,31 @@ fn walk(
         other => Ok(other.clone()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::{InMemorySecretsStore, Secret};
+    use serde_json::json;
+
+    fn store_with(entries: &[(&str, &str)]) -> InMemorySecretsStore {
+        let store = InMemorySecretsStore::new();
+        for (name, value) in entries {
+            store
+                .register(Secret {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })
+                .expect("register synthetic test secret");
+        }
+        store
+    }
+
+    #[test]
+    fn flat_string_whole_placeholder_substitutes_full_value() {
+        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let result = resolve_placeholders(&json!("${DB_PASSWORD}"), &store).unwrap();
+        assert_eq!(result.resolved, json!("real-secret-abc"));
+        assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
+    }
+}
