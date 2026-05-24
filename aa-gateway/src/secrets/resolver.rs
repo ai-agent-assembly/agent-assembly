@@ -32,3 +32,19 @@ pub struct SubstitutionResult {
     /// `${DB_PASSWORD}` produces two entries.
     pub names_substituted: Vec<String>,
 }
+
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+/// Lazy-compiled regex for the `${NAME}` token. `NAME` is uppercase +
+/// digits + underscore and starts with a letter — matches the convention
+/// pinned in the `e2e_secret_injection.rs` scaffold (`${DB_PASSWORD}`,
+/// `${UNKNOWN_SECRET}`).
+///
+/// `OnceLock` (rather than `LazyLock`) keeps the workspace MSRV at 1.75.
+#[allow(dead_code)]
+fn placeholder_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\$\{([A-Z][A-Z0-9_]*)\}").expect("placeholder regex is valid"))
+}
