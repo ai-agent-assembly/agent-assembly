@@ -459,6 +459,98 @@ fn eval_clause_safe(
         };
     }
 
+    // `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
+    //
+    // Null-safe at every step: non-ToolCall actions, unparseable args JSON,
+    // and unresolved pointers all surface as no-match rather than erroring.
+    // String comparisons require the resolved value to be a JSON string;
+    // numeric ops require a JSON number; list membership requires a string.
+    // Mixed-type comparisons (e.g. `args.timeout == "30"` against a number)
+    // are treated as no-match — policies must match the underlying type.
+    if let FieldRef::ToolArg(pointer) = field {
+        let args_str = match action {
+            GovernanceAction::ToolCall { args, .. } => args.as_str(),
+            _ => return false,
+        };
+        let args_value: serde_json::Value = match serde_json::from_str(args_str) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let resolved = match args_value.pointer(pointer) {
+            Some(v) => v,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq | OpKind::Ne => match (resolved, literal) {
+                (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
+                    if matches!(op, OpKind::Eq) {
+                        s == lit
+                    } else {
+                        s != lit
+                    }
+                }
+                (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
+                    Some(v) => {
+                        if matches!(op, OpKind::Eq) {
+                            (v - *lit).abs() < f64::EPSILON
+                        } else {
+                            (v - *lit).abs() >= f64::EPSILON
+                        }
+                    }
+                    None => false,
+                },
+                _ => false,
+            },
+            OpKind::Contains | OpKind::StartsWith => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let lit = match literal {
+                    LiteralVal::Str(s) => s.as_str(),
+                    _ => return false,
+                };
+                if matches!(op, OpKind::Contains) {
+                    value.contains(lit)
+                } else {
+                    value.starts_with(lit)
+                }
+            }
+            OpKind::In | OpKind::NotIn => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let list = match literal {
+                    LiteralVal::StrList(items) => items,
+                    _ => return false,
+                };
+                if matches!(op, OpKind::In) {
+                    list.iter().any(|item| item == value)
+                } else {
+                    list.iter().all(|item| item != value)
+                }
+            }
+            OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => {
+                let lhs = match resolved.as_f64() {
+                    Some(n) => n,
+                    None => return false,
+                };
+                let rhs = match literal {
+                    LiteralVal::Num(n) => *n,
+                    _ => return false,
+                };
+                match op {
+                    OpKind::Gt => lhs > rhs,
+                    OpKind::Gte => lhs >= rhs,
+                    OpKind::Lt => lhs < rhs,
+                    OpKind::Lte => lhs <= rhs,
+                    _ => unreachable!(),
+                }
+            }
+        };
+    }
+
     // agent.risk_tier — ordinal comparison against the current agent's risk tier.
     // Returns false (null-safe no-match) when context or registry lookup is absent.
     if let FieldRef::AgentRiskTier = field {
