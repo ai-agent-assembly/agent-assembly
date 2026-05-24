@@ -67,7 +67,6 @@ pub trait SecretsStore: Send + Sync {
 /// `AppState` and hand it to async tasks.
 #[derive(Clone, Default)]
 pub struct InMemorySecretsStore {
-    #[allow(dead_code)]
     data: Arc<RwLock<HashMap<String, String>>>,
 }
 
@@ -75,5 +74,36 @@ impl InMemorySecretsStore {
     /// Builds a fresh, empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+impl SecretsStore for InMemorySecretsStore {
+    fn register(&self, secret: Secret) -> Result<(), SecretsError> {
+        let mut data = self.data.write().expect("secrets store lock poisoned");
+        if data.contains_key(&secret.name) {
+            return Err(SecretsError::AlreadyRegistered { name: secret.name });
+        }
+        data.insert(secret.name, secret.value);
+        Ok(())
+    }
+
+    fn lookup(&self, name: &str) -> Option<String> {
+        let data = self.data.read().expect("secrets store lock poisoned");
+        data.get(name).cloned()
+    }
+
+    fn list(&self) -> Vec<String> {
+        let data = self.data.read().expect("secrets store lock poisoned");
+        let mut names: Vec<String> = data.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    fn delete(&self, name: &str) -> Result<(), SecretsError> {
+        let mut data = self.data.write().expect("secrets store lock poisoned");
+        if data.remove(name).is_none() {
+            return Err(SecretsError::NotFound { name: name.to_owned() });
+        }
+        Ok(())
     }
 }
