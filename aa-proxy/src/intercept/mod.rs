@@ -196,6 +196,29 @@ impl Interceptor {
         let _ = self.event_tx.send(PipelineEvent::Audit(Box::new(enriched)));
     }
 
+    /// Scan a response-side payload for credentials and return the redacted
+    /// form when findings are present.
+    ///
+    /// Returns `None` when the scanner is disabled or the payload is clean.
+    /// On `Some(redacted)`, the secret bytes have been replaced with the
+    /// scanner's `[REDACTED:<kind>]` markers and the caller should forward
+    /// the redacted bytes in place of the original.
+    ///
+    /// Used by the AAASM-1930 MCP data path to redact upstream response
+    /// bodies before they reach the client (ST-Q-3). The proxy's default
+    /// scanner carries the same `aa_core::CredentialScanner` patterns the
+    /// gateway uses for ToolResult evaluation, so the redaction shape
+    /// matches what `mcp_redact_secrets.yaml` would produce gateway-side.
+    pub fn redact_response_body(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let scanner = self.scanner.as_ref()?;
+        let text = String::from_utf8_lossy(body);
+        let scan = scanner.scan(&text);
+        if scan.is_clean() {
+            return None;
+        }
+        Some(scan.redact(&text).into_bytes())
+    }
+
     /// Emit an audit event recording the gateway's decision for an MCP
     /// `tools/call` intercept.
     ///

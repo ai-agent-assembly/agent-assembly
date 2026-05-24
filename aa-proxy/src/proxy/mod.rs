@@ -27,7 +27,9 @@ use crate::intercept::event::ProxyEvent;
 use crate::intercept::mcp::parse_mcp_request;
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
-use crate::proxy::http::{read_http_request, serialize_http_request, HttpRequest};
+use crate::proxy::http::{
+    read_http_request, read_http_response, serialize_http_request, serialize_http_response, HttpRequest,
+};
 use crate::tls::{CaStore, CertCache};
 
 /// A TLS `ServerCertVerifier` that accepts any certificate.
@@ -306,18 +308,20 @@ impl ProxyServer {
             return Ok(());
         };
 
-        // MCP detection.
-        if let Some(call) = parse_mcp_request(&req.body) {
+        // MCP detection. On a successful request-side eval, carry the parsed
+        // call forward so the response-side path below can use the tool_name
+        // for audit emission and (when needed) ToolResult-driven redaction.
+        let mcp_call: Option<crate::intercept::mcp::McpToolCall> = if let Some(call) = parse_mcp_request(&req.body) {
             let target_url = format!("https://{host}{path}", path = req.target);
             match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
                 Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
                     tracing::info!(
                         tool_name = %call.tool_name,
                         %host,
-                        "MCP call allowed by gateway, forwarding to upstream",
+                        "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
                     );
                     self.interceptor.emit_mcp_decision(&call.tool_name, false, "").await;
-                    // fall through to forward
+                    Some(call)
                 }
                 Ok(McpDecision::Deny { reason }) => {
                     tracing::info!(
@@ -345,24 +349,80 @@ impl ProxyServer {
                         error = %e,
                         "gateway CheckAction failed, forwarding without enforcement",
                     );
-                    // fall through to forward
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
 
-        // Not MCP (or RPC failed) — forward the consumed body plus the
-        // remaining stream transparently.
+        // Forward the (consumed) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
         let outgoing = serialize_http_request(&req, &req.body);
         let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
-        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+        let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
-        let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-        let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-        tokio::select! {
-            r = client_to_upstream => { r?; }
-            r = upstream_to_client => { r?; }
+        if let Some(call) = mcp_call {
+            // MCP response path (AAASM-1930 ST-Q-3): read the upstream
+            // response body-aware, run the proxy's credential scanner on
+            // the body, and forward a redacted version when findings are
+            // present. The scanner is the same `aa_core::CredentialScanner`
+            // the gateway uses internally for ToolResult evaluation, so
+            // the redaction shape matches what `mcp_redact_secrets.yaml`
+            // would produce gateway-side. A future iteration could swap
+            // this for a second `CheckAction` carrying ToolResult to
+            // centralise policy decisions at the gateway — the gateway-
+            // side ToolResult flow landed in AAASM-1941 for that purpose.
+            let mut upstream_reader = BufReader::new(upstream_read);
+            match read_http_response(&mut upstream_reader).await {
+                Ok(Some(resp)) => {
+                    let body_to_forward = match self.interceptor.redact_response_body(&resp.body) {
+                        Some(redacted) => {
+                            tracing::info!(
+                                tool_name = %call.tool_name,
+                                "MCP response carried sensitive payload, redacting before forwarding to client",
+                            );
+                            self.interceptor
+                                .emit_mcp_decision(&call.tool_name, false, "response redacted")
+                                .await;
+                            redacted
+                        }
+                        None => resp.body.clone(),
+                    };
+                    let modified = serialize_http_response(&resp, &body_to_forward);
+                    client_write.write_all(&modified).await?;
+                }
+                Ok(None) => {
+                    // Upstream closed without writing a response — nothing to forward.
+                }
+                Err(e) => {
+                    // Could not parse the response (e.g. chunked, malformed) —
+                    // fall back to transparent copy from where we left off.
+                    tracing::warn!(
+                        tool_name = %call.tool_name,
+                        error = %e,
+                        "MCP response parse failed, falling back to transparent copy",
+                    );
+                    let mut upstream_read = upstream_reader.into_inner();
+                    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+                    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+                    tokio::select! {
+                        r = client_to_upstream => { r?; }
+                        r = upstream_to_client => { r?; }
+                    }
+                }
+            }
+        } else {
+            // Not MCP (or RPC failed) — transparent bidirectional copy for
+            // any remaining stream activity (mirrors the historical behaviour).
+            let mut upstream_read = upstream_read;
+            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+            tokio::select! {
+                r = client_to_upstream => { r?; }
+                r = upstream_to_client => { r?; }
+            }
         }
         Ok(())
     }
