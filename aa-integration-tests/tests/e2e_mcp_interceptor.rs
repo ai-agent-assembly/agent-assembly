@@ -291,18 +291,77 @@ async fn st_q_1_mcp_read_file_etc_passwd_is_denied() {
 
 /// ST-Q-2 — MCP `read_file /home/user/file.txt` is allowed.
 ///
-/// AAASM-1930 will assert:
+/// Drives a `tools/call` for `read_file` through a real `ProxyServer` +
+/// `PolicyService` (loaded with `allow_all.yaml`) + mock MCP upstream.
+/// Asserts:
 ///
-/// 1. The proxy forwards the original JSON-RPC envelope unchanged to the
-///    upstream mock MCP server (`request_count() == 1`,
-///    `last_call().tool_name == "read_file"`).
-/// 2. The agent receives the upstream's result envelope intact.
-/// 3. The emitted audit event carries `tool_name == "read_file"`,
-///    `decision == Allow`.
-#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
-#[test]
-fn st_q_2_mcp_read_file_home_user_is_allowed() {
-    todo!("AAASM-1930: drive the allowed path and assert upstream forward + Allow audit event")
+/// 1. The proxy forwards the original JSON-RPC envelope to the upstream
+///    (`request_count() == 1`, `last_body()` contains the original body).
+/// 2. The client receives the upstream's canned `tools/call` result
+///    envelope (the mock returns `{"jsonrpc":"2.0","id":1,"result":{...}}`).
+/// 3. The emitted audit event carries a `ToolCallDetail` with
+///    `tool_name == "read_file"`, `tool_source == "mcp"`, `succeeded == true`.
+#[tokio::test(flavor = "multi_thread")]
+async fn st_q_2_mcp_read_file_home_user_is_allowed() {
+    use proxy_e2e::*;
+    install_crypto_provider();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.expect("ca");
+    let client_config = std::sync::Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+    let upstream = TlsCapturingMcpUpstream::start(&ca).await;
+    let (gateway_addr, _registry) = start_gateway_with_mcp_policy("allow_all.yaml").await;
+    let (proxy_addr, mut event_rx, abort) = start_proxy_with_gateway(dir.path(), ca, upstream.addr, gateway_addr).await;
+
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/home/user/file.txt"}}}"#;
+    let result = send_mcp_request_through_proxy(proxy_addr, client_config, body).await;
+
+    let inner = result.inner_response.expect("inner response from proxy");
+    assert!(
+        inner.contains(r#""result""#),
+        "client must receive upstream's tools/call success envelope, got: {inner}",
+    );
+    assert!(
+        !inner.contains(r#""error""#),
+        "no JSON-RPC error envelope on Allow path, got: {inner}",
+    );
+
+    // Allow upstream a beat to register the forwarded request.
+    for _ in 0..50 {
+        if upstream.request_count() >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        upstream.request_count(),
+        1,
+        "upstream must receive exactly one forwarded request on Allow",
+    );
+    let received = upstream.last_body().expect("upstream captured body");
+    assert!(
+        received.contains(r#""name":"read_file""#),
+        "upstream must receive the original JSON-RPC body, got: {received}",
+    );
+    assert!(
+        received.contains(r#""path":"/home/user/file.txt""#),
+        "upstream body must carry original args, got: {received}",
+    );
+
+    // Audit event: ToolCallDetail with tool_name = read_file, succeeded = true.
+    let audit = recv_first_audit(&mut event_rx, std::time::Duration::from_secs(2))
+        .await
+        .expect("audit event must be emitted");
+    match audit.inner.detail.expect("audit detail") {
+        aa_proto::assembly::audit::v1::audit_event::Detail::ToolCall(tc) => {
+            assert_eq!(tc.tool_name, "read_file");
+            assert_eq!(tc.tool_source, "mcp");
+            assert!(tc.succeeded, "tool_call succeeded must be true on Allow");
+        }
+        other => panic!("expected ToolCallDetail, got {other:?}"),
+    }
+
+    abort.abort();
 }
 
 /// ST-Q-3 — MCP tool result containing a secret is redacted before the
