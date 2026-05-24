@@ -154,4 +154,14 @@ mod tests {
         }"#;
         assert!(parse_mcp_request(body).is_none());
     }
+
+    #[test]
+    fn returns_none_on_malformed_json() {
+        // Garbage bytes, truncated envelopes, and non-JSON traffic must all
+        // surface as `None` instead of panicking — the proxy data path will
+        // see plenty of non-MCP HTTPS bodies in production.
+        assert!(parse_mcp_request(b"not json at all").is_none());
+        assert!(parse_mcp_request(b"{\"jsonrpc\":\"2.0\",\"method\":").is_none());
+        assert!(parse_mcp_request(b"").is_none());
+    }
 }
