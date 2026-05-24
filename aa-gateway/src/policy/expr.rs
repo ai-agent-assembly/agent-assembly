@@ -2323,4 +2323,16 @@ mod tests {
         let action = tool_result_with_body("read_file", r#"{"contents": "key=sk-abc123"}"#);
         assert!(evaluate(r#"tool_result.contents contains "sk-""#, &action, None, None));
     }
+
+    #[test]
+    fn tool_result_walks_nested_json_pointer() {
+        // `tool_result.payload.api_key` → JSON pointer "/payload/api_key".
+        let action = tool_result_with_body("http_fetch", r#"{"payload": {"api_key": "sk-test-xyz"}}"#);
+        assert!(evaluate(
+            r#"tool_result.payload.api_key starts_with "sk-""#,
+            &action,
+            None,
+            None,
+        ));
+    }
 }
