@@ -265,6 +265,16 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
+    fn governance_action_tool_result() {
+        let action = GovernanceAction::ToolResult {
+            tool_name: alloc::string::String::from("list_files"),
+            result: alloc::string::String::from("{\"entries\":[\"a.txt\"]}"),
+        };
+        assert_eq!(action.clone(), action);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
     fn governance_action_file_access() {
         let action = GovernanceAction::FileAccess {
             path: alloc::string::String::from("/etc/passwd"),
