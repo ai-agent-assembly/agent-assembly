@@ -24,7 +24,9 @@ use crate::config::ProxyConfig;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
+use crate::intercept::mcp::parse_mcp_request;
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{read_http_request, serialize_http_request, HttpRequest};
 use crate::tls::{CaStore, CertCache};
 
@@ -71,6 +73,16 @@ impl ServerCertVerifier for NoCertVerifier {
             .signature_verification_algorithms
             .supported_schemes()
     }
+}
+
+/// Build a JSON-RPC 2.0 error response body carrying the policy reason.
+///
+/// `id` is fixed at `null` because the proxy denies before parsing the
+/// inbound envelope's `id` field — most MCP clients accept a null id on
+/// errors emitted by a transport-layer interceptor.
+fn build_jsonrpc_error_response(code: i32, message: &str) -> String {
+    let msg_json = serde_json::to_string(message).unwrap_or_else(|_| "\"policy deny\"".into());
+    format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{code},"message":{msg_json}}}}}"#)
 }
 
 /// The running proxy server.
@@ -264,6 +276,95 @@ impl ProxyServer {
         Ok(upstream_tls)
     }
 
+    /// Non-LLM, gateway-aware data path: read the HTTP request inside the
+    /// MitM TLS tunnel, try to parse it as an MCP `tools/call` envelope, and
+    /// either enforce the gateway's decision on the wire or forward the
+    /// body transparently.
+    ///
+    /// Branches:
+    ///
+    /// * **MCP detected, gateway returns `Allow` or `Redact`** — forward the
+    ///   original body to upstream and continue bidirectional copy.
+    ///   (`Redact` is logged and forwarded as `Allow` for now — response-side
+    ///   rewriting lands in AAASM-1941.)
+    /// * **MCP detected, gateway returns `Deny`** — write a JSON-RPC 2.0
+    ///   error envelope to the client TLS stream, do not dial upstream.
+    /// * **MCP detected, gateway RPC failed** — log the error, fall through
+    ///   to transparent forward. Soft-degradation matches `aa-runtime`'s
+    ///   policy.
+    /// * **Body is not MCP** — transparently forward what was read plus the
+    ///   remaining stream.
+    async fn handle_non_llm_with_gateway(
+        self: &Arc<Self>,
+        client_tls: tokio_rustls::server::TlsStream<TcpStream>,
+        gateway: &Arc<Mutex<GatewayClient>>,
+        host: &str,
+        target: &str,
+    ) -> Result<(), ProxyError> {
+        let mut client_reader = BufReader::new(client_tls);
+        let Some(req) = read_http_request(&mut client_reader).await? else {
+            return Ok(());
+        };
+
+        // MCP detection.
+        if let Some(call) = parse_mcp_request(&req.body) {
+            let target_url = format!("https://{host}{path}", path = req.target);
+            match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+                Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+                    tracing::info!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        "MCP call allowed by gateway, forwarding to upstream",
+                    );
+                    // fall through to forward
+                }
+                Ok(McpDecision::Deny { reason }) => {
+                    tracing::info!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        %reason,
+                        "MCP call denied by gateway, returning JSON-RPC error envelope",
+                    );
+                    let body = build_jsonrpc_error_response(-32000, &reason);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let mut client_tls = client_reader.into_inner();
+                    client_tls.write_all(resp.as_bytes()).await?;
+                    let _ = client_tls.shutdown().await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        error = %e,
+                        "gateway CheckAction failed, forwarding without enforcement",
+                    );
+                    // fall through to forward
+                }
+            }
+        }
+
+        // Not MCP (or RPC failed) — forward the consumed body plus the
+        // remaining stream transparently.
+        let upstream_tls = self.dial_upstream_tls(host, target).await?;
+        let outgoing = serialize_http_request(&req, &req.body);
+        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
+        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+        upstream_write.write_all(&outgoing).await?;
+
+        let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+        let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+        tokio::select! {
+            r = client_to_upstream => { r?; }
+            r = upstream_to_client => { r?; }
+        }
+        Ok(())
+    }
+
     /// Handle a single accepted TCP connection.
     ///
     /// Reads the first HTTP request line to determine whether this is a
@@ -437,17 +538,33 @@ impl ProxyServer {
                 return Ok(());
             }
 
-            // Non-LLM pattern: raw bidirectional copy (no body inspection).
-            let upstream_tls = self.dial_upstream_tls(host, target).await?;
-            let (mut client_read, mut client_write) = tokio::io::split(client_tls);
-            let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+            // Non-LLM pattern.
+            //
+            // When a gateway client is configured, attempt MCP detection
+            // on the inbound HTTPS request body: a JSON-RPC 2.0 `tools/call`
+            // envelope is dispatched to the gateway PolicyService and
+            // enforced on the wire (Deny → JSON-RPC error envelope, Allow →
+            // forward, Redact → forward unchanged until AAASM-1941 lands
+            // response-side rewriting). Non-MCP bodies fall through to a
+            // transparent forward of the bytes we've already read.
+            //
+            // When no gateway is configured, preserve the historical raw
+            // bidirectional copy (no body inspection at all).
+            if let Some(gateway) = self.gateway_client.get() {
+                self.handle_non_llm_with_gateway(client_tls, gateway, host, target)
+                    .await?;
+            } else {
+                let upstream_tls = self.dial_upstream_tls(host, target).await?;
+                let (mut client_read, mut client_write) = tokio::io::split(client_tls);
+                let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
 
-            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+                let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+                let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
 
-            tokio::select! {
-                r = client_to_upstream => { r?; }
-                r = upstream_to_client => { r?; }
+                tokio::select! {
+                    r = client_to_upstream => { r?; }
+                    r = upstream_to_client => { r?; }
+                }
             }
 
             Ok(())
