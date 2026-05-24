@@ -70,3 +70,26 @@ fn parser_extracts_tool_name_and_path_for_deny_match() {
         "policy engine needs arguments.path to evaluate `starts_with \"/etc\"` predicates",
     );
 }
+
+/// ST-Q detection — the parser surfaces an allowed path (one that does NOT
+/// match the deny rule's `starts_with "/etc"` predicate) just like a denied
+/// one. The primitive is policy-agnostic; ST-Q-2 in AAASM-1930 will assert
+/// that the gateway evaluates this body as `Allow` and forwards upstream.
+#[test]
+fn parser_extracts_tool_name_and_path_for_allow_match() {
+    let body = br#"{
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "read_file",
+            "arguments": { "path": "/home/user/file.txt" }
+        }
+    }"#;
+    let call = parse_mcp_request(body).expect("MCP tools/call body must parse");
+    assert_eq!(call.tool_name, "read_file");
+    assert_eq!(
+        call.arguments.get("path").and_then(|v| v.as_str()),
+        Some("/home/user/file.txt"),
+    );
+}
