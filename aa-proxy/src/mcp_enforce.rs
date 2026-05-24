@@ -128,3 +128,38 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_call() -> McpToolCall {
+        McpToolCall {
+            tool_name: "read_file".into(),
+            arguments: json!({ "path": "/etc/passwd" }),
+        }
+    }
+
+    #[test]
+    fn build_request_populates_tool_call_context_fields() {
+        let call = sample_call();
+        let req = build_check_action_request(&call, "https://mcp.example.com/tools", "trace-abc", "span-1");
+
+        assert_eq!(req.action_type, ActionType::ToolCall as i32);
+        assert_eq!(req.trace_id, "trace-abc");
+        assert_eq!(req.span_id, "span-1");
+
+        let action = req.context.expect("context").action.expect("action");
+        let tool = match action {
+            Action::ToolCall(t) => t,
+            other => panic!("expected ToolCall action, got {other:?}"),
+        };
+        assert_eq!(tool.tool_name, "read_file");
+        assert_eq!(tool.tool_source, MCP_TOOL_SOURCE);
+        assert_eq!(tool.target_url, "https://mcp.example.com/tools");
+        // args_json round-trips back to the original Value.
+        let parsed: serde_json::Value = serde_json::from_slice(&tool.args_json).expect("args_json must be valid JSON");
+        assert_eq!(parsed, json!({ "path": "/etc/passwd" }));
+    }
+}
