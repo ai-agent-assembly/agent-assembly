@@ -1204,6 +1204,12 @@ pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error:
         if name.starts_with("args.") && name.len() > "args.".len() {
             continue;
         }
+        // Same shape applies to `tool_result.<key>` (response-side
+        // FieldRef::ToolResult) and the bare `tool_result` shorthand
+        // (FieldRef::ToolResultWhole) — neither sits in a static list.
+        if name == "tool_result" || (name.starts_with("tool_result.") && name.len() > "tool_result.".len()) {
+            continue;
+        }
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
             let suggestion = suggest_variable(&name).map(str::to_owned);
             let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
