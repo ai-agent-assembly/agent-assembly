@@ -259,3 +259,19 @@ fn st_q_1_mcp_read_file_etc_passwd_is_denied() {
 fn st_q_2_mcp_read_file_home_user_is_allowed() {
     todo!("AAASM-1930: drive the allowed path and assert upstream forward + Allow audit event")
 }
+
+/// ST-Q-3 — MCP tool result containing a secret is redacted before the
+/// agent sees it.
+///
+/// AAASM-1930 will assert:
+///
+/// 1. The agent's view of the upstream response has the secret pattern
+///    replaced with `[REDACTED:OpenAiKey]` (or equivalent redaction marker).
+/// 2. The raw secret value appears nowhere in the bytes the agent receives.
+/// 3. The emitted audit event has `credential_findings` populated and
+///    `decision == Redact`.
+#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
+#[test]
+fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
+    todo!("AAASM-1930: install mcp_redact_secrets.yaml, drive a tool whose result carries sk-...")
+}
