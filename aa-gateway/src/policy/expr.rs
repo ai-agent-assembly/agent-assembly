@@ -8,9 +8,23 @@
 //! clause     := field op literal
 //! combinator := "AND" | "OR"
 //! field      := "tool" | "path" | "url" | "method" | "command"
+//!             | "args." dotted_path        # walks ToolCall.args JSON
+//!             | (other identifiers — see KNOWN_VARIABLES)
 //! op         := "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "starts_with"
-//! literal    := quoted_string | integer | float
+//!             | "in" | "not_in"
+//! literal    := quoted_string | integer | float | list
 //! ```
+//!
+//! ## `args.<key>` predicates
+//!
+//! Identifiers prefixed with `args.` walk the JSON object on a
+//! [`GovernanceAction::ToolCall`]'s `args` field via a JSON pointer
+//! synthesised from the dotted path (`args.path` → `/path`,
+//! `args.headers.authorization` → `/headers/authorization`). Resolved
+//! string leaves accept `== != contains starts_with in not_in`;
+//! resolved numeric leaves accept `== != > >= < <=`. Non-`ToolCall`
+//! actions, malformed `args` JSON, and unresolved pointers all surface
+//! as no-match (false) — never fail-safe-true.
 //!
 //! **Fail-safe**: any parse/tokenization error returns `true`
 //! (triggers RequiresApproval — the safe default).
@@ -88,6 +102,13 @@ enum FieldRef {
     AgentChildrenCount,
     AgentIsRoot,
     AgentIsLeaf,
+    /// `args.<key>` / `args.<key>.<nested>` — walks the `args` JSON object on
+    /// a `GovernanceAction::ToolCall` via the carried JSON-pointer path
+    /// (e.g. `args.path` → `"/path"`, `args.config.timeout_ms` →
+    /// `"/config/timeout_ms"`). Surfaces a leaf scalar to the predicate
+    /// evaluator; null-safe no-match when the pointer cannot resolve or the
+    /// `args` payload is not valid JSON.
+    ToolArg(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -253,6 +274,21 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 } else {
                     break;
                 }
+            }
+
+            // `args.<key>` / `args.<key>.<nested>` — synthesise a
+            // `FieldRef::ToolArg(json_pointer)`. Translates the dotted
+            // identifier into a JSON pointer the evaluator walks against
+            // the ToolCall's `args` JSON object. Empty pointer (bare
+            // `args`) is rejected so policies must reference a concrete
+            // field.
+            if let Some(rest) = word.strip_prefix("args.") {
+                if rest.is_empty() {
+                    return None;
+                }
+                let pointer = format!("/{}", rest.replace('.', "/"));
+                tokens.push(Token::Field(FieldRef::ToolArg(pointer)));
+                continue;
             }
 
             let token = match word.as_str() {
@@ -434,6 +470,98 @@ fn eval_clause_safe(
             OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
             OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
             _ => false,
+        };
+    }
+
+    // `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
+    //
+    // Null-safe at every step: non-ToolCall actions, unparseable args JSON,
+    // and unresolved pointers all surface as no-match rather than erroring.
+    // String comparisons require the resolved value to be a JSON string;
+    // numeric ops require a JSON number; list membership requires a string.
+    // Mixed-type comparisons (e.g. `args.timeout == "30"` against a number)
+    // are treated as no-match — policies must match the underlying type.
+    if let FieldRef::ToolArg(pointer) = field {
+        let args_str = match action {
+            GovernanceAction::ToolCall { args, .. } => args.as_str(),
+            _ => return false,
+        };
+        let args_value: serde_json::Value = match serde_json::from_str(args_str) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let resolved = match args_value.pointer(pointer) {
+            Some(v) => v,
+            None => return false,
+        };
+        return match op {
+            OpKind::Eq | OpKind::Ne => match (resolved, literal) {
+                (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
+                    if matches!(op, OpKind::Eq) {
+                        s == lit
+                    } else {
+                        s != lit
+                    }
+                }
+                (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
+                    Some(v) => {
+                        if matches!(op, OpKind::Eq) {
+                            (v - *lit).abs() < f64::EPSILON
+                        } else {
+                            (v - *lit).abs() >= f64::EPSILON
+                        }
+                    }
+                    None => false,
+                },
+                _ => false,
+            },
+            OpKind::Contains | OpKind::StartsWith => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let lit = match literal {
+                    LiteralVal::Str(s) => s.as_str(),
+                    _ => return false,
+                };
+                if matches!(op, OpKind::Contains) {
+                    value.contains(lit)
+                } else {
+                    value.starts_with(lit)
+                }
+            }
+            OpKind::In | OpKind::NotIn => {
+                let value = match resolved.as_str() {
+                    Some(s) => s,
+                    None => return false,
+                };
+                let list = match literal {
+                    LiteralVal::StrList(items) => items,
+                    _ => return false,
+                };
+                if matches!(op, OpKind::In) {
+                    list.iter().any(|item| item == value)
+                } else {
+                    list.iter().all(|item| item != value)
+                }
+            }
+            OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => {
+                let lhs = match resolved.as_f64() {
+                    Some(n) => n,
+                    None => return false,
+                };
+                let rhs = match literal {
+                    LiteralVal::Num(n) => *n,
+                    _ => return false,
+                };
+                match op {
+                    OpKind::Gt => lhs > rhs,
+                    OpKind::Gte => lhs >= rhs,
+                    OpKind::Lt => lhs < rhs,
+                    OpKind::Lte => lhs <= rhs,
+                    _ => unreachable!(),
+                }
+            }
         };
     }
 
@@ -1038,6 +1166,14 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 /// known variable is ≤ 2.
 pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
     for name in extract_field_names(expr) {
+        // `args.<key>` / `args.<key>.<nested>` is a structural identifier
+        // accepted by the lexer as `FieldRef::ToolArg`. There is no static
+        // list of valid keys (they're inspected against the live action's
+        // JSON-encoded args), so validation skips the membership check and
+        // defers null-safety to the runtime evaluator.
+        if name.starts_with("args.") && name.len() > "args.".len() {
+            continue;
+        }
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
             let suggestion = suggest_variable(&name).map(str::to_owned);
             let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
@@ -1129,6 +1265,15 @@ mod tests {
         GovernanceAction::ToolCall {
             name: name.to_string(),
             args: String::new(),
+        }
+    }
+
+    /// Build a `ToolCall` whose `args` is a JSON-encoded body — used by the
+    /// `args.<key>` predicate tests below.
+    fn tool_with_args(name: &str, args: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.to_string(),
+            args: args.to_string(),
         }
     }
 
@@ -1888,6 +2033,107 @@ mod tests {
             &tool("any"),
             None,
             Some(&ctx),
+        ));
+    }
+
+    // ── FieldRef::ToolArg — args.<key> predicate tests ──────────────────────
+
+    #[test]
+    fn args_field_eq_matches_string_value() {
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_starts_with_matches_etc_path_prefix() {
+        // The flagship AAASM-1930 ST-Q-1 predicate shape.
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_starts_with_no_match_outside_etc_prefix() {
+        // The negative side of the same rule: a path the policy should allow.
+        let action = tool_with_args("read_file", r#"{"path": "/home/user/file.txt"}"#);
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_walks_nested_json_pointer() {
+        // `args.headers.authorization` → JSON pointer "/headers/authorization".
+        let action = tool_with_args("http_fetch", r#"{"headers": {"authorization": "Bearer abc"}}"#);
+        assert!(evaluate(
+            r#"args.headers.authorization starts_with "Bearer""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn args_missing_key_is_null_safe_no_match() {
+        // Pointer doesn't resolve → no-match (NOT a fail-safe true).
+        let action = tool_with_args("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_malformed_json_is_null_safe_no_match() {
+        // Args body that doesn't parse as JSON (default empty string, garbage,
+        // truncated, etc.) is treated as null-safe no-match — policies don't
+        // fire and policies don't fail-safe `true` either.
+        let empty = tool_with_args("read_file", "");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &empty, None, None));
+
+        let garbage = tool_with_args("read_file", "{not valid json");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &garbage, None, None));
+    }
+
+    #[test]
+    fn args_in_list_matches_when_value_is_member() {
+        let action = tool_with_args("invoke", r#"{"action": "delete"}"#);
+        assert!(evaluate(
+            r#"args.action in ["delete", "drop", "truncate"]"#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn args_not_in_list_matches_when_value_outside_allowlist() {
+        // The allowlist shape: deny when args.action is not in the allowed set.
+        let action = tool_with_args("invoke", r#"{"action": "execute_bash"}"#);
+        assert!(evaluate(r#"args.action not_in ["read", "write"]"#, &action, None, None,));
+    }
+
+    #[test]
+    fn args_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`) work against JSON number values.
+        let action = tool_with_args("rpc_call", r#"{"timeout_ms": 30000}"#);
+        assert!(evaluate("args.timeout_ms > 1000", &action, None, None));
+        assert!(evaluate("args.timeout_ms <= 30000", &action, None, None));
+        assert!(!evaluate("args.timeout_ms < 100", &action, None, None));
+    }
+
+    #[test]
+    fn args_predicate_against_non_toolcall_action_is_no_match() {
+        // A FileAccess action carries no `args` payload; the same expression
+        // that fires on a ToolCall must surface as no-match for non-ToolCall
+        // variants so policies don't leak across action types.
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &process("ls"), None, None));
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
         ));
     }
 }
