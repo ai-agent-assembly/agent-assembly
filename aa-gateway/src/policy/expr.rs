@@ -8,9 +8,23 @@
 //! clause     := field op literal
 //! combinator := "AND" | "OR"
 //! field      := "tool" | "path" | "url" | "method" | "command"
+//!             | "args." dotted_path        # walks ToolCall.args JSON
+//!             | (other identifiers — see KNOWN_VARIABLES)
 //! op         := "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "starts_with"
-//! literal    := quoted_string | integer | float
+//!             | "in" | "not_in"
+//! literal    := quoted_string | integer | float | list
 //! ```
+//!
+//! ## `args.<key>` predicates
+//!
+//! Identifiers prefixed with `args.` walk the JSON object on a
+//! [`GovernanceAction::ToolCall`]'s `args` field via a JSON pointer
+//! synthesised from the dotted path (`args.path` → `/path`,
+//! `args.headers.authorization` → `/headers/authorization`). Resolved
+//! string leaves accept `== != contains starts_with in not_in`;
+//! resolved numeric leaves accept `== != > >= < <=`. Non-`ToolCall`
+//! actions, malformed `args` JSON, and unresolved pointers all surface
+//! as no-match (false) — never fail-safe-true.
 //!
 //! **Fail-safe**: any parse/tokenization error returns `true`
 //! (triggers RequiresApproval — the safe default).
