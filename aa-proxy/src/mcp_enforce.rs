@@ -162,4 +162,82 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&tool.args_json).expect("args_json must be valid JSON");
         assert_eq!(parsed, json!({ "path": "/etc/passwd" }));
     }
+
+    fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {
+        CheckActionResponse {
+            decision: decision as i32,
+            reason: reason.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decision_allow_maps_to_mcp_allow() {
+        let resp = response_with(Decision::Allow, "ok");
+        assert_eq!(decision_from_response(&resp), McpDecision::Allow);
+    }
+
+    #[test]
+    fn decision_deny_maps_to_mcp_deny_with_reason() {
+        let resp = response_with(Decision::Deny, "tool_name read_file blocked on /etc paths");
+        match decision_from_response(&resp) {
+            McpDecision::Deny { reason } => {
+                assert_eq!(reason, "tool_name read_file blocked on /etc paths");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decision_redact_maps_to_mcp_redact_with_instructions() {
+        let resp = CheckActionResponse {
+            decision: Decision::Redact as i32,
+            redact: Some(RedactInstructions::default()),
+            ..Default::default()
+        };
+        assert!(matches!(decision_from_response(&resp), McpDecision::Redact { .. }));
+    }
+
+    #[test]
+    fn decision_pending_downgrades_to_deny_at_proxy_layer() {
+        // The proxy cannot block on a human approval queue inside the MitM
+        // tunnel, so PENDING must surface as a wire-level Deny.
+        let mut resp = response_with(Decision::Pending, "");
+        resp.approval_id = "queue-7".into();
+        match decision_from_response(&resp) {
+            McpDecision::Deny { reason } => {
+                assert!(
+                    reason.contains("queue-7") || reason.contains("PENDING"),
+                    "deny reason should explain the downgrade, got: {reason}",
+                );
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decision_unspecified_downgrades_to_deny() {
+        let resp = response_with(Decision::Unspecified, "");
+        assert!(matches!(decision_from_response(&resp), McpDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn unknown_decision_code_downgrades_to_deny() {
+        // Out-of-range proto enum value (e.g. a future Decision variant the
+        // proxy was compiled before) must still surface as Deny rather than
+        // panic.
+        let resp = CheckActionResponse {
+            decision: 9999,
+            ..Default::default()
+        };
+        match decision_from_response(&resp) {
+            McpDecision::Deny { reason } => {
+                assert!(
+                    reason.contains("9999"),
+                    "reason should name the unknown code, got: {reason}"
+                );
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
 }
