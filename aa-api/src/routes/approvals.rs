@@ -11,7 +11,6 @@ use aa_runtime::approval::{ApprovalDecision, ApprovalError, ApprovalLookup, Pend
 use utoipa::IntoParams;
 
 use crate::error::ProblemDetail;
-use crate::pagination::PaginatedResponse;
 use crate::state::AppState;
 
 /// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
@@ -195,7 +194,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
     path = "/api/v1/approvals",
     params(ListApprovalsParams),
     responses(
-        (status = 200, description = "Paginated list of approvals", body = Vec<ApprovalResponse>)
+        (status = 200, description = "Paginated list of approvals", body = PaginatedApprovalResponse)
     ),
     tag = "approvals"
 )]
@@ -237,7 +236,7 @@ pub async fn list_approvals(
 
     (
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedApprovalResponse {
             items,
             page: params.page(),
             per_page: params.per_page(),
