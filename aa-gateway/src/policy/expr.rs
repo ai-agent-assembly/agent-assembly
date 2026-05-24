@@ -9,6 +9,8 @@
 //! combinator := "AND" | "OR"
 //! field      := "tool" | "path" | "url" | "method" | "command"
 //!             | "args." dotted_path        # walks ToolCall.args JSON
+//!             | "tool_result." dotted_path # walks ToolResult.result JSON
+//!             | "tool_result"              # whole ToolResult.result body
 //!             | (other identifiers — see KNOWN_VARIABLES)
 //! op         := "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "starts_with"
 //!             | "in" | "not_in"
@@ -25,6 +27,21 @@
 //! resolved numeric leaves accept `== != > >= < <=`. Non-`ToolCall`
 //! actions, malformed `args` JSON, and unresolved pointers all surface
 //! as no-match (false) — never fail-safe-true.
+//!
+//! ## `tool_result.<key>` predicates (response side)
+//!
+//! Response-side mirror of `args.<key>`: identifiers prefixed with
+//! `tool_result.` walk the JSON body on a
+//! [`GovernanceAction::ToolResult`]'s `result` field via the same
+//! JSON-pointer translation (`tool_result.foo` → `/foo`,
+//! `tool_result.payload.api_key` → `/payload/api_key`). Op coverage
+//! and null-safety match `args.<key>` exactly.
+//!
+//! The bare identifier `tool_result` (no dotted suffix) is a special
+//! shorthand that treats the entire serialised `result` body as one
+//! string. Only `contains` / `starts_with` against a string literal
+//! are meaningful here — useful for regex-style pattern matches like
+//! `tool_result contains "sk-"` when the body schema is unknown.
 //!
 //! **Fail-safe**: any parse/tokenization error returns `true`
 //! (triggers RequiresApproval — the safe default).
