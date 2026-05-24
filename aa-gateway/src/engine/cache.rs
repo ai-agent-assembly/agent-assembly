@@ -48,6 +48,10 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
             "tool".hash(&mut h);
             name.hash(&mut h);
         }
+        aa_core::GovernanceAction::ToolResult { tool_name, .. } => {
+            "tool_result".hash(&mut h);
+            tool_name.hash(&mut h);
+        }
         aa_core::GovernanceAction::NetworkRequest { url, method } => {
             "net".hash(&mut h);
             url.hash(&mut h);

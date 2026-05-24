@@ -554,6 +554,7 @@ impl PolicyEngine {
         // to redact the payload once; the redacted text propagates — the original is dropped.
         let text = match action {
             aa_core::GovernanceAction::ToolCall { args, .. } => args.as_str(),
+            aa_core::GovernanceAction::ToolResult { .. } => "",
             aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
             aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
             aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
@@ -769,6 +770,7 @@ impl PolicyEngine {
         // Stage 6 — Credential scan: accumulate custom patterns from all cascade docs.
         let text = match action {
             aa_core::GovernanceAction::ToolCall { args, .. } => args.as_str(),
+            aa_core::GovernanceAction::ToolResult { .. } => "",
             aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
             aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
             aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),

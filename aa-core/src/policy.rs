@@ -167,6 +167,19 @@ pub enum GovernanceAction {
         /// Pre-serialized JSON arguments passed to the tool.
         args: ArgsJson,
     },
+    /// Result returned by a tool invocation, evaluated on the response path
+    /// before the result is forwarded back to the agent.
+    ///
+    /// Carries the same shape as `ToolCall.args` — a pre-serialized JSON
+    /// string — so the policy engine can apply JSON-pointer-addressed
+    /// predicates (e.g. `tool_result.foo`) and credential-pattern scans
+    /// against the body the upstream tool emitted.
+    ToolResult {
+        /// Registered name of the tool that produced the result.
+        tool_name: alloc::string::String,
+        /// Pre-serialized JSON body of the tool's response.
+        result: ArgsJson,
+    },
     /// Read or write access to a file path.
     FileAccess {
         /// Absolute or relative path of the file being accessed.

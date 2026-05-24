@@ -128,6 +128,7 @@ impl SimulationEngine {
 fn action_summary(action: &GovernanceAction) -> String {
     match action {
         GovernanceAction::ToolCall { name, .. } => format!("tool:{name}"),
+        GovernanceAction::ToolResult { tool_name, .. } => format!("tool_result:{tool_name}"),
         GovernanceAction::FileAccess { path, mode } => format!("file:{mode:?}:{path}"),
         GovernanceAction::NetworkRequest { url, method, .. } => format!("net:{method}:{url}"),
         GovernanceAction::ProcessExec { command, .. } => format!("exec:{command}"),
