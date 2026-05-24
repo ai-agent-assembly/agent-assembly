@@ -92,3 +92,25 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
         arguments: params.arguments,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extracts_tool_name_and_arguments_from_tools_call() {
+        let body = br#"{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "read_file",
+                "arguments": { "path": "/etc/passwd" }
+            }
+        }"#;
+        let call = parse_mcp_request(body).expect("valid tools/call must parse");
+        assert_eq!(call.tool_name, "read_file");
+        assert_eq!(call.arguments, json!({ "path": "/etc/passwd" }));
+    }
+}
