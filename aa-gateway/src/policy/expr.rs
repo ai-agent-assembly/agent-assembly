@@ -2036,4 +2036,11 @@ mod tests {
         let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
         assert!(evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
     }
+
+    #[test]
+    fn args_starts_with_no_match_outside_etc_prefix() {
+        // The negative side of the same rule: a path the policy should allow.
+        let action = tool_with_args("read_file", r#"{"path": "/home/user/file.txt"}"#);
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
 }
