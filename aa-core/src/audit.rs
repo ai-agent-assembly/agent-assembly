@@ -933,6 +933,7 @@ mod tests {
             AuditEventType::ApprovalTimedOut,
             AuditEventType::ApprovalRouted,
             AuditEventType::ApprovalEscalated,
+            AuditEventType::ToolDispatched,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
