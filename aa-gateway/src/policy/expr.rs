@@ -2335,4 +2335,24 @@ mod tests {
             None,
         ));
     }
+
+    #[test]
+    fn bare_tool_result_contains_pattern_in_whole_body() {
+        // The ST-Q-3 shorthand: `tool_result contains "sk-"` matches against
+        // the entire serialised result body — useful when the schema is
+        // unknown but the secret prefix is.
+        let action = tool_result_with_body(
+            "search",
+            r#"{"items": [{"snippet": "leaked key: sk-test-123 in log"}]}"#,
+        );
+        assert!(evaluate(r#"tool_result contains "sk-""#, &action, None, None));
+    }
+
+    #[test]
+    fn bare_tool_result_starts_with_against_whole_body() {
+        // Whole-body starts_with is rarer but sometimes useful — e.g. asserting
+        // a response is JSON-shaped (`{...}`) before any further predicate runs.
+        let action = tool_result_with_body("ping", r#"{"ok": true}"#);
+        assert!(evaluate(r#"tool_result starts_with "{""#, &action, None, None));
+    }
 }
