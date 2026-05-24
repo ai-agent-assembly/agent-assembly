@@ -1,0 +1,21 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-mcp-deny-execute-bash
+  version: "0.1.0"
+spec:
+  # AAASM-1930 ST-Q-4 fixture. The spec language is `deny if tool_name not
+  # in ["read_file", "write_file"]` (an allowlist); this fixture captures
+  # the same observable behaviour for a specific outside-the-list tool by
+  # hard-denying `execute_bash`. The proxy MCP interceptor dispatches the
+  # `tools/call` to the gateway; the gateway returns Decision::Deny and
+  # the proxy writes a JSON-RPC 2.0 error envelope.
+  #
+  # An expression-form allowlist (`tool not_in […]` on a wildcard tool
+  # entry) would route through Stage 5 RequiresApproval — currently
+  # impractical in test fixtures without an attached approval_queue (see
+  # the comment in mcp_deny_read_file.yaml). The spec's allowlist intent
+  # is preserved as test-shape ("execute_bash is denied at the proxy").
+  tools:
+    execute_bash:
+      allow: false

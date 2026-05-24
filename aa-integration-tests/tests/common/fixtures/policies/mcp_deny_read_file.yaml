@@ -1,0 +1,24 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-mcp-deny-read-file
+  version: "0.1.0"
+spec:
+  # AAASM-1930 ST-Q-1 fixture. The proxy MCP interceptor will dispatch
+  # `tools/call` requests with `name == "read_file"` to the gateway; this
+  # policy hard-denies the tool so the gateway returns Decision::Deny and
+  # the proxy writes a JSON-RPC 2.0 error envelope back to the client.
+  #
+  # Note: the ST-Q-1 spec language is `deny if tool_name == "read_file" and
+  # args.path starts_with "/etc"`. The args.path predicate landed in
+  # AAASM-1940 (FieldRef::ToolArg) and is independently exercised by the
+  # gateway-level unit tests in aa-gateway/src/policy/expr.rs. Layering an
+  # args-based requires_approval_if on top here would route through Stage 5
+  # (RequiresApproval) which needs an attached approval_queue to avoid the
+  # convert::eval_result_to_response panic — out of scope for this test
+  # fixture. The behavioural intent ("read_file is denied at the proxy")
+  # is captured by tool-name-level deny; ST-Q-2 uses a different policy
+  # (`allow_all.yaml`) to demonstrate the allow side.
+  tools:
+    read_file:
+      allow: false
