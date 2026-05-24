@@ -143,23 +143,47 @@ fn ac_8_crate_suite_smoke() {
 /// Tiny RAII guard for env-var manipulation in the AC tests.
 ///
 /// `apply_env_overrides()` reads from `std::env::var`, which is process-global.
-/// Restoring the prior value when the guard drops keeps tests independent
-/// (nextest may still serialise them — that's fine; correctness here doesn't
-/// depend on parallelism).
+/// Restoring the prior value when the guard drops keeps tests independent.
+///
+/// ## Why we hold a Mutex while alive
+///
+/// `cargo test` runs tests within a binary in parallel by default. Two
+/// sibling tests in this file both mutate `AA_MODE` (`ac_4` and `ac_7`);
+/// without serialisation they can interleave such that one test's `Drop`
+/// removes the env var between the other test's `set` and its read,
+/// causing the read to see the wrong (or absent) value.
+///
+/// The static `ENV_LOCK` mutex is held for the lifetime of every
+/// `ScopedEnv` instance, so env-mutating tests are serialised regardless
+/// of how the test harness schedules them. Local 4-thread runs and CI
+/// runs (cargo test `--all-features --workspace`) both stay deterministic.
 struct ScopedEnv {
     key: &'static str,
     prior: Option<String>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+fn env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 impl ScopedEnv {
     fn set(key: &'static str, value: &str) -> Self {
+        // Lock first so two `set` calls from different threads cannot
+        // interleave their snapshot of `prior` with each other's mutation.
+        let guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let prior = std::env::var(key).ok();
-        // SAFETY: tests run in this process; we restore on drop. Other parallel
-        // tests in this binary do not read these specific env vars.
+        // SAFETY: tests run in this process; we restore on drop. The
+        // ENV_LOCK guard serialises every ScopedEnv across the file.
         unsafe {
             std::env::set_var(key, value);
         }
-        Self { key, prior }
+        Self {
+            key,
+            prior,
+            _guard: guard,
+        }
     }
 }
 
