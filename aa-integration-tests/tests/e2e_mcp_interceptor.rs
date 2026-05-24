@@ -382,17 +382,52 @@ fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
 
 /// ST-Q-4 — MCP tool name outside the allowlist is denied.
 ///
-/// AAASM-1930 will assert:
+/// Drives `tools/call execute_bash` against `mcp_deny_execute_bash.yaml`
+/// (the allowlist-shape fixture documented in that file). Asserts:
 ///
-/// 1. With `deny if tool_name not in [read_file, write_file]`, a
-///    `tools/call` for `execute_bash` is denied at the proxy.
+/// 1. The proxy returns a JSON-RPC 2.0 error envelope.
 /// 2. The upstream MCP server's `request_count() == 0`.
-/// 3. The emitted audit event carries `tool_name == "execute_bash"`,
-///    `decision == Deny` with the allowlist reason.
-#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
-#[test]
-fn st_q_4_mcp_tool_name_outside_allowlist_is_denied() {
-    todo!("AAASM-1930: install mcp_allowlist.yaml, drive tools/call execute_bash, assert deny")
+/// 3. The emitted audit event carries `PolicyViolation { blocked_action:
+///    "tools/call execute_bash" }`.
+#[tokio::test(flavor = "multi_thread")]
+async fn st_q_4_mcp_tool_name_outside_allowlist_is_denied() {
+    use proxy_e2e::*;
+    install_crypto_provider();
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.expect("ca");
+    let client_config = std::sync::Arc::new(client_trust_proxy_ca(dir.path()).await);
+
+    let upstream = TlsCapturingMcpUpstream::start(&ca).await;
+    let (gateway_addr, _registry) = start_gateway_with_mcp_policy("mcp_deny_execute_bash.yaml").await;
+    let (proxy_addr, mut event_rx, abort) = start_proxy_with_gateway(dir.path(), ca, upstream.addr, gateway_addr).await;
+
+    let body = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute_bash","arguments":{"cmd":"ls /tmp"}}}"#;
+    let result = send_mcp_request_through_proxy(proxy_addr, client_config, body).await;
+
+    let inner = result.inner_response.expect("inner response from proxy");
+    assert!(
+        inner.contains(r#""error""#) && inner.contains(r#""code":-32000"#),
+        "proxy must return JSON-RPC error envelope, got: {inner}",
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        upstream.request_count(),
+        0,
+        "upstream must receive zero requests for non-allowlisted tool",
+    );
+
+    let audit = recv_first_audit(&mut event_rx, std::time::Duration::from_secs(2))
+        .await
+        .expect("audit event must be emitted");
+    match audit.inner.detail.expect("audit detail") {
+        aa_proto::assembly::audit::v1::audit_event::Detail::Violation(v) => {
+            assert_eq!(v.blocked_action, "tools/call execute_bash");
+        }
+        other => panic!("expected PolicyViolation, got {other:?}"),
+    }
+
+    abort.abort();
 }
 
 /// ST-Q-5 — All four behaviours above work with NO SDK installed.
