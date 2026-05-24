@@ -16,7 +16,9 @@
 //! alternatives.
 
 pub mod error;
+pub mod store;
 pub mod types;
 
 pub use error::SecretsError;
+pub use store::SecretsStore;
 pub use types::Secret;
