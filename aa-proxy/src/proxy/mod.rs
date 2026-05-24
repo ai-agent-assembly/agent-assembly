@@ -316,6 +316,7 @@ impl ProxyServer {
                         %host,
                         "MCP call allowed by gateway, forwarding to upstream",
                     );
+                    self.interceptor.emit_mcp_decision(&call.tool_name, false, "").await;
                     // fall through to forward
                 }
                 Ok(McpDecision::Deny { reason }) => {
@@ -325,6 +326,7 @@ impl ProxyServer {
                         %reason,
                         "MCP call denied by gateway, returning JSON-RPC error envelope",
                     );
+                    self.interceptor.emit_mcp_decision(&call.tool_name, true, &reason).await;
                     let body = build_jsonrpc_error_response(-32000, &reason);
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
