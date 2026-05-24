@@ -531,6 +531,7 @@ mod proxy_data_path {
             skip_upstream_tls_verify: true,
             credential_action,
             upstream_override: Some(upstream_override),
+            gateway_endpoint: None,
         };
         let bind_addr = config.bind_addr;
         let (tx, rx) = broadcast::channel(64);

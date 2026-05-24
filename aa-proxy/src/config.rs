@@ -76,6 +76,15 @@ pub struct ProxyConfig {
     /// MitM certificate so the client's TLS verification continues to work
     /// against the per-host CA chain.
     pub upstream_override: Option<SocketAddr>,
+
+    /// Endpoint of the `aa-gateway` PolicyService gRPC server. When `Some`,
+    /// the proxy connects on startup and forwards MCP `tools/call` bodies
+    /// to the gateway for structured policy evaluation (AAASM-1930). When
+    /// `None`, MCP enforcement is disabled and bodies pass through to the
+    /// existing credential-scanner data path unchanged.
+    ///
+    /// Env: `AA_PROXY_GATEWAY_ENDPOINT` — e.g. `http://127.0.0.1:50051`.
+    pub gateway_endpoint: Option<String>,
 }
 
 impl ProxyConfig {
@@ -128,6 +137,11 @@ impl ProxyConfig {
             Err(_) => CredentialAction::default(),
         };
 
+        let gateway_endpoint = match std::env::var("AA_PROXY_GATEWAY_ENDPOINT") {
+            Ok(val) if !val.is_empty() => Some(val),
+            _ => None,
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
@@ -137,6 +151,7 @@ impl ProxyConfig {
             skip_upstream_tls_verify,
             credential_action,
             upstream_override: None,
+            gateway_endpoint,
         })
     }
 }
