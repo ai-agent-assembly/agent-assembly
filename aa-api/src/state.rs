@@ -14,6 +14,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::iam::IamApiKeyStore;
 use aa_gateway::policy::history::PolicyHistoryStore;
 use aa_gateway::registry::AgentRegistry;
+use aa_gateway::secrets::SecretsStore;
 use aa_gateway::storage::RetentionEngine;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
@@ -118,4 +119,9 @@ pub struct AppState {
     /// handlers (AAASM-1592 S-K). `None` when the gateway is started without
     /// a `storage` section — the handlers respond with 503 in that case.
     pub retention_engine: Option<Arc<RetentionEngine>>,
+    /// Placeholder → credential registry consumed by `POST /v1/dispatch_tool`
+    /// (AAASM-1920 Secret Injection). `Arc<dyn SecretsStore>` so the handler
+    /// can resolve `${NAME}` tokens via
+    /// `aa-gateway::secrets::resolver::resolve_placeholders`.
+    pub secrets_store: Arc<dyn SecretsStore>,
 }

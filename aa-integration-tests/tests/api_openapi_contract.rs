@@ -60,8 +60,8 @@ fn openapi_spec_loads_without_errors() {
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
     assert_eq!(
-        path_count, 51,
-        "openapi/v1.yaml must declare exactly 51 paths, found {path_count}"
+        path_count, 52,
+        "openapi/v1.yaml must declare exactly 52 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -124,6 +124,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/capability/override",
         "/api/v1/capability/override/{id}",
         "/api/v1/costs",
+        "/api/v1/dispatch_tool",
         "/api/v1/health",
         "/api/v1/iam/api-keys",
         "/api/v1/iam/api-keys/{id}/revoke",
