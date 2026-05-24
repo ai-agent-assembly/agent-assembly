@@ -393,3 +393,26 @@ pub struct DecideRequest {
     /// Optional reason for the decision.
     pub reason: Option<String>,
 }
+
+/// Paginated wire-format envelope for `GET /api/v1/approvals`.
+///
+/// Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
+/// — `{items, page, per_page, total}` — but is declared as a concrete,
+/// non-generic type so utoipa can register it as a named component schema
+/// and downstream codegen (the dashboard `openapi-typescript` step) sees
+/// a typed envelope rather than a bare array. Introduced to close the
+/// drift between the handler's runtime body and the OpenAPI contract
+/// flagged by AAASM-1922; the other paginated list endpoints
+/// (`list_agents`, `list_alerts`, `list_policies`, `list_logs`) carry the
+/// same drift and will be addressed independently.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedApprovalResponse {
+    /// Items in the current page.
+    pub items: Vec<ApprovalResponse>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total number of items across all pages (after filters).
+    pub total: u64,
+}
