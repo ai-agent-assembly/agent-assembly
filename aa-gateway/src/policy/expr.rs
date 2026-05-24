@@ -303,6 +303,24 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
                 continue;
             }
 
+            // `tool_result.<key>` / `tool_result.<key>.<nested>` — response-side
+            // mirror of `args.<key>`. Resolves to `FieldRef::ToolResult(pointer)`
+            // when a dotted path follows; the bare `tool_result` (no path) maps
+            // to `FieldRef::ToolResultWhole` so policies can match the entire
+            // serialised response as one string.
+            if let Some(rest) = word.strip_prefix("tool_result.") {
+                if rest.is_empty() {
+                    return None;
+                }
+                let pointer = format!("/{}", rest.replace('.', "/"));
+                tokens.push(Token::Field(FieldRef::ToolResult(pointer)));
+                continue;
+            }
+            if word == "tool_result" {
+                tokens.push(Token::Field(FieldRef::ToolResultWhole));
+                continue;
+            }
+
             let token = match word.as_str() {
                 "AND" => Token::And,
                 "OR" => Token::Or,
