@@ -49,6 +49,12 @@ pub enum AuditEventType {
     AgentForceDeregistered = 11,
     /// An inter-team message was blocked because the target channel is not permitted by policy.
     MessageBlocked = 12,
+    /// A `dispatch_tool` call was processed by the gateway: the agent's
+    /// placeholder-form args were resolved via the `SecretsStore` and
+    /// forwarded to the tool sink. The audit `payload` carries the
+    /// **placeholder-form** args — the resolved credential value is never
+    /// recorded. (AAASM-1920 / Secret Injection.)
+    ToolDispatched = 13,
 }
 
 impl AuditEventType {
@@ -70,6 +76,7 @@ impl AuditEventType {
             Self::ApprovalEscalated => "ApprovalEscalated",
             Self::AgentForceDeregistered => "AgentForceDeregistered",
             Self::MessageBlocked => "MessageBlocked",
+            Self::ToolDispatched => "ToolDispatched",
         }
     }
 }
@@ -611,6 +618,49 @@ impl AuditEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-dispatch helper (AAASM-1920 / Secret Injection)
+// ---------------------------------------------------------------------------
+
+/// Build an [`AuditEntry`] for a `dispatch_tool` call, carrying the
+/// **placeholder-form** args as the `payload`.
+///
+/// The caller passes `placeholder_args` as it was *received* from the agent
+/// — before any `${NAME}` token is resolved by
+/// `aa-gateway::secrets::resolver::resolve_placeholders`. The resolved
+/// credential value is forwarded to the tool sink separately, but it must
+/// never appear in `payload`. This helper centralises that contract so
+/// every dispatch_tool handler (HTTP, gRPC) emits the same shape.
+///
+/// Returns an entry tagged [`AuditEventType::ToolDispatched`].
+///
+/// Gated on `feature = "std"` because it relies on `serde_json::to_string`.
+#[cfg(feature = "std")]
+pub fn audit_entry_for_tool_dispatch(
+    seq: u64,
+    timestamp_ns: u64,
+    agent_id: AgentId,
+    session_id: SessionId,
+    placeholder_args: &serde_json::Value,
+    previous_hash: [u8; 32],
+) -> AuditEntry {
+    let payload = serde_json::to_string(placeholder_args).unwrap_or_else(|_| {
+        // Malformed input is implausible for a `serde_json::Value` — this
+        // branch exists so the helper is total. A non-secret stand-in is
+        // recorded so the audit chain stays unbroken.
+        String::from("{\"error\":\"failed to serialize placeholder args\"}")
+    });
+    AuditEntry::new(
+        seq,
+        timestamp_ns,
+        AuditEventType::ToolDispatched,
+        agent_id,
+        session_id,
+        payload,
+        previous_hash,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -893,6 +943,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalTimedOut.as_str(), "ApprovalTimedOut");
         assert_eq!(AuditEventType::ApprovalRouted.as_str(), "ApprovalRouted");
         assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
+        assert_eq!(AuditEventType::ToolDispatched.as_str(), "ToolDispatched");
     }
 
     #[test]
@@ -908,6 +959,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalTimedOut as u32, 8);
         assert_eq!(AuditEventType::ApprovalRouted as u32, 9);
         assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
+        assert_eq!(AuditEventType::ToolDispatched as u32, 13);
     }
 
     #[test]
@@ -924,6 +976,7 @@ mod tests {
             AuditEventType::ApprovalTimedOut,
             AuditEventType::ApprovalRouted,
             AuditEventType::ApprovalEscalated,
+            AuditEventType::ToolDispatched,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
@@ -1387,6 +1440,34 @@ mod tests {
             (*ptr)[0] = 0xFF;
         }
         assert!(!log.verify_chain());
+    }
+
+    // --- audit_entry_for_tool_dispatch (AAASM-1920 Secret Injection) ---
+
+    #[test]
+    fn tool_dispatch_helper_emits_placeholder_form_payload() {
+        // Synthetic — fabricated for this test only.
+        let real_secret = "real-secret-abc-DEADBEEF-0001";
+        let placeholder_args = serde_json::json!({
+            "connection_string": "${DB_PASSWORD}"
+        });
+
+        let entry = audit_entry_for_tool_dispatch(
+            42,
+            1_714_222_134_000_000_000,
+            AgentId::from_bytes(AGENT_BYTES),
+            SessionId::from_bytes(SESSION_BYTES),
+            &placeholder_args,
+            GENESIS_HASH,
+        );
+
+        assert_eq!(entry.event_type(), AuditEventType::ToolDispatched);
+        // Payload carries the placeholder-form, not the resolved value.
+        assert!(entry.payload().contains("${DB_PASSWORD}"));
+        assert!(
+            !entry.payload().contains(real_secret),
+            "audit payload MUST NOT contain the resolved credential — placeholder-form contract"
+        );
     }
 }
 
