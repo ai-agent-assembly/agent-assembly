@@ -2297,4 +2297,22 @@ mod tests {
             None,
         ));
     }
+
+    // ── FieldRef::ToolResult — tool_result.<key> + bare tool_result tests ───
+
+    /// Build a `ToolResult` action against a known `tool_name` whose `result`
+    /// is a JSON-encoded body — used by the response-side predicate tests
+    /// below.
+    fn tool_result_with_body(tool_name: &str, body: &str) -> GovernanceAction {
+        GovernanceAction::ToolResult {
+            tool_name: tool_name.to_string(),
+            result: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn tool_result_field_eq_matches_string_leaf() {
+        let action = tool_result_with_body("read_file", r#"{"contents": "hello"}"#);
+        assert!(evaluate(r#"tool_result.contents == "hello""#, &action, None, None));
+    }
 }
