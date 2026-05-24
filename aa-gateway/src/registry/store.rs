@@ -510,6 +510,128 @@ impl AgentRegistry {
         }
     }
 
+    /// Move `child` from its current parent (if any) to `new_parent`.
+    ///
+    /// Updates `child`'s `parent_key`, `parent_agent_id`, `root_agent_id`,
+    /// and `depth`; maintains the old and new parent `children` lists; and
+    /// recursively recomputes `depth` and `root_agent_id` for the entire
+    /// subtree rooted at `child` so topology-aware policy evaluations see
+    /// the new ancestry on the next call.
+    ///
+    /// Idempotent: when `child`'s current parent already equals `new_parent`,
+    /// returns `Ok(())` without touching any record.
+    ///
+    /// # Errors
+    ///
+    /// * [`RegistryError::NotFound`] — `child` or `new_parent` is not in the
+    ///   registry.
+    /// * [`RegistryError::Lineage`] with
+    ///   [`LineageError::CircularDelegation`] — `new_parent` is `child`
+    ///   itself or sits within `child`'s subtree, so the move would create
+    ///   a cycle.
+    /// * [`RegistryError::Lineage`] with [`LineageError::MaxDepthExceeded`]
+    ///   — the deepest leaf of the moved subtree would land at or past
+    ///   [`DEFAULT_MAX_AGENT_DEPTH`] under `new_parent`.
+    pub fn reparent(&self, child: &[u8; 16], new_parent: &[u8; 16]) -> Result<(), RegistryError> {
+        // Serialise against concurrent register / reparent so the cycle and
+        // depth checks stay consistent with the eventual mutation.
+        let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        let (old_parent_key, current_child_depth) = match self.agents.get(child) {
+            Some(r) => (r.parent_key, r.depth),
+            None => return Err(RegistryError::NotFound(*child)),
+        };
+
+        // Idempotent same-parent fast path.
+        if old_parent_key.as_ref() == Some(new_parent) {
+            return Ok(());
+        }
+
+        if !self.agents.contains_key(new_parent) {
+            return Err(RegistryError::NotFound(*new_parent));
+        }
+
+        // Cycle: self-parent is rejected up-front so the descendant walk
+        // below stays a pure descendant check.
+        if new_parent == child {
+            return Err(RegistryError::Lineage(LineageError::CircularDelegation {
+                cycle: vec![*child, *new_parent],
+            }));
+        }
+
+        // Cycle: new_parent must not be a descendant of child.
+        let descendants = self.descendants_of(child);
+        if descendants.iter().any(|d| d == new_parent) {
+            return Err(RegistryError::Lineage(LineageError::CircularDelegation {
+                cycle: vec![*child, *new_parent],
+            }));
+        }
+
+        // Depth bound: the deepest leaf in the moved subtree must stay below
+        // DEFAULT_MAX_AGENT_DEPTH. Project the new deepest depth by shifting
+        // the current deepest descendant depth by (new_child_depth - current_child_depth).
+        let new_parent_depth = self.agents.get(new_parent).map(|r| r.depth).unwrap_or(0);
+        let new_child_depth = new_parent_depth + 1;
+        let max_descendant_depth = descendants
+            .iter()
+            .filter_map(|d| self.agent_depth(d))
+            .max()
+            .unwrap_or(current_child_depth);
+        let depth_delta = i64::from(new_child_depth) - i64::from(current_child_depth);
+        let projected_deepest = (i64::from(max_descendant_depth) + depth_delta) as u32;
+        if projected_deepest >= DEFAULT_MAX_AGENT_DEPTH {
+            return Err(RegistryError::Lineage(LineageError::MaxDepthExceeded {
+                depth: projected_deepest,
+                max: DEFAULT_MAX_AGENT_DEPTH,
+            }));
+        }
+
+        // The new subtree root is the new_parent's own root (the new_parent
+        // itself when it is a root agent).
+        let new_root_agent_id = self
+            .agents
+            .get(new_parent)
+            .map(|r| r.root_agent_id.unwrap_or(r.agent_id));
+        let new_parent_agent_id_str = uuid::Uuid::from_bytes(*new_parent).to_string();
+
+        // Unlink from old parent's children list.
+        if let Some(opk) = old_parent_key {
+            if let Some(mut p) = self.agents.get_mut(&opk) {
+                p.children.retain(|k| k != child);
+            }
+        }
+
+        // Link to new parent's children list (defensive contains-check keeps
+        // re-entry safe even if a stale entry slipped in).
+        if let Some(mut np) = self.agents.get_mut(new_parent) {
+            if !np.children.contains(child) {
+                np.children.push(*child);
+            }
+        }
+
+        // Update child record.
+        if let Some(mut c) = self.agents.get_mut(child) {
+            c.parent_key = Some(*new_parent);
+            c.parent_agent_id = Some(new_parent_agent_id_str);
+            c.root_agent_id = new_root_agent_id;
+            c.depth = new_child_depth;
+        }
+
+        // Recompute depth for the entire subtree using the existing helper.
+        self.recalculate_depth_recursive(*child, new_child_depth);
+
+        // Propagate the new root_agent_id across the subtree.
+        if let Some(root) = new_root_agent_id {
+            for d in self.descendants_of(child) {
+                if let Some(mut entry) = self.agents.get_mut(&d) {
+                    entry.root_agent_id = Some(root);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Update the `last_heartbeat` timestamp for an agent to now.
     pub fn update_heartbeat(&self, agent_id: &[u8; 16]) -> Result<(), RegistryError> {
         let mut entry = self
@@ -993,6 +1115,131 @@ mod tree_tests {
         assert_eq!(reg.children_of(&r), vec![c]);
         // children_of child = [grandchild]
         assert_eq!(reg.children_of(&c), vec![g]);
+    }
+
+    #[test]
+    fn reparent_errors_not_found_for_missing_agents() {
+        let reg = AgentRegistry::new();
+        let known = [0x50u8; 16];
+        let missing = [0x51u8; 16];
+        reg.register(make_record(known, None, None, 0)).unwrap();
+
+        // Missing child.
+        match reg.reparent(&missing, &known) {
+            Err(RegistryError::NotFound(id)) => assert_eq!(id, missing),
+            other => panic!("expected NotFound(missing) child, got {other:?}"),
+        }
+
+        // Missing new_parent.
+        match reg.reparent(&known, &missing) {
+            Err(RegistryError::NotFound(id)) => assert_eq!(id, missing),
+            other => panic!("expected NotFound(missing) parent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reparent_is_idempotent_when_parent_unchanged() {
+        let reg = AgentRegistry::new();
+        let root = [0x40u8; 16];
+        let child = [0x41u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(root), None, 1)).unwrap();
+        let original_children = reg.children_of(&root);
+
+        // Calling reparent with the current parent is a no-op success.
+        reg.reparent(&child, &root).expect("idempotent reparent should succeed");
+
+        // Children list must not have duplicates and the child must keep its
+        // original parent link/depth.
+        assert_eq!(reg.children_of(&root), original_children);
+        let after = reg.get(&child).unwrap();
+        assert_eq!(after.parent_key, Some(root));
+        assert_eq!(after.depth, 1);
+    }
+
+    #[test]
+    fn reparent_under_own_descendant_is_rejected_as_cycle() {
+        let reg = AgentRegistry::new();
+        let root = [0x30u8; 16];
+        let child = [0x31u8; 16];
+        let grandchild = [0x32u8; 16];
+
+        reg.register(make_record(root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(root), None, 1)).unwrap();
+        reg.register(make_record(grandchild, Some(child), None, 2)).unwrap();
+
+        // Re-parenting root under its own grandchild would invert the chain.
+        let err = reg.reparent(&root, &grandchild).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::Lineage(LineageError::CircularDelegation { .. })
+        ));
+
+        // Tree is unchanged after the rejected attempt.
+        assert_eq!(reg.get(&root).unwrap().parent_key, None);
+        assert_eq!(reg.children_of(&root), vec![child]);
+    }
+
+    #[test]
+    fn reparent_to_self_is_rejected_as_cycle() {
+        let reg = AgentRegistry::new();
+        let agent = [0x77u8; 16];
+        reg.register(make_record(agent, None, None, 0)).unwrap();
+
+        let err = reg.reparent(&agent, &agent).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::Lineage(LineageError::CircularDelegation { .. })
+        ));
+    }
+
+    #[test]
+    fn reparent_recalculates_depth_for_descendants() {
+        let reg = AgentRegistry::new();
+        let root_a = [0x10u8; 16];
+        let mid = [0x11u8; 16];
+        let leaf = [0x12u8; 16];
+        let root_x = [0x20u8; 16];
+
+        reg.register(make_record(root_a, None, None, 0)).unwrap();
+        reg.register(make_record(mid, Some(root_a), None, 1)).unwrap();
+        reg.register(make_record(leaf, Some(mid), None, 2)).unwrap();
+        reg.register(make_record(root_x, None, None, 0)).unwrap();
+
+        // Move the mid node (with leaf descendant) under root_x: depths shift -0
+        // because both old and new parent are at depth 0, but root_agent_id and
+        // parent links must still update on the entire subtree.
+        reg.reparent(&mid, &root_x).expect("reparent should succeed");
+
+        let mid_after = reg.get(&mid).unwrap();
+        let leaf_after = reg.get(&leaf).unwrap();
+        assert_eq!(mid_after.depth, 1);
+        assert_eq!(leaf_after.depth, 2);
+        assert_eq!(mid_after.root_agent_id, Some(root_x));
+        assert_eq!(leaf_after.root_agent_id, Some(root_x));
+        assert_eq!(leaf_after.parent_key, Some(mid));
+    }
+
+    #[test]
+    fn reparent_moves_child_to_new_parent() {
+        let reg = AgentRegistry::new();
+        let old_root = [0xA0u8; 16];
+        let new_root = [0xB0u8; 16];
+        let child = [0xC0u8; 16];
+
+        reg.register(make_record(old_root, None, None, 0)).unwrap();
+        reg.register(make_record(new_root, None, None, 0)).unwrap();
+        reg.register(make_record(child, Some(old_root), None, 1)).unwrap();
+
+        reg.reparent(&child, &new_root).expect("reparent should succeed");
+
+        let moved = reg.get(&child).unwrap();
+        assert_eq!(moved.parent_key, Some(new_root));
+        assert_eq!(moved.root_agent_id, Some(new_root));
+        assert_eq!(moved.depth, 1);
+        assert!(reg.children_of(&old_root).is_empty());
+        assert_eq!(reg.children_of(&new_root), vec![child]);
     }
 }
 

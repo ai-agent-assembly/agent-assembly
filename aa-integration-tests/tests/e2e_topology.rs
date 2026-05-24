@@ -405,12 +405,66 @@ async fn policy_requires_approval_for_spawn_child_at_depth_two() {
 /// When an agent is re-parented its depth changes; a topology-aware policy
 /// should reflect the new depth immediately on the next `evaluate()` call.
 ///
-/// Marked `#[ignore]` because `AgentRegistry` does not yet implement
-/// re-parenting. Unblock by implementing `AgentRegistry::reparent`.
-#[ignore = "blocked on AAASM-1599: AgentRegistry::reparent not implemented"]
+/// Drives `AgentRegistry::reparent` end-to-end: a depth-2 grandchild whose
+/// `delete` calls require approval is moved directly under the root agent.
+/// The very next `engine.evaluate()` resolves `agent.depth` from the live
+/// registry and now returns `Allow`.
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_evaluates_against_current_topology_after_reparent() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
-    let _ = env;
-    unimplemented!("blocked: AgentRegistry::reparent not available");
+
+    env.agent_registry
+        .register(make_record(DEPTH0_AGENT, 0, None, Some(DEPTH0_AGENT), None))
+        .expect("register depth-0 root");
+    env.agent_registry
+        .register(make_record(
+            DEPTH1_AGENT,
+            1,
+            Some(DEPTH0_AGENT),
+            Some(DEPTH0_AGENT),
+            Some(hex(&DEPTH0_AGENT)),
+        ))
+        .expect("register depth-1 intermediate");
+    env.agent_registry
+        .register(make_record(
+            DEPTH2_AGENT,
+            2,
+            Some(DEPTH1_AGENT),
+            Some(DEPTH0_AGENT),
+            Some(hex(&DEPTH1_AGENT)),
+        ))
+        .expect("register depth-2 grandchild");
+
+    let engine = make_topology_engine(&env);
+    let ctx = make_agent_ctx(DEPTH2_AGENT);
+    let action = GovernanceAction::ToolCall {
+        name: "delete".into(),
+        args: "{}".into(),
+    };
+
+    // Pre-reparent: depth-2 agent triggers the `agent.depth >= 2` approval rule.
+    let before = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(before, PolicyResult::RequiresApproval { .. }),
+        "depth-2 agent calling 'delete' should require approval before reparent (got {before:?})"
+    );
+
+    // Move the grandchild directly under the root — now at depth 1.
+    env.agent_registry
+        .reparent(&DEPTH2_AGENT, &DEPTH0_AGENT)
+        .expect("reparent should succeed");
+    assert_eq!(
+        env.agent_registry.agent_depth(&DEPTH2_AGENT),
+        Some(1),
+        "reparent should drop depth-2 agent to depth 1 under the root"
+    );
+
+    // Post-reparent: same agent, same action, but the policy now sees depth 1
+    // and allows the call without approval.
+    let after = engine.evaluate(&ctx, &action).decision;
+    assert_eq!(
+        after,
+        PolicyResult::Allow,
+        "after reparent under root, depth-1 'delete' should be allowed (got {after:?})"
+    );
 }
