@@ -16,9 +16,10 @@
 //! alternatives.
 
 pub mod error;
+pub mod resolver;
 pub mod store;
 pub mod types;
 
-pub use error::SecretsError;
+pub use error::{SecretInjectionError, SecretsError};
 pub use store::{InMemorySecretsStore, SecretsStore};
 pub use types::Secret;
