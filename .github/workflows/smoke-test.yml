@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   issues: write
+  packages: read
 
 # Avoid concurrent smoke runs for the same release tag.
 concurrency:
@@ -317,3 +318,105 @@ jobs:
             echo "::error::@agent-assembly/sdk version mismatch — got '${got}', want '${want}'"
             exit 1
           }
+
+  smoke-docker:
+    name: Smoke — Docker (ghcr.io/agent-assembly/python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compute expected aasm version
+        id: expected
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${TAG#v}"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve release version from event payload" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        # GITHUB_TOKEN gets packages:read from the workflow-level
+        # permission grant; this works for both public and private
+        # tags so the workflow doesn't have to change if visibility
+        # ever flips.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Run aasm --version inside ghcr.io/agent-assembly/python
+        env:
+          EXPECTED: ${{ steps.expected.outputs.version }}
+        shell: bash
+        run: |
+          image="ghcr.io/agent-assembly/python:${EXPECTED}"
+          got=$(docker run --rm "${image}" aasm --version)
+          want="aasm ${EXPECTED}"
+          echo "Image:     ${image}"
+          echo "Installed: ${got}"
+          echo "Expected:  ${want}"
+          [ "${got}" = "${want}" ] || {
+            echo "::error::Container aasm --version mismatch for ${image} — got '${got}', want '${want}'"
+            exit 1
+          }
+
+  notify-on-failure:
+    name: Open Issue when a smoke job fails
+    needs:
+      - smoke-homebrew-macos
+      - smoke-homebrew-linux
+      - smoke-curl-installer
+      - smoke-python-pypi-import
+      - smoke-python-pypi-runtime
+      - smoke-npm
+      - smoke-docker
+    # Fire only when the workflow is genuinely broken — `failure()` covers
+    # any failed `needs:` job; the `release` event guard avoids dispatching
+    # notifications during manual `workflow_dispatch` reruns.
+    if: failure() && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open an Issue with the list of failed smoke jobs
+        uses: actions/github-script@v7
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const tag = context.payload?.release?.tag_name
+              || context.payload?.release?.name
+              || context.ref;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const needs = JSON.parse(process.env.NEEDS_JSON);
+            const failedLines = Object.entries(needs)
+              .filter(([, j]) => j.result !== 'success' && j.result !== 'skipped')
+              .map(([k, j]) => `- \`${k}\` — **${j.result}**`)
+              .join('\n');
+            const title = `Smoke test failed for release ${tag}`;
+            const body = [
+              `The post-release smoke test workflow failed for release **${tag}**.`,
+              '',
+              '## Failed jobs',
+              failedLines || '_(no individual job result was non-success — the workflow itself failed)_',
+              '',
+              `Workflow run: ${runUrl}`,
+              '',
+              '_Opened automatically by the `Smoke Test (Release Artifacts)` workflow on failure (AAASM-1252)._',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['ci', 'release', 'smoke-test-failure'],
+            });
