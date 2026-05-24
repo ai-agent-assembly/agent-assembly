@@ -60,13 +60,19 @@ impl KprobeManager {
         }
 
         // Attach all file I/O kprobe programs to their kernel functions.
+        // `aa_sys_unlink_legacy` / `aa_sys_rename_legacy` cover the legacy
+        // syscall entry points that glibc on x86_64 invokes for libc
+        // `unlink()` / `rename()` — bypassing the at-variant probes
+        // above. See AAASM-1574.
         let probes: &[(&str, &str)] = &[
             ("aa_sys_openat", "__x64_sys_openat"),
             ("aa_sys_openat_ret", "__x64_sys_openat"),
             ("aa_sys_read", "__x64_sys_read"),
             ("aa_sys_write", "__x64_sys_write"),
             ("aa_sys_unlink", "__x64_sys_unlinkat"),
+            ("aa_sys_unlink_legacy", "__x64_sys_unlink"),
             ("aa_sys_rename", "__x64_sys_renameat2"),
+            ("aa_sys_rename_legacy", "__x64_sys_rename"),
         ];
 
         let mut links: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(probes.len());
@@ -139,7 +145,9 @@ impl KprobeManager {
         ("aa_sys_read", "__x64_sys_read"),
         ("aa_sys_write", "__x64_sys_write"),
         ("aa_sys_unlink", "__x64_sys_unlinkat"),
+        ("aa_sys_unlink_legacy", "__x64_sys_unlink"),
         ("aa_sys_rename", "__x64_sys_renameat2"),
+        ("aa_sys_rename_legacy", "__x64_sys_rename"),
     ];
 }
 
@@ -165,7 +173,7 @@ mod tests {
     #[test]
     fn kprobe_targets_covers_all_file_io_syscalls() {
         let targets = KprobeManager::KPROBE_TARGETS;
-        assert_eq!(targets.len(), 6);
+        assert_eq!(targets.len(), 8);
 
         let prog_names: Vec<&str> = targets.iter().map(|(p, _)| *p).collect();
         assert!(prog_names.contains(&"aa_sys_openat"));
@@ -173,7 +181,9 @@ mod tests {
         assert!(prog_names.contains(&"aa_sys_read"));
         assert!(prog_names.contains(&"aa_sys_write"));
         assert!(prog_names.contains(&"aa_sys_unlink"));
+        assert!(prog_names.contains(&"aa_sys_unlink_legacy"));
         assert!(prog_names.contains(&"aa_sys_rename"));
+        assert!(prog_names.contains(&"aa_sys_rename_legacy"));
     }
 
     #[test]

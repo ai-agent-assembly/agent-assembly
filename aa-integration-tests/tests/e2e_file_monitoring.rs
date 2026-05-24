@@ -48,35 +48,39 @@
 //!
 //! ## Test status
 //!
+//! All eight tests are enabled. See "Probe-bug history" below for the
+//! two predecessor incidents (AAASM-1552 then AAASM-1574) that
+//! previously gated this suite.
+//!
 //! | # | Name | Status |
 //! |---|------|--------|
-//! | 1 | `ebpf_file_create_emits_event_with_path_and_pid` | `#[ignore]` — AAASM-1552 |
-//! | 2 | `ebpf_file_write_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
-//! | 3 | `ebpf_file_read_syscall_emits_event_for_target_pid` | `#[ignore]` — AAASM-1552 |
-//! | 4 | `ebpf_file_rename_emits_event_with_old_path` | `#[ignore]` — AAASM-1552 |
-//! | 5 | `ebpf_file_unlink_emits_event_with_path` | `#[ignore]` — AAASM-1552 |
-//! | 6 | `ebpf_file_events_attributed_to_filtered_pid_only` | `#[ignore]` — AAASM-1552 |
-//! | 7 | `ebpf_pid_not_in_filter_map_produces_no_event` | enabled (root) |
-//! | 8 | `ebpf_file_event_records_path_when_openat_is_absolute` | `#[ignore]` — AAASM-1552 |
+//! | 1 | `ebpf_file_create_emits_event_with_path_and_pid` | enabled |
+//! | 2 | `ebpf_file_write_syscall_emits_event_for_target_pid` | enabled |
+//! | 3 | `ebpf_file_read_syscall_emits_event_for_target_pid` | enabled |
+//! | 4 | `ebpf_file_rename_emits_event_with_old_path` | enabled |
+//! | 5 | `ebpf_file_unlink_emits_event_with_path` | enabled |
+//! | 6 | `ebpf_file_events_attributed_to_filtered_pid_only` | enabled |
+//! | 7 | `ebpf_pid_not_in_filter_map_produces_no_event` | enabled |
+//! | 8 | `ebpf_file_event_records_path_when_openat_is_absolute` | enabled |
 //!
-//! ## Blocking probe bug — AAASM-1552
+//! ## Probe-bug history
 //!
-//! On the first three CI runs of this suite, 7 of 8 tests timed out
-//! waiting for events with the right `path`. A diagnostic dump confirmed
-//! the probe DOES fire and events DO reach userspace with correct `pid`
-//! / `tid` / `syscall` attribution — but every event has `path == ""`.
-//! Root cause: `aa-ebpf-probes::try_sys_openat` (and the matching
-//! unlink / rename probes) read `ctx.arg(1)` directly, which on any
-//! Linux kernel with `CONFIG_SYSCALL_WRAPPER=y` (default since 4.17,
-//! every modern x86_64 distro including ubuntu-latest) returns the
-//! `rsi` register of the `__x64_sys_*(struct pt_regs *regs)` wrapper —
-//! not the user's filename pointer. The probe must either deref pt_regs
-//! to extract the real syscall arg, or switch to syscall tracepoints.
+//! Two probe-side bugs previously gated this suite:
 //!
-//! Until that probe-side fix lands (tracked under AAASM-1552), the 7
-//! affected tests are `#[ignore]`'d with a referenced blocker. Test 7
-//! (`ebpf_pid_not_in_filter_map_produces_no_event`) stays enabled because it
-//! asserts the *absence* of events and is unaffected by the path bug.
+//! 1. **AAASM-1552** — `aa-ebpf-probes` read `ctx.arg(1)` directly on
+//!    `__x64_sys_*` kprobes, which on any kernel with
+//!    `CONFIG_SYSCALL_WRAPPER=y` (default since 4.17) returns the
+//!    wrapper's own register state, not the user's filename pointer.
+//!    Fixed by routing every path argument through
+//!    `syscall_pt_regs(ctx).arg(n)`. Closed.
+//! 2. **AAASM-1574** — even with the pt_regs deref fix, tests 4 and 5
+//!    timed out because glibc on x86_64 routes libc `unlink()` /
+//!    `rename()` through `__NR_unlink` / `__NR_rename` (the legacy
+//!    syscalls), which surface as `__x64_sys_unlink` / `__x64_sys_rename`
+//!    — not the at-variant probes the test was attaching to. Fixed by
+//!    adding `aa_sys_unlink_legacy` / `aa_sys_rename_legacy` probes
+//!    that read arg 0 (rdi) and attaching them alongside the at-variant
+//!    probes in [`load_file_io_bpf`]. Closed.
 //!
 //! ## Schema gaps deliberately not asserted
 //!
@@ -150,7 +154,27 @@ fn load_file_io_bpf() -> Ebpf {
     attach_kprobe_pair(&mut bpf, "aa_sys_read", "aa_sys_read_ret", "__x64_sys_read");
     attach_kprobe_pair(&mut bpf, "aa_sys_write", "aa_sys_write_ret", "__x64_sys_write");
     attach_kprobe_pair(&mut bpf, "aa_sys_unlink", "aa_sys_unlink_ret", "__x64_sys_unlinkat");
+    // glibc on x86_64 routes `unlink()` through `__NR_unlink` —
+    // attach the legacy probe so the Python driver's `os.unlink(p)`
+    // call fires the unlink kretprobe via the legacy entry point.
+    // See AAASM-1574.
+    attach_kprobe_pair(
+        &mut bpf,
+        "aa_sys_unlink_legacy",
+        "aa_sys_unlink_legacy_ret",
+        "__x64_sys_unlink",
+    );
     attach_kprobe_pair(&mut bpf, "aa_sys_rename", "aa_sys_rename_ret", "__x64_sys_renameat2");
+    // glibc on x86_64 routes `rename()` through `__NR_rename` —
+    // attach the legacy probe so the Python driver's `os.rename(a, b)`
+    // call fires the rename kretprobe via the legacy entry point.
+    // See AAASM-1574.
+    attach_kprobe_pair(
+        &mut bpf,
+        "aa_sys_rename_legacy",
+        "aa_sys_rename_legacy_ret",
+        "__x64_sys_rename",
+    );
     bpf
 }
 
@@ -464,7 +488,6 @@ async fn ebpf_file_read_syscall_emits_event_for_target_pid() {
 /// renameat2 today, so only the source path is asserted — see
 /// AAASM-1425 for the dual-path schema extension.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1574: aa-file-io probe attaches to __x64_sys_renameat2 but glibc rename() routes through __x64_sys_rename on x86_64"]
 async fn ebpf_file_rename_emits_event_with_old_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
@@ -513,7 +536,6 @@ async fn ebpf_file_rename_emits_event_with_old_path() {
 /// pid. Confirms the file is actually gone afterwards as a sanity check
 /// that the driver did the right syscall.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "blocked on AAASM-1574: aa-file-io probe attaches to __x64_sys_unlinkat but glibc unlink() routes through __x64_sys_unlink on x86_64"]
 async fn ebpf_file_unlink_emits_event_with_path() {
     let mut bpf = load_file_io_bpf();
     let (mut rx, _events_array) = start_perf_reader(&mut bpf);
