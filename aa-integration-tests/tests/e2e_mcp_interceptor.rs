@@ -243,3 +243,19 @@ fn parser_does_not_leak_secret_bytes_outside_arguments_value() {
 fn st_q_1_mcp_read_file_etc_passwd_is_denied() {
     todo!("AAASM-1930: drive a JSON-RPC tools/call through ProxyServer with mcp_deny_etc_paths.yaml")
 }
+
+/// ST-Q-2 — MCP `read_file /home/user/file.txt` is allowed.
+///
+/// AAASM-1930 will assert:
+///
+/// 1. The proxy forwards the original JSON-RPC envelope unchanged to the
+///    upstream mock MCP server (`request_count() == 1`,
+///    `last_call().tool_name == "read_file"`).
+/// 2. The agent receives the upstream's result envelope intact.
+/// 3. The emitted audit event carries `tool_name == "read_file"`,
+///    `decision == Allow`.
+#[ignore = "AAASM-1930: requires aa-proxy MCP data-path wiring"]
+#[test]
+fn st_q_2_mcp_read_file_home_user_is_allowed() {
+    todo!("AAASM-1930: drive the allowed path and assert upstream forward + Allow audit event")
+}
