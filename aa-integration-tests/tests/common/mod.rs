@@ -438,7 +438,83 @@ impl TopologyTestEnv {
     /// budget E2E suite (AAASM-1518 / F116 ST-F).
     #[allow(dead_code)]
     pub async fn start_with_team_budget(team_limit_usd: Decimal) -> anyhow::Result<Self> {
-        let (state, audit_dir, alert_store, key_store) = build_test_state_with_team_budget(team_limit_usd)?;
+        let (state, audit_dir, alert_store, key_store) = build_test_state_with_team_budget(team_limit_usd, None)?;
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app_with_healthz(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            ops_registry,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok(env)
+    }
+
+    /// Start a harness whose `BudgetTracker` uses a sub-day rollover window.
+    ///
+    /// `team_limit_usd` is passed to `BudgetTracker::with_team_daily_limit`;
+    /// `window` is passed to `BudgetTracker::with_window(BudgetWindow::Duration)`
+    /// and a periodic flush task is spawned in-process so reads between
+    /// `record_*` calls see the rollover. Used by AAASM-1600 to validate
+    /// the F116 ST-F `budget_resets_after_daily_window` integration test.
+    #[allow(dead_code)]
+    pub async fn start_with_team_budget_window(
+        team_limit_usd: Decimal,
+        window: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        let (state, audit_dir, alert_store, key_store) =
+            build_test_state_with_team_budget(team_limit_usd, Some(window))?;
+        // Spawn the periodic flush task at one-quarter of the configured
+        // window so sub-day rollovers are visible to dashboard reads even
+        // when no `record_*` event fires in the interval — mirrors the
+        // gateway's `maybe_spawn_window_flush` cadence.
+        let flush_interval = std::cmp::max(window / 4, std::time::Duration::from_millis(20));
+        let _flush_handle = tokio::spawn({
+            let tracker = Arc::clone(&state.budget_tracker);
+            async move {
+                let mut tick = tokio::time::interval(flush_interval);
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    tracker.flush_window();
+                }
+            }
+        });
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
         let approval_queue = Arc::clone(&state.approval_queue);
@@ -972,11 +1048,15 @@ spec:
 
 /// Build a minimal `AppState` with a per-team daily spend limit applied to the
 /// `BudgetTracker`. Identical to [`build_test_state`] except the tracker is
-/// constructed with `.with_team_daily_limit(team_limit_usd)`.
+/// constructed with `.with_team_daily_limit(team_limit_usd)`. When `window`
+/// is `Some(_)`, the tracker is also configured with
+/// `BudgetWindow::Duration(...)` for sub-day rollover (AAASM-1600).
 ///
-/// Used by [`TopologyTestEnv::start_with_team_budget`] (AAASM-1518 / F116 ST-F).
+/// Used by [`TopologyTestEnv::start_with_team_budget`] (AAASM-1518 / F116 ST-F)
+/// and [`TopologyTestEnv::start_with_team_budget_window`] (AAASM-1600).
 fn build_test_state_with_team_budget(
     team_limit_usd: Decimal,
+    window: Option<std::time::Duration>,
 ) -> anyhow::Result<(AppState, PathBuf, Arc<InMemoryAlertStore>, Arc<ApiKeyStore>)> {
     let policy_id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let policy_dir = std::env::temp_dir().join(format!("aa-budget-it-policy-{}-{policy_id}", std::process::id()));
@@ -1001,10 +1081,12 @@ spec:
         PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
             .map_err(|e| anyhow::anyhow!("load policy: {e:?}"))?,
     );
-    let budget_tracker = Arc::new(
-        BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
-            .with_team_daily_limit(team_limit_usd),
-    );
+    let mut tracker = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+        .with_team_daily_limit(team_limit_usd);
+    if let Some(d) = window {
+        tracker = tracker.with_window(aa_gateway::budget::BudgetWindow::Duration(d));
+    }
+    let budget_tracker = Arc::new(tracker);
     let approval_queue = ApprovalQueue::new();
     let agent_registry = Arc::new(AgentRegistry::new());
 

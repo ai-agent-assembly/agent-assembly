@@ -12,7 +12,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use crate::budget::{
     pricing::PricingTable,
-    types::{BudgetAlert, BudgetState, BudgetStatus},
+    types::{BudgetAlert, BudgetState, BudgetStatus, BudgetWindow},
 };
 
 /// Per-agent daily limit entry stored in `BudgetTracker::agent_limits`.
@@ -80,6 +80,9 @@ pub struct BudgetTracker {
     pub(crate) spend_history: DashMap<AgentId, std::collections::BTreeMap<chrono::NaiveDate, Decimal>>,
     alert_tx: broadcast::Sender<BudgetAlert>,
     timezone: chrono_tz::Tz,
+    /// Rollover strategy. Defaults to [`BudgetWindow::Daily`]; override via
+    /// [`BudgetTracker::with_window`] to enable sub-day rollover (AAASM-1600).
+    window: BudgetWindow,
 }
 
 impl BudgetTracker {
@@ -119,6 +122,7 @@ impl BudgetTracker {
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
+            window: BudgetWindow::Daily,
         }
     }
 
@@ -193,7 +197,22 @@ impl BudgetTracker {
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
+            window: BudgetWindow::Daily,
         }
+    }
+
+    /// Override the rollover strategy. Defaults to [`BudgetWindow::Daily`] —
+    /// callers that need sub-day rollover (test fixtures, short-cycle staging)
+    /// pass `BudgetWindow::Duration(...)`.
+    pub fn with_window(mut self, window: BudgetWindow) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// Return the currently-configured rollover strategy.
+    #[allow(dead_code)]
+    pub fn window(&self) -> BudgetWindow {
+        self.window
     }
 
     /// Return an `Arc` wrapping the per-ancestor `parking_lot::Mutex`, creating it if absent.
@@ -257,7 +276,7 @@ impl BudgetTracker {
     /// per-action cost is not yet known and only a limit check is needed.
     pub fn check_daily(&self, agent_id: &AgentId, limit: Decimal) -> bool {
         if let Some(mut entry) = self.per_agent.get_mut(agent_id) {
-            entry.maybe_reset(today_in_tz(self.timezone));
+            entry.maybe_reset_window(chrono::Utc::now(), self.window, self.timezone);
             entry.spent_usd >= limit
         } else {
             false
@@ -270,7 +289,7 @@ impl BudgetTracker {
     /// current month in the configured timezone.
     pub fn check_monthly(&self, agent_id: &AgentId, limit: Decimal) -> bool {
         if let Some(mut entry) = self.per_agent.get_mut(agent_id) {
-            entry.maybe_reset(today_in_tz(self.timezone));
+            entry.maybe_reset_window(chrono::Utc::now(), self.window, self.timezone);
             entry.monthly_spent_usd.map(|m| m >= limit).unwrap_or(false)
         } else {
             false
@@ -330,12 +349,15 @@ impl BudgetTracker {
     /// and [`record_raw_spend`](Self::record_raw_spend).
     fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
         let has_monthly = self.monthly_limit_usd.is_some() || self.team_monthly_limit_usd.is_some();
+        let now = chrono::Utc::now();
         let today = today_in_tz(self.timezone);
+        let window = self.window;
+        let tz = self.timezone;
 
         self.per_agent
             .entry(agent_id)
             .and_modify(|s| {
-                s.maybe_reset(today);
+                s.maybe_reset_window(now, window, tz);
                 s.spent_usd += cost;
                 if let Some(m) = s.monthly_spent_usd.as_mut() {
                     *m += cost;
@@ -346,6 +368,9 @@ impl BudgetTracker {
                 s.spent_usd += cost;
                 if has_monthly {
                     s.monthly_spent_usd = Some(cost);
+                }
+                if matches!(window, BudgetWindow::Duration(_)) {
+                    s.last_reset_at = Some(now);
                 }
                 s
             });
@@ -365,17 +390,20 @@ impl BudgetTracker {
             self.team_budgets
                 .entry(tid.to_string())
                 .and_modify(|s| {
-                    s.maybe_reset(today_in_tz(self.timezone));
+                    s.maybe_reset_window(now, window, tz);
                     s.spent_usd += cost;
                     if let Some(m) = s.monthly_spent_usd.as_mut() {
                         *m += cost;
                     }
                 })
                 .or_insert_with(|| {
-                    let mut s = BudgetState::new_for_date(today_in_tz(self.timezone));
+                    let mut s = BudgetState::new_for_date(today);
                     s.spent_usd += cost;
                     if has_monthly {
                         s.monthly_spent_usd = Some(cost);
+                    }
+                    if matches!(window, BudgetWindow::Duration(_)) {
+                        s.last_reset_at = Some(now);
                     }
                     s
                 });
@@ -411,7 +439,7 @@ impl BudgetTracker {
             .unwrap_or((cost, None));
 
         if let Ok(mut g) = self.global.lock() {
-            g.maybe_reset(today_in_tz(self.timezone));
+            g.maybe_reset_window(now, window, tz);
             g.spent_usd += cost;
         }
 
@@ -446,7 +474,7 @@ impl BudgetTracker {
         amount: Decimal,
     ) -> Result<(), crate::budget::types::BudgetError> {
         use crate::budget::types::{BudgetError, BudgetKind};
-        let today = today_in_tz(self.timezone);
+        let now = chrono::Utc::now();
         for &ancestor_bytes in ancestors {
             let ancestor_id = AgentId::from_bytes(ancestor_bytes);
             if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Daily) {
@@ -455,7 +483,7 @@ impl BudgetTracker {
                     .get(&ancestor_id)
                     .map(|s| {
                         let mut copy = s.clone();
-                        copy.maybe_reset(today);
+                        copy.maybe_reset_window(now, self.window, self.timezone);
                         copy.spent_usd
                     })
                     .unwrap_or(Decimal::ZERO);
@@ -496,16 +524,22 @@ impl BudgetTracker {
         self.preflight_ancestors(ancestors, amount)?;
 
         // Phase 2: commit — record spend on the agent and every ancestor.
+        let now = chrono::Utc::now();
         let today = today_in_tz(self.timezone);
+        let window = self.window;
+        let tz = self.timezone;
         self.per_agent
             .entry(agent_id)
             .and_modify(|s| {
-                s.maybe_reset(today);
+                s.maybe_reset_window(now, window, tz);
                 s.spent_usd += amount;
             })
             .or_insert_with(|| {
                 let mut s = BudgetState::new_for_date(today);
                 s.spent_usd = amount;
+                if matches!(window, BudgetWindow::Duration(_)) {
+                    s.last_reset_at = Some(now);
+                }
                 s
             });
         for &ancestor_bytes in ancestors {
@@ -513,12 +547,15 @@ impl BudgetTracker {
             self.per_agent
                 .entry(ancestor_id)
                 .and_modify(|s| {
-                    s.maybe_reset(today);
+                    s.maybe_reset_window(now, window, tz);
                     s.spent_usd += amount;
                 })
                 .or_insert_with(|| {
                     let mut s = BudgetState::new_for_date(today);
                     s.spent_usd = amount;
+                    if matches!(window, BudgetWindow::Duration(_)) {
+                        s.last_reset_at = Some(now);
+                    }
                     s
                 });
         }
@@ -531,7 +568,7 @@ impl BudgetTracker {
     /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
     /// This is a read-only snapshot — it does not mutate any state.
     pub fn subtree_spend(&self, agent_id: &AgentId, descendants: &[[u8; 16]]) -> crate::budget::types::SubtreeSpend {
-        let today = today_in_tz(self.timezone);
+        let now = chrono::Utc::now();
         let mut total_usd = Decimal::ZERO;
         let mut agents_counted = 0usize;
 
@@ -540,7 +577,7 @@ impl BudgetTracker {
             let aid = AgentId::from_bytes(id_bytes);
             if let Some(state) = self.per_agent.get(&aid) {
                 let mut copy = state.clone();
-                copy.maybe_reset(today);
+                copy.maybe_reset_window(now, self.window, self.timezone);
                 if copy.spent_usd > Decimal::ZERO {
                     total_usd += copy.spent_usd;
                     agents_counted += 1;
@@ -605,6 +642,28 @@ impl BudgetTracker {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_else(|_| BudgetState::new_for_date(today_in_tz(self.timezone)))
+    }
+
+    /// Re-evaluate the window-aware reset against every per-agent, per-team,
+    /// and global state. Used by the periodic flush task so sub-day rollovers
+    /// take effect even when no `record_cost` call has fired in the interval —
+    /// e.g. so dashboard reads see a zeroed accumulator the moment the window
+    /// elapses.
+    ///
+    /// No-op for [`BudgetWindow::Daily`] when the calendar date hasn't rolled
+    /// over (each state's `maybe_reset_window` short-circuits on the same-day
+    /// path).
+    pub fn flush_window(&self) {
+        let now = chrono::Utc::now();
+        for mut entry in self.per_agent.iter_mut() {
+            entry.maybe_reset_window(now, self.window, self.timezone);
+        }
+        for mut entry in self.team_budgets.iter_mut() {
+            entry.maybe_reset_window(now, self.window, self.timezone);
+        }
+        if let Ok(mut g) = self.global.lock() {
+            g.maybe_reset_window(now, self.window, self.timezone);
+        }
     }
 
     /// Snapshot the full tracker state for disk persistence.
@@ -821,6 +880,7 @@ mod tests {
             date: today,
             month: today.year() as u32 * 100 + today.month(),
             monthly_spent_usd: None,
+            last_reset_at: None,
         };
         let persisted = PersistedBudget {
             per_agent: vec![PersistedAgentEntry {

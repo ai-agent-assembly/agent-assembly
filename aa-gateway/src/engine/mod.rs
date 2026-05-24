@@ -1500,6 +1500,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1523,6 +1524,7 @@ mod tests {
             monthly_limit_usd: Some(5.0),
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1546,6 +1548,7 @@ mod tests {
             monthly_limit_usd: Some(10.0),
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1564,6 +1567,7 @@ mod tests {
             monthly_limit_usd: Some(5.0),
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1588,6 +1592,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Deny,
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1611,6 +1616,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Suspend,
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1634,6 +1640,7 @@ mod tests {
             monthly_limit_usd: Some(5.0),
             timezone: None,
             action_on_exceed: ActionOnExceed::Suspend,
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1657,6 +1664,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Deny,
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -1960,6 +1968,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine_with_alert_sender(doc, alert_tx);
         let ctx = make_ctx();
@@ -1981,6 +1990,7 @@ mod tests {
             monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
+            window: None,
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();

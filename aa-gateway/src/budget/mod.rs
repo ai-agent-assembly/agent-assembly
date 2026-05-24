@@ -3,15 +3,15 @@
 //! Entry point: [`tracker::BudgetTracker::record_usage`].
 
 pub mod types;
-pub use types::{BudgetAlert, BudgetState, BudgetStatus, Model, Provider};
+pub use types::{BudgetAlert, BudgetState, BudgetStatus, BudgetWindow, Model, Provider};
 
 pub mod pricing;
 pub use pricing::{PricingEntry, PricingLoadError, PricingTable};
 
 pub mod persistence;
 pub use persistence::{
-    default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer, PersistedAgentEntry,
-    PersistedBudget, PersistenceError,
+    default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer, start_window_flush_task,
+    PersistedAgentEntry, PersistedBudget, PersistenceError,
 };
 
 pub mod tracker;
