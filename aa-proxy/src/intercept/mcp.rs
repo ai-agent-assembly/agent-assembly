@@ -113,4 +113,18 @@ mod tests {
         assert_eq!(call.tool_name, "read_file");
         assert_eq!(call.arguments, json!({ "path": "/etc/passwd" }));
     }
+
+    #[test]
+    fn returns_none_when_method_is_not_tools_call() {
+        // `tools/list`, `initialize`, and other MCP methods must not trip the
+        // policy engine — only `tools/call` carries a `tool_name` to match
+        // structured rules against.
+        let body = br#"{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }"#;
+        assert!(parse_mcp_request(body).is_none());
+    }
 }
