@@ -126,4 +126,11 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(store.lookup("DB_PASSWORD").as_deref(), Some("real-secret-1"));
     }
+
+    #[test]
+    fn lookup_returns_none_for_unknown_name() {
+        let store = InMemorySecretsStore::new();
+        store.register(secret("DB_PASSWORD", "real-secret-1")).unwrap();
+        assert_eq!(store.lookup("UNKNOWN"), None);
+    }
 }
