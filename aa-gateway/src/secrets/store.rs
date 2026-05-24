@@ -1,5 +1,9 @@
 //! The [`SecretsStore`] trait — gateway-side registry of placeholder →
-//! credential mappings used by Secret Injection.
+//! credential mappings used by Secret Injection — and the canonical
+//! in-memory implementation [`InMemorySecretsStore`].
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use crate::secrets::{Secret, SecretsError};
 
@@ -50,4 +54,26 @@ pub trait SecretsStore: Send + Sync {
     /// Returns [`SecretsError::NotFound`] when no entry exists for `name`
     /// so callers cannot accidentally treat a no-op as a successful delete.
     fn delete(&self, name: &str) -> Result<(), SecretsError>;
+}
+
+/// In-memory [`SecretsStore`] implementation — the default for v0.0.1.
+///
+/// Backed by a single `Arc<RwLock<HashMap<String, String>>>`. Reads
+/// (`lookup`, `list`) take a read lock; writes (`register`, `delete`)
+/// take a write lock. Persistence and per-team scoping are explicit
+/// non-goals for v0.0.1 (tracked as follow-ups in `secrets/README.md`).
+///
+/// `Clone` is cheap (Arc bump) so callers can stash a handle in
+/// `AppState` and hand it to async tasks.
+#[derive(Clone, Default)]
+pub struct InMemorySecretsStore {
+    #[allow(dead_code)]
+    data: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl InMemorySecretsStore {
+    /// Builds a fresh, empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
 }

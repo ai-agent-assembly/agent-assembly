@@ -20,5 +20,5 @@ pub mod store;
 pub mod types;
 
 pub use error::SecretsError;
-pub use store::SecretsStore;
+pub use store::{InMemorySecretsStore, SecretsStore};
 pub use types::Secret;
