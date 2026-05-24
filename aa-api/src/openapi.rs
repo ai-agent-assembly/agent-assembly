@@ -145,6 +145,7 @@ use crate::routes::{
         policies::PolicyResponse,
         policies::CreatePolicyRequest,
         approvals::ApprovalResponse,
+        approvals::PaginatedApprovalResponse,
         approvals::DecideRequest,
         costs::CostSummary,
         costs::AgentCostEntry,
