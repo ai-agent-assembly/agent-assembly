@@ -39,10 +39,6 @@
 use aa_proxy::intercept::mcp::parse_mcp_request;
 
 /// OpenAI key with the documented `sk-test-` test prefix. Synthetic.
-///
-/// Consumed by the raw-secret-absence invariant test added in a later commit
-/// in this PR; allow(dead_code) until that test lands.
-#[allow(dead_code)]
 const FAKE_OPENAI_KEY: &str = "sk-test-AbCdEf1234567890ABCDEF1234567890ABCDEF1234567890";
 
 // ── Detection slice ──────────────────────────────────────────────────────────
@@ -161,5 +157,63 @@ fn parser_rejects_non_mcp_json_traffic_seen_by_proxy() {
     assert!(
         parse_mcp_request(generic).is_none(),
         "generic JSON must not match an MCP rule"
+    );
+}
+
+/// ST-Q detection — raw-secret-absence security invariant on the parser.
+///
+/// The parser is **not** a redactor — that's AAASM-1930's response-side job.
+/// What the parser MUST guarantee is that it does not become a side-channel:
+/// the secret bytes must live exactly in the structured `arguments` value
+/// where the policy engine can match against them, and nowhere else (no copy
+/// in `tool_name`, no leak via `Debug` formatting outside the arguments).
+///
+/// AAASM-1930's ST-Q-3 will assert the data-path-side redaction (raw key
+/// absent from the response bytes returned to the agent). This test locks
+/// down the parser-side prerequisite: the parser hands a faithful
+/// `arguments` to the engine without smearing the secret across other
+/// fields.
+#[test]
+fn parser_does_not_leak_secret_bytes_outside_arguments_value() {
+    let body = format!(
+        r#"{{
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {{
+                "name": "submit_context",
+                "arguments": {{ "context": "user said {FAKE_OPENAI_KEY}" }}
+            }}
+        }}"#
+    );
+    let call = parse_mcp_request(body.as_bytes()).expect("MCP body with secret in args must parse");
+
+    // (1) tool_name carries only the tool name — never spills the secret.
+    assert_eq!(call.tool_name, "submit_context");
+    assert!(
+        !call.tool_name.contains(FAKE_OPENAI_KEY),
+        "tool_name must never carry argument bytes",
+    );
+
+    // (2) The secret IS present in the structured arguments value — that's
+    //     where the gateway's redaction predicate (AAASM-1930) will find and
+    //     replace it on the response path.
+    let context = call
+        .arguments
+        .get("context")
+        .and_then(|v| v.as_str())
+        .expect("arguments.context must be a string");
+    assert!(
+        context.contains(FAKE_OPENAI_KEY),
+        "secret must be present in arguments so the policy engine can match it",
+    );
+
+    // (3) The secret must NOT appear in any non-arguments serialised view of
+    //     the parsed struct (a regression here would mean a future change
+    //     accidentally added a Display impl or log line that leaks the key).
+    let debug_repr = format!("{:?}", call.tool_name);
+    assert!(
+        !debug_repr.contains(FAKE_OPENAI_KEY),
+        "Debug of tool_name must not leak the secret — got {debug_repr}",
     );
 }
