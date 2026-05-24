@@ -2075,4 +2075,22 @@ mod tests {
         let garbage = tool_with_args("read_file", "{not valid json");
         assert!(!evaluate(r#"args.path == "/etc/passwd""#, &garbage, None, None));
     }
+
+    #[test]
+    fn args_in_list_matches_when_value_is_member() {
+        let action = tool_with_args("invoke", r#"{"action": "delete"}"#);
+        assert!(evaluate(
+            r#"args.action in ["delete", "drop", "truncate"]"#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn args_not_in_list_matches_when_value_outside_allowlist() {
+        // The allowlist shape: deny when args.action is not in the allowed set.
+        let action = tool_with_args("invoke", r#"{"action": "execute_bash"}"#);
+        assert!(evaluate(r#"args.action not_in ["read", "write"]"#, &action, None, None,));
+    }
 }
