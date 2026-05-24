@@ -107,3 +107,23 @@ impl SecretsStore for InMemorySecretsStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn secret(name: &str, value: &str) -> Secret {
+        Secret {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+
+    #[test]
+    fn register_stores_a_new_secret() {
+        let store = InMemorySecretsStore::new();
+        let result = store.register(secret("DB_PASSWORD", "real-secret-1"));
+        assert!(result.is_ok());
+        assert_eq!(store.lookup("DB_PASSWORD").as_deref(), Some("real-secret-1"));
+    }
+}
