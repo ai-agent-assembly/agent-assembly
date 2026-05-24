@@ -2355,4 +2355,31 @@ mod tests {
         let action = tool_result_with_body("ping", r#"{"ok": true}"#);
         assert!(evaluate(r#"tool_result starts_with "{""#, &action, None, None));
     }
+
+    #[test]
+    fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
+        // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
+        // no `result` payload; tool_result predicates must surface as no-match
+        // so policies don't leak across request/response sides. The same shape
+        // applies to the bare `tool_result` whole-body predicate.
+        assert!(!evaluate(
+            r#"tool_result.contents == "hello""#,
+            &tool("read_file"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(
+            r#"tool_result contains "sk-""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(
+            r#"tool_result.api_key starts_with "sk-""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(r#"tool_result contains "x""#, &process("ls"), None, None));
+    }
 }
