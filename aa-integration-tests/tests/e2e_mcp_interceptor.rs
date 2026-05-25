@@ -348,7 +348,10 @@ async fn st_q_2_mcp_read_file_home_user_is_allowed() {
         "upstream body must carry original args, got: {received}",
     );
 
-    // Audit event: ToolCallDetail with tool_name = read_file, succeeded = true.
+    // Audit event: ToolCallDetail with tool_name = read_file, succeeded = true,
+    // and args_json carrying the original (non-secret) arguments — the
+    // tool_args half of the AAASM-1930 AC "every emitted MCP audit event
+    // carries tool_name, tool_args, decision".
     let audit = recv_first_audit(&mut event_rx, std::time::Duration::from_secs(2))
         .await
         .expect("audit event must be emitted");
@@ -357,6 +360,17 @@ async fn st_q_2_mcp_read_file_home_user_is_allowed() {
             assert_eq!(tc.tool_name, "read_file");
             assert_eq!(tc.tool_source, "mcp");
             assert!(tc.succeeded, "tool_call succeeded must be true on Allow");
+            // args_json carries the request-side arguments verbatim — no
+            // secrets in this test so the scanner-based redaction leaves
+            // the payload untouched.
+            assert!(!tc.args_json.is_empty(), "args_json must be populated");
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&tc.args_json).expect("args_json must round-trip as JSON");
+            assert_eq!(
+                parsed.get("path").and_then(|v| v.as_str()),
+                Some("/home/user/file.txt"),
+                "args_json must carry the original args.path",
+            );
         }
         other => panic!("expected ToolCallDetail, got {other:?}"),
     }
