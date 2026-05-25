@@ -377,6 +377,7 @@ dependencies = [
  "aa-core",
  "aa-proto",
  "aa-runtime",
+ "aa-sandbox",
  "anyhow",
  "bytes",
  "criterion",

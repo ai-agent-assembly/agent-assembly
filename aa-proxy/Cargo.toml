@@ -14,9 +14,10 @@ name = "aa-proxy"
 path = "src/main.rs"
 
 [dependencies]
-aa-core = { path = "../aa-core", features = ["serde"] }
+aa-core    = { path = "../aa-core", features = ["serde"] }
 aa-proto   = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
+aa-sandbox = { path = "../aa-sandbox" }
 tokio      = { version = "1", features = ["full"] }
 hyper      = { version = "1", features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server"] }
