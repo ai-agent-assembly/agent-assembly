@@ -38,10 +38,11 @@
 use aa_core::audit::AuditEventType;
 use aa_proxy::wasm_dispatch::{dispatch_wasm_tool, WasmDispatchResult};
 use aa_sandbox::error::SandboxError;
-use aa_sandbox::policy::SandboxConfig;
+use aa_sandbox::policy::{SandboxConfig, SandboxLimits};
 use aa_sandbox::registry::{ToolKind, ToolRegistry};
 
 const FS_PROBE_WAT: &str = include_str!("../fixtures/wasm/fs_probe.wat");
+const RUNAWAY_WAT: &str = include_str!("../fixtures/wasm/runaway.wat");
 
 /// Build a [`ToolRegistry`] containing a single WASM tool compiled
 /// from `wat_source` at test time and registered under `name`.
@@ -74,6 +75,41 @@ async fn sandbox_blocks_etc_passwd_read() {
             assert_eq!(
                 audit_events,
                 vec![AuditEventType::SandboxStarted, AuditEventType::SandboxFilesystemBlocked,],
+            );
+        }
+        WasmDispatchResult::NotWasm => panic!("registered Wasm tool must dispatch as Wasm"),
+    }
+}
+
+#[tokio::test]
+async fn sandbox_kills_runaway_loop() {
+    // Tight 1 000-unit fuel budget so the runaway loop trips
+    // `Trap::OutOfFuel` within microseconds; default memory + wall-clock
+    // budgets are kept (irrelevant — fuel exhausts first under any
+    // non-zero budget on a pure-CPU runaway).
+    let config = SandboxConfig {
+        limits: SandboxLimits {
+            fuel: 1_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let reg = registry_with("runaway", RUNAWAY_WAT, config);
+
+    let outcome = tokio::task::spawn_blocking(move || dispatch_wasm_tool("runaway", &[], &reg))
+        .await
+        .expect("dispatch task must not panic");
+
+    match outcome {
+        WasmDispatchResult::Wasm { result, audit_events } => {
+            assert!(
+                matches!(result, Err(SandboxError::CpuTimeout)),
+                "expected SandboxError::CpuTimeout, got {:?}",
+                result,
+            );
+            assert_eq!(
+                audit_events,
+                vec![AuditEventType::SandboxStarted, AuditEventType::SandboxCpuTimeout],
             );
         }
         WasmDispatchResult::NotWasm => panic!("registered Wasm tool must dispatch as Wasm"),
