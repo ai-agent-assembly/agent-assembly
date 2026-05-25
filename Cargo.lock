@@ -12,6 +12,7 @@ dependencies = [
  "aa-gateway",
  "aa-proto",
  "aa-runtime",
+ "aa-sandbox",
  "argon2",
  "async-trait",
  "axum",
@@ -379,7 +380,6 @@ dependencies = [
  "aa-core",
  "aa-proto",
  "aa-runtime",
- "aa-sandbox",
  "anyhow",
  "bytes",
  "criterion",
@@ -399,7 +399,6 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "wat",
 ]
 
 [[package]]
@@ -435,6 +434,7 @@ dependencies = [
 name = "aa-sandbox"
 version = "0.0.1"
 dependencies = [
+ "aa-core",
  "thiserror 2.0.18",
  "wasmtime",
  "wasmtime-wasi",

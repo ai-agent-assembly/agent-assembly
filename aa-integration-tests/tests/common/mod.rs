@@ -66,6 +66,7 @@ use aa_api::replay::ReplayBuffer;
 use aa_api::server::build_app;
 use aa_api::state::AppState;
 use aa_api::trace_store::{InMemoryTraceStore, TraceStore};
+use aa_core::audit::AuditEntry;
 use aa_core::DevToolAdapter;
 use aa_devtool::DiscoveryService;
 use aa_gateway::budget::pricing::PricingTable;
@@ -78,7 +79,8 @@ use aa_gateway::routes::healthz::{healthz, HealthzState};
 use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
-use tokio::sync::oneshot;
+use aa_sandbox::registry::ToolRegistry;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 /// Per-process counter for unique temp-file names.
@@ -148,6 +150,13 @@ pub struct TopologyTestEnv {
     /// so lifecycle endpoints can be exercised without a gRPC registration path.
     #[allow(dead_code)]
     pub ops_registry: Arc<OpsRegistry>,
+    /// `tools/call` registry — clone-by-refcount shares the underlying
+    /// `Arc<RwLock<HashMap>>` with the running server, so registering a
+    /// `ToolKind::Wasm` here makes it dispatchable through the live
+    /// `POST /api/v1/dispatch_tool` HTTP route (AAASM-2033 / F116 ST-W
+    /// production data-path).
+    #[allow(dead_code)]
+    pub tool_registry: ToolRegistry,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -159,6 +168,70 @@ pub struct TopologyTestEnv {
 }
 
 impl TopologyTestEnv {
+    /// Spin up the harness with an `mpsc` audit sink wired to
+    /// [`AppState::audit_sender`]. Returns the env paired with the
+    /// receive end of the channel so tests can drain the entries the
+    /// route handlers emit (see AAASM-2033 — the `/dispatch_tool` WASM
+    /// path produces `[SandboxStarted, <outcome>]` per invocation; the
+    /// native path produces `[ToolDispatched]`).
+    ///
+    /// Capacity is 64 entries — handlers `try_send` (non-blocking), so
+    /// the channel only buffers; tests drain promptly after each
+    /// request.
+    #[allow(dead_code)]
+    pub async fn start_with_audit_sink() -> anyhow::Result<(Self, mpsc::Receiver<AuditEntry>)> {
+        let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
+        let (sender, receiver) = mpsc::channel::<AuditEntry>(64);
+        state.audit_sender = Some(sender);
+
+        let agent_registry = Arc::clone(&state.agent_registry);
+        let trace_store = Arc::clone(&state.trace_store);
+        let approval_queue = Arc::clone(&state.approval_queue);
+        let budget_tracker = Arc::clone(&state.budget_tracker);
+        let events = Arc::clone(&state.events);
+        let replay_buffer = state.replay_buffer.clone();
+        let next_event_id = Arc::clone(&state.next_event_id);
+        let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
+
+        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
+
+        let app = build_app_with_healthz(state);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        let env = Self {
+            addr: bound_addr,
+            agent_registry,
+            trace_store,
+            approval_queue,
+            audit_dir,
+            budget_tracker,
+            alert_store,
+            key_store,
+            events,
+            replay_buffer,
+            next_event_id,
+            ops_registry,
+            tool_registry,
+            shutdown_tx: Some(shutdown_tx),
+            server_handle: Some(server_handle),
+            cleaned: false,
+        };
+        env.await_ready().await?;
+        Ok((env, receiver))
+    }
+
     /// Spin up the harness with a pre-populated [`InMemorySecretsStore`]
     /// (AAASM-1920 / Secret Injection).
     ///
@@ -191,6 +264,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -221,6 +295,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -241,6 +316,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -271,6 +347,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -298,6 +375,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -328,6 +406,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -355,6 +434,7 @@ impl TopologyTestEnv {
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
@@ -388,6 +468,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -415,6 +496,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -445,6 +527,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -470,6 +553,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -500,6 +584,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -524,6 +609,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -554,6 +640,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -600,6 +687,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -630,6 +718,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -844,6 +933,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -981,6 +1071,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1119,6 +1210,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1249,6 +1341,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1369,6 +1462,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,

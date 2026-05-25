@@ -17,7 +17,6 @@ path = "src/main.rs"
 aa-core    = { path = "../aa-core", features = ["serde"] }
 aa-proto   = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
-aa-sandbox = { path = "../aa-sandbox" }
 tokio      = { version = "1", features = ["full"] }
 hyper      = { version = "1", features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server"] }
@@ -44,7 +43,6 @@ bytes = "1"
 criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
-wat = "1"
 
 [[bench]]
 name    = "intercept_bench"
