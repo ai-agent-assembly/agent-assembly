@@ -63,6 +63,7 @@ fn check_action_request_tool_call_matches_golden() {
                 },
             )),
         }),
+        caller_agent_id: None,
     };
     assert_eq!(msg.encode_to_vec(), load_golden_bin("check_action_request_tool_call"));
 }

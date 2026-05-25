@@ -76,6 +76,7 @@ fn make_request() -> CheckActionRequest {
         trace_id: "trace-001".into(),
         span_id: "span-001".into(),
         credential_token: String::new(),
+        caller_agent_id: None,
     }
 }
 

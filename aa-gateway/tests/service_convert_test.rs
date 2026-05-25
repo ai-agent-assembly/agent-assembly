@@ -26,6 +26,7 @@ fn base_request(action: Action) -> CheckActionRequest {
         span_id: "span-1".into(),
         action_type: ActionType::ToolCall as i32,
         context: Some(ActionContext { action: Some(action) }),
+        caller_agent_id: None,
     }
 }
 
@@ -274,6 +275,7 @@ fn empty_metadata_fields_are_omitted() {
                 ..Default::default()
             })),
         }),
+        caller_agent_id: None,
     };
     let (ctx, _) = request_to_core(&req).unwrap();
     assert!(ctx.metadata.is_empty());
