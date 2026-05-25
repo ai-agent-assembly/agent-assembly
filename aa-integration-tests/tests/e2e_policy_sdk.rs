@@ -136,7 +136,7 @@ async fn sdk_deny_audit_event_includes_rule_id_and_reason() {
 
     let reader = AuditReader::new(tmp.path().to_path_buf());
     let (entries, total) = reader
-        .list(10, 0, None, Some("PolicyViolation"))
+        .list(10, 0, None, Some("PolicyViolation"), None)
         .await
         .expect("AuditReader::list");
 
