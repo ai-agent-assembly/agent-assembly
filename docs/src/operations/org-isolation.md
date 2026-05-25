@@ -16,7 +16,7 @@ gateway enforces the following invariants:
 | Topology | `GET /api/v1/topology/overview?org_id=X` returns only X's agents. The registry maintains an `org_index` secondary index for O(members) lookup. |
 | Credential validation | An agent registered in Org A presenting its valid token but claiming `agent_id.org_id = "B"` is rejected with `A2AImpersonationAttempted`. The registry's credential reverse-index catches cross-org reuse before any policy evaluation. |
 | Policy scope | A policy with `scope: org:<id>` cascades only for agents in that org. (Requires the multi-document loader from [AAASM-2023](https://lightning-dust-mite.atlassian.net/browse/AAASM-2023) — partial today.) |
-| Budget | Per-team budget isolation provides implicit Org-tier isolation when each Org uses distinct team_ids. Explicit Org-tier budget tracking is tracked under [AAASM-2022](https://lightning-dust-mite.atlassian.net/browse/AAASM-2022). |
+| Budget | Every Org owns an independent spend envelope on the `BudgetTracker.org_budgets` map. `record_cost` rolls each charge into the agent's `org_id` and enforces `org_daily_limit_usd` / `org_monthly_limit_usd` set via policy YAML or the `with_org_*_limit` builders. Exhausting one Org's envelope never affects another. |
 
 ## How to set up multi-tenancy
 
@@ -90,17 +90,58 @@ When an agent in Org A presents its credential but claims `agent_id.org_id =
 A reviewer searching `aasm audit list --event-type A2AImpersonationAttempted`
 sees these attempts grouped by the org the attacker tried to claim.
 
+## Configuring Org-tier budget limits
+
+Operator-facing knobs live in the `budget:` section of any Global-scoped
+policy document:
+
+```yaml
+budget:
+  daily_limit_usd:        10000.0   # global cap across all orgs
+  monthly_limit_usd:      250000.0
+  org_daily_limit_usd:    1000.0    # AAASM-2022 — per-org daily cap
+  org_monthly_limit_usd:  25000.0   # AAASM-2022 — per-org monthly cap
+  timezone: "UTC"
+  action_on_exceed: deny
+```
+
+Semantics:
+
+* `org_daily_limit_usd` / `org_monthly_limit_usd` are **uniform per-Org**
+  caps — the same envelope applies to every Org that records spend.
+  Cross-Org isolation comes from the tracker maintaining an independent
+  `BudgetState` per `org_id`, not from per-Org-customised limits.
+* Enforcement order in `record_cost` is **global → org → team → agent**,
+  monthly checked before daily within each tier. The first tier that
+  exceeds returns `BudgetStatus::LimitExceeded` and the deny is recorded.
+* Limits enter the tracker via `with_org_daily_limit` /
+  `with_org_monthly_limit` builders during policy load. Restoring from
+  persisted snapshot preserves limits via the same path — the
+  `org_budgets` map is empty on first restore until the migration in
+  AAASM-2022 follow-up lands.
+
+### Observing per-Org spend
+
+```rust
+// In-process accessor:
+let alpha = budget.org_state("acme").map(|s| s.spent_usd);
+```
+
+The dashboard / CLI surfaces for `aasm budget status --org <id>` are
+queued under [AAASM-1232](https://lightning-dust-mite.atlassian.net/browse/AAASM-1232)
+follow-up subtasks.
+
 ## Known gaps
 
-* **Org-tier budget**: explicit Org-tier limits not yet wired —
-  [AAASM-2022](https://lightning-dust-mite.atlassian.net/browse/AAASM-2022).
 * **Org-scoped policy E2E**: `PolicyEngine::load_from_file` doesn't
   populate the scope_index, so `scope: org:<id>` policies need a
   multi-document loader — [AAASM-2023](https://lightning-dust-mite.atlassian.net/browse/AAASM-2023).
 * **Topology endpoints beyond `overview`**: tree / team / lineage /
   stats accept the `org_id` query param but currently ignore it.
+* **Persistence schema for Org-tier spend**: the on-disk snapshot does
+  not yet carry the `org_budgets` map; a restored tracker starts with
+  empty Org state.
 
-These are all carry-overs from the F116 Org-tier isolation acceptance
-work (AAASM-2008). The headline scenarios — audit isolation, topology
-overview scoping, cross-org credential rejection — ship complete in
-AAASM-2008.
+The headline scenarios — audit isolation, topology overview scoping,
+cross-org credential rejection (AAASM-2008), and cross-org budget
+envelope isolation (AAASM-2022) — ship complete.

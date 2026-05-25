@@ -184,7 +184,7 @@ async fn agents_budget_returns_snapshot() {
 
     let agent_core_id = aa_core::identity::AgentId::from_bytes(id);
     env.budget_tracker
-        .record_raw_spend(agent_core_id, Some(TEAM), rust_decimal::Decimal::from(5));
+        .record_raw_spend(agent_core_id, Some(TEAM), None, rust_decimal::Decimal::from(5));
 
     let client = reqwest::Client::new();
     let resp = client

@@ -32,7 +32,7 @@ fn round_trip_preserves_spend() {
         alert_tx.clone(),
     );
     let agent = test_agent_id();
-    tracker.record_raw_spend(agent, None, Decimal::from_str("42.50").unwrap());
+    tracker.record_raw_spend(agent, None, None, Decimal::from_str("42.50").unwrap());
 
     // 2. Snapshot and persist.
     let snapshot = tracker.snapshot();
@@ -74,7 +74,7 @@ fn restored_tracker_accumulates_further_spend() {
         alert_tx.clone(),
     );
     let agent = test_agent_id();
-    tracker.record_raw_spend(agent, None, Decimal::from_str("10.00").unwrap());
+    tracker.record_raw_spend(agent, None, None, Decimal::from_str("10.00").unwrap());
 
     let snapshot = tracker.snapshot();
     save_to_disk_atomic(&path, &snapshot).unwrap();
@@ -89,7 +89,7 @@ fn restored_tracker_accumulates_further_spend() {
     ));
 
     // Record more spend on the restored tracker.
-    restored.record_raw_spend(agent, None, Decimal::from_str("5.00").unwrap());
+    restored.record_raw_spend(agent, None, None, Decimal::from_str("5.00").unwrap());
 
     let final_snapshot = restored.snapshot();
     assert_eq!(

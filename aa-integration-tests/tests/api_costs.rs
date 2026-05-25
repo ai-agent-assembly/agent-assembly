@@ -22,7 +22,7 @@
 //! ## Seeding strategy
 //!
 //! The gateway exposes no HTTP route for recording spend, so tests seed
-//! `env.budget_tracker.record_raw_spend(AgentId, Option<&str>, Decimal)`
+//! `env.budget_tracker.record_raw_spend(AgentId, Option<&str>, None, Decimal)`
 //! directly — the same pattern used for `agent_registry` and `trace_store`.
 //!
 //! ## No query-param filtering
@@ -140,6 +140,7 @@ async fn costs_global_date_field_is_iso_date_string() {
     env.budget_tracker.record_raw_spend(
         AgentId::from_bytes(AGENT_A_BYTES),
         Some(TEAM_ID),
+        None,
         Decimal::new(100, 2), // 1.00 USD
     );
 
@@ -166,6 +167,7 @@ async fn costs_per_agent_entry_has_date_field_in_iso_format() {
     env.budget_tracker.record_raw_spend(
         AgentId::from_bytes(AGENT_A_BYTES),
         Some(TEAM_ID),
+        None,
         Decimal::new(250, 2), // 2.50 USD
     );
 
@@ -195,6 +197,7 @@ async fn costs_per_team_entry_has_date_field_in_iso_format() {
     env.budget_tracker.record_raw_spend(
         AgentId::from_bytes(AGENT_A_BYTES),
         Some(TEAM_ID),
+        None,
         Decimal::new(300, 2), // 3.00 USD
     );
 
@@ -227,6 +230,7 @@ async fn costs_reflects_seeded_per_agent_spend() {
     env.budget_tracker.record_raw_spend(
         agent_id,
         Some(TEAM_ID),
+        None,
         Decimal::new(475, 2), // 4.75 USD
     );
 
@@ -257,11 +261,13 @@ async fn costs_reflects_seeded_per_team_spend_and_sorted_order() {
     env.budget_tracker.record_raw_spend(
         AgentId::from_bytes(AGENT_B_BYTES),
         Some(TEAM_ID_B),
+        None,
         Decimal::new(600, 2), // 6.00 USD
     );
     env.budget_tracker.record_raw_spend(
         AgentId::from_bytes(AGENT_A_BYTES),
         Some(TEAM_ID),
+        None,
         Decimal::new(200, 2), // 2.00 USD
     );
 
@@ -315,10 +321,18 @@ async fn costs_global_spend_accumulates_across_agents() {
     let env = TopologyTestEnv::start().await.expect("harness should start");
 
     // Agent A: 3.25 USD; Agent B: 1.75 USD → total 5.00 USD.
-    env.budget_tracker
-        .record_raw_spend(AgentId::from_bytes(AGENT_A_BYTES), Some(TEAM_ID), Decimal::new(325, 2));
-    env.budget_tracker
-        .record_raw_spend(AgentId::from_bytes(AGENT_B_BYTES), Some(TEAM_ID), Decimal::new(175, 2));
+    env.budget_tracker.record_raw_spend(
+        AgentId::from_bytes(AGENT_A_BYTES),
+        Some(TEAM_ID),
+        None,
+        Decimal::new(325, 2),
+    );
+    env.budget_tracker.record_raw_spend(
+        AgentId::from_bytes(AGENT_B_BYTES),
+        Some(TEAM_ID),
+        None,
+        Decimal::new(175, 2),
+    );
 
     let body: serde_json::Value = reqwest::get(format!("{}/api/v1/costs", env.base_url()))
         .await

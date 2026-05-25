@@ -44,6 +44,13 @@ pub struct BudgetPolicy {
     pub daily_limit_usd: Option<f64>,
     /// Maximum USD spend per calendar month; `None` means no limit.
     pub monthly_limit_usd: Option<f64>,
+    /// AAASM-2022 — Maximum USD spend per calendar day, per organisation.
+    /// Enforced independently of `daily_limit_usd` (which is the global cap).
+    /// `None` means no per-org daily limit.
+    pub org_daily_limit_usd: Option<f64>,
+    /// AAASM-2022 — Maximum USD spend per calendar month, per organisation.
+    /// `None` means no per-org monthly limit.
+    pub org_monthly_limit_usd: Option<f64>,
     /// IANA timezone for daily/monthly reset boundary. `None` means UTC.
     pub timezone: Option<String>,
     /// Action when budget is exceeded: deny individual requests or suspend agent.

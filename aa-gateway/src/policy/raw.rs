@@ -45,6 +45,12 @@ pub struct RawBudgetPolicy {
     pub daily_limit_usd: Option<f64>,
     /// Maximum USD spend per calendar month; `None` means no limit.
     pub monthly_limit_usd: Option<f64>,
+    /// AAASM-2022 — Maximum USD spend per calendar day, per organisation.
+    /// `None` means no per-org daily limit.
+    pub org_daily_limit_usd: Option<f64>,
+    /// AAASM-2022 — Maximum USD spend per calendar month, per organisation.
+    /// `None` means no per-org monthly limit.
+    pub org_monthly_limit_usd: Option<f64>,
     /// Optional IANA timezone for daily/monthly reset boundary. Defaults to UTC if absent.
     pub timezone: Option<String>,
     /// Action when budget is exceeded: `"deny"` (default) or `"suspend"`.

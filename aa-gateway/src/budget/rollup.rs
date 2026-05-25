@@ -145,7 +145,7 @@ mod tests {
     fn tracker_with_spend(seed: &[(AgentId, Option<&str>, Decimal)]) -> BudgetTracker {
         let tracker = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC);
         for (agent_id, team_id, amount) in seed {
-            tracker.record_raw_spend(*agent_id, *team_id, *amount);
+            tracker.record_raw_spend(*agent_id, *team_id, None, *amount);
         }
         tracker
     }
