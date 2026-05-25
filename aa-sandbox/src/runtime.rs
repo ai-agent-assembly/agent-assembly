@@ -326,4 +326,34 @@ mod tests {
             result,
         );
     }
+
+    /// Hand-authored WAT fixture exercising the memory-store limiter.
+    /// `_start` declares a 1-page initial memory and immediately tries
+    /// to grow it by 100 pages (= 6.4 MiB), well past the default
+    /// `SandboxLimits::memory_pages = 16` (1 MiB) cap. The
+    /// `MemoryLimit` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
+    /// for the grow, which wasmtime surfaces as a trap.
+    const MEMORY_BOMB_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "_start")
+            (drop (memory.grow (i32.const 100)))
+          )
+        )
+    "#;
+
+    #[test]
+    fn run_tool_kills_memory_bomb_with_memory_exhausted() {
+        let runtime = SandboxRuntime::new(SandboxConfig::default())
+            .expect("SandboxRuntime with default memory cap must construct");
+        let wasm = wat::parse_str(MEMORY_BOMB_WAT).expect("memory-bomb WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::MemoryExhausted)),
+            "expected SandboxError::MemoryExhausted, got {:?}",
+            result,
+        );
+    }
 }
