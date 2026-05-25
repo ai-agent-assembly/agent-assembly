@@ -42,6 +42,20 @@ message CheckActionRequest {
   assembly.common.v1.ActionType action_type      = 5;
   // Detailed context for the specific action type.
   ActionContext                 context          = 6;
+  // Optional identity of the agent that initiated this call when the request
+  // is part of an agent-to-agent (A2A) dispatch — for example when agent A's
+  // tool call routes through a tool exposed by agent B, the SDK populates
+  // `agent_id = B` (the callee performing the action) and `caller_agent_id
+  // = A` (the originator). Empty for single-agent calls.
+  //
+  // The gateway carries `caller_agent_id` into the policy context and the
+  // resulting audit event so reviewers can reconstruct cross-agent
+  // delegation graphs. Validation of `credential_token` continues to be
+  // against the `agent_id` field — `caller_agent_id` is an attestation by
+  // the callee, not a credential.
+  //
+  // Added under AAASM-1944 (F116 ST-X — Zero-trust A2A).
+  assembly.common.v1.AgentId    caller_agent_id  = 7;
 }
 
 // ActionContext carries type-specific details for the action under evaluation.
