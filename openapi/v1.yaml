@@ -1,3 +1,54 @@
+   Compiling h2 v0.4.14
+   Compiling rustls v0.23.40
+   Compiling bitflags v2.11.1
+   Compiling prost-derive v0.14.3
+   Compiling url v2.5.8
+   Compiling tower v0.5.3
+   Compiling rustix v1.1.4
+   Compiling pulldown-cmark v0.13.3
+   Compiling aa-core v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-core)
+   Compiling metrics-util v0.20.3
+   Compiling zip v3.0.0
+   Compiling rand v0.8.6
+   Compiling x509-parser v0.18.1
+   Compiling ahash v0.8.12
+   Compiling security-framework v3.7.0
+   Compiling notify-types v2.1.0
+   Compiling sqlx-core v0.8.6
+   Compiling notify v8.2.0
+   Compiling pulldown-cmark-to-cmark v22.0.0
+   Compiling tempfile v3.27.0
+   Compiling tower-http v0.6.11
+   Compiling utoipa-swagger-ui v9.0.2
+   Compiling rustls-native-certs v0.8.3
+   Compiling prost v0.14.3
+   Compiling aa-devtool-saas v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-devtool-saas)
+   Compiling aa-devtool v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-devtool)
+   Compiling sqlx-postgres v0.8.6
+   Compiling sqlx-sqlite v0.8.6
+   Compiling prost-types v0.14.3
+   Compiling hyper v1.9.0
+   Compiling tokio-rustls v0.26.4
+   Compiling prost-build v0.14.3
+   Compiling hyper-util v0.1.20
+   Compiling tonic-prost-build v0.14.6
+   Compiling aa-proto v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-proto)
+   Compiling axum v0.8.9
+   Compiling hyper-timeout v0.5.2
+   Compiling hyper-rustls v0.27.9
+   Compiling axum-server v0.8.0
+   Compiling metrics-exporter-prometheus v0.18.3
+   Compiling reqwest v0.12.28
+   Compiling sqlx-macros-core v0.8.6
+   Compiling sqlx-macros v0.8.6
+   Compiling sqlx v0.8.6
+   Compiling tonic v0.14.6
+   Compiling tonic-prost v0.14.6
+   Compiling aa-runtime v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-runtime)
+   Compiling aa-gateway v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-gateway)
+   Compiling aa-api v0.0.1 (/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-2008-feat-org_isolation/aa-api)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.90s
+     Running `target/debug/generate_openapi`
 openapi: 3.1.0
 info:
   title: Agent Assembly API
@@ -1622,6 +1673,20 @@ paths:
           type:
           - string
           - 'null'
+      - name: org_id
+        in: query
+        description: |-
+          AAASM-2008 — filter by organisation identifier. When supplied, only
+          audit entries whose `lineage.org_id` matches are returned. Entries
+          emitted before the agent was registered with an `org_id` (where the
+          field is `None` on the entry) never match an explicit `org_id`
+          filter — multi-tenancy isolation requires explicit Org tagging on
+          the entry at write time.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
       responses:
         '200':
           description: Paginated audit log entries
@@ -1991,6 +2056,18 @@ paths:
           type:
           - boolean
           - 'null'
+      - name: org_id
+        in: query
+        description: |-
+          AAASM-2008 — scope the query to a single organisation. When set,
+          only agents whose `org_id` matches are returned (multi-tenancy
+          isolation). Empty / absent agents (no `org_id` on the record)
+          never match an explicit filter.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
       responses:
         '200':
           description: Topology overview
@@ -2057,6 +2134,18 @@ paths:
         schema:
           type:
           - boolean
+          - 'null'
+      - name: org_id
+        in: query
+        description: |-
+          AAASM-2008 — scope the query to a single organisation. When set,
+          only agents whose `org_id` matches are returned (multi-tenancy
+          isolation). Empty / absent agents (no `org_id` on the record)
+          never match an explicit filter.
+        required: false
+        schema:
+          type:
+          - string
           - 'null'
       responses:
         '200':
