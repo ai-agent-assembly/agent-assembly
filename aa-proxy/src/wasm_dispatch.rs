@@ -112,3 +112,172 @@ fn outcome_event(result: &Result<SandboxOutput, SandboxError>) -> AuditEventType
         Err(SandboxError::InvalidWasm(_)) | Err(SandboxError::Wasmtime(_)) => AuditEventType::SandboxTerminated,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_sandbox::policy::{SandboxConfig, SandboxLimits};
+
+    /// Minimal `_start` that returns cleanly (empty body). Used to
+    /// assert the happy-path `SandboxTerminated` lifecycle event.
+    /// Avoids `proc_exit(0)` because the wasmtime-wasi backtrace
+    /// wrapper around an `I32Exit(0)` doesn't downcast through
+    /// `wasmtime::Error::downcast_ref::<I32Exit>` cleanly on every
+    /// path; a body-less `_start` is the canonical clean-exit shape.
+    const NOOP_WAT: &str = r#"
+        (module
+          (func (export "_start"))
+        )
+    "#;
+
+    /// Same `path_open("/etc/passwd")` probe as AAASM-2017's runtime
+    /// fixture — confirms `FilesystemBlocked` round-trips through the
+    /// dispatch helper.
+    const PATH_OPEN_PROBE_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "path_open"
+            (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "/etc/passwd")
+          (func (export "_start")
+            (call $proc_exit
+              (call $path_open
+                (i32.const 3) (i32.const 0) (i32.const 0) (i32.const 11)
+                (i32.const 0) (i64.const 0) (i64.const 0) (i32.const 0)
+                (i32.const 100)
+              )
+            )
+          )
+        )
+    "#;
+
+    /// Same runaway loop as AAASM-2018's runtime fixture.
+    const RUNAWAY_LOOP_WAT: &str = r#"
+        (module
+          (func (export "_start")
+            (loop $infinite (br $infinite))
+          )
+        )
+    "#;
+
+    /// Same memory bomb as AAASM-2018's runtime fixture.
+    const MEMORY_BOMB_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "_start")
+            (drop (memory.grow (i32.const 100)))
+          )
+        )
+    "#;
+
+    fn registry_with(name: &str, wat_source: &str) -> ToolRegistry {
+        registry_with_config(name, wat_source, SandboxConfig::default())
+    }
+
+    fn registry_with_config(name: &str, wat_source: &str, config: SandboxConfig) -> ToolRegistry {
+        let module_bytes = wat::parse_str(wat_source).expect("test WAT fixture must parse");
+        let reg = ToolRegistry::new();
+        reg.register(name, ToolKind::Wasm { module_bytes, config });
+        reg
+    }
+
+    #[test]
+    fn dispatch_unknown_tool_returns_not_wasm() {
+        let reg = ToolRegistry::new();
+        assert!(matches!(
+            dispatch_wasm_tool("never_registered", &[], &reg),
+            WasmDispatchResult::NotWasm
+        ));
+    }
+
+    #[test]
+    fn dispatch_native_tool_returns_not_wasm() {
+        let reg = ToolRegistry::new();
+        reg.register("forward_upstream", ToolKind::Native);
+        assert!(matches!(
+            dispatch_wasm_tool("forward_upstream", &[], &reg),
+            WasmDispatchResult::NotWasm
+        ));
+    }
+
+    #[test]
+    fn dispatch_wasm_tool_emits_started_then_terminated_on_success() {
+        let reg = registry_with("noop", NOOP_WAT);
+        match dispatch_wasm_tool("noop", &[], &reg) {
+            WasmDispatchResult::Wasm { result, audit_events } => {
+                assert!(result.is_ok(), "noop must succeed, got {:?}", result);
+                assert_eq!(
+                    audit_events,
+                    vec![AuditEventType::SandboxStarted, AuditEventType::SandboxTerminated],
+                );
+            }
+            WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
+        }
+    }
+
+    #[test]
+    fn dispatch_wasm_tool_emits_started_then_filesystem_blocked() {
+        let reg = registry_with("fs_probe", PATH_OPEN_PROBE_WAT);
+        match dispatch_wasm_tool("fs_probe", &[], &reg) {
+            WasmDispatchResult::Wasm { result, audit_events } => {
+                assert!(
+                    matches!(result, Err(SandboxError::FilesystemBlocked { .. })),
+                    "expected FilesystemBlocked, got {:?}",
+                    result,
+                );
+                assert_eq!(
+                    audit_events,
+                    vec![AuditEventType::SandboxStarted, AuditEventType::SandboxFilesystemBlocked],
+                );
+            }
+            WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
+        }
+    }
+
+    #[test]
+    fn dispatch_wasm_tool_emits_started_then_cpu_timeout_on_runaway_loop() {
+        let config = SandboxConfig {
+            limits: SandboxLimits {
+                fuel: 1_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let reg = registry_with_config("runaway", RUNAWAY_LOOP_WAT, config);
+        match dispatch_wasm_tool("runaway", &[], &reg) {
+            WasmDispatchResult::Wasm { result, audit_events } => {
+                assert!(
+                    matches!(result, Err(SandboxError::CpuTimeout)),
+                    "expected CpuTimeout, got {:?}",
+                    result,
+                );
+                assert_eq!(
+                    audit_events,
+                    vec![AuditEventType::SandboxStarted, AuditEventType::SandboxCpuTimeout],
+                );
+            }
+            WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
+        }
+    }
+
+    #[test]
+    fn dispatch_wasm_tool_emits_started_then_oom_killed_on_memory_bomb() {
+        let reg = registry_with("mem_bomb", MEMORY_BOMB_WAT);
+        match dispatch_wasm_tool("mem_bomb", &[], &reg) {
+            WasmDispatchResult::Wasm { result, audit_events } => {
+                assert!(
+                    matches!(result, Err(SandboxError::MemoryExhausted)),
+                    "expected MemoryExhausted, got {:?}",
+                    result,
+                );
+                assert_eq!(
+                    audit_events,
+                    vec![AuditEventType::SandboxStarted, AuditEventType::SandboxOomKilled],
+                );
+            }
+            WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
+        }
+    }
+}
