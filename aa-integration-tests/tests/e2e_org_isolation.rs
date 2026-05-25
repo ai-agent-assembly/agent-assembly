@@ -56,17 +56,37 @@ fn fixture_path(rel: &str) -> std::path::PathBuf {
 async fn start_gateway(policy_fixture: &str) -> (SocketAddr, Arc<AgentRegistry>, mpsc::Receiver<AuditEntry>) {
     let path = fixture_path(policy_fixture);
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
-    let engine = Arc::new(PolicyEngine::load_from_file(&path, alert_tx).expect("policy fixture loads"));
+    let engine_inner = PolicyEngine::load_from_file(&path, alert_tx).expect("policy fixture loads");
+    spawn_gateway_with_engine_builder(engine_inner).await
+}
+
+/// AAASM-2023 — companion helper that loads a directory of YAML documents
+/// via `PolicyEngine::load_cascade_from_dir`. Used by the org-scoped ST-org-4
+/// test where the gateway needs both a Global default and an Org-scoped rule.
+async fn start_gateway_with_cascade_dir(
+    policy_dir: &str,
+) -> (SocketAddr, Arc<AgentRegistry>, mpsc::Receiver<AuditEntry>) {
+    let path = fixture_path(policy_dir);
+    let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+    let engine_inner = PolicyEngine::load_cascade_from_dir(&path, alert_tx).expect("cascade fixture loads");
+    spawn_gateway_with_engine_builder(engine_inner).await
+}
+
+/// Build the registry first, attach it to the engine via `with_registry`
+/// (so `collect_cascade` can resolve `lineage.org_id`), then wire the gRPC
+/// server. Returns the bound addr + registry handle + audit receiver.
+async fn spawn_gateway_with_engine_builder(
+    engine_inner: PolicyEngine,
+) -> (SocketAddr, Arc<AgentRegistry>, mpsc::Receiver<AuditEntry>) {
     let registry = Arc::new(AgentRegistry::new());
+    // AAASM-2023 — engine.with_registry is the key step: collect_cascade
+    // walks `self.registry.lineage(agent_id)` for org/team scoping; without
+    // it the cascade is collapsed to Global-only and org-scoped policies
+    // never fire even when scope_index has them registered.
+    let engine = Arc::new(engine_inner.with_registry(Arc::clone(&registry)));
     let (audit_tx, audit_rx) = mpsc::channel::<AuditEntry>(4096);
     let audit_drops = Arc::new(AtomicU64::new(0));
-    let service = PolicyServiceImpl::with_registry(
-        Arc::clone(&engine),
-        Arc::clone(&registry),
-        audit_tx,
-        audit_drops,
-        [0u8; 32],
-    );
+    let service = PolicyServiceImpl::with_registry(engine, Arc::clone(&registry), audit_tx, audit_drops, [0u8; 32]);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
     let addr = listener.local_addr().expect("local_addr");
@@ -261,28 +281,53 @@ async fn st_org_3_cross_org_budget_isolation() {
 // ── ST-org-4 ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "AAASM-2023: PolicyEngine::load_from_file does not populate the scope_index, so org-scoped \
-    policies route through evaluate_primary and apply globally. The engine's scope_index cascade \
-    DOES handle PolicyScope::Org correctly (covered by aa-gateway/tests/cascade_merge_test.rs), but \
-    exercising it E2E here requires a multi-document loader — filed as a follow-up subtask"]
 async fn st_org_4_policy_with_org_scope_fires_only_for_matching_org() {
-    // When AAASM-2023 ships a `PolicyEngine::load_cascade_from_dir(...)` or
-    // equivalent multi-document loader, this test will:
+    // AAASM-2023 un-ignored this test. Uses the new
+    // `PolicyEngine::load_cascade_from_dir` to load TWO policy documents
+    // from a single directory:
     //
-    // 1. Load TWO policy documents: a Global allow-all + an
-    //    org-alpha-scoped deny-bash (org_scoped_deny_bash.yaml fixture).
-    // 2. Register agents in org-alpha and org-beta.
-    // 3. Drive `bash` from each agent.
-    // 4. Assert: org-alpha → Deny (org-scoped rule fires); org-beta →
-    //    Allow (org-scoped rule does NOT fire — lineage.org_id filters it
-    //    out of the cascade).
+    //   policies/org_cascade/
+    //   ├── 000-global-allow-all.yaml   (scope: global, empty tools)
+    //   └── 100-org-alpha-deny-bash.yaml (scope: org:org-alpha, deny bash)
     //
-    // The pure-logic equivalent (cascade evaluator + PolicyScope::Org
-    // filtering) is already unit-tested in
-    // aa-gateway/tests/cascade_merge_test.rs::cascade_merge_org_team_agent.
-    // This E2E test is the F116 acceptance lens; un-ignored when AAASM-2023
-    // wires the gateway-side multi-document loader.
-    unimplemented!("AAASM-2023 — gateway multi-document cascade loader");
+    // Cascade collector at engine/mod.rs:1083-1116 walks the scopes for
+    // each agent's lineage. Org-alpha agents include the org-alpha
+    // document → bash is denied. Org-beta agents don't include it →
+    // bash falls through to the Global allow-all default.
+    let (addr, registry, _audit_rx) = start_gateway_with_cascade_dir("policies/org_cascade").await;
+
+    let alpha = id("org-alpha", "team", "agent-a");
+    let beta = id("org-beta", "team", "agent-b");
+    register_agent(&registry, &alpha, "tok-alpha");
+    register_agent(&registry, &beta, "tok-beta");
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    // bash from org-alpha → Deny (the org-scoped policy fires).
+    let alpha_resp = client
+        .check_action(tool_call(&alpha, "tok-alpha", "bash", "t-alpha"))
+        .await
+        .expect("alpha bash")
+        .into_inner();
+    assert_eq!(
+        alpha_resp.decision,
+        Decision::Deny as i32,
+        "org-alpha bash must be denied by the org-scoped policy (cascade includes org-alpha doc)"
+    );
+
+    // bash from org-beta → Allow (cascade for org-beta only includes the
+    // Global allow-all default; the org-alpha-scoped doc is filtered out
+    // by lineage.org_id mismatch).
+    let beta_resp = client
+        .check_action(tool_call(&beta, "tok-beta", "bash", "t-beta"))
+        .await
+        .expect("beta bash")
+        .into_inner();
+    assert_eq!(
+        beta_resp.decision,
+        Decision::Allow as i32,
+        "org-beta bash must pass through — the org-alpha-scoped policy must not fire"
+    );
 }
 
 // ── ST-org-5 ────────────────────────────────────────────────────────────────

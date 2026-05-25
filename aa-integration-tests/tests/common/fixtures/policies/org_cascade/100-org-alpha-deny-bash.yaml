@@ -9,12 +9,11 @@ metadata:
 # whose `lineage.org_id == "org-alpha"`; agents in any other org fall
 # through to the Global default (allow).
 #
-# Mirrors aa-integration-tests/tests/common/fixtures/policies/org_scoped_deny_bash.yaml
-# but lives under the cascade directory so load_cascade_from_dir picks it
-# up alongside the Global default.
-scope: org:org-alpha
-
+# Note: `scope` lives INSIDE `spec:` for envelope-format documents — the
+# validator deserializes the `spec` value as the RawPolicyDocument, so
+# `scope:` at the outer envelope level is silently ignored.
 spec:
+  scope: org:org-alpha
   tools:
     bash:
       allow: false
