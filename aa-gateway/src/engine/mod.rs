@@ -240,13 +240,33 @@ impl PolicyEngine {
             .as_ref()
             .and_then(|bp| bp.monthly_limit_usd)
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        let budget = Arc::new(BudgetTracker::new_with_alert_sender(
+        // AAASM-2022 — Lift org-tier limits from BudgetPolicy into the tracker.
+        let org_daily_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.org_daily_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        let org_monthly_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.org_monthly_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
             crate::budget::PricingTable::default_table(),
             daily_limit,
             monthly_limit,
             budget_tz,
             budget_alert_tx,
-        ));
+        );
+        if let Some(limit) = org_daily_limit {
+            budget_tracker = budget_tracker.with_org_daily_limit(limit);
+        }
+        if let Some(limit) = org_monthly_limit {
+            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
+        }
+        let budget = Arc::new(budget_tracker);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
         Ok(PolicyEngine {
@@ -325,6 +345,9 @@ impl PolicyEngine {
         let mut budget_tz = chrono_tz::UTC;
         let mut daily_limit: Option<rust_decimal::Decimal> = None;
         let mut monthly_limit: Option<rust_decimal::Decimal> = None;
+        // AAASM-2022 — Org-tier limits from the Global-scoped doc.
+        let mut org_daily_limit: Option<rust_decimal::Decimal> = None;
+        let mut org_monthly_limit: Option<rust_decimal::Decimal> = None;
 
         for path in &entries {
             let yaml = std::fs::read_to_string(path).map_err(PolicyLoadError::Io)?;
@@ -359,19 +382,36 @@ impl PolicyEngine {
                     .as_ref()
                     .and_then(|bp| bp.monthly_limit_usd)
                     .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                org_daily_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.org_daily_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                org_monthly_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.org_monthly_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
                 primary = Some(doc.clone());
             }
 
             scope_index.insert(doc);
         }
 
-        let budget = Arc::new(BudgetTracker::new_with_alert_sender(
+        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
             crate::budget::PricingTable::default_table(),
             daily_limit,
             monthly_limit,
             budget_tz,
             budget_alert_tx,
-        ));
+        );
+        if let Some(limit) = org_daily_limit {
+            budget_tracker = budget_tracker.with_org_daily_limit(limit);
+        }
+        if let Some(limit) = org_monthly_limit {
+            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
+        }
+        let budget = Arc::new(budget_tracker);
 
         let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
             name: None,
