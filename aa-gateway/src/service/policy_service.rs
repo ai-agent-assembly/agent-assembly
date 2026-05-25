@@ -728,6 +728,103 @@ impl PolicyServiceImpl {
             _ => AuditEventType::PolicyViolation, // fallback for unknown
         }
     }
+
+    /// AAASM-1944 — validate the supplied `credential_token` against the
+    /// registered token for the claimed `agent_id`.
+    ///
+    /// Returns `Some(deny_response)` when the request must be rejected:
+    ///
+    /// * Empty `credential_token` for a registered agent → Deny with reason
+    ///   `"missing credential token"`. Emits `A2AImpersonationAttempted`.
+    /// * Non-empty `credential_token` that does not match the registered
+    ///   token for the claimed `agent_id` → Deny with reason
+    ///   `"credential token mismatch"`. Emits `A2AImpersonationAttempted`.
+    ///
+    /// Returns `None` (skip validation) when:
+    ///
+    /// * No `AgentRegistry` is attached (test fixtures that bypass the
+    ///   registry layer continue to work unchanged).
+    /// * `req.agent_id` is `None` (caller did not declare an identity —
+    ///   handled by downstream evaluation).
+    /// * The claimed agent is not registered (no fixture data to verify
+    ///   against; the policy engine may or may not allow per its rules).
+    ///
+    /// Emitting the audit event is fire-and-forget — a full `Deny`
+    /// response is always constructed and returned to the caller.
+    async fn validate_credential_token(&self, req: &CheckActionRequest) -> Option<CheckActionResponse> {
+        let registry = self.registry.as_ref()?;
+        let proto_agent = req.agent_id.as_ref()?;
+        let key = proto_agent_id_to_key(proto_agent);
+        let record = registry.get(&key)?;
+
+        let reason = if req.credential_token.is_empty() {
+            "missing credential token"
+        } else if req.credential_token != record.credential_token {
+            "credential token mismatch"
+        } else {
+            return None;
+        };
+
+        let response = CheckActionResponse {
+            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+            reason: reason.into(),
+            policy_rule: "a2a_identity_verification".into(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: 0,
+        };
+
+        self.record_impersonation_audit(req, &response).await;
+        Some(response)
+    }
+
+    /// Emit a dedicated `A2AImpersonationAttempted` audit event for the
+    /// rejected credential validation in `validate_credential_token`. Mirrors
+    /// the chain-bookkeeping shape of [`PolicyServiceImpl::record_audit`].
+    async fn record_impersonation_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
+        let Some(proto_agent) = req.agent_id.as_ref() else {
+            return;
+        };
+        let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
+        let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
+        let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+
+        let payload = serde_json::json!({
+            "action_type": req.action_type,
+            "decision": response.decision,
+            "reason": &response.reason,
+            "policy_rule": &response.policy_rule,
+            "claimed_agent_id": &proto_agent.agent_id,
+            "credential_token_present": !req.credential_token.is_empty(),
+        })
+        .to_string();
+
+        let mut last_hash = self.last_hash.lock().await;
+        let entry = AuditEntry::new(
+            seq,
+            timestamp_ns,
+            AuditEventType::A2AImpersonationAttempted,
+            agent_id,
+            session_id,
+            payload,
+            *last_hash,
+        );
+        *last_hash = *entry.entry_hash();
+        drop(last_hash);
+
+        if let Err(e) = self.audit_tx.try_send(entry) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(seq, "audit channel full — impersonation entry dropped");
+                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::error!("audit channel closed — AuditWriter task has exited");
+                }
+            }
+        }
+    }
 }
 
 impl PolicyServiceImpl {
@@ -842,6 +939,21 @@ impl PolicyService for PolicyServiceImpl {
             trace_id = %req.trace_id,
             "check_action request"
         );
+
+        // AAASM-1944: validate the supplied `credential_token` against the
+        // registered token for the claimed `agent_id` before any policy
+        // evaluation runs. When the token is empty or mismatched, short-
+        // circuit with a Deny + the appropriate A2A audit event so an
+        // impersonator never reaches the policy engine.
+        //
+        // Skipped silently when the registry is absent (test fixtures
+        // without registration) or when the claimed agent is not
+        // registered (allows existing detection-slice fixtures to continue
+        // working unchanged). Registered agents always go through the
+        // strict validation path — opt-in is by registering the agent.
+        if let Some(rejection) = self.validate_credential_token(&req).await {
+            return Ok(Response::new(rejection));
+        }
 
         // AAASM-1422: ingest the op into the live-ops registry before
         // evaluation so the dashboard sees the in-flight check even when
