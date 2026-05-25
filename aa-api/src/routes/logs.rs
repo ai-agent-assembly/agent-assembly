@@ -33,6 +33,13 @@ pub struct LogFilterParams {
     pub agent_id: Option<String>,
     /// Filter by event type name (e.g. `PolicyViolation`).
     pub event_type: Option<String>,
+    /// AAASM-2008 — filter by organisation identifier. When supplied, only
+    /// audit entries whose `lineage.org_id` matches are returned. Entries
+    /// emitted before the agent was registered with an `org_id` (where the
+    /// field is `None` on the entry) never match an explicit `org_id`
+    /// filter — multi-tenancy isolation requires explicit Org tagging on
+    /// the entry at write time.
+    pub org_id: Option<String>,
 }
 
 /// `GET /api/v1/logs` — paginated audit log query.
@@ -63,6 +70,7 @@ pub async fn list_logs(
             offset,
             filters.agent_id.as_deref(),
             filters.event_type.as_deref(),
+            filters.org_id.as_deref(),
         )
         .await
         .unwrap_or_default();
