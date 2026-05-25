@@ -159,6 +159,12 @@ pub struct AgentRegistry {
     control_senders: DashMap<[u8; 16], ControlSender>,
     /// Secondary index mapping team_id → set of agent registry keys.
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// AAASM-2008 — secondary index mapping org_id → set of agent registry
+    /// keys. Mirrors `team_index` at the multi-tenancy tier so topology
+    /// queries can list all agents in a given Org in O(members), and
+    /// cross-org isolation checks can verify "agent X belongs to Org A"
+    /// without scanning the full agent table.
+    org_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
     /// All active suspension reasons per agent. Supports multi-reason coexistence:
@@ -183,6 +189,7 @@ impl AgentRegistry {
             agents: DashMap::new(),
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
+            org_index: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
@@ -253,6 +260,7 @@ impl AgentRegistry {
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
+        let org_id = record.org_id.clone();
 
         {
             // Hold registration_lock across validate+insert to prevent TOCTOU races where
@@ -272,7 +280,9 @@ impl AgentRegistry {
             }
         } // registration_lock released here
 
-        // Post-insert: update parent's children list and team index (safe outside lock).
+        // Post-insert: update parent's children list and secondary indexes
+        // (safe outside lock — DashMap individual entries are independently
+        // synchronised).
         if let Some(pk) = parent_key {
             if let Some(mut parent) = self.agents.get_mut(&pk) {
                 parent.children.push(agent_id);
@@ -280,6 +290,10 @@ impl AgentRegistry {
         }
         if let Some(tid) = team_id {
             self.team_index.entry(tid).or_default().insert(agent_id);
+        }
+        // AAASM-2008 — mirror the team_index insertion for the Org tier.
+        if let Some(oid) = org_id {
+            self.org_index.entry(oid).or_default().insert(agent_id);
         }
 
         Ok(())
@@ -345,6 +359,12 @@ impl AgentRegistry {
         // Remove from team_index.
         if let Some(ref tid) = record.team_id {
             if let Some(set) = self.team_index.get(tid) {
+                set.remove(agent_id);
+            }
+        }
+        // AAASM-2008 — mirror the team_index removal for the Org tier.
+        if let Some(ref oid) = record.org_id {
+            if let Some(set) = self.org_index.get(oid) {
                 set.remove(agent_id);
             }
         }
@@ -929,6 +949,16 @@ impl AgentRegistry {
     pub fn team_members(&self, team_id: &str) -> Vec<[u8; 16]> {
         self.team_index
             .get(team_id)
+            .map(|s| s.iter().map(|k| *k).collect())
+            .unwrap_or_default()
+    }
+
+    /// AAASM-2008 — return all agent keys belonging to the given organisation.
+    /// Mirrors [`Self::team_members`] at the multi-tenancy tier. Used by
+    /// topology / audit / budget endpoints when scoping queries by Org.
+    pub fn org_members(&self, org_id: &str) -> Vec<[u8; 16]> {
+        self.org_index
+            .get(org_id)
             .map(|s| s.iter().map(|k| *k).collect())
             .unwrap_or_default()
     }
