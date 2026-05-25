@@ -7,9 +7,33 @@
 //! credential findings, and delegation lineage carried by
 //! [`aa_core::AuditEntry`] survive end-to-end.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
 use aa_core::AuditEntry;
 
 use super::models::ComplianceRecord;
+
+/// Read one per-session audit JSONL file from disk into audit entries in file order.
+///
+/// Each line of the input must be a single JSON document produced by the
+/// gateway's audit writer. Blank lines are skipped so a trailing newline does
+/// not produce a parse error. A malformed line aborts the read with the
+/// underlying I/O or serde error.
+pub fn load_jsonl_file(path: &Path) -> Result<Vec<AuditEntry>, Box<dyn std::error::Error>> {
+    let reader = BufReader::new(File::open(path)?);
+    let mut entries = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: AuditEntry = serde_json::from_str(&line)?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
 
 /// Convert a full-fidelity on-disk [`AuditEntry`] into a [`ComplianceRecord`]
 /// suitable for compliance export.
@@ -128,6 +152,47 @@ mod tests {
 
         let record = map_audit_entry(&entry);
         assert_eq!(record.payload, payload);
+    }
+
+    #[test]
+    fn load_jsonl_file_reads_chain_in_order() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+
+        let agent = fixed_agent();
+        let session = fixed_session();
+        let mut prev = [0u8; 32];
+        let mut originals: Vec<AuditEntry> = Vec::new();
+        for seq in 0..3 {
+            let e = AuditEntry::new(
+                seq,
+                1_700_000_000_000_000_000 + seq,
+                AuditEventType::ToolCallIntercepted,
+                agent,
+                session,
+                format!("{{\"seq\":{seq}}}"),
+                prev,
+            );
+            prev = *e.entry_hash();
+            originals.push(e);
+        }
+
+        let mut f = File::create(&path).unwrap();
+        for e in &originals {
+            writeln!(f, "{}", serde_json::to_string(e).unwrap()).unwrap();
+        }
+        // Trailing blank line — must be skipped, not parsed.
+        writeln!(f).unwrap();
+        drop(f);
+
+        let loaded = load_jsonl_file(&path).unwrap();
+        assert_eq!(loaded.len(), 3);
+        for (l, o) in loaded.iter().zip(originals.iter()) {
+            assert_eq!(l.seq(), o.seq());
+            assert_eq!(l.entry_hash(), o.entry_hash());
+        }
     }
 
     #[test]
