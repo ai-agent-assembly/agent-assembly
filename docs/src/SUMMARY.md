@@ -38,6 +38,7 @@
 - [Agent-to-Agent Identity](operations/a2a-identity.md)
 - [Tool Sandbox: Network Egress](operations/tool-sandbox-network.md)
 - [Org-Tier Isolation](operations/org-isolation.md)
+- [Multi-Document Policy Cascade](operations/policy-cascade-loader.md)
 
 # Benchmarks
 
