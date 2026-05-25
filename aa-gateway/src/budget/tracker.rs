@@ -153,6 +153,20 @@ impl BudgetTracker {
         self
     }
 
+    /// AAASM-2022 — Set the per-org daily spend limit in USD. Enforced in
+    /// `record_cost` for every org independently of how teams within the
+    /// org are named.
+    pub fn with_org_daily_limit(mut self, limit: Decimal) -> Self {
+        self.org_daily_limit_usd = Some(limit);
+        self
+    }
+
+    /// AAASM-2022 — Set the per-org monthly spend limit in USD.
+    pub fn with_org_monthly_limit(mut self, limit: Decimal) -> Self {
+        self.org_monthly_limit_usd = Some(limit);
+        self
+    }
+
     /// Register a per-agent daily and/or monthly spend cap.
     ///
     /// Used by `check_and_decrement` to validate per-agent limits before committing
@@ -687,6 +701,13 @@ impl BudgetTracker {
     /// Return the current spend state for a specific team, or `None` if the team has no spend.
     pub fn team_state(&self, team_id: &str) -> Option<BudgetState> {
         self.team_budgets.get(team_id).map(|s| s.clone())
+    }
+
+    /// AAASM-2022 — Return the current spend state for a specific
+    /// organisation, or `None` if the org has no recorded spend. Mirrors
+    /// [`team_state`](Self::team_state) at the multi-tenancy tier.
+    pub fn org_state(&self, org_id: &str) -> Option<BudgetState> {
+        self.org_budgets.get(org_id).map(|s| s.clone())
     }
 
     /// Return the current spend state for a specific agent, or `None` if the
