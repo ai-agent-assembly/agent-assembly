@@ -1,0 +1,14 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-cascade-global-allow-all
+  version: "0.1.0"
+
+# AAASM-2023 ST-org-4 cascade fixture — Global-scoped default policy
+# layered under the org-alpha-scoped deny in 100-org-alpha-deny-bash.yaml.
+# Empty rules list = allow-by-default for any tool the agent invokes
+# unless a higher-precedence document in the cascade denies it.
+#
+# Default scope is `global` when the field is absent.
+spec:
+  tools: {}

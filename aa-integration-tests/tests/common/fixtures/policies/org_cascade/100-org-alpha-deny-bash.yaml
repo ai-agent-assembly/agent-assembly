@@ -1,0 +1,19 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-cascade-org-alpha-deny-bash
+  version: "0.1.0"
+
+# AAASM-2023 ST-org-4 cascade fixture — Org-scoped policy layered ON TOP of
+# the Global default in 000-global-allow-all.yaml. Fires only for agents
+# whose `lineage.org_id == "org-alpha"`; agents in any other org fall
+# through to the Global default (allow).
+#
+# Note: `scope` lives INSIDE `spec:` for envelope-format documents — the
+# validator deserializes the `spec` value as the RawPolicyDocument, so
+# `scope:` at the outer envelope level is silently ignored.
+spec:
+  scope: org:org-alpha
+  tools:
+    bash:
+      allow: false

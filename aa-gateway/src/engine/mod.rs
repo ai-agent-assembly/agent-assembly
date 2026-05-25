@@ -263,6 +263,146 @@ impl PolicyEngine {
         })
     }
 
+    /// AAASM-2023 — Load **multiple** policy documents from every `*.yaml`
+    /// file in a directory and populate the `scope_index` cascade.
+    ///
+    /// Each YAML file is parsed independently and inserted into the
+    /// `scope_index` keyed by its `scope` field (`Global` / `Org(...)` /
+    /// `Team(...)` / `Agent(...)`). At evaluation time, the cascade
+    /// collector at `evaluate()` walks the scopes for the calling agent's
+    /// lineage and merges every matching document — which finally lets
+    /// `scope: org:<id>` policies fire ONLY for agents in that org
+    /// (closes the gateway-side gap that AAASM-2008 ST-org-4 surfaced).
+    ///
+    /// ## Semantics
+    ///
+    /// * Files are loaded in alphabetical filename order (deterministic).
+    /// * The first Global-scoped document found supplies the budget and
+    ///   data-pattern config; if no Global-scoped document is present,
+    ///   budget limits default to None and the data-pattern set is empty.
+    /// * Files that fail to parse abort the entire load — the caller gets
+    ///   a `PolicyParseError` for the first bad file. (Partial loads would
+    ///   be a worse failure mode than the loud abort.)
+    /// * The `policy: ArcSwap<Arc<PolicyDocument>>` primary field is set
+    ///   to the first Global-scoped document (or a fresh default when
+    ///   none is present). With a non-empty `scope_index`, `evaluate()`
+    ///   routes through `evaluate_with_cascade` and the primary slot is
+    ///   only consulted by callers that bypass the cascade path.
+    /// * No filesystem watcher is attached — the watcher today is
+    ///   single-file. Hot-reload across multiple files is a separate
+    ///   concern; for now the cascade is static-at-load.
+    ///
+    /// ## Example
+    ///
+    /// ```text
+    /// policies/
+    /// ├── 000-global-allow-all.yaml   # scope: global (or omitted)
+    /// ├── 100-org-acme-deny-bash.yaml # scope: org:acme
+    /// └── 200-team-platform.yaml      # scope: team:platform
+    /// ```
+    ///
+    /// Loading this directory gives every agent in `acme/platform` the
+    /// Global rules + the org-acme deny + the team-platform rules.
+    /// Agents in other orgs see only the Global rules.
+    pub fn load_cascade_from_dir(
+        dir: &Path,
+        budget_alert_tx: tokio::sync::broadcast::Sender<crate::budget::BudgetAlert>,
+    ) -> Result<Self, PolicyLoadError> {
+        // Collect *.yaml entries in alphabetical order so the cascade is
+        // deterministic across runs and filesystems with different
+        // dir-iteration orders.
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map_err(PolicyLoadError::Io)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .collect();
+        entries.sort();
+
+        let mut scope_index = ScopeIndex::new();
+        let mut primary: Option<PolicyDocument> = None;
+        let mut compiled_patterns = Vec::new();
+        let mut budget_tz = chrono_tz::UTC;
+        let mut daily_limit: Option<rust_decimal::Decimal> = None;
+        let mut monthly_limit: Option<rust_decimal::Decimal> = None;
+
+        for path in &entries {
+            let yaml = std::fs::read_to_string(path).map_err(PolicyLoadError::Io)?;
+            let output = PolicyValidator::from_yaml(&yaml).map_err(PolicyLoadError::Validation)?;
+            let doc = output.document;
+
+            // First Global-scoped document supplies budget + sensitive-pattern config.
+            if matches!(doc.scope, crate::policy::scope::PolicyScope::Global) && primary.is_none() {
+                compiled_patterns = doc
+                    .data
+                    .as_ref()
+                    .map(|dp| {
+                        dp.sensitive_patterns
+                            .iter()
+                            .filter_map(|p| regex::Regex::new(p).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                budget_tz = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.timezone.as_deref())
+                    .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
+                    .unwrap_or(chrono_tz::UTC);
+                daily_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.daily_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                monthly_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.monthly_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                primary = Some(doc.clone());
+            }
+
+            scope_index.insert(doc);
+        }
+
+        let budget = Arc::new(BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            daily_limit,
+            monthly_limit,
+            budget_tz,
+            budget_alert_tx,
+        ));
+
+        let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
+            name: None,
+            policy_version: None,
+            version: None,
+            scope: crate::policy::scope::PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: std::collections::HashMap::new(),
+            capabilities: None,
+        });
+        let policy_arc = Arc::new(ArcSwap::new(Arc::new(primary_doc)));
+
+        Ok(PolicyEngine {
+            policy: policy_arc,
+            scanner: aa_core::CredentialScanner::new(),
+            compiled_patterns,
+            rate_state: DashMap::new(),
+            budget,
+            scope_index,
+            _watcher: None,
+            registry: None,
+            policy_epoch: Arc::new(AtomicU64::new(0)),
+            decision_cache: DecisionCache::new(100_000),
+        })
+    }
+
     /// Load a policy from a YAML file using a pre-built budget tracker.
     ///
     /// Use this when restoring budget state from disk — the caller constructs
@@ -381,7 +521,25 @@ impl PolicyEngine {
     /// single-policy pipeline (`evaluate_primary`) when no scoped policies are
     /// present, preserving full backward compatibility.
     pub fn evaluate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
-        let cascade = self.collect_cascade(&ctx.agent_id);
+        // AAASM-2023 — resolve lineage from ctx FIRST (convert.rs already
+        // deposits proto.org_id / proto.team_id into ctx.metadata) before
+        // falling back to a registry lookup. The registry-keyed-by-composite
+        // path doesn't match `ctx.agent_id` (which is hashed from just the
+        // agent_id string), so without this preference org-scoped cascades
+        // would never see the agent's org_id.
+        let ctx_lineage = crate::registry::Lineage {
+            org_id: ctx.metadata.get("org_id").cloned(),
+            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
+        };
+        let lineage = if ctx_lineage.org_id.is_some() || ctx_lineage.team_id.is_some() {
+            ctx_lineage
+        } else {
+            self.registry
+                .as_ref()
+                .and_then(|r| r.lineage(ctx.agent_id.as_bytes()))
+                .unwrap_or_default()
+        };
+        let cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
 
         // Backward-compat: no scoped policies loaded → use primary policy only.
         if cascade.is_empty() {
@@ -1073,13 +1231,29 @@ impl PolicyEngine {
     /// narrowest. Policies within the same scope appear in their load order
     /// (insertion order in `ScopeIndex`).
     pub fn collect_cascade(&self, agent_id: &aa_core::identity::AgentId) -> Vec<Arc<PolicyDocument>> {
-        use crate::policy::scope::PolicyScope;
-
         let lineage = self
             .registry
             .as_ref()
             .and_then(|r| r.lineage(agent_id.as_bytes()))
             .unwrap_or_default();
+        self.collect_cascade_with_lineage(agent_id, &lineage)
+    }
+
+    /// AAASM-2023 — variant of [`Self::collect_cascade`] that takes a
+    /// pre-resolved [`crate::registry::Lineage`] hint instead of looking
+    /// it up via the attached registry.
+    ///
+    /// Used by [`Self::evaluate`] which can resolve the lineage from the
+    /// `AgentContext` (where convert.rs already deposits `org_id` /
+    /// `team_id` in `metadata`) without needing the registry to be
+    /// queryable by `ctx.agent_id` — a key shape that doesn't match the
+    /// registry's composite `{org_id, team_id, agent_id}` hash today.
+    pub fn collect_cascade_with_lineage(
+        &self,
+        agent_id: &aa_core::identity::AgentId,
+        lineage: &crate::registry::Lineage,
+    ) -> Vec<Arc<PolicyDocument>> {
+        use crate::policy::scope::PolicyScope;
 
         let mut cascade = Vec::new();
 
