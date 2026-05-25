@@ -467,3 +467,134 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Egress allowlist matcher (AAASM-1943)
+// ---------------------------------------------------------------------------
+
+/// Decide whether a host is allowed by an outbound-egress allowlist.
+///
+/// Semantics:
+///
+/// * **Empty allowlist** → `true` (allowlist disabled — caller falls back to
+///   whatever default policy applies, typically Allow).
+/// * **Non-empty allowlist** → `true` only when `host` matches at least one
+///   pattern; `false` otherwise.
+///
+/// Pattern syntax (`aa-proxy` + `aa-gateway` policy DSL share this):
+///
+/// * **Exact match**: `api.openai.com` matches `api.openai.com` only.
+/// * **Leftmost-label wildcard**: `*.openai.com` matches `api.openai.com`,
+///   `chat.openai.com`, etc. but NOT `openai.com` itself and NOT
+///   `evil.example.com.openai.com.attacker.com`.
+/// * **Universal wildcard**: `*` matches every host (escape hatch for
+///   "allow everything that isn't otherwise denied"; rarely used).
+///
+/// Matching is **case-insensitive** for the host portion since DNS labels are
+/// case-insensitive (RFC 4343).
+///
+/// The pattern is intentionally narrow — we don't accept arbitrary glob
+/// (`?`, character classes, full-`*` mid-label) because allowlist patterns
+/// that look more permissive than they are have historically been the source
+/// of egress-rule misconfigurations. The narrow grammar lets operators
+/// reason about every pattern at a glance.
+#[cfg(feature = "alloc")]
+pub fn is_host_allowed_by_egress_allowlist(host: &str, allowlist: &[alloc::string::String]) -> bool {
+    if allowlist.is_empty() {
+        return true;
+    }
+    let host_lower = host.to_ascii_lowercase();
+    for pattern in allowlist {
+        if egress_pattern_matches(pattern, &host_lower) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(feature = "alloc")]
+fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
+    let pattern_lower = pattern.to_ascii_lowercase();
+    if pattern_lower == "*" {
+        return true;
+    }
+    if let Some(suffix) = pattern_lower.strip_prefix("*.") {
+        // *.example.com matches anything ending in `.example.com` AFTER at
+        // least one extra label — does NOT match the bare suffix or
+        // attacker-crafted subdomains where the suffix is not at the right.
+        let required_suffix = alloc::format!(".{suffix}");
+        return host_lower.ends_with(&required_suffix) && host_lower.len() > required_suffix.len();
+    }
+    pattern_lower == host_lower
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod egress_tests {
+    use alloc::string::ToString;
+    use alloc::vec;
+
+    use super::is_host_allowed_by_egress_allowlist;
+
+    #[test]
+    fn empty_allowlist_is_default_allow() {
+        assert!(is_host_allowed_by_egress_allowlist("api.example.com", &[]));
+        assert!(is_host_allowed_by_egress_allowlist("evil.attacker.net", &[]));
+    }
+
+    #[test]
+    fn exact_match_only_matches_exact_host() {
+        let list = vec!["api.openai.com".to_string()];
+        assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
+        assert!(!is_host_allowed_by_egress_allowlist("chat.openai.com", &list));
+        assert!(!is_host_allowed_by_egress_allowlist("openai.com", &list));
+        assert!(!is_host_allowed_by_egress_allowlist("attackerapi.openai.com", &list));
+    }
+
+    #[test]
+    fn case_insensitive_host_match() {
+        let list = vec!["API.OpenAI.com".to_string()];
+        assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
+        assert!(is_host_allowed_by_egress_allowlist("API.OPENAI.COM", &list));
+    }
+
+    #[test]
+    fn leftmost_wildcard_matches_subdomain() {
+        let list = vec!["*.openai.com".to_string()];
+        assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
+        assert!(is_host_allowed_by_egress_allowlist("chat.openai.com", &list));
+        assert!(is_host_allowed_by_egress_allowlist("a.b.openai.com", &list));
+    }
+
+    #[test]
+    fn leftmost_wildcard_does_not_match_bare_suffix() {
+        let list = vec!["*.openai.com".to_string()];
+        assert!(!is_host_allowed_by_egress_allowlist("openai.com", &list));
+    }
+
+    #[test]
+    fn leftmost_wildcard_does_not_match_attacker_crafted_suffix() {
+        let list = vec!["*.openai.com".to_string()];
+        // Classic confusion attack: the attacker hopes a glob would match
+        // `evil.openai.com.attacker.net`. Our grammar refuses.
+        assert!(!is_host_allowed_by_egress_allowlist(
+            "evil.openai.com.attacker.net",
+            &list
+        ));
+    }
+
+    #[test]
+    fn universal_wildcard_matches_any_host() {
+        let list = vec!["*".to_string()];
+        assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
+        assert!(is_host_allowed_by_egress_allowlist("evil.attacker.net", &list));
+        assert!(is_host_allowed_by_egress_allowlist("anything", &list));
+    }
+
+    #[test]
+    fn multiple_patterns_any_match_allows() {
+        let list = vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()];
+        assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
+        assert!(is_host_allowed_by_egress_allowlist("api.anthropic.com", &list));
+        assert!(!is_host_allowed_by_egress_allowlist("api.cohere.com", &list));
+    }
+}
