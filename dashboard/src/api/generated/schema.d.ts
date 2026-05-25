@@ -5044,6 +5044,15 @@ export interface operations {
                 agent_id?: string | null;
                 /** @description Filter by event type name (e.g. `PolicyViolation`). */
                 event_type?: string | null;
+                /**
+                 * @description AAASM-2008 — filter by organisation identifier. When supplied, only
+                 *     audit entries whose `lineage.org_id` matches are returned. Entries
+                 *     emitted before the agent was registered with an `org_id` (where the
+                 *     field is `None` on the entry) never match an explicit `org_id`
+                 *     filter — multi-tenancy isolation requires explicit Org tagging on
+                 *     the entry at write time.
+                 */
+                org_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -5439,6 +5448,13 @@ export interface operations {
                 min_depth?: number | null;
                 /** @description When `true`, include the governance level in each agent node. */
                 show_budget?: boolean | null;
+                /**
+                 * @description AAASM-2008 — scope the query to a single organisation. When set,
+                 *     only agents whose `org_id` matches are returned (multi-tenancy
+                 *     isolation). Empty / absent agents (no `org_id` on the record)
+                 *     never match an explicit filter.
+                 */
+                org_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -5486,6 +5502,13 @@ export interface operations {
                 min_depth?: number | null;
                 /** @description When `true`, include the governance level in each agent node. */
                 show_budget?: boolean | null;
+                /**
+                 * @description AAASM-2008 — scope the query to a single organisation. When set,
+                 *     only agents whose `org_id` matches are returned (multi-tenancy
+                 *     isolation). Empty / absent agents (no `org_id` on the record)
+                 *     never match an explicit filter.
+                 */
+                org_id?: string | null;
             };
             header?: never;
             path: {
