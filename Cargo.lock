@@ -329,6 +329,7 @@ dependencies = [
  "aa-proto",
  "aa-proxy",
  "aa-runtime",
+ "aa-sandbox",
  "anyhow",
  "assert_cmd",
  "async-trait",
@@ -358,6 +359,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "uuid",
+ "wat",
 ]
 
 [[package]]
