@@ -32,6 +32,7 @@ use aa_gateway::secrets::InMemorySecretsStore;
 use aa_gateway::storage::RetentionEngine;
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
+use aa_sandbox::registry::ToolRegistry;
 use axum::Router;
 
 /// Default JWT test secret (>= 32 bytes).
@@ -176,6 +177,7 @@ spec:
         destination_registry: Arc::new(DestinationRegistry::seeded()),
         retention_engine: None,
         secrets_store: Arc::new(InMemorySecretsStore::new()),
+        tool_registry: ToolRegistry::new(),
     }
 }
 

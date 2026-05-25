@@ -78,6 +78,7 @@ use aa_gateway::routes::healthz::{healthz, HealthzState};
 use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
+use aa_sandbox::registry::ToolRegistry;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -844,6 +845,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -981,6 +983,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1119,6 +1122,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1249,6 +1253,7 @@ spec:
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,
@@ -1369,6 +1374,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
         },
         audit_dir,
         alert_store_handle,

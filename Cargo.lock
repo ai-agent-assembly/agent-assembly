@@ -12,6 +12,7 @@ dependencies = [
  "aa-gateway",
  "aa-proto",
  "aa-runtime",
+ "aa-sandbox",
  "argon2",
  "async-trait",
  "axum",
