@@ -13,6 +13,9 @@
 //! scope for AAASM-2019 (see the sub-task's explicit out-of-scope
 //! section).
 
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
 use crate::policy::SandboxConfig;
 
 /// Whether a registered tool is forwarded upstream as-is or executed
@@ -34,4 +37,59 @@ pub enum ToolKind {
         /// `SandboxRuntime::new` and then consumed per `run_tool`.
         config: SandboxConfig,
     },
+}
+
+/// In-memory `tools/call` → [`ToolKind`] map shared across the proxy's
+/// per-connection tasks.
+///
+/// Backed by `Arc<RwLock<HashMap<String, ToolKind>>>` so the proxy's
+/// async data path can `.read()` per `tools/call` without contending
+/// with rare `.write()`s from registry-management code paths.
+/// `ToolRegistry` is `Clone` (just bumps the `Arc`'s refcount) so it
+/// can be handed to as many tasks as the proxy spawns.
+///
+/// The registry is intentionally empty by default; consumers register
+/// tools at proxy boot or via the management surface that lands in a
+/// later sub-task.
+#[derive(Clone, Default)]
+pub struct ToolRegistry {
+    inner: Arc<RwLock<HashMap<String, ToolKind>>>,
+}
+
+impl ToolRegistry {
+    /// Construct an empty registry. Equivalent to `ToolRegistry::default()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `kind` under `name`, returning the previously-registered
+    /// [`ToolKind`] (if any). Useful for hot-swap semantics.
+    pub fn register(&self, name: impl Into<String>, kind: ToolKind) -> Option<ToolKind> {
+        self.inner
+            .write()
+            .expect("ToolRegistry lock poisoned")
+            .insert(name.into(), kind)
+    }
+
+    /// Look up `name`. Returns a cloned [`ToolKind`] so callers don't
+    /// hold the registry's `RwLock` across `await` points (the WASM
+    /// dispatch helper does its `SandboxRuntime::run_tool` invocation
+    /// outside of any registry lock).
+    pub fn get(&self, name: &str) -> Option<ToolKind> {
+        self.inner
+            .read()
+            .expect("ToolRegistry lock poisoned")
+            .get(name)
+            .cloned()
+    }
+
+    /// Number of currently-registered tools.
+    pub fn len(&self) -> usize {
+        self.inner.read().expect("ToolRegistry lock poisoned").len()
+    }
+
+    /// `true` iff no tools are registered.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
