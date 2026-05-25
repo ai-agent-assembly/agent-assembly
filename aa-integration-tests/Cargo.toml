@@ -24,6 +24,7 @@ aa-gateway  = { path = "../aa-gateway" }
 aa-proto    = { path = "../aa-proto" }
 aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }
+aa-sandbox  = { path = "../aa-sandbox" }
 
 anyhow      = "1"
 assert_cmd  = "2"
@@ -53,6 +54,7 @@ tokio-util        = "0.7"
 tonic             = { version = "0.14", features = ["transport"] }
 uuid              = { version = "1", features = ["v4"] }
 futures           = "0.3"
+wat               = "1"
 
 # Linux-only dev-deps for the AAASM-1520 / F116 ST-H eBPF E2E suite (also
 # used by AAASM-1522 / F116 ST-J file-monitoring E2E suite). Gated on
