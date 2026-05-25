@@ -76,6 +76,7 @@ dependencies = [
  "csv",
  "dirs",
  "futures-util",
+ "hex",
  "include_dir",
  "libc",
  "mime_guess",
