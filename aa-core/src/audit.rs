@@ -81,6 +81,13 @@ pub enum AuditEventType {
     /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
     /// [`SandboxOomKilled`]: Self::SandboxOomKilled
     SandboxStarted = 16,
+    /// A sandboxed tool attempted to read or write outside the WASI
+    /// preopened-dir allowlist. Surfaced by `aa-sandbox::runtime` when
+    /// `path_open` (or another `fd_*` host call) returns `EACCES`
+    /// because the requested path is not under any directory passed to
+    /// `WasiCtxBuilder::preopened_dir`. (AAASM-1965 / F116 ST-W,
+    /// Scenario 1 — filesystem isolation.)
+    SandboxFilesystemBlocked = 17,
 }
 
 impl AuditEventType {
@@ -106,6 +113,7 @@ impl AuditEventType {
             Self::A2ACallIntercepted => "A2ACallIntercepted",
             Self::A2AImpersonationAttempted => "A2AImpersonationAttempted",
             Self::SandboxStarted => "SandboxStarted",
+            Self::SandboxFilesystemBlocked => "SandboxFilesystemBlocked",
         }
     }
 }
@@ -974,6 +982,10 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
         assert_eq!(AuditEventType::ToolDispatched.as_str(), "ToolDispatched");
         assert_eq!(AuditEventType::SandboxStarted.as_str(), "SandboxStarted");
+        assert_eq!(
+            AuditEventType::SandboxFilesystemBlocked.as_str(),
+            "SandboxFilesystemBlocked"
+        );
     }
 
     #[test]
@@ -991,6 +1003,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
         assert_eq!(AuditEventType::ToolDispatched as u32, 13);
         assert_eq!(AuditEventType::SandboxStarted as u32, 16);
+        assert_eq!(AuditEventType::SandboxFilesystemBlocked as u32, 17);
     }
 
     #[test]
@@ -1009,6 +1022,7 @@ mod tests {
             AuditEventType::ApprovalEscalated,
             AuditEventType::ToolDispatched,
             AuditEventType::SandboxStarted,
+            AuditEventType::SandboxFilesystemBlocked,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
