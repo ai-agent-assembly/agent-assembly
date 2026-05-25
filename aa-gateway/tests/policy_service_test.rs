@@ -59,7 +59,9 @@ fn tool_call_request(tool_name: &str) -> CheckActionRequest {
             team_id: "team".into(),
             agent_id: "agent-1".into(),
         }),
-        credential_token: "tok".into(),
+        // Must match level_test_record's credential_token so AAASM-1944
+        // credential validation passes for the registered-agent tests.
+        credential_token: "tok_test".into(),
         trace_id: "trace-1".into(),
         span_id: "span-1".into(),
         action_type: ActionType::ToolCall as i32,
@@ -71,6 +73,7 @@ fn tool_call_request(tool_name: &str) -> CheckActionRequest {
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 

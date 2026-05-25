@@ -68,6 +68,7 @@ fn tool_call_request_with_args(args: &str) -> CheckActionRequest {
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 

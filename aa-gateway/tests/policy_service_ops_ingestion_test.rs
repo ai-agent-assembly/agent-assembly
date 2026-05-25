@@ -66,6 +66,7 @@ fn request_with_ids(trace_id: &str, span_id: &str, tool_name: &str) -> CheckActi
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 

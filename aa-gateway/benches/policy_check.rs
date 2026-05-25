@@ -56,6 +56,7 @@ fn minimal_llm_call() -> CheckActionRequest {
                 contains_pii: false,
             })),
         }),
+        caller_agent_id: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn full_tool_call() -> CheckActionRequest {
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 
@@ -116,6 +118,7 @@ fn worst_case_network() -> CheckActionRequest {
                 in_allowlist: false,
             })),
         }),
+        caller_agent_id: None,
     }
 }
 

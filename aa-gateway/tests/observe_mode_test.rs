@@ -128,6 +128,7 @@ fn tool_call_request_for(proto_id: &ProtoAgentId, tool_name: &str) -> CheckActio
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 

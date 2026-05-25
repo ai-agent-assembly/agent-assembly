@@ -55,6 +55,20 @@ pub enum AuditEventType {
     /// **placeholder-form** args — the resolved credential value is never
     /// recorded. (AAASM-1920 / Secret Injection.)
     ToolDispatched = 13,
+    /// An agent-to-agent (A2A) call was intercepted. The audit `payload`
+    /// carries both `caller_agent_id` (the originating agent) and
+    /// `callee_agent_id` (the agent performing the action), so reviewers
+    /// can reconstruct cross-agent delegation graphs even when the call
+    /// was allowed. Emitted only when the request's `caller_agent_id` is
+    /// populated and differs from `agent_id`. (AAASM-1944 / Zero-trust A2A.)
+    A2ACallIntercepted = 14,
+    /// An impersonation attempt was rejected: the request claimed an
+    /// `agent_id` whose registered `credential_token` does not match the
+    /// token supplied. The audit `payload` carries `claimed_agent_id` and
+    /// the agent whose `credential_token` was actually presented (when
+    /// resolvable). The action is denied before policy evaluation runs.
+    /// (AAASM-1944 / Zero-trust A2A.)
+    A2AImpersonationAttempted = 15,
 }
 
 impl AuditEventType {
@@ -77,6 +91,8 @@ impl AuditEventType {
             Self::AgentForceDeregistered => "AgentForceDeregistered",
             Self::MessageBlocked => "MessageBlocked",
             Self::ToolDispatched => "ToolDispatched",
+            Self::A2ACallIntercepted => "A2ACallIntercepted",
+            Self::A2AImpersonationAttempted => "A2AImpersonationAttempted",
         }
     }
 }

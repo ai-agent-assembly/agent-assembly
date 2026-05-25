@@ -496,6 +496,7 @@ mod tests {
             span_id: "span-1".into(),
             action_type: ActionType::FileOperation as i32,
             context: Default::default(),
+            caller_agent_id: None,
         };
         let resp = CheckActionResponse {
             decision: Decision::Deny as i32,
@@ -542,6 +543,7 @@ mod tests {
             span_id: String::new(),
             action_type: ActionType::ToolCall as i32,
             context: Default::default(),
+            caller_agent_id: None,
         };
         let resp = CheckActionResponse {
             decision: Decision::Deny as i32,

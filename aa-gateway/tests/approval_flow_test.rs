@@ -93,6 +93,7 @@ fn tool_call_request(tool_name: &str) -> CheckActionRequest {
                 target_url: String::new(),
             })),
         }),
+        caller_agent_id: None,
     }
 }
 
