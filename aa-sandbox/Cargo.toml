@@ -1,0 +1,17 @@
+[package]
+name = "aa-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebAssembly/WASI sandbox runtime for Agent Assembly tool execution"
+
+[dependencies]
+wasmtime      = "45"
+wasmtime-wasi = "45"
+
+[dev-dependencies]
+wat = "1"
+
+[lints]
+workspace = true
