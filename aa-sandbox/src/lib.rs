@@ -15,4 +15,5 @@
 
 pub mod error;
 pub mod policy;
+pub mod registry;
 pub mod runtime;
