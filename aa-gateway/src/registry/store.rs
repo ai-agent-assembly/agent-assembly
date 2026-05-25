@@ -715,16 +715,20 @@ impl AgentRegistry {
         evicted
     }
 
-    /// Return the scope lineage (org, team) for `agent_id` by reading the
-    /// `"org_id"` and `"team_id"` metadata keys written at registration.
+    /// Return the scope lineage (org, team) for `agent_id`.
     ///
-    /// Returns `None` if the agent is not in the registry. Both inner fields
-    /// may also be `None` if the agent was registered without org/team metadata.
+    /// AAASM-2008 — prefers the first-class `org_id` / `team_id` fields on
+    /// `AgentRecord`; falls back to the `metadata` map for records that
+    /// were registered before those fields were promoted from metadata.
+    /// Returns `None` if the agent is not in the registry.
     pub fn lineage(&self, agent_id: &[u8; 16]) -> Option<crate::registry::Lineage> {
         let record = self.agents.get(agent_id)?;
         Some(crate::registry::Lineage {
-            org_id: record.metadata.get("org_id").cloned(),
-            team_id: record.metadata.get("team_id").cloned(),
+            org_id: record.org_id.clone().or_else(|| record.metadata.get("org_id").cloned()),
+            team_id: record
+                .team_id
+                .clone()
+                .or_else(|| record.metadata.get("team_id").cloned()),
         })
     }
 

@@ -115,6 +115,13 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         } else {
             Some(proto_id.team_id.clone())
         };
+        // AAASM-2008 — capture org_id from proto into AgentRecord so the
+        // multi-tenancy tier is queryable as a first-class field.
+        let echo_org_id = if proto_id.org_id.is_empty() {
+            None
+        } else {
+            Some(proto_id.org_id.clone())
+        };
 
         // Compute root_agent_id, parent_key, and depth server-side before building the record.
         // Root agents: root = self, depth = 0, parent_key = None.
@@ -169,7 +176,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             children: Vec::new(),
             parent_key: resolved_parent_key,
             enforcement_mode: aa_core::EnforcementMode::from_proto_i32(req.enforcement_mode),
-            org_id: None,
+            org_id: echo_org_id,
         };
 
         self.registry.register_persisted(record).await.map_err(|e| match e {
