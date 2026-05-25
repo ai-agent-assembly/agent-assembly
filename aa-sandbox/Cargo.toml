@@ -7,6 +7,7 @@ repository.workspace = true
 description = "WebAssembly/WASI sandbox runtime for Agent Assembly tool execution"
 
 [dependencies]
+aa-core       = { path = "../aa-core" }
 thiserror     = "2"
 wasmtime      = "45"
 wasmtime-wasi = "45"

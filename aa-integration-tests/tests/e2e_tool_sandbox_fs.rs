@@ -26,7 +26,7 @@
 //! That pattern works when the dispatch lives behind an HTTP route
 //! (the secret-injection case fronts `/dispatch_tool`). The
 //! AAASM-2019 dispatch helper
-//! ([`aa_proxy::wasm_dispatch::dispatch_wasm_tool`]) is currently a
+//! ([`aa_sandbox::wasm_dispatch::dispatch_wasm_tool`]) is currently a
 //! synchronous pure function not yet wired into any HTTP route — its
 //! audit-event sink IS the `audit_events: Vec<AuditEventType>` field
 //! on the returned [`WasmDispatchResult::Wasm`]. These tests inspect
@@ -36,10 +36,10 @@
 //! sub-task once an external surface needs it.
 
 use aa_core::audit::AuditEventType;
-use aa_proxy::wasm_dispatch::{dispatch_wasm_tool, WasmDispatchResult};
 use aa_sandbox::error::SandboxError;
 use aa_sandbox::policy::{SandboxConfig, SandboxLimits};
 use aa_sandbox::registry::{ToolKind, ToolRegistry};
+use aa_sandbox::wasm_dispatch::{dispatch_wasm_tool, WasmDispatchResult};
 
 const FS_PROBE_WAT: &str = include_str!("../fixtures/wasm/fs_probe.wat");
 const RUNAWAY_WAT: &str = include_str!("../fixtures/wasm/runaway.wat");

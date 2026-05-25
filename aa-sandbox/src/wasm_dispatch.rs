@@ -2,40 +2,38 @@
 //! `tools/call` requests through [`SandboxRuntime`] instead of forwarding
 //! upstream.
 //!
-//! The proxy data path calls [`dispatch_wasm_tool`] after the gateway's
-//! `CheckAction` returns `McpDecision::Allow`. If the named tool is
-//! [`ToolKind::Wasm`], this helper runs it in the sandbox and reports the
-//! outcome alongside the audit-event sequence the data path should write.
-//! If the tool is missing from the registry or registered as
-//! [`ToolKind::Native`], the helper returns [`WasmDispatchResult::NotWasm`]
-//! and the data path falls through to its existing upstream-forward
-//! pipeline unchanged.
+//! Originally shipped in `aa-proxy::wasm_dispatch` under AAASM-2019;
+//! relocated to `aa-sandbox::wasm_dispatch` under AAASM-2033 so the
+//! `aa-api` `/dispatch_tool` HTTP route can consume it without reversing
+//! the workspace dep direction (`aa-api → aa-proxy` would be a layer
+//! inversion; `aa-api → aa-sandbox` is a clean primitive dep).
+//!
+//! Callers — either the proxy data path or the `aa-api` dispatch route —
+//! invoke [`dispatch_wasm_tool`] after the gateway's `CheckAction`
+//! returns `Allow`. If the named tool is [`ToolKind::Wasm`], this helper
+//! runs it in the sandbox and reports the outcome alongside the
+//! audit-event sequence the caller should write. If the tool is missing
+//! from the registry or registered as [`ToolKind::Native`], the helper
+//! returns [`WasmDispatchResult::NotWasm`] and the caller falls through
+//! to its existing pipeline unchanged.
 //!
 //! ## Audit-event lifecycle
 //!
 //! Every WASM dispatch emits a paired event sequence — a
 //! [`AuditEventType::SandboxStarted`] at the start, then exactly one
-//! outcome event ([`SandboxFilesystemBlocked`], [`SandboxCpuTimeout`],
-//! [`SandboxOomKilled`], or [`SandboxTerminated`]). Wall-clock breaches
-//! and InvalidWasm / generic wasmtime errors are folded into
+//! outcome event ([`AuditEventType::SandboxFilesystemBlocked`],
+//! [`AuditEventType::SandboxCpuTimeout`],
+//! [`AuditEventType::SandboxOomKilled`], or
+//! [`AuditEventType::SandboxTerminated`]). Wall-clock breaches and
+//! `InvalidWasm` / generic `Wasmtime` errors are folded into
 //! `SandboxCpuTimeout` and `SandboxTerminated` respectively (see the
 //! per-variant doc-comments on `AuditEventType` for the rationale).
-//!
-//! [`AuditEventType::SandboxStarted`]: aa_core::audit::AuditEventType::SandboxStarted
-//! [`SandboxFilesystemBlocked`]: aa_core::audit::AuditEventType::SandboxFilesystemBlocked
-//! [`SandboxCpuTimeout`]: aa_core::audit::AuditEventType::SandboxCpuTimeout
-//! [`SandboxOomKilled`]: aa_core::audit::AuditEventType::SandboxOomKilled
-//! [`SandboxTerminated`]: aa_core::audit::AuditEventType::SandboxTerminated
-//! [`ToolRegistry`]: aa_sandbox::registry::ToolRegistry
-//! [`ToolKind`]: aa_sandbox::registry::ToolKind
-//! [`ToolKind::Wasm`]: aa_sandbox::registry::ToolKind::Wasm
-//! [`ToolKind::Native`]: aa_sandbox::registry::ToolKind::Native
-//! [`SandboxRuntime`]: aa_sandbox::runtime::SandboxRuntime
 
 use aa_core::audit::AuditEventType;
-use aa_sandbox::error::SandboxError;
-use aa_sandbox::registry::{ToolKind, ToolRegistry};
-use aa_sandbox::runtime::{SandboxOutput, SandboxRuntime};
+
+use crate::error::SandboxError;
+use crate::registry::{ToolKind, ToolRegistry};
+use crate::runtime::{SandboxOutput, SandboxRuntime};
 
 /// Outcome of a single `tools/call` dispatch attempt.
 #[derive(Debug)]
@@ -68,12 +66,12 @@ pub enum WasmDispatchResult {
 /// `run_tool(module_bytes, args)`, and packages the verdict + lifecycle
 /// audit events.
 ///
-/// `args` is forwarded to `SandboxRuntime::run_tool` unchanged; in
-/// AAASM-2019 the sandbox runtime ignores it (no WASI args wiring yet),
-/// but the parameter is kept so the caller doesn't need to change shape
-/// when the dispatch glue lands in AAASM-2020.
+/// `args` is forwarded to `SandboxRuntime::run_tool` unchanged; the
+/// sandbox runtime currently ignores it (no WASI args wiring yet), but
+/// the parameter is kept so the caller's shape stays stable once WASI
+/// args land.
 ///
-/// [`SandboxConfig`]: aa_sandbox::policy::SandboxConfig
+/// [`SandboxConfig`]: crate::policy::SandboxConfig
 pub fn dispatch_wasm_tool(tool_name: &str, args: &[u8], registry: &ToolRegistry) -> WasmDispatchResult {
     let kind = match registry.get(tool_name) {
         Some(k) => k,
@@ -116,7 +114,7 @@ fn outcome_event(result: &Result<SandboxOutput, SandboxError>) -> AuditEventType
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_sandbox::policy::{SandboxConfig, SandboxLimits};
+    use crate::policy::{SandboxConfig, SandboxLimits};
 
     /// Minimal `_start` that returns cleanly (empty body). Used to
     /// assert the happy-path `SandboxTerminated` lifecycle event.

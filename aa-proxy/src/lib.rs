@@ -24,7 +24,6 @@ pub mod intercept;
 pub mod mcp_enforce;
 pub mod proxy;
 pub mod tls;
-pub mod wasm_dispatch;
 
 pub use config::ProxyConfig;
 pub use error::ProxyError;

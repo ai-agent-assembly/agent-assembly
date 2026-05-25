@@ -127,7 +127,7 @@ pub struct AppState {
     pub secrets_store: Arc<dyn SecretsStore>,
     /// In-memory `tools/call` registry consumed by `POST /v1/dispatch_tool`
     /// when the named tool is a WASM-marked entry. The handler invokes
-    /// [`aa_proxy::wasm_dispatch::dispatch_wasm_tool`] for those; native
+    /// [`aa_sandbox::wasm_dispatch::dispatch_wasm_tool`] for those; native
     /// (or absent) entries fall through to the existing
     /// secret-injection / forward-upstream path. (AAASM-2033 /
     /// F116 ST-W data-path follow-up.)
