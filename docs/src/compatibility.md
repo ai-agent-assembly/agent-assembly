@@ -16,6 +16,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 
 | `aa-runtime` | Python SDK (`aa-ffi-python`) | Node.js SDK (`aa-ffi-node`) | Go SDK (`aa-ffi-go`) | Protocol Version |
 |---|---|---|---|---|
+| v0.0.1-alpha.1 | v0.0.1-alpha.1 (PyPI `0.0.1a1`) ✓ | v0.0.1-alpha.1 ✓ | v0.0.1-alpha.1 ✓ | protocol/v1 |
 | v0.0.1 | v0.0.1 ✓ | v0.0.1 ✓ | v0.0.1 ✓ | protocol/v1 |
 
 **Legend:**
@@ -41,6 +42,7 @@ A runtime version may support multiple protocol versions to allow SDK upgrades w
 
 | `aa-runtime` Version | Supported Protocol Versions |
 |---|---|
+| v0.0.1-alpha.1 | protocol/v1 |
 | v0.0.1 | protocol/v1 |
 
 ---

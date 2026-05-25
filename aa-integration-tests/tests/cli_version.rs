@@ -139,16 +139,28 @@ async fn version_build_metadata_field_shape() {
     let cli_version = by_component["cli"]["version"]
         .as_str()
         .expect("cli.version should be a string");
-    let parts: Vec<&str> = cli_version.split('.').collect();
+    // SemVer 2.0 allows pre-release identifiers (`-alpha.1`) and build
+    // metadata (`+meta`) suffixed on the `MAJOR.MINOR.PATCH` core. Peel
+    // both off before splitting on `.` so pre-release tag bumps (e.g.
+    // AAASM-1932 → `0.0.1-alpha.1`) don't trip this shape check.
+    let core_part = cli_version
+        .split_once('+')
+        .map(|(core, _build)| core)
+        .unwrap_or(cli_version);
+    let core_part = core_part
+        .split_once('-')
+        .map(|(release, _pre)| release)
+        .unwrap_or(core_part);
+    let parts: Vec<&str> = core_part.split('.').collect();
     assert_eq!(
         parts.len(),
         3,
-        "cli.version `{cli_version}` should be semver `MAJOR.MINOR.PATCH`"
+        "cli.version `{cli_version}` SemVer core should be `MAJOR.MINOR.PATCH` (got core `{core_part}`)"
     );
     for part in &parts {
         assert!(
             part.chars().any(|c| c.is_ascii_digit()),
-            "cli.version segment `{part}` should contain at least one digit (got `{cli_version}`)",
+            "cli.version SemVer core segment `{part}` should contain at least one digit (got `{cli_version}`)",
         );
     }
 }

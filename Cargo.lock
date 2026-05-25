@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aa-api"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-devtool",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "aa-cli"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-devtool",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "aa-core"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-claude-code"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-codex"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-copilot"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-saas"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-sample-myeditor"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-windsurf"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "aa-ebpf"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-ebpf-common",
@@ -226,18 +226,18 @@ dependencies = [
 
 [[package]]
 name = "aa-ebpf-common"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 
 [[package]]
 name = "aa-ffi-go"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aa-ffi-node"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "napi",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "aa-ffi-python"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-proto",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "aa-gateway"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-proto",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "aa-integration-tests"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-api",
  "aa-core",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "aa-proto"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "prost",
  "tonic",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "aa-proxy"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-proto",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "aa-runtime"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-ebpf",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "aa-wasm"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "wasm-bindgen",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "conformance"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "aa-core",
  "aa-proto",
