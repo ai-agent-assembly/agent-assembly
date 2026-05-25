@@ -805,6 +805,7 @@ mod proxy_e2e {
             cert_cache_capacity: 10,
             llm_only: false,
             denied_hosts: Vec::new(),
+            network_allowlist: Vec::new(),
             skip_upstream_tls_verify: true,
             credential_action: CredentialAction::default(),
             upstream_override: Some(upstream_override),
