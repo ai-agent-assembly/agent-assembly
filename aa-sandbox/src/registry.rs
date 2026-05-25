@@ -93,3 +93,66 @@ impl ToolRegistry {
         self.len() == 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_registry_is_empty_and_len_zero() {
+        let reg = ToolRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+        assert!(reg.get("anything").is_none());
+    }
+
+    #[test]
+    fn register_native_then_lookup_returns_native() {
+        let reg = ToolRegistry::new();
+        let prev = reg.register("forward_to_upstream", ToolKind::Native);
+        assert!(prev.is_none(), "first register should return no previous entry");
+        assert_eq!(reg.len(), 1);
+        match reg.get("forward_to_upstream") {
+            Some(ToolKind::Native) => {}
+            other => panic!("expected ToolKind::Native, got {:?}", other.map(|_| "Wasm")),
+        }
+    }
+
+    #[test]
+    fn register_wasm_then_lookup_returns_wasm_with_bytes() {
+        let reg = ToolRegistry::new();
+        let module_bytes = b"\x00asm\x01\x00\x00\x00".to_vec(); // minimal WASM magic + version
+        reg.register(
+            "run_in_sandbox",
+            ToolKind::Wasm {
+                module_bytes: module_bytes.clone(),
+                config: SandboxConfig::default(),
+            },
+        );
+        match reg.get("run_in_sandbox") {
+            Some(ToolKind::Wasm { module_bytes: got, .. }) => {
+                assert_eq!(got, module_bytes, "registered module bytes must round-trip on lookup");
+            }
+            other => panic!("expected ToolKind::Wasm, got {:?}", other.map(|_| "Native")),
+        }
+    }
+
+    #[test]
+    fn register_replaces_existing_entry() {
+        let reg = ToolRegistry::new();
+        reg.register("same_name", ToolKind::Native);
+        let prev = reg.register(
+            "same_name",
+            ToolKind::Wasm {
+                module_bytes: vec![0, 1, 2],
+                config: SandboxConfig::default(),
+            },
+        );
+        assert!(
+            matches!(prev, Some(ToolKind::Native)),
+            "register should return the previous entry on replace"
+        );
+        assert_eq!(reg.len(), 1, "len stays at 1 after a replace");
+        assert!(matches!(reg.get("same_name"), Some(ToolKind::Wasm { .. })));
+    }
+}
