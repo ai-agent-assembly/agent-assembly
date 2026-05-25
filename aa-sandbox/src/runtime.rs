@@ -130,3 +130,61 @@ impl SandboxRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hand-authored WAT fixture that probes the WASI filesystem
+    /// allowlist. The guest:
+    ///
+    /// 1. Places the literal `/etc/passwd` at memory offset 0.
+    /// 2. Invokes `path_open` with `fd = 3` — the first non-stdio fd,
+    ///    which is unbound when [`SandboxConfig::preopened_dirs`] is
+    ///    empty.
+    /// 3. Surfaces the returned errno via `proc_exit`. WASI returns
+    ///    `EBADF` (8) when the dir fd is unmapped (the AAASM-2017
+    ///    empty-allowlist case) or `ENOTCAPABLE` (76) when a path
+    ///    escapes the preopen tree.
+    const PATH_OPEN_PROBE_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "path_open"
+            (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "/etc/passwd")
+          (func (export "_start")
+            (call $proc_exit
+              (call $path_open
+                (i32.const 3)
+                (i32.const 0)
+                (i32.const 0)
+                (i32.const 11)
+                (i32.const 0)
+                (i64.const 0)
+                (i64.const 0)
+                (i32.const 0)
+                (i32.const 100)
+              )
+            )
+          )
+        )
+    "#;
+
+    #[test]
+    fn run_tool_blocks_path_open_outside_allowlist() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with empty allowlist must construct");
+        let wasm = wat::parse_str(PATH_OPEN_PROBE_WAT).expect("WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        match result {
+            Err(SandboxError::FilesystemBlocked { errno }) => {
+                assert_ne!(errno, 0, "WASI must surface a non-zero errno for the blocked path_open");
+            }
+            other => panic!("expected SandboxError::FilesystemBlocked, got {:?}", other),
+        }
+    }
+}
