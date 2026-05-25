@@ -1,50 +1,42 @@
 //! AAASM-2033 / F116 ST-W data-path E2E — `POST /api/v1/dispatch_tool`
 //! with a WASM-marked tool registered.
 //!
-//! Boots the `TopologyTestEnv` (in-process Axum server), registers a
-//! `ToolKind::Wasm` entry in the shared `tool_registry` for each of the
-//! three sandbox scenarios from AAASM-2020's WAT fixtures, drives the
-//! HTTP route, and asserts the `DispatchToolResponse.sandbox` payload
-//! shape.
+//! Boots [`TopologyTestEnv::start_with_audit_sink`] — an in-process Axum
+//! server with an `mpsc::Receiver<AuditEntry>` wired to
+//! `AppState::audit_sender`. Each test registers a `ToolKind::Wasm`
+//! entry in the shared `tool_registry` for one of the AAASM-2020 WAT
+//! fixtures, drives the HTTP route, and asserts **both** the
+//! `DispatchToolResponse.sandbox` payload shape AND the exact
+//! lifecycle audit-event sequence drained from the audit-sink receiver.
 //!
-//! Three tests:
+//! Four tests:
 //!
 //! * `dispatch_tool_wasm_routes_filesystem_blocked` — exercises the
 //!   AAASM-2017 filesystem-isolation half end-to-end through the HTTP
-//!   surface; asserts `sandbox.error == "FilesystemBlocked"`.
+//!   surface; asserts `sandbox.error == "FilesystemBlocked"` + audit
+//!   sequence `[SandboxStarted, SandboxFilesystemBlocked]`.
 //! * `dispatch_tool_wasm_routes_cpu_timeout` — exercises the AAASM-2018
-//!   CPU-timeout half; asserts `sandbox.error == "CpuTimeout"`.
+//!   CPU-timeout half; asserts `sandbox.error == "CpuTimeout"` + audit
+//!   `[SandboxStarted, SandboxCpuTimeout]`.
 //! * `dispatch_tool_wasm_routes_memory_exhausted` — exercises the
 //!   AAASM-2018 memory-exhaustion half; asserts
-//!   `sandbox.error == "MemoryExhausted"`.
-//!
-//! ## Scope note
-//!
-//! The AAASM-2033 acceptance criterion mentions "persistence to the
-//! production audit sink" — the dispatch handler emits audit entries
-//! via `state.audit_sender.try_send()` for every `audit_events` element
-//! returned by `dispatch_wasm_tool`. The `TopologyTestEnv` test harness
-//! constructs `AppState` with `audit_sender: None` (no on-disk JSONL
-//! writer wired), so the emission is exercised but its persisted
-//! readback is verified at two adjacent layers instead:
-//!
-//! * `aa_sandbox::wasm_dispatch` unit tests assert the dispatch helper
-//!   returns the exact `[SandboxStarted, <outcome>]` `Vec`.
-//! * `aa-api/src/routes/dispatch.rs` emits each entry via
-//!   `audit_sender.try_send()` — code-reviewable, exercised here as a
-//!   no-op when `audit_sender` is `None`.
-//!
-//! End-to-end JSONL persistence belongs to the binary that hosts
-//! `aa-api` (boots the audit writer); follow-up scope.
+//!   `sandbox.error == "MemoryExhausted"` + audit
+//!   `[SandboxStarted, SandboxOomKilled]`.
+//! * `dispatch_tool_unknown_tool_falls_through_to_secret_injection` —
+//!   regression guard that the AAASM-1920 secret-injection path is
+//!   untouched when the registry has no entry; asserts the native path
+//!   emits a single `ToolDispatched` audit entry.
 
 #[path = "common/mod.rs"]
 mod common;
 
-use std::sync::Arc;
+use std::time::Duration;
 
+use aa_core::audit::{AuditEntry, AuditEventType};
 use aa_sandbox::policy::{SandboxConfig, SandboxLimits};
 use aa_sandbox::registry::ToolKind;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 use common::TopologyTestEnv;
 
@@ -67,9 +59,34 @@ async fn post_dispatch_tool(env: &TopologyTestEnv, body: Value) -> Value {
     resp.json::<Value>().await.expect("response must be valid JSON")
 }
 
+/// Drain `expected` audit entries from `receiver`, each with a 500 ms
+/// timeout. Returns the entries in the order they were emitted. Panics
+/// if `expected` entries don't arrive — the handler emits via
+/// `try_send` synchronously before returning the HTTP response, so any
+/// drop indicates a real bug, not a timing flake.
+async fn drain_audit_entries(receiver: &mut mpsc::Receiver<AuditEntry>, expected: usize) -> Vec<AuditEntry> {
+    let mut entries = Vec::with_capacity(expected);
+    for i in 0..expected {
+        match tokio::time::timeout(Duration::from_millis(500), receiver.recv()).await {
+            Ok(Some(entry)) => entries.push(entry),
+            Ok(None) => panic!("audit-sink channel closed before {expected} entries (got {i})"),
+            Err(_) => panic!("timeout waiting for audit entry #{i} of {expected}"),
+        }
+    }
+    entries
+}
+
+/// Convenience: extract just the `event_type` discriminants from a
+/// drained entry list.
+fn event_types(entries: &[AuditEntry]) -> Vec<AuditEventType> {
+    entries.iter().map(|e| e.event_type()).collect()
+}
+
 #[tokio::test]
 async fn dispatch_tool_wasm_routes_filesystem_blocked() {
-    let env = TopologyTestEnv::start().await.expect("topology env must boot");
+    let (env, mut audit_rx) = TopologyTestEnv::start_with_audit_sink()
+        .await
+        .expect("topology env must boot");
     let module_bytes = wat::parse_str(FS_PROBE_WAT).expect("fs_probe.wat must parse");
     env.tool_registry.register(
         "fs_probe",
@@ -100,21 +117,24 @@ async fn dispatch_tool_wasm_routes_filesystem_blocked() {
         "errno must be a non-zero WASI errno, got {:?}",
         sandbox["errno"],
     );
-    // Native-path fields are empty/null for WASM dispatches.
-    assert!(
-        resp["resolved_args"].is_null(),
-        "resolved_args must be null on WASM path"
-    );
+    assert!(resp["resolved_args"].is_null());
+    assert_eq!(resp["names_substituted"], json!([]));
+
+    // Drain the audit sink — the handler must have emitted the
+    // lifecycle sequence to the live sender during the HTTP request.
+    let entries = drain_audit_entries(&mut audit_rx, 2).await;
     assert_eq!(
-        resp["names_substituted"],
-        json!([]),
-        "names_substituted must be empty on WASM path",
+        event_types(&entries),
+        vec![AuditEventType::SandboxStarted, AuditEventType::SandboxFilesystemBlocked],
+        "audit sink must receive [SandboxStarted, SandboxFilesystemBlocked]",
     );
 }
 
 #[tokio::test]
 async fn dispatch_tool_wasm_routes_cpu_timeout() {
-    let env = TopologyTestEnv::start().await.expect("topology env must boot");
+    let (env, mut audit_rx) = TopologyTestEnv::start_with_audit_sink()
+        .await
+        .expect("topology env must boot");
     let module_bytes = wat::parse_str(RUNAWAY_WAT).expect("runaway.wat must parse");
     // Tight 1 000-unit fuel budget so the loop trips OutOfFuel within
     // microseconds. Memory + wall-clock budgets kept at the safe-by-default
@@ -138,11 +158,19 @@ async fn dispatch_tool_wasm_routes_cpu_timeout() {
     let sandbox = resp.get("sandbox").cloned().expect("`sandbox` must be present");
     assert_eq!(sandbox["ok"], json!(false));
     assert_eq!(sandbox["error"], json!("CpuTimeout"));
+
+    let entries = drain_audit_entries(&mut audit_rx, 2).await;
+    assert_eq!(
+        event_types(&entries),
+        vec![AuditEventType::SandboxStarted, AuditEventType::SandboxCpuTimeout],
+    );
 }
 
 #[tokio::test]
 async fn dispatch_tool_wasm_routes_memory_exhausted() {
-    let env = TopologyTestEnv::start().await.expect("topology env must boot");
+    let (env, mut audit_rx) = TopologyTestEnv::start_with_audit_sink()
+        .await
+        .expect("topology env must boot");
     let module_bytes = wat::parse_str(MEM_BOMB_WAT).expect("mem_bomb.wat must parse");
     env.tool_registry.register(
         "mem_bomb",
@@ -157,6 +185,12 @@ async fn dispatch_tool_wasm_routes_memory_exhausted() {
     let sandbox = resp.get("sandbox").cloned().expect("`sandbox` must be present");
     assert_eq!(sandbox["ok"], json!(false));
     assert_eq!(sandbox["error"], json!("MemoryExhausted"));
+
+    let entries = drain_audit_entries(&mut audit_rx, 2).await;
+    assert_eq!(
+        event_types(&entries),
+        vec![AuditEventType::SandboxStarted, AuditEventType::SandboxOomKilled],
+    );
 }
 
 #[tokio::test]
@@ -164,8 +198,11 @@ async fn dispatch_tool_unknown_tool_falls_through_to_secret_injection() {
     // Regression guard: when the registry has no entry for the tool name
     // (the default state of the `TopologyTestEnv` `tool_registry`), the
     // handler must fall through to the AAASM-1920 secret-injection
-    // path — `sandbox` field absent / null, `resolved_args` populated.
-    let env = TopologyTestEnv::start().await.expect("topology env must boot");
+    // path — `sandbox` field absent / null, `resolved_args` populated,
+    // a single `ToolDispatched` audit entry emitted.
+    let (env, mut audit_rx) = TopologyTestEnv::start_with_audit_sink()
+        .await
+        .expect("topology env must boot");
 
     let resp = post_dispatch_tool(
         &env,
@@ -185,11 +222,13 @@ async fn dispatch_tool_unknown_tool_falls_through_to_secret_injection() {
     );
     assert_eq!(resp["names_substituted"], json!([]));
 
-    // Keep `env` alive until the test exits so the server task stays
-    // running for the HTTP request above. (The `Arc<>` field on the
-    // struct keeps the underlying server alive even after `env` is
-    // dropped, but holding the binding explicit is clearer.)
-    let _keep_alive: Arc<()> = Arc::new(());
-    drop(_keep_alive);
-    drop(env);
+    // The native path emits exactly one `ToolDispatched` audit entry
+    // (AAASM-1920) — confirms our fall-through preserves the existing
+    // emission shape.
+    let entries = drain_audit_entries(&mut audit_rx, 1).await;
+    assert_eq!(
+        event_types(&entries),
+        vec![AuditEventType::ToolDispatched],
+        "native fall-through must emit exactly one ToolDispatched entry",
+    );
 }
