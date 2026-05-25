@@ -88,6 +88,13 @@ pub enum AuditEventType {
     /// `WasiCtxBuilder::preopened_dir`. (AAASM-1965 / F116 ST-W,
     /// Scenario 1 — filesystem isolation.)
     SandboxFilesystemBlocked = 17,
+    /// A sandboxed tool was killed because its wasmtime instruction-fuel
+    /// budget (or wall-clock guard) was exhausted. Surfaced by
+    /// `aa-sandbox::runtime` when `Store::set_fuel` drains to zero or
+    /// the wall-clock watcher fires, mapping to
+    /// `SandboxError::CpuTimeout` / `SandboxError::WallClockTimeout`.
+    /// (AAASM-1965 / F116 ST-W, Scenario 2 — runaway-loop kill.)
+    SandboxCpuTimeout = 18,
 }
 
 impl AuditEventType {
@@ -114,6 +121,7 @@ impl AuditEventType {
             Self::A2AImpersonationAttempted => "A2AImpersonationAttempted",
             Self::SandboxStarted => "SandboxStarted",
             Self::SandboxFilesystemBlocked => "SandboxFilesystemBlocked",
+            Self::SandboxCpuTimeout => "SandboxCpuTimeout",
         }
     }
 }
@@ -986,6 +994,7 @@ mod tests {
             AuditEventType::SandboxFilesystemBlocked.as_str(),
             "SandboxFilesystemBlocked"
         );
+        assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
     }
 
     #[test]
@@ -1004,6 +1013,7 @@ mod tests {
         assert_eq!(AuditEventType::ToolDispatched as u32, 13);
         assert_eq!(AuditEventType::SandboxStarted as u32, 16);
         assert_eq!(AuditEventType::SandboxFilesystemBlocked as u32, 17);
+        assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
     }
 
     #[test]
@@ -1023,6 +1033,7 @@ mod tests {
             AuditEventType::ToolDispatched,
             AuditEventType::SandboxStarted,
             AuditEventType::SandboxFilesystemBlocked,
+            AuditEventType::SandboxCpuTimeout,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
