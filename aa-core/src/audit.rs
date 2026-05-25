@@ -105,6 +105,12 @@ pub enum AuditEventType {
     ///
     /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
     SandboxOomKilled = 19,
+    /// A sandboxed tool invocation completed without being killed by
+    /// any isolation primitive. Emitted by `aa-sandbox::runtime`
+    /// regardless of whether the tool returned a logical success or a
+    /// tool-defined error — this variant marks lifecycle completion,
+    /// not outcome semantics. (AAASM-1965 / F116 ST-W.)
+    SandboxTerminated = 20,
 }
 
 impl AuditEventType {
@@ -133,6 +139,7 @@ impl AuditEventType {
             Self::SandboxFilesystemBlocked => "SandboxFilesystemBlocked",
             Self::SandboxCpuTimeout => "SandboxCpuTimeout",
             Self::SandboxOomKilled => "SandboxOomKilled",
+            Self::SandboxTerminated => "SandboxTerminated",
         }
     }
 }
@@ -1007,6 +1014,7 @@ mod tests {
         );
         assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
         assert_eq!(AuditEventType::SandboxOomKilled.as_str(), "SandboxOomKilled");
+        assert_eq!(AuditEventType::SandboxTerminated.as_str(), "SandboxTerminated");
     }
 
     #[test]
@@ -1027,6 +1035,7 @@ mod tests {
         assert_eq!(AuditEventType::SandboxFilesystemBlocked as u32, 17);
         assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
         assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
+        assert_eq!(AuditEventType::SandboxTerminated as u32, 20);
     }
 
     #[test]
@@ -1048,6 +1057,7 @@ mod tests {
             AuditEventType::SandboxFilesystemBlocked,
             AuditEventType::SandboxCpuTimeout,
             AuditEventType::SandboxOomKilled,
+            AuditEventType::SandboxTerminated,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
