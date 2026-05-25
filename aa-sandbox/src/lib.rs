@@ -12,3 +12,5 @@
 //! parent Story AAASM-1965 for scope and acceptance criteria.
 
 #![forbid(unsafe_code)]
+
+pub mod error;
