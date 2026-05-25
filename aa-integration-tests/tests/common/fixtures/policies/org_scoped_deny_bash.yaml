@@ -1,0 +1,16 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: org-alpha-deny-bash
+  version: "0.1.0"
+
+# AAASM-2008 — Scenario 4: org-scoped policy evaluation.
+# Only agents whose registered org_id is "org-alpha" should hit this
+# policy. Agents in any other org fall through to the next document in
+# the cascade (allow-by-default in our test setup).
+scope: org:org-alpha
+
+spec:
+  tools:
+    bash:
+      allow: false
