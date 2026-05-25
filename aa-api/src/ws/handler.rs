@@ -606,6 +606,7 @@ mod tests {
                 latency_ms: 41,
                 succeeded: false,
                 error_message: "blocked by policy".into(),
+                ..Default::default()
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));

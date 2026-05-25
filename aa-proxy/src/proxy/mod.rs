@@ -309,52 +309,62 @@ impl ProxyServer {
         };
 
         // MCP detection. On a successful request-side eval, carry the parsed
-        // call forward so the response-side path below can use the tool_name
-        // for audit emission and (when needed) ToolResult-driven redaction.
-        let mcp_call: Option<crate::intercept::mcp::McpToolCall> = if let Some(call) = parse_mcp_request(&req.body) {
-            let target_url = format!("https://{host}{path}", path = req.target);
-            match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-                Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
-                    tracing::info!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
-                    );
-                    self.interceptor.emit_mcp_decision(&call.tool_name, false, "").await;
-                    Some(call)
+        // call AND its serialised args bytes forward so the response-side
+        // path below can re-use both for audit emission (args go into
+        // `ToolCallDetail.args_json`).
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> =
+            if let Some(call) = parse_mcp_request(&req.body) {
+                let target_url = format!("https://{host}{path}", path = req.target);
+                // Serialise args once and reuse across the audit emissions on
+                // both the request-side (Allow/Deny) and the response-side
+                // (post-redact) paths.
+                let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
+                match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+                    Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+                        tracing::info!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
+                        );
+                        self.interceptor
+                            .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
+                            .await;
+                        Some((call, args_bytes))
+                    }
+                    Ok(McpDecision::Deny { reason }) => {
+                        tracing::info!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            %reason,
+                            "MCP call denied by gateway, returning JSON-RPC error envelope",
+                        );
+                        self.interceptor
+                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
+                            .await;
+                        let body = build_jsonrpc_error_response(-32000, &reason);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body,
+                        );
+                        let mut client_tls = client_reader.into_inner();
+                        client_tls.write_all(resp.as_bytes()).await?;
+                        let _ = client_tls.shutdown().await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            error = %e,
+                            "gateway CheckAction failed, forwarding without enforcement",
+                        );
+                        None
+                    }
                 }
-                Ok(McpDecision::Deny { reason }) => {
-                    tracing::info!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        %reason,
-                        "MCP call denied by gateway, returning JSON-RPC error envelope",
-                    );
-                    self.interceptor.emit_mcp_decision(&call.tool_name, true, &reason).await;
-                    let body = build_jsonrpc_error_response(-32000, &reason);
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body,
-                    );
-                    let mut client_tls = client_reader.into_inner();
-                    client_tls.write_all(resp.as_bytes()).await?;
-                    let _ = client_tls.shutdown().await;
-                    return Ok(());
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        error = %e,
-                        "gateway CheckAction failed, forwarding without enforcement",
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         // Forward the (consumed) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
@@ -363,7 +373,7 @@ impl ProxyServer {
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
-        if let Some(call) = mcp_call {
+        if let Some((call, args_bytes)) = mcp_call {
             // MCP response path (AAASM-1930 ST-Q-3): read the upstream
             // response body-aware, run the proxy's credential scanner on
             // the body, and forward a redacted version when findings are
@@ -384,7 +394,7 @@ impl ProxyServer {
                                 "MCP response carried sensitive payload, redacting before forwarding to client",
                             );
                             self.interceptor
-                                .emit_mcp_decision(&call.tool_name, false, "response redacted")
+                                .emit_mcp_decision(&call.tool_name, &args_bytes, false, "response redacted")
                                 .await;
                             redacted
                         }

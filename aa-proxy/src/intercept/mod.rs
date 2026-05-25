@@ -223,10 +223,14 @@ impl Interceptor {
     /// `tools/call` intercept.
     ///
     /// * `tool_name` is copied verbatim from the parsed [`crate::intercept::mcp::McpToolCall`].
+    /// * `args_json` is the JSON-encoded arguments the agent passed to the
+    ///   tool. Run through the `CredentialScanner` here so the audit
+    ///   `ToolCallDetail.args_json` carries the **redacted** form when
+    ///   findings are present — the audit chain never sees raw secrets.
     /// * `denied` distinguishes the two audit shapes:
     ///   * `false` → `audit_event::Detail::ToolCall(ToolCallDetail { tool_name,
-    ///     tool_source: "mcp", succeeded: true, .. })` for Allow / Redact (the
-    ///     proxy forwarded the request).
+    ///     tool_source: "mcp", succeeded: true, args_json: <maybe redacted>, .. })`
+    ///     for Allow / Redact (the proxy forwarded the request).
     ///   * `true` → `audit_event::Detail::Violation(PolicyViolation {
     ///     blocked_action: "tools/call <tool_name>", reason })` for Deny.
     /// * `reason` is the policy's human-readable explanation for the deny
@@ -234,7 +238,7 @@ impl Interceptor {
     ///
     /// The event is emitted on the broadcast channel; send failures are
     /// silently dropped (no-receivers is normal for standalone proxy mode).
-    pub async fn emit_mcp_decision(&self, tool_name: &str, denied: bool, reason: &str) {
+    pub async fn emit_mcp_decision(&self, tool_name: &str, args_json: &[u8], denied: bool, reason: &str) {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -248,10 +252,29 @@ impl Interceptor {
             };
             audit_event::Detail::Violation(violation)
         } else {
+            // Scan the args for credentials before recording them in the
+            // audit chain. The producer-side scrub keeps raw secrets out
+            // of every downstream audit subscriber (JSONL writer, dashboard
+            // ws, etc.) without requiring each subscriber to re-scan.
+            let safe_args = self
+                .scanner
+                .as_ref()
+                .and_then(|s| {
+                    let text = String::from_utf8_lossy(args_json);
+                    let scan = s.scan(&text);
+                    if scan.is_clean() {
+                        None
+                    } else {
+                        Some(scan.redact(&text).into_bytes())
+                    }
+                })
+                .unwrap_or_else(|| args_json.to_vec());
+
             let tool_call = ToolCallDetail {
                 tool_name: tool_name.to_string(),
                 tool_source: "mcp".into(),
                 succeeded: true,
+                args_json: safe_args,
                 ..Default::default()
             };
             audit_event::Detail::ToolCall(tool_call)
