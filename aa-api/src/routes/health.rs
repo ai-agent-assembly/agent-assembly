@@ -43,7 +43,7 @@ async fn subsystem_checks(state: &AppState) -> BTreeMap<String, String> {
     checks.insert("registry".to_string(), "ok".to_string());
 
     // audit: list() reads the audit log directory; errors (e.g. permissions) → degraded.
-    let audit_status = match state.audit_reader.list(1, 0, None, None).await {
+    let audit_status = match state.audit_reader.list(1, 0, None, None, None).await {
         Ok(_) => "ok",
         Err(_) => "degraded",
     };

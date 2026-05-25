@@ -26,6 +26,7 @@ fn depth2_lineage() -> Lineage {
         root_agent_id: Some(ROOT),
         parent_agent_id: Some(PARENT),
         team_id: Some("team-alpha".into()),
+        org_id: None,
         delegation_reason: Some("summarise results".into()),
         spawned_by_tool: Some("langgraph.subgraph".into()),
         depth: Some(2),

@@ -109,6 +109,7 @@ fn register_agent_with_mode(
         children: vec![],
         parent_key: None,
         enforcement_mode: mode,
+        org_id: None,
     };
     registry.register(record).unwrap();
 }

@@ -120,6 +120,10 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        // AAASM-2008 — org_id is not persisted in the current storage
+        // schema either; populated as None until the storage layer carries
+        // it through (follow-up).
+        org_id: None,
     }
 }
 
@@ -163,6 +167,7 @@ mod tests {
             children: Vec::new(),
             parent_key: None,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 

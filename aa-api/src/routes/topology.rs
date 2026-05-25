@@ -63,6 +63,11 @@ pub struct TopologyFilterParams {
     pub min_depth: Option<u32>,
     /// When `true`, include the governance level in each agent node.
     pub show_budget: Option<bool>,
+    /// AAASM-2008 — scope the query to a single organisation. When set,
+    /// only agents whose `org_id` matches are returned (multi-tenancy
+    /// isolation). Empty / absent agents (no `org_id` on the record)
+    /// never match an explicit filter.
+    pub org_id: Option<String>,
 }
 
 /// Query parameters for the tree endpoint.
@@ -155,7 +160,15 @@ pub async fn get_overview(
         return (StatusCode::OK, Json((*cached).clone()));
     }
 
-    let all = state.agent_registry.list();
+    // AAASM-2008 — when org_id is set, scope to that org's members
+    // (O(members) lookup). Otherwise list all agents.
+    let all = match params.org_id.as_deref() {
+        Some(oid) => {
+            let keys = state.agent_registry.org_members(oid);
+            keys.into_iter().filter_map(|k| state.agent_registry.get(&k)).collect()
+        }
+        None => state.agent_registry.list(),
+    };
     let show_budget = params.show_budget.unwrap_or(false);
 
     let filtered: Vec<_> = all

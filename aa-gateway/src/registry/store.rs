@@ -108,6 +108,16 @@ pub struct AgentRecord {
     pub parent_agent_id: Option<String>,
     /// Team this agent belongs to; `None` if not provided at registration.
     pub team_id: Option<String>,
+    /// AAASM-2008 — Organization (tenant) this agent belongs to; `None` if
+    /// not provided at registration. First-class field mirroring `team_id`
+    /// at the multi-tenancy tier; used by topology / audit / budget
+    /// scope-by-org filtering and by Org-scoped policy evaluation.
+    ///
+    /// Historically the org tag flowed only through the `metadata.get("org_id")`
+    /// map; promoting it to a first-class field lets the registry maintain a
+    /// secondary index (org_index) and lets the audit pipeline propagate it
+    /// into [`aa_core::Lineage::org_id`] without parsing the metadata BTreeMap.
+    pub org_id: Option<String>,
     /// Delegation depth in the agent hierarchy — 0 for root agents.
     pub depth: u32,
     /// Human-readable reason the parent delegated to this agent.
@@ -149,6 +159,21 @@ pub struct AgentRegistry {
     control_senders: DashMap<[u8; 16], ControlSender>,
     /// Secondary index mapping team_id → set of agent registry keys.
     team_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// AAASM-2008 — secondary index mapping org_id → set of agent registry
+    /// keys. Mirrors `team_index` at the multi-tenancy tier so topology
+    /// queries can list all agents in a given Org in O(members), and
+    /// cross-org isolation checks can verify "agent X belongs to Org A"
+    /// without scanning the full agent table.
+    org_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// AAASM-2008 — reverse index mapping `credential_token` → registry
+    /// key. Lets `validate_credential_token` detect cross-org credential
+    /// reuse: when a request claims `agent_id = {org-beta, …, X}` and
+    /// presents a token registered to `{org-alpha, …, X}`, the lookup
+    /// at the claimed key fails (different org → different hash) but
+    /// this reverse lookup finds the actual owner and the gateway can
+    /// emit `A2AImpersonationAttempted` instead of silently allowing
+    /// the request to fall through to policy evaluation.
+    credential_index: DashMap<String, [u8; 16]>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
     /// All active suspension reasons per agent. Supports multi-reason coexistence:
@@ -173,6 +198,8 @@ impl AgentRegistry {
             agents: DashMap::new(),
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
+            org_index: DashMap::new(),
+            credential_index: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
@@ -243,6 +270,15 @@ impl AgentRegistry {
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
+        let org_id = record.org_id.clone();
+        // AAASM-2008 — capture credential_token for the reverse index.
+        // Empty tokens (test fixtures that bypass credential validation)
+        // are not indexed.
+        let credential_token = if record.credential_token.is_empty() {
+            None
+        } else {
+            Some(record.credential_token.clone())
+        };
 
         {
             // Hold registration_lock across validate+insert to prevent TOCTOU races where
@@ -262,7 +298,9 @@ impl AgentRegistry {
             }
         } // registration_lock released here
 
-        // Post-insert: update parent's children list and team index (safe outside lock).
+        // Post-insert: update parent's children list and secondary indexes
+        // (safe outside lock — DashMap individual entries are independently
+        // synchronised).
         if let Some(pk) = parent_key {
             if let Some(mut parent) = self.agents.get_mut(&pk) {
                 parent.children.push(agent_id);
@@ -270,6 +308,16 @@ impl AgentRegistry {
         }
         if let Some(tid) = team_id {
             self.team_index.entry(tid).or_default().insert(agent_id);
+        }
+        // AAASM-2008 — mirror the team_index insertion for the Org tier.
+        if let Some(oid) = org_id {
+            self.org_index.entry(oid).or_default().insert(agent_id);
+        }
+        // AAASM-2008 — populate the credential reverse index. Used by
+        // validate_credential_token to detect cross-org credential reuse
+        // (token from Org A presented under Org B's claimed identity).
+        if let Some(tok) = credential_token {
+            self.credential_index.insert(tok, agent_id);
         }
 
         Ok(())
@@ -337,6 +385,16 @@ impl AgentRegistry {
             if let Some(set) = self.team_index.get(tid) {
                 set.remove(agent_id);
             }
+        }
+        // AAASM-2008 — mirror the team_index removal for the Org tier.
+        if let Some(ref oid) = record.org_id {
+            if let Some(set) = self.org_index.get(oid) {
+                set.remove(agent_id);
+            }
+        }
+        // AAASM-2008 — drop the credential reverse-index entry too.
+        if !record.credential_token.is_empty() {
+            self.credential_index.remove(&record.credential_token);
         }
 
         // Apply orphan policy to each direct child recursively.
@@ -705,16 +763,20 @@ impl AgentRegistry {
         evicted
     }
 
-    /// Return the scope lineage (org, team) for `agent_id` by reading the
-    /// `"org_id"` and `"team_id"` metadata keys written at registration.
+    /// Return the scope lineage (org, team) for `agent_id`.
     ///
-    /// Returns `None` if the agent is not in the registry. Both inner fields
-    /// may also be `None` if the agent was registered without org/team metadata.
+    /// AAASM-2008 — prefers the first-class `org_id` / `team_id` fields on
+    /// `AgentRecord`; falls back to the `metadata` map for records that
+    /// were registered before those fields were promoted from metadata.
+    /// Returns `None` if the agent is not in the registry.
     pub fn lineage(&self, agent_id: &[u8; 16]) -> Option<crate::registry::Lineage> {
         let record = self.agents.get(agent_id)?;
         Some(crate::registry::Lineage {
-            org_id: record.metadata.get("org_id").cloned(),
-            team_id: record.metadata.get("team_id").cloned(),
+            org_id: record.org_id.clone().or_else(|| record.metadata.get("org_id").cloned()),
+            team_id: record
+                .team_id
+                .clone()
+                .or_else(|| record.metadata.get("team_id").cloned()),
         })
     }
 
@@ -919,6 +981,24 @@ impl AgentRegistry {
             .unwrap_or_default()
     }
 
+    /// AAASM-2008 — return all agent keys belonging to the given organisation.
+    /// Mirrors [`Self::team_members`] at the multi-tenancy tier. Used by
+    /// topology / audit / budget endpoints when scoping queries by Org.
+    pub fn org_members(&self, org_id: &str) -> Vec<[u8; 16]> {
+        self.org_index
+            .get(org_id)
+            .map(|s| s.iter().map(|k| *k).collect())
+            .unwrap_or_default()
+    }
+
+    /// AAASM-2008 — find the agent key that owns the given credential
+    /// token. Returns `None` when no agent has registered with this
+    /// token (and `validate_credential_token` should reject any non-empty
+    /// token whose owner is unknown).
+    pub fn find_by_credential_token(&self, token: &str) -> Option<[u8; 16]> {
+        self.credential_index.get(token).map(|e| *e.value())
+    }
+
     /// Return the registry keys of all root agents (depth == 0).
     pub fn root_agents(&self) -> Vec<[u8; 16]> {
         self.agents
@@ -1013,6 +1093,7 @@ mod tree_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1280,6 +1361,7 @@ mod lineage_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1420,6 +1502,7 @@ mod cascade_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1586,6 +1669,7 @@ mod orphan_mode_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1796,6 +1880,7 @@ mod cross_mode_integration {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1940,6 +2025,7 @@ mod sweep_aged_agents_tests {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 

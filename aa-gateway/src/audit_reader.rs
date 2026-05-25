@@ -37,6 +37,7 @@ impl AuditReader {
         offset: usize,
         agent_id: Option<&str>,
         event_type: Option<&str>,
+        org_id: Option<&str>,
     ) -> io::Result<(Vec<AuditEntry>, u64)> {
         let mut all_entries = self.read_all_entries().await?;
 
@@ -45,7 +46,7 @@ impl AuditReader {
         let event_filter: Option<Vec<AuditEventType>> = event_type.and_then(parse_event_type);
 
         // Apply filters.
-        if agent_filter.is_some() || event_filter.is_some() {
+        if agent_filter.is_some() || event_filter.is_some() || org_id.is_some() {
             all_entries.retain(|entry| {
                 if let Some(aid) = &agent_filter {
                     if entry.agent_id() != *aid {
@@ -54,6 +55,15 @@ impl AuditReader {
                 }
                 if let Some(types) = &event_filter {
                     if !types.contains(&entry.event_type()) {
+                        return false;
+                    }
+                }
+                // AAASM-2008 — org_id filter scopes the result to a single
+                // tenant. Entries with org_id=None never match a non-None
+                // filter (multi-tenancy isolation requires explicit org
+                // tagging on the entry).
+                if let Some(org) = org_id {
+                    if entry.org_id() != Some(org) {
                         return false;
                     }
                 }

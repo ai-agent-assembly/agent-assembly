@@ -358,6 +358,7 @@ async fn audit_service_populates_lineage_from_registry() {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            org_id: None,
         })
         .unwrap();
 

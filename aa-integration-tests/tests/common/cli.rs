@@ -178,6 +178,7 @@ impl CliFixture {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            org_id: None,
         };
 
         self.env
@@ -351,6 +352,7 @@ impl CliFixture {
             children: vec![],
             parent_key: Some(parent_id),
             enforcement_mode: None,
+            org_id: None,
         };
         self.env
             .agent_registry

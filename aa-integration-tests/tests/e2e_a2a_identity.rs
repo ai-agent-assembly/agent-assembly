@@ -117,6 +117,7 @@ fn register_agent(registry: &AgentRegistry, proto_id: &ProtoAgentId, credential_
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        org_id: None,
     };
     registry.register(record).expect("register agent");
 }

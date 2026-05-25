@@ -703,8 +703,33 @@ impl PolicyServiceImpl {
         // redacted payload) to the audit entry via the redaction-aware constructor.
         // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
         // never reach the audit pipeline.
+        // AAASM-2008 — resolve the agent's org_id from the registry so the
+        // audit entry carries it in the Lineage. Lets `/api/v1/logs?org_id=…`
+        // and `aasm audit compliance-export` filter by tenant. Falls back to
+        // an empty Lineage when the registry is absent (lightweight test
+        // fixtures) or the agent is not registered.
+        let lineage = self
+            .registry
+            .as_ref()
+            .and_then(|r| r.lineage(&proto_agent_id_to_key(proto_agent)))
+            .map(|reg_lineage| Lineage {
+                org_id: reg_lineage.org_id,
+                team_id: reg_lineage.team_id,
+                ..Lineage::default()
+            })
+            .unwrap_or_default();
+
         let entry = if eval.credential_findings.is_empty() {
-            AuditEntry::new(seq, timestamp_ns, event_type, agent_id, session_id, payload, *last_hash)
+            AuditEntry::new_with_lineage(
+                seq,
+                timestamp_ns,
+                event_type,
+                agent_id,
+                session_id,
+                payload,
+                *last_hash,
+                lineage,
+            )
         } else {
             let redaction = Redaction {
                 credential_findings: eval.credential_findings.clone(),
@@ -718,7 +743,7 @@ impl PolicyServiceImpl {
                 session_id,
                 payload,
                 *last_hash,
-                Lineage::default(),
+                lineage,
                 redaction,
             )
         };
@@ -780,14 +805,37 @@ impl PolicyServiceImpl {
         let registry = self.registry.as_ref()?;
         let proto_agent = req.agent_id.as_ref()?;
         let key = proto_agent_id_to_key(proto_agent);
-        let record = registry.get(&key)?;
+        let record_opt = registry.get(&key);
 
-        let reason = if req.credential_token.is_empty() {
-            "missing credential token"
-        } else if req.credential_token != record.credential_token {
-            "credential token mismatch"
+        let reason = if let Some(record) = &record_opt {
+            // The claimed agent is registered at the claimed (org, team, id)
+            // triple. Standard validation: empty / mismatched token rejects.
+            if req.credential_token.is_empty() {
+                "missing credential token"
+            } else if req.credential_token != record.credential_token {
+                "credential token mismatch"
+            } else {
+                return None;
+            }
         } else {
-            return None;
+            // AAASM-2008 — the claimed agent is NOT registered at the
+            // claimed triple. If the supplied credential_token is registered
+            // to a DIFFERENT agent, this is a cross-org / cross-identity
+            // impersonation attempt and must be rejected. (Empty token +
+            // unregistered agent is the lightweight-fixture path — skip
+            // validation so existing tests that bypass the registry layer
+            // continue working.)
+            if req.credential_token.is_empty() {
+                return None;
+            }
+            if registry.find_by_credential_token(&req.credential_token).is_some() {
+                "credential token registered to a different agent"
+            } else {
+                // Token doesn't belong to any registered agent; could be a
+                // test fixture or an unregistered client. Existing behaviour
+                // (skip) is preserved.
+                return None;
+            }
         };
 
         let response = CheckActionResponse {
@@ -821,12 +869,26 @@ impl PolicyServiceImpl {
             "reason": &response.reason,
             "policy_rule": &response.policy_rule,
             "claimed_agent_id": &proto_agent.agent_id,
+            "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
         })
         .to_string();
 
+        // AAASM-2008 — stamp the claimed org_id onto the impersonation
+        // entry's Lineage so audit queries filtered by org_id surface the
+        // attempt against the org it claimed. (For impersonation attempts
+        // the claimed org is the one a reviewer would search by.)
+        let claimed_org_lineage = if proto_agent.org_id.is_empty() {
+            Lineage::default()
+        } else {
+            Lineage {
+                org_id: Some(proto_agent.org_id.clone()),
+                ..Lineage::default()
+            }
+        };
+
         let mut last_hash = self.last_hash.lock().await;
-        let entry = AuditEntry::new(
+        let entry = AuditEntry::new_with_lineage(
             seq,
             timestamp_ns,
             AuditEventType::A2AImpersonationAttempted,
@@ -834,6 +896,7 @@ impl PolicyServiceImpl {
             session_id,
             payload,
             *last_hash,
+            claimed_org_lineage,
         );
         *last_hash = *entry.entry_hash();
         drop(last_hash);
