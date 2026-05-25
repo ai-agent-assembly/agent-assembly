@@ -8,7 +8,7 @@
 //! [`aa_core::AuditEntry`] survive end-to-end.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use aa_core::AuditEntry;
@@ -79,6 +79,79 @@ pub fn map_audit_entry(entry: &AuditEntry) -> ComplianceRecord {
         spawned_by_tool: entry.spawned_by_tool().map(|s| s.to_string()),
         depth: entry.depth(),
     }
+}
+
+/// Write compliance records as newline-delimited JSON, one record per line.
+///
+/// The preferred output for SIEM ingestors, regulators, and archival systems.
+/// Each line is a complete JSON document encoding a [`ComplianceRecord`].
+pub fn write_records_jsonl<W: Write>(
+    records: &[ComplianceRecord],
+    mut writer: W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for record in records {
+        let line = serde_json::to_string(record)?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// Write compliance records as a pretty-printed JSON array.
+///
+/// Useful for human review of a small archive. Prefer JSONL for any
+/// production export.
+pub fn write_records_json<W: Write>(
+    records: &[ComplianceRecord],
+    mut writer: W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json = serde_json::to_string_pretty(records)?;
+    writer.write_all(json.as_bytes())?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Write compliance records as CSV with the regulator-relevant columns.
+///
+/// The CSV view drops the payload body and lineage to keep the file
+/// approachable for spreadsheet review. It always includes the hash chain
+/// anchors and the count of credential findings so an auditor can spot
+/// scrubbed entries at a glance. Use JSONL for full fidelity.
+pub fn write_records_csv<W: Write>(
+    records: &[ComplianceRecord],
+    mut writer: W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut wtr = csv::Writer::from_writer(&mut writer);
+    wtr.write_record([
+        "seq",
+        "timestamp",
+        "event_type",
+        "agent_id",
+        "session_id",
+        "previous_hash",
+        "entry_hash",
+        "credential_findings_count",
+        "redacted",
+    ])?;
+    for record in records {
+        wtr.write_record([
+            record.seq.to_string().as_str(),
+            record.timestamp.as_str(),
+            record.event_type.as_str(),
+            record.agent_id.as_str(),
+            record.session_id.as_str(),
+            record.previous_hash.as_str(),
+            record.entry_hash.as_str(),
+            record.credential_findings.len().to_string().as_str(),
+            if record.redacted_payload.is_some() {
+                "true"
+            } else {
+                "false"
+            },
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -211,5 +284,63 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         let parsed: ComplianceRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, record);
+    }
+
+    fn sample_records(n: usize) -> Vec<ComplianceRecord> {
+        let mut prev = [0u8; 32];
+        (0..n)
+            .map(|i| {
+                let e = AuditEntry::new(
+                    i as u64,
+                    1_700_000_000_000_000_000 + i as u64,
+                    AuditEventType::ToolCallIntercepted,
+                    fixed_agent(),
+                    fixed_session(),
+                    format!("{{\"seq\":{i}}}"),
+                    prev,
+                );
+                prev = *e.entry_hash();
+                map_audit_entry(&e)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_records_jsonl_one_line_per_record() {
+        let records = sample_records(3);
+        let mut buf = Vec::new();
+        write_records_jsonl(&records, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            let parsed: ComplianceRecord = serde_json::from_str(line).unwrap();
+            assert!(parsed.entry_hash.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn write_records_json_yields_parseable_array() {
+        let records = sample_records(2);
+        let mut buf = Vec::new();
+        write_records_json(&records, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: Vec<ComplianceRecord> = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].seq, 0);
+        assert_eq!(parsed[1].seq, 1);
+    }
+
+    #[test]
+    fn write_records_csv_header_and_per_record_rows() {
+        let records = sample_records(2);
+        let mut buf = Vec::new();
+        write_records_csv(&records, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 rows
+        assert!(lines[0].starts_with("seq,timestamp,event_type,agent_id,session_id,previous_hash,entry_hash"));
+        assert!(lines[1].contains("ToolCallIntercepted"));
+        assert!(lines[1].contains("false")); // no redaction
     }
 }
