@@ -95,6 +95,16 @@ pub enum AuditEventType {
     /// `SandboxError::CpuTimeout` / `SandboxError::WallClockTimeout`.
     /// (AAASM-1965 / F116 ST-W, Scenario 2 — runaway-loop kill.)
     SandboxCpuTimeout = 18,
+    /// A sandboxed tool was killed because wasmtime's `Store::limiter`
+    /// rejected a memory-growth request that would exceed the
+    /// configured `memory_pages` ceiling. Surfaced by
+    /// `aa-sandbox::runtime` mapping to `SandboxError::MemoryExhausted`.
+    /// Distinguished from [`SandboxCpuTimeout`] so audit consumers can
+    /// tell whether the host pressure was instruction-fuel or memory
+    /// pages. (AAASM-1965 / F116 ST-W, Scenario 2 — memory-bomb kill.)
+    ///
+    /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
+    SandboxOomKilled = 19,
 }
 
 impl AuditEventType {
@@ -122,6 +132,7 @@ impl AuditEventType {
             Self::SandboxStarted => "SandboxStarted",
             Self::SandboxFilesystemBlocked => "SandboxFilesystemBlocked",
             Self::SandboxCpuTimeout => "SandboxCpuTimeout",
+            Self::SandboxOomKilled => "SandboxOomKilled",
         }
     }
 }
@@ -995,6 +1006,7 @@ mod tests {
             "SandboxFilesystemBlocked"
         );
         assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
+        assert_eq!(AuditEventType::SandboxOomKilled.as_str(), "SandboxOomKilled");
     }
 
     #[test]
@@ -1014,6 +1026,7 @@ mod tests {
         assert_eq!(AuditEventType::SandboxStarted as u32, 16);
         assert_eq!(AuditEventType::SandboxFilesystemBlocked as u32, 17);
         assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
+        assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
     }
 
     #[test]
@@ -1034,6 +1047,7 @@ mod tests {
             AuditEventType::SandboxStarted,
             AuditEventType::SandboxFilesystemBlocked,
             AuditEventType::SandboxCpuTimeout,
+            AuditEventType::SandboxOomKilled,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
