@@ -1237,6 +1237,42 @@ mod tests {
         assert!(!s.contains("bash"));
     }
 
+    #[test]
+    fn display_round_trips_sandbox_event_names() {
+        // For each Sandbox* lifecycle variant introduced under AAASM-1965,
+        // assert that AuditEntry's Display surfaces the variant's `as_str()`
+        // label verbatim. Auditors grep the JSONL log by these tokens.
+        let sandbox_events = [
+            (AuditEventType::SandboxStarted, "event=SandboxStarted]"),
+            (
+                AuditEventType::SandboxFilesystemBlocked,
+                "event=SandboxFilesystemBlocked]",
+            ),
+            (AuditEventType::SandboxCpuTimeout, "event=SandboxCpuTimeout]"),
+            (AuditEventType::SandboxOomKilled, "event=SandboxOomKilled]"),
+            (AuditEventType::SandboxTerminated, "event=SandboxTerminated]"),
+        ];
+        for (event_type, expected_tail) in sandbox_events {
+            let entry = AuditEntry::new(
+                0,
+                1_714_222_134_000_000_000,
+                event_type,
+                AgentId::from_bytes(AGENT_BYTES),
+                SessionId::from_bytes(SESSION_BYTES),
+                alloc::string::String::from("{}"),
+                GENESIS_HASH,
+            );
+            let rendered = alloc::format!("{}", entry);
+            assert!(
+                rendered.ends_with(expected_tail),
+                "Display for {:?} should end with `{}` but was `{}`",
+                event_type,
+                expected_tail,
+                rendered,
+            );
+        }
+    }
+
     // --- AuditLog helpers ---
 
     fn make_log() -> AuditLog {
