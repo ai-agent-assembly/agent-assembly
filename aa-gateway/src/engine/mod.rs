@@ -521,7 +521,25 @@ impl PolicyEngine {
     /// single-policy pipeline (`evaluate_primary`) when no scoped policies are
     /// present, preserving full backward compatibility.
     pub fn evaluate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
-        let cascade = self.collect_cascade(&ctx.agent_id);
+        // AAASM-2023 — resolve lineage from ctx FIRST (convert.rs already
+        // deposits proto.org_id / proto.team_id into ctx.metadata) before
+        // falling back to a registry lookup. The registry-keyed-by-composite
+        // path doesn't match `ctx.agent_id` (which is hashed from just the
+        // agent_id string), so without this preference org-scoped cascades
+        // would never see the agent's org_id.
+        let ctx_lineage = crate::registry::Lineage {
+            org_id: ctx.metadata.get("org_id").cloned(),
+            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
+        };
+        let lineage = if ctx_lineage.org_id.is_some() || ctx_lineage.team_id.is_some() {
+            ctx_lineage
+        } else {
+            self.registry
+                .as_ref()
+                .and_then(|r| r.lineage(ctx.agent_id.as_bytes()))
+                .unwrap_or_default()
+        };
+        let cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
 
         // Backward-compat: no scoped policies loaded → use primary policy only.
         if cascade.is_empty() {
@@ -1213,13 +1231,29 @@ impl PolicyEngine {
     /// narrowest. Policies within the same scope appear in their load order
     /// (insertion order in `ScopeIndex`).
     pub fn collect_cascade(&self, agent_id: &aa_core::identity::AgentId) -> Vec<Arc<PolicyDocument>> {
-        use crate::policy::scope::PolicyScope;
-
         let lineage = self
             .registry
             .as_ref()
             .and_then(|r| r.lineage(agent_id.as_bytes()))
             .unwrap_or_default();
+        self.collect_cascade_with_lineage(agent_id, &lineage)
+    }
+
+    /// AAASM-2023 — variant of [`Self::collect_cascade`] that takes a
+    /// pre-resolved [`crate::registry::Lineage`] hint instead of looking
+    /// it up via the attached registry.
+    ///
+    /// Used by [`Self::evaluate`] which can resolve the lineage from the
+    /// `AgentContext` (where convert.rs already deposits `org_id` /
+    /// `team_id` in `metadata`) without needing the registry to be
+    /// queryable by `ctx.agent_id` — a key shape that doesn't match the
+    /// registry's composite `{org_id, team_id, agent_id}` hash today.
+    pub fn collect_cascade_with_lineage(
+        &self,
+        agent_id: &aa_core::identity::AgentId,
+        lineage: &crate::registry::Lineage,
+    ) -> Vec<Arc<PolicyDocument>> {
+        use crate::policy::scope::PolicyScope;
 
         let mut cascade = Vec::new();
 
