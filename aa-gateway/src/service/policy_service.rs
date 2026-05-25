@@ -647,7 +647,28 @@ impl PolicyServiceImpl {
         };
         let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
-        let event_type = Self::decision_to_event_type_from_response(response.decision);
+
+        // AAASM-1944: when the request carries `caller_agent_id` and it
+        // differs from `agent_id`, the call is an agent-to-agent (A2A)
+        // dispatch — emit the dedicated A2ACallIntercepted event for Allow
+        // decisions so reviewers can reconstruct cross-agent delegation
+        // graphs. Deny / Redact / Pending decisions continue to flow
+        // through the existing variants per `decision_to_event_type_from_response`.
+        let caller_agent_id_str: Option<&str> = req.caller_agent_id.as_ref().and_then(|c| {
+            if c.agent_id.is_empty() || c.agent_id == proto_agent.agent_id {
+                None
+            } else {
+                Some(c.agent_id.as_str())
+            }
+        });
+        let is_a2a_allow = caller_agent_id_str.is_some()
+            && response.decision == aa_proto::assembly::common::v1::Decision::Allow as i32;
+        let event_type = if is_a2a_allow {
+            AuditEventType::A2ACallIntercepted
+        } else {
+            Self::decision_to_event_type_from_response(response.decision)
+        };
+
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
@@ -661,6 +682,8 @@ impl PolicyServiceImpl {
                 "dry_run": true,
                 "shadow_decision": &s.shadow_decision,
                 "shadow_reason": &s.reason,
+                "caller_agent_id": caller_agent_id_str,
+                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
             }),
             None => serde_json::json!({
                 "action_type": req.action_type,
@@ -668,6 +691,8 @@ impl PolicyServiceImpl {
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
                 "latency_us": response.decision_latency_us,
+                "caller_agent_id": caller_agent_id_str,
+                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
             }),
         }
         .to_string();
