@@ -136,6 +136,122 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A parsed HTTP response from the proxy's MitM tunnel (upstream side).
+#[derive(Debug, Clone)]
+pub struct HttpResponse {
+    /// HTTP version (e.g. `"HTTP/1.1"`).
+    pub version: String,
+    /// Status code (e.g. `"200"`).
+    pub status_code: String,
+    /// Reason phrase (e.g. `"OK"`).
+    pub reason: String,
+    /// Header lines as `(name, value)` pairs preserving casing.
+    pub headers: Vec<(String, String)>,
+    /// Response body bytes, captured verbatim.
+    pub body: Vec<u8>,
+}
+
+/// Read and parse an HTTP/1.1 response from `reader`.
+///
+/// Companion to [`read_http_request`] but for the upstream side of the
+/// MitM tunnel. Reads exactly `Content-Length` bytes of body; responses
+/// using `Transfer-Encoding: chunked` parse the head but leave the body
+/// empty (consistent with the request-side scope note above).
+///
+/// Used by the AAASM-1930 MCP path to capture upstream responses for
+/// credential scanning before the bytes reach the client.
+pub async fn read_http_response<R>(reader: &mut BufReader<R>) -> Result<Option<HttpResponse>, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut status_line = String::new();
+    let n = reader.read_line(&mut status_line).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let trimmed = status_line.trim_end_matches(['\r', '\n']);
+    let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return Err(ProxyError::Config(format!("malformed HTTP status line: {trimmed:?}")));
+    }
+    let version = parts[0].to_string();
+    let status_code = parts[1].to_string();
+    let reason = parts.get(2).copied().unwrap_or("").to_string();
+
+    let mut headers: Vec<(String, String)> = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Err(ProxyError::Config("unexpected EOF reading response headers".into()));
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = trimmed.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        } else {
+            return Err(ProxyError::Config(format!(
+                "malformed response header line: {trimmed:?}"
+            )));
+        }
+    }
+
+    let content_length: usize = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0);
+
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body).await?;
+    }
+
+    Ok(Some(HttpResponse {
+        version,
+        status_code,
+        reason,
+        headers,
+        body,
+    }))
+}
+
+/// Re-serialise an [`HttpResponse`] with a replacement body, rewriting the
+/// `Content-Length` header to match the new body length.
+///
+/// Mirrors [`serialize_http_request`]'s contract for the upstream side:
+/// existing `Content-Length` and `Transfer-Encoding` headers are dropped
+/// and replaced with a single fresh `Content-Length`, so the client sees
+/// unambiguous framing.
+pub fn serialize_http_response(resp: &HttpResponse, new_body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(resp.body.len() + new_body.len() + 256);
+    out.extend_from_slice(resp.version.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(resp.status_code.as_bytes());
+    if !resp.reason.is_empty() {
+        out.push(b' ');
+        out.extend_from_slice(resp.reason.as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
+
+    for (k, v) in &resp.headers {
+        if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"Content-Length: ");
+    out.extend_from_slice(new_body.len().to_string().as_bytes());
+    out.extend_from_slice(b"\r\n\r\n");
+    out.extend_from_slice(new_body);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

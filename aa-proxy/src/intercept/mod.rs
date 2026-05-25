@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
 
-use aa_proto::assembly::audit::v1::{audit_event, AuditEvent, LlmCallDetail, NetworkCallDetail, PolicyViolation};
+use aa_proto::assembly::audit::v1::{
+    audit_event, AuditEvent, LlmCallDetail, NetworkCallDetail, PolicyViolation, ToolCallDetail,
+};
 use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::pipeline::event::{EnrichedEvent, EventSource};
 use aa_runtime::pipeline::PipelineEvent;
@@ -191,6 +193,108 @@ impl Interceptor {
 
         // send() returns Err only when there are zero receivers — normal for
         // standalone proxy operation (no runtime attached).
+        let _ = self.event_tx.send(PipelineEvent::Audit(Box::new(enriched)));
+    }
+
+    /// Scan a response-side payload for credentials and return the redacted
+    /// form when findings are present.
+    ///
+    /// Returns `None` when the scanner is disabled or the payload is clean.
+    /// On `Some(redacted)`, the secret bytes have been replaced with the
+    /// scanner's `[REDACTED:<kind>]` markers and the caller should forward
+    /// the redacted bytes in place of the original.
+    ///
+    /// Used by the AAASM-1930 MCP data path to redact upstream response
+    /// bodies before they reach the client (ST-Q-3). The proxy's default
+    /// scanner carries the same `aa_core::CredentialScanner` patterns the
+    /// gateway uses for ToolResult evaluation, so the redaction shape
+    /// matches what `mcp_redact_secrets.yaml` would produce gateway-side.
+    pub fn redact_response_body(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let scanner = self.scanner.as_ref()?;
+        let text = String::from_utf8_lossy(body);
+        let scan = scanner.scan(&text);
+        if scan.is_clean() {
+            return None;
+        }
+        Some(scan.redact(&text).into_bytes())
+    }
+
+    /// Emit an audit event recording the gateway's decision for an MCP
+    /// `tools/call` intercept.
+    ///
+    /// * `tool_name` is copied verbatim from the parsed [`crate::intercept::mcp::McpToolCall`].
+    /// * `args_json` is the JSON-encoded arguments the agent passed to the
+    ///   tool. Run through the `CredentialScanner` here so the audit
+    ///   `ToolCallDetail.args_json` carries the **redacted** form when
+    ///   findings are present — the audit chain never sees raw secrets.
+    /// * `denied` distinguishes the two audit shapes:
+    ///   * `false` → `audit_event::Detail::ToolCall(ToolCallDetail { tool_name,
+    ///     tool_source: "mcp", succeeded: true, args_json: <maybe redacted>, .. })`
+    ///     for Allow / Redact (the proxy forwarded the request).
+    ///   * `true` → `audit_event::Detail::Violation(PolicyViolation {
+    ///     blocked_action: "tools/call <tool_name>", reason })` for Deny.
+    /// * `reason` is the policy's human-readable explanation for the deny
+    ///   path; ignored on Allow.
+    ///
+    /// The event is emitted on the broadcast channel; send failures are
+    /// silently dropped (no-receivers is normal for standalone proxy mode).
+    pub async fn emit_mcp_decision(&self, tool_name: &str, args_json: &[u8], denied: bool, reason: &str) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let detail = if denied {
+            let violation = PolicyViolation {
+                blocked_action: format!("tools/call {tool_name}"),
+                reason: reason.to_string(),
+                ..Default::default()
+            };
+            audit_event::Detail::Violation(violation)
+        } else {
+            // Scan the args for credentials before recording them in the
+            // audit chain. The producer-side scrub keeps raw secrets out
+            // of every downstream audit subscriber (JSONL writer, dashboard
+            // ws, etc.) without requiring each subscriber to re-scan.
+            let safe_args = self
+                .scanner
+                .as_ref()
+                .and_then(|s| {
+                    let text = String::from_utf8_lossy(args_json);
+                    let scan = s.scan(&text);
+                    if scan.is_clean() {
+                        None
+                    } else {
+                        Some(scan.redact(&text).into_bytes())
+                    }
+                })
+                .unwrap_or_else(|| args_json.to_vec());
+
+            let tool_call = ToolCallDetail {
+                tool_name: tool_name.to_string(),
+                tool_source: "mcp".into(),
+                succeeded: true,
+                args_json: safe_args,
+                ..Default::default()
+            };
+            audit_event::Detail::ToolCall(tool_call)
+        };
+
+        let audit = AuditEvent {
+            action_type: ActionType::ToolCall.into(),
+            detail: Some(detail),
+            ..Default::default()
+        };
+
+        let enriched = EnrichedEvent {
+            inner: audit,
+            received_at_ms: now_ms,
+            source: EventSource::Proxy,
+            agent_id: String::new(),
+            connection_id: 0,
+            sequence_number: 0,
+        };
+
         let _ = self.event_tx.send(PipelineEvent::Audit(Box::new(enriched)));
     }
 
