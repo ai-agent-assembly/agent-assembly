@@ -18,12 +18,65 @@
 //! Fuel + memory-store limits land in AAASM-2018; ToolRegistry dispatch +
 //! audit-event emission land in AAASM-2019.
 
-use wasmtime::{Engine, Linker, Module, Store};
+use std::sync::mpsc;
+use std::time::Duration;
+
+use wasmtime::{Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
 use crate::policy::SandboxConfig;
+
+/// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
+/// when a `memory.grow` would exceed the configured byte cap. The
+/// runtime's call-result branch downcasts to this type to surface
+/// [`SandboxError::MemoryExhausted`].
+#[derive(Debug)]
+struct MemoryExhaustedMarker;
+
+impl std::fmt::Display for MemoryExhaustedMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox memory store limit exceeded")
+    }
+}
+
+impl std::error::Error for MemoryExhaustedMarker {}
+
+/// Per-store linear-memory cap enforced via [`Store::limiter`].
+///
+/// `memory_growing` denies any grow that would push the guest above
+/// `max_bytes` by returning [`MemoryExhaustedMarker`] inside the
+/// `wasmtime::Error` channel — the wasmtime runtime then surfaces that
+/// error from the call's `start.call(...)` return value, which the
+/// runtime maps to [`SandboxError::MemoryExhausted`].
+struct MemoryLimit {
+    max_bytes: usize,
+}
+
+impl ResourceLimiter for MemoryLimit {
+    fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        if desired > self.max_bytes {
+            Err(wasmtime::Error::new(MemoryExhaustedMarker))
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn table_growing(&mut self, _current: usize, _desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Per-store state combining the WASI context with the memory limiter.
+///
+/// Wraps the [`WasiP1Ctx`] previously held directly by the store; the
+/// linker's WASI projection closure now returns `&mut state.wasi`, and
+/// `Store::limiter` projects to `&mut state.limiter`.
+struct StoreState {
+    wasi: WasiP1Ctx,
+    limiter: MemoryLimit,
+}
 
 /// Successful sandboxed-tool invocation outcome.
 ///
@@ -48,7 +101,7 @@ pub struct SandboxOutput {
 /// leaks between tools.
 pub struct SandboxRuntime {
     engine: Engine,
-    linker: Linker<WasiP1Ctx>,
+    linker: Linker<StoreState>,
     config: SandboxConfig,
 }
 
@@ -60,9 +113,12 @@ impl SandboxRuntime {
     /// practice this only happens on a programming error — duplicate
     /// import name).
     pub fn new(config: SandboxConfig) -> Result<Self, SandboxError> {
-        let engine = Engine::default();
-        let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-        p1::add_to_linker_sync(&mut linker, |cx| cx).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        let mut engine_config = Config::new();
+        engine_config.consume_fuel(true);
+        engine_config.epoch_interruption(true);
+        let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        let mut linker: Linker<StoreState> = Linker::new(&engine);
+        p1::add_to_linker_sync(&mut linker, |s| &mut s.wasi).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         Ok(Self { engine, linker, config })
     }
 
@@ -85,9 +141,11 @@ impl SandboxRuntime {
     ///   fixtures).
     /// * [`SandboxError::InvalidWasm`] if wasmtime cannot parse/validate
     ///   the module bytes.
-    /// * [`SandboxError::Wasmtime`] for any other trap; this is the
-    ///   fallback bucket that AAASM-2018 (fuel/limiter) narrows into
-    ///   `CpuTimeout` and `MemoryExhausted`.
+    /// * [`SandboxError::CpuTimeout`] if the guest exhausts its fuel
+    ///   budget (`Trap::OutOfFuel`).
+    /// * [`SandboxError::Wasmtime`] for any other trap (further
+    ///   narrowed by `MemoryExhausted` / `WallClockTimeout` mappings
+    ///   landing on this branch).
     pub fn run_tool(&self, wasm_bytes: &[u8], _args: &[u8]) -> Result<SandboxOutput, SandboxError> {
         let module =
             Module::from_binary(&self.engine, wasm_bytes).map_err(|e| SandboxError::InvalidWasm(e.to_string()))?;
@@ -104,7 +162,40 @@ impl SandboxRuntime {
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
-        let mut store = Store::new(&self.engine, wasi);
+        let limiter = MemoryLimit {
+            max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
+        };
+        let mut store = Store::new(&self.engine, StoreState { wasi, limiter });
+        store.limiter(|s| &mut s.limiter);
+        store
+            .set_fuel(self.config.limits.fuel)
+            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_trap();
+
+        // Wall-clock watchdog — spawn a thread that fires
+        // `Engine::increment_epoch` after `wall_clock_ms` unless the call
+        // completes first. `Engine::increment_epoch` ticks the global
+        // counter; since this store armed `set_epoch_deadline(1)` against
+        // the engine's current epoch + 1, that single tick trips the
+        // deadline and traps the guest with `Trap::Interrupt`.
+        //
+        // The watchdog blocks on an mpsc channel with `recv_timeout` so
+        // the main thread can wake it early — keeps fast-completing
+        // calls from paying the full `wall_clock_ms` latency.
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+        let watchdog = {
+            let engine = self.engine.clone();
+            let wall_clock_ms = self.config.limits.wall_clock_ms;
+            std::thread::spawn(move || {
+                if matches!(
+                    cancel_rx.recv_timeout(Duration::from_millis(wall_clock_ms)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    engine.increment_epoch();
+                }
+            })
+        };
 
         let instance = self
             .linker
@@ -114,7 +205,15 @@ impl SandboxRuntime {
             .get_typed_func::<(), ()>(&mut store, "_start")
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
 
-        match start.call(&mut store, ()) {
+        let call_result = start.call(&mut store, ());
+
+        // Cancel the watchdog and reap it. Sending on the cancel channel
+        // wakes the watchdog's `recv_timeout` immediately so `join()`
+        // returns without paying the remaining `wall_clock_ms`.
+        let _ = cancel_tx.send(());
+        let _ = watchdog.join();
+
+        match call_result {
             Ok(()) => Ok(SandboxOutput { exit_code: 0 }),
             Err(trap) => {
                 if let Some(I32Exit(code)) = trap.downcast_ref::<I32Exit>() {
@@ -123,6 +222,12 @@ impl SandboxRuntime {
                     } else {
                         Err(SandboxError::FilesystemBlocked { errno: *code as u32 })
                     }
+                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
+                    Err(SandboxError::CpuTimeout)
+                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::Interrupt)) {
+                    Err(SandboxError::WallClockTimeout)
+                } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
+                    Err(SandboxError::MemoryExhausted)
                 } else {
                     Err(SandboxError::Wasmtime(trap.to_string()))
                 }
@@ -186,5 +291,69 @@ mod tests {
             }
             other => panic!("expected SandboxError::FilesystemBlocked, got {:?}", other),
         }
+    }
+
+    /// Hand-authored WAT fixture exercising the fuel budget. `_start`
+    /// enters an infinite WebAssembly loop (`(loop (br 0))`); every
+    /// iteration consumes ~1 unit of wasmtime instruction fuel, so a
+    /// small `SandboxLimits::fuel` budget trips `Trap::OutOfFuel`
+    /// within microseconds.
+    const RUNAWAY_LOOP_WAT: &str = r#"
+        (module
+          (func (export "_start")
+            (loop $infinite (br $infinite))
+          )
+        )
+    "#;
+
+    #[test]
+    fn run_tool_kills_runaway_loop_with_cpu_timeout() {
+        let config = SandboxConfig {
+            limits: crate::policy::SandboxLimits {
+                fuel: 1_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("SandboxRuntime with low fuel must construct");
+        let wasm = wat::parse_str(RUNAWAY_LOOP_WAT).expect("runaway-loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::CpuTimeout)),
+            "expected SandboxError::CpuTimeout, got {:?}",
+            result,
+        );
+    }
+
+    /// Hand-authored WAT fixture exercising the memory-store limiter.
+    /// `_start` declares a 1-page initial memory and immediately tries
+    /// to grow it by 100 pages (= 6.4 MiB), well past the default
+    /// `SandboxLimits::memory_pages = 16` (1 MiB) cap. The
+    /// `MemoryLimit` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
+    /// for the grow, which wasmtime surfaces as a trap.
+    const MEMORY_BOMB_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "_start")
+            (drop (memory.grow (i32.const 100)))
+          )
+        )
+    "#;
+
+    #[test]
+    fn run_tool_kills_memory_bomb_with_memory_exhausted() {
+        let runtime = SandboxRuntime::new(SandboxConfig::default())
+            .expect("SandboxRuntime with default memory cap must construct");
+        let wasm = wat::parse_str(MEMORY_BOMB_WAT).expect("memory-bomb WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::MemoryExhausted)),
+            "expected SandboxError::MemoryExhausted, got {:?}",
+            result,
+        );
     }
 }
