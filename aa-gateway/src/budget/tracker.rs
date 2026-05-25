@@ -64,7 +64,6 @@ pub struct BudgetTracker {
     /// at the multi-tenancy tier so an org's agents share a single spend
     /// envelope independent of how teams are named across orgs. Used by
     /// `record_cost` for org-tier enforcement and by `org_state` for read-back.
-    #[allow(dead_code)] // consumed by record_cost in the next commit
     pub(crate) org_budgets: DashMap<String, BudgetState>,
     pub(crate) global: Mutex<BudgetState>,
     pricing: PricingTable,
@@ -77,11 +76,9 @@ pub struct BudgetTracker {
     /// AAASM-2022 — Per-org daily spend limit. Applied to each org
     /// independently. `None` leaves the org tier unconstrained (only
     /// per-agent / per-team / global limits enforce in that case).
-    #[allow(dead_code)] // consumed by record_cost in the next commit
     org_daily_limit_usd: Option<Decimal>,
     /// AAASM-2022 — Per-org monthly spend limit. Applied to each org
     /// independently.
-    #[allow(dead_code)] // consumed by record_cost in the next commit
     org_monthly_limit_usd: Option<Decimal>,
     /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
     pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
@@ -329,23 +326,32 @@ impl BudgetTracker {
     /// rather than raw token counts.
     ///
     /// Fires 80%/95% threshold alerts on the broadcast channel and updates the
-    /// global and team spend accumulators. Returns the resulting [`BudgetStatus`].
-    pub fn record_raw_spend(&self, agent_id: AgentId, team_id: Option<&str>, amount_usd: Decimal) -> BudgetStatus {
-        self.record_cost(agent_id, team_id, amount_usd)
+    /// global, team, and (AAASM-2022) org spend accumulators. Returns the
+    /// resulting [`BudgetStatus`].
+    pub fn record_raw_spend(
+        &self,
+        agent_id: AgentId,
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+        amount_usd: Decimal,
+    ) -> BudgetStatus {
+        self.record_cost(agent_id, team_id, org_id, amount_usd)
     }
 
     /// Record token usage and return the resulting [`BudgetStatus`].
+    #[allow(clippy::too_many_arguments)] // multi-tenancy tier adds org_id; lineage chain is structural
     pub fn record_usage(
         &self,
         agent_id: AgentId,
         team_id: Option<&str>,
+        org_id: Option<&str>,
         provider: crate::budget::types::Provider,
         model: crate::budget::types::Model,
         input_tokens: u64,
         output_tokens: u64,
     ) -> BudgetStatus {
         let cost = self.pricing.cost_usd(provider, model, input_tokens, output_tokens);
-        self.record_cost(agent_id, team_id, cost)
+        self.record_cost(agent_id, team_id, org_id, cost)
     }
 
     /// Compute status for `spent` against `limit`, emit a [`BudgetAlert`] on the broadcast
@@ -372,8 +378,21 @@ impl BudgetTracker {
 
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
-    fn record_cost(&self, agent_id: AgentId, team_id: Option<&str>, cost: Decimal) -> BudgetStatus {
-        let has_monthly = self.monthly_limit_usd.is_some() || self.team_monthly_limit_usd.is_some();
+    ///
+    /// AAASM-2022 — accepts `org_id` so the spend can be rolled up into
+    /// `org_budgets` for explicit Org-tier enforcement. When `org_id` is
+    /// `None`, the org tier is skipped (existing single-org or untenanted
+    /// deployments preserve their behaviour).
+    fn record_cost(
+        &self,
+        agent_id: AgentId,
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+        cost: Decimal,
+    ) -> BudgetStatus {
+        let has_monthly = self.monthly_limit_usd.is_some()
+            || self.team_monthly_limit_usd.is_some()
+            || self.org_monthly_limit_usd.is_some();
         let now = chrono::Utc::now();
         let today = today_in_tz(self.timezone);
         let window = self.window;
@@ -450,6 +469,54 @@ impl BudgetTracker {
                 if let Some(team_state) = self.team_budgets.get(tid) {
                     let status =
                         self.check_limit_and_alert(agent_id, Some(tid), team_state.spent_usd, team_daily_limit);
+                    if status == BudgetStatus::LimitExceeded {
+                        return BudgetStatus::LimitExceeded;
+                    }
+                }
+            }
+        }
+
+        // AAASM-2022 — Org-tier rollup + enforcement. Mirrors the team block:
+        // accumulate per-org spend into `org_budgets`, then enforce the
+        // monthly limit (precedes daily by convention).
+        if let Some(oid) = org_id {
+            self.org_budgets
+                .entry(oid.to_string())
+                .and_modify(|s| {
+                    s.maybe_reset_window(now, window, tz);
+                    s.spent_usd += cost;
+                    if let Some(m) = s.monthly_spent_usd.as_mut() {
+                        *m += cost;
+                    }
+                })
+                .or_insert_with(|| {
+                    let mut s = BudgetState::new_for_date(today);
+                    s.spent_usd += cost;
+                    if has_monthly {
+                        s.monthly_spent_usd = Some(cost);
+                    }
+                    if matches!(window, BudgetWindow::Duration(_)) {
+                        s.last_reset_at = Some(now);
+                    }
+                    s
+                });
+
+            // Check org monthly limit and emit alert.
+            if let Some(org_monthly_limit) = self.org_monthly_limit_usd {
+                if let Some(org_state) = self.org_budgets.get(oid) {
+                    if let Some(org_monthly) = org_state.monthly_spent_usd {
+                        let status = self.check_limit_and_alert(agent_id, None, org_monthly, org_monthly_limit);
+                        if status == BudgetStatus::LimitExceeded {
+                            return BudgetStatus::LimitExceeded;
+                        }
+                    }
+                }
+            }
+
+            // Check org daily limit and emit alert.
+            if let Some(org_daily_limit) = self.org_daily_limit_usd {
+                if let Some(org_state) = self.org_budgets.get(oid) {
+                    let status = self.check_limit_and_alert(agent_id, None, org_state.spent_usd, org_daily_limit);
                     if status == BudgetStatus::LimitExceeded {
                         return BudgetStatus::LimitExceeded;
                     }
@@ -763,8 +830,8 @@ mod tests {
     fn agent_spend_history_records_todays_spend() {
         let t = new_tracker();
         let aid = AgentId::from_bytes([0xAA; 16]);
-        t.record_raw_spend(aid, None, Decimal::new(125, 2));
-        t.record_raw_spend(aid, None, Decimal::new(375, 2));
+        t.record_raw_spend(aid, None, None, Decimal::new(125, 2));
+        t.record_raw_spend(aid, None, None, Decimal::new(375, 2));
 
         let history = t.agent_spend_history(&aid, 1);
         assert_eq!(history.len(), 1);
@@ -775,7 +842,7 @@ mod tests {
     fn agent_spend_history_zero_days_returns_empty_vec() {
         let t = new_tracker();
         let aid = AgentId::from_bytes([0xAA; 16]);
-        t.record_raw_spend(aid, None, Decimal::ONE);
+        t.record_raw_spend(aid, None, None, Decimal::ONE);
         assert!(t.agent_spend_history(&aid, 0).is_empty());
     }
 
@@ -852,7 +919,7 @@ mod tests {
     fn record_usage_no_limit_returns_within_budget() {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         let t = new_tracker();
-        let s = t.record_usage(agent(1), None, Provider::OpenAi, Model::Gpt4o, 100, 100);
+        let s = t.record_usage(agent(1), None, None, Provider::OpenAi, Model::Gpt4o, 100, 100);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -861,7 +928,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // GPT-4o: 100k input=$0.50 + 40k output=$0.60 = $1.10 > $1.00 limit
         let t = tracker_with_limit("1.00");
-        let s = t.record_usage(agent(2), None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
+        let s = t.record_usage(agent(2), None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -870,7 +937,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // 100k input=$0.50 + 20k output=$0.30 = $0.80 = 80% of $1.00
         let t = tracker_with_limit("1.00");
-        let s = t.record_usage(agent(3), None, Provider::OpenAi, Model::Gpt4o, 100_000, 20_000);
+        let s = t.record_usage(agent(3), None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 20_000);
         assert_eq!(s, BudgetStatus::ThresholdAlert { pct: 80 });
     }
 
@@ -879,12 +946,12 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         let t = tracker_with_limit("1.00");
         let id = agent(4);
-        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
+        t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
             s
         });
-        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -927,7 +994,7 @@ mod tests {
         use crate::budget::types::{Model, Provider};
         let t = new_tracker();
         let id = agent(7);
-        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
+        t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
         let snap = t.snapshot();
         assert_eq!(snap.per_agent.len(), 1);
         assert_eq!(snap.global.spent_usd, snap.per_agent[0].state.spent_usd);
@@ -937,8 +1004,8 @@ mod tests {
     fn global_state_accumulates_all_agents() {
         use crate::budget::types::{Model, Provider};
         let t = new_tracker();
-        t.record_usage(agent(5), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
-        t.record_usage(agent(6), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
+        t.record_usage(agent(5), None, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
+        t.record_usage(agent(6), None, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0); // $0.005
         let g = t.global_state();
         let expected: Decimal = "0.010".parse().unwrap();
         assert_eq!(g.spent_usd, expected);
@@ -953,15 +1020,15 @@ mod tests {
         let t = BudgetTracker::new(PricingTable::default_table(), Some("1.00".parse().unwrap()), None, tz);
         let id = agent(10);
         // First call — establishes the agent entry
-        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
-                                                                                   // Backdate the agent entry by 1 day in the Tokyo timezone
+        t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000); // $0.95
+                                                                                         // Backdate the agent entry by 1 day in the Tokyo timezone
         let yesterday_tokyo = today_in_tz(tz) - chrono::Duration::days(1);
         t.per_agent.alter(&id, |_, mut s| {
             s.date = yesterday_tokyo;
             s
         });
         // Next call should reset (yesterday < today in Tokyo)
-        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(
             matches!(s, BudgetStatus::WithinBudget { .. }),
             "Expected reset after Tokyo midnight, got: {:?}",
@@ -983,7 +1050,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // Monthly limit $1.00. GPT-4o: 100k input=$0.50 + 40k output=$0.60 = $1.10 > $1.00
         let t = tracker_with_monthly_limit("1.00");
-        let s = t.record_usage(agent(20), None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
+        let s = t.record_usage(agent(20), None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -992,7 +1059,7 @@ mod tests {
         use crate::budget::types::{BudgetStatus, Model, Provider};
         // Monthly limit $10.00. Small usage should be within budget.
         let t = tracker_with_monthly_limit("10.00");
-        let s = t.record_usage(agent(21), None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
+        let s = t.record_usage(agent(21), None, None, Provider::OpenAi, Model::Gpt4o, 1_000, 0);
         assert!(matches!(s, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -1003,14 +1070,14 @@ mod tests {
         let t = tracker_with_monthly_limit("1.00");
         let id = agent(22);
         // Day 1: $0.50 (100k input)
-        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 0);
+        t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 0);
         // Backdate the entry by 1 day — daily resets, monthly stays
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
             s
         });
         // Day 2: another $0.60 (40k output) — total monthly $1.10 > $1.00
-        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 0, 40_000);
+        let s = t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 0, 40_000);
         assert_eq!(s, BudgetStatus::LimitExceeded);
     }
 
@@ -1021,7 +1088,7 @@ mod tests {
         let t = tracker_with_monthly_limit("1.00");
         let id = agent(23);
         // Record $0.95
-        t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000);
+        t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100_000, 30_000);
         // Backdate to last month — both daily and monthly should reset
         let last_month = chrono::Utc::now().date_naive() - chrono::Duration::days(32);
         t.per_agent.alter(&id, |_, mut s| {
@@ -1030,7 +1097,7 @@ mod tests {
             s
         });
         // New usage should start fresh — well within budget
-        let s = t.record_usage(id, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
+        let s = t.record_usage(id, None, None, Provider::OpenAi, Model::Gpt4o, 100, 0);
         assert!(
             matches!(s, BudgetStatus::WithinBudget { .. }),
             "Expected within budget after monthly reset, got: {:?}",
@@ -1050,7 +1117,7 @@ mod tests {
     fn check_daily_returns_true_when_exceeded() {
         let t = tracker_with_limit("1.00");
         let id = agent(31);
-        t.record_raw_spend(id, None, "1.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "1.00".parse().unwrap());
         assert!(t.check_daily(&id, "1.00".parse().unwrap()));
     }
 
@@ -1064,7 +1131,7 @@ mod tests {
     fn check_monthly_returns_true_when_exceeded() {
         let t = tracker_with_monthly_limit("5.00");
         let id = agent(33);
-        t.record_raw_spend(id, None, "5.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "5.00".parse().unwrap());
         assert!(t.check_monthly(&id, "5.00".parse().unwrap()));
     }
 
@@ -1072,8 +1139,8 @@ mod tests {
     fn record_raw_spend_accumulates() {
         let t = tracker_with_limit("10.00");
         let id = agent(34);
-        t.record_raw_spend(id, None, "3.00".parse().unwrap());
-        t.record_raw_spend(id, None, "4.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "3.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "4.00".parse().unwrap());
         // 7.00 >= 7.00
         assert!(t.check_daily(&id, "7.00".parse().unwrap()));
         // 7.00 < 8.00
@@ -1086,7 +1153,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(35);
         // 8.00 / 10.00 = 80%
-        t.record_raw_spend(id, None, "8.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("expected 80% alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.agent_id, id);
@@ -1098,7 +1165,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(36);
         // 9.50 / 10.00 = 95%
-        t.record_raw_spend(id, None, "9.50".parse().unwrap());
+        t.record_raw_spend(id, None, None, "9.50".parse().unwrap());
         let alert = rx.try_recv().expect("expected 95% alert");
         assert_eq!(alert.threshold_pct, 95);
     }
@@ -1114,7 +1181,7 @@ mod tests {
             tx,
         );
         let id = agent(37);
-        t.record_raw_spend(id, None, "8.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("alert should arrive on external channel");
         assert_eq!(alert.threshold_pct, 80);
     }
@@ -1125,7 +1192,7 @@ mod tests {
     fn check_daily_exact_limit_is_exceeded() {
         let t = tracker_with_limit("1.00");
         let id = agent(40);
-        t.record_raw_spend(id, None, "1.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "1.00".parse().unwrap());
         // 1.00 >= 1.00 is true (not strictly greater)
         assert!(t.check_daily(&id, "1.00".parse().unwrap()));
     }
@@ -1134,7 +1201,7 @@ mod tests {
     fn check_daily_resets_on_new_date() {
         let t = tracker_with_limit("1.00");
         let id = agent(41);
-        t.record_raw_spend(id, None, "0.90".parse().unwrap());
+        t.record_raw_spend(id, None, None, "0.90".parse().unwrap());
         // Backdate the entry to yesterday
         t.per_agent.alter(&id, |_, mut s| {
             s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
@@ -1148,8 +1215,8 @@ mod tests {
     fn check_monthly_accumulates_raw_spend() {
         let t = tracker_with_monthly_limit("7.00");
         let id = agent(42);
-        t.record_raw_spend(id, None, "3.00".parse().unwrap());
-        t.record_raw_spend(id, None, "4.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "3.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "4.00".parse().unwrap());
         // 7.00 >= 7.00
         assert!(t.check_monthly(&id, "7.00".parse().unwrap()));
         // 7.00 < 8.00
@@ -1161,7 +1228,7 @@ mod tests {
         use chrono::Datelike;
         let t = tracker_with_monthly_limit("5.00");
         let id = agent(43);
-        t.record_raw_spend(id, None, "5.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "5.00".parse().unwrap());
         // Backdate to last month
         let last_month = chrono::Utc::now().date_naive() - chrono::Duration::days(32);
         t.per_agent.alter(&id, |_, mut s| {
@@ -1190,7 +1257,7 @@ mod tests {
         let t = tracker_with_team_daily_limit("5.00");
         let id = agent(50);
         // Spend $5.00 — exactly at limit
-        let status = t.record_raw_spend(id, Some("team-alpha"), "5.00".parse().unwrap());
+        let status = t.record_raw_spend(id, Some("team-alpha"), None, "5.00".parse().unwrap());
         assert_eq!(status, BudgetStatus::LimitExceeded);
     }
 
@@ -1198,7 +1265,7 @@ mod tests {
     fn team_daily_limit_not_exceeded_before_threshold() {
         let t = tracker_with_team_daily_limit("10.00");
         let id = agent(51);
-        let status = t.record_raw_spend(id, Some("team-alpha"), "3.00".parse().unwrap());
+        let status = t.record_raw_spend(id, Some("team-alpha"), None, "3.00".parse().unwrap());
         assert!(matches!(status, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -1208,9 +1275,9 @@ mod tests {
         let id_a = agent(52);
         let id_b = agent(53);
         // Agent A spends $3.00
-        t.record_raw_spend(id_a, Some("team-beta"), "3.00".parse().unwrap());
+        t.record_raw_spend(id_a, Some("team-beta"), None, "3.00".parse().unwrap());
         // Agent B spends $2.00 — pushes team total to $5.00 (exactly at limit)
-        let status = t.record_raw_spend(id_b, Some("team-beta"), "2.00".parse().unwrap());
+        let status = t.record_raw_spend(id_b, Some("team-beta"), None, "2.00".parse().unwrap());
         assert_eq!(status, BudgetStatus::LimitExceeded);
     }
 
@@ -1218,7 +1285,7 @@ mod tests {
     fn team_monthly_limit_exceeded_blocks() {
         let t = tracker_with_team_monthly_limit("10.00");
         let id = agent(54);
-        let status = t.record_raw_spend(id, Some("team-gamma"), "10.00".parse().unwrap());
+        let status = t.record_raw_spend(id, Some("team-gamma"), None, "10.00".parse().unwrap());
         assert_eq!(status, BudgetStatus::LimitExceeded);
     }
 
@@ -1227,7 +1294,7 @@ mod tests {
         let t = tracker_with_team_daily_limit("1.00");
         let id = agent(55);
         // No team_id — team limit should not apply
-        let status = t.record_raw_spend(id, None, "100.00".parse().unwrap());
+        let status = t.record_raw_spend(id, None, None, "100.00".parse().unwrap());
         assert!(matches!(status, BudgetStatus::WithinBudget { .. }));
     }
 
@@ -1239,7 +1306,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(60);
         // 8.00 / 10.00 = 80%
-        t.record_raw_spend(id, Some("team-delta"), "8.00".parse().unwrap());
+        t.record_raw_spend(id, Some("team-delta"), None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("expected 80% team alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.team_id.as_deref(), Some("team-delta"));
@@ -1251,7 +1318,7 @@ mod tests {
         let mut rx = t.subscribe_alerts();
         let id = agent(61);
         // 9.50 / 10.00 = 95%
-        t.record_raw_spend(id, Some("team-epsilon"), "9.50".parse().unwrap());
+        t.record_raw_spend(id, Some("team-epsilon"), None, "9.50".parse().unwrap());
         let alert = rx.try_recv().expect("expected 95% team alert");
         assert_eq!(alert.threshold_pct, 95);
         assert_eq!(alert.team_id.as_deref(), Some("team-epsilon"));
@@ -1374,7 +1441,7 @@ mod tests {
     fn subtree_spend_leaf_agent_equals_own_spend() {
         let t = new_tracker();
         let id = agent(80);
-        t.record_raw_spend(id, None, "3.00".parse().unwrap());
+        t.record_raw_spend(id, None, None, "3.00".parse().unwrap());
         let result = t.subtree_spend(&id, &[]);
         assert_eq!(result.usd, "3.00".parse::<Decimal>().unwrap());
         assert_eq!(result.agents_counted, 1);
@@ -1395,7 +1462,7 @@ mod tests {
         // Record $1 each for every node.
         let one: Decimal = "1.00".parse().unwrap();
         for &a in &[root, child_a, child_b, gc1, gc2, gc3, gc4] {
-            t.record_raw_spend(a, None, one);
+            t.record_raw_spend(a, None, None, one);
         }
 
         let descendants = [
@@ -1521,7 +1588,7 @@ mod tests {
         let t = tracker_with_team_monthly_limit("10.00");
         let mut rx = t.subscribe_alerts();
         let id = agent(62);
-        t.record_raw_spend(id, Some("team-zeta"), "8.00".parse().unwrap());
+        t.record_raw_spend(id, Some("team-zeta"), None, "8.00".parse().unwrap());
         let alert = rx.try_recv().expect("expected 80% monthly team alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.team_id.as_deref(), Some("team-zeta"));

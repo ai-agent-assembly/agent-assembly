@@ -404,7 +404,9 @@ impl CliFixture {
     pub fn seed_cost_sample(&self, agent_id: [u8; 16], team_id: Option<&str>, usd: &str) {
         let amount = Decimal::from_str(usd).expect("seed_cost_sample: invalid USD amount");
         let agent_id = AgentId::from_bytes(agent_id);
-        self.env.budget_tracker.record_raw_spend(agent_id, team_id, amount);
+        self.env
+            .budget_tracker
+            .record_raw_spend(agent_id, team_id, None, amount);
     }
 }
 

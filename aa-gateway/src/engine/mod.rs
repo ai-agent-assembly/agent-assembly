@@ -1097,8 +1097,12 @@ impl PolicyEngine {
     /// tracker's `record_raw_spend`, which fires 80%/95% threshold alerts.
     pub fn record_spend(&self, ctx: &aa_core::AgentContext, amount_usd: f64) {
         if let Ok(amount) = rust_decimal::Decimal::try_from(amount_usd) {
+            // AAASM-2022 — thread `org_id` from ctx.metadata so the spend
+            // rolls up into the Org tier's budget envelope. Falls back to
+            // None when convert.rs didn't populate the metadata key.
+            let org_id = ctx.metadata.get("org_id").map(String::as_str);
             self.budget
-                .record_raw_spend(ctx.agent_id, ctx.team_id.as_deref(), amount);
+                .record_raw_spend(ctx.agent_id, ctx.team_id.as_deref(), org_id, amount);
         }
     }
 

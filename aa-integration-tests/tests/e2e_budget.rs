@@ -16,7 +16,7 @@
 //!
 //! ## Seeding strategy
 //!
-//! `env.budget_tracker.record_raw_spend(AgentId, Option<&str>, Decimal)`
+//! `env.budget_tracker.record_raw_spend(AgentId, Option<&str>, None, Decimal)`
 //! injects spend and returns `BudgetStatus` synchronously — the same pattern
 //! used by `api_costs.rs` (AAASM-1490 / F122 ST-I).
 
@@ -47,7 +47,7 @@ async fn budget_spend_accumulates_per_agent_and_team() {
 
     for _ in 0..5 {
         env.budget_tracker
-            .record_raw_spend(agent, Some(TEAM_A), Decimal::new(50, 2)); // 0.50 USD each
+            .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(50, 2)); // 0.50 USD each
     }
 
     let agent_state = env
@@ -114,7 +114,7 @@ async fn budget_deny_at_exhaustion_returns_limit_exceeded() {
     // 1.80 USD — within the 2.00 USD cap.
     let status_before = env
         .budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(180, 2));
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(180, 2));
     assert!(
         matches!(
             status_before,
@@ -126,7 +126,7 @@ async fn budget_deny_at_exhaustion_returns_limit_exceeded() {
     // Additional 0.50 USD pushes total to 2.30 — over the cap.
     let status_over = env
         .budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(50, 2));
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(50, 2));
     assert_eq!(
         status_over,
         BudgetStatus::LimitExceeded,
@@ -146,13 +146,13 @@ async fn budget_exhausted_request_is_rejected_at_tracking_layer() {
 
     // Push team over the cap in one call.
     env.budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(150, 2)); // 1.50 > 1.00
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(150, 2)); // 1.50 > 1.00
 
     // A subsequent call must still return LimitExceeded — proving enforcement
     // is checked on every call, not just the first one that crosses the limit.
     let follow_up = env
         .budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(10, 2));
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(10, 2));
     assert_eq!(
         follow_up,
         BudgetStatus::LimitExceeded,
@@ -202,7 +202,7 @@ async fn budget_resets_after_daily_window() {
 
     // Pre-window: record some spend; assert it accumulated.
     env.budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(200, 2)); // 2.00 USD
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(200, 2)); // 2.00 USD
     let before = env
         .budget_tracker
         .team_state(TEAM_A)
@@ -223,7 +223,7 @@ async fn budget_resets_after_daily_window() {
     // total reflects only the new amount.
     let status = env
         .budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(75, 2)); // 0.75 USD
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(75, 2)); // 0.75 USD
     let after = env
         .budget_tracker
         .team_state(TEAM_A)
@@ -257,13 +257,13 @@ async fn budget_per_team_isolation_prevents_cross_team_bleed() {
     // Exhaust team A: 2.50 USD > 2.00 USD cap.
     let status_a = env
         .budget_tracker
-        .record_raw_spend(agent_a, Some(TEAM_A), Decimal::new(250, 2));
+        .record_raw_spend(agent_a, Some(TEAM_A), None, Decimal::new(250, 2));
     assert_eq!(status_a, BudgetStatus::LimitExceeded, "team A should be over its cap");
 
     // Team B: 1.00 USD — independent cap, should be allowed.
     let status_b = env
         .budget_tracker
-        .record_raw_spend(agent_b, Some(TEAM_B), Decimal::new(100, 2));
+        .record_raw_spend(agent_b, Some(TEAM_B), None, Decimal::new(100, 2));
     assert!(
         matches!(
             status_b,
@@ -282,7 +282,7 @@ async fn budget_partial_spend_charged_exactly() {
 
     // Seed a non-round amount: 1.37 USD.
     env.budget_tracker
-        .record_raw_spend(agent, Some(TEAM_A), Decimal::new(137, 2));
+        .record_raw_spend(agent, Some(TEAM_A), None, Decimal::new(137, 2));
 
     let agent_state = env
         .budget_tracker
