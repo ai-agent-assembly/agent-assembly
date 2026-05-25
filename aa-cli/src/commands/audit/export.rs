@@ -154,6 +154,20 @@ pub fn write_json<W: Write>(entries: &[AuditEntry], mut writer: W) -> Result<(),
     Ok(())
 }
 
+/// Write audit entries as newline-delimited JSON, one record per line.
+///
+/// Output is appendable and stream-friendly: each line is a complete JSON
+/// document so SIEM ingestors and `jq -c` consumers can process records as
+/// they arrive without waiting for a closing `]`.
+pub fn write_jsonl<W: Write>(entries: &[AuditEntry], mut writer: W) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in entries {
+        let line = serde_json::to_string(entry)?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// Write compliance header (if any) and formatted entries to a writer.
 fn write_to<W: Write>(
     entries: &[AuditEntry],
@@ -167,6 +181,7 @@ fn write_to<W: Write>(
     match args.format {
         ExportFormat::Csv => write_csv(entries, writer),
         ExportFormat::Json => write_json(entries, writer),
+        ExportFormat::Jsonl => write_jsonl(entries, writer),
     }
 }
 
