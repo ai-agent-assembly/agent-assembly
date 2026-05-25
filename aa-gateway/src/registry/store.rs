@@ -165,6 +165,15 @@ pub struct AgentRegistry {
     /// cross-org isolation checks can verify "agent X belongs to Org A"
     /// without scanning the full agent table.
     org_index: DashMap<String, dashmap::DashSet<[u8; 16]>>,
+    /// AAASM-2008 — reverse index mapping `credential_token` → registry
+    /// key. Lets `validate_credential_token` detect cross-org credential
+    /// reuse: when a request claims `agent_id = {org-beta, …, X}` and
+    /// presents a token registered to `{org-alpha, …, X}`, the lookup
+    /// at the claimed key fails (different org → different hash) but
+    /// this reverse lookup finds the actual owner and the gateway can
+    /// emit `A2AImpersonationAttempted` instead of silently allowing
+    /// the request to fall through to policy evaluation.
+    credential_index: DashMap<String, [u8; 16]>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
     /// All active suspension reasons per agent. Supports multi-reason coexistence:
@@ -190,6 +199,7 @@ impl AgentRegistry {
             control_senders: DashMap::new(),
             team_index: DashMap::new(),
             org_index: DashMap::new(),
+            credential_index: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
@@ -261,6 +271,14 @@ impl AgentRegistry {
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
         let org_id = record.org_id.clone();
+        // AAASM-2008 — capture credential_token for the reverse index.
+        // Empty tokens (test fixtures that bypass credential validation)
+        // are not indexed.
+        let credential_token = if record.credential_token.is_empty() {
+            None
+        } else {
+            Some(record.credential_token.clone())
+        };
 
         {
             // Hold registration_lock across validate+insert to prevent TOCTOU races where
@@ -294,6 +312,12 @@ impl AgentRegistry {
         // AAASM-2008 — mirror the team_index insertion for the Org tier.
         if let Some(oid) = org_id {
             self.org_index.entry(oid).or_default().insert(agent_id);
+        }
+        // AAASM-2008 — populate the credential reverse index. Used by
+        // validate_credential_token to detect cross-org credential reuse
+        // (token from Org A presented under Org B's claimed identity).
+        if let Some(tok) = credential_token {
+            self.credential_index.insert(tok, agent_id);
         }
 
         Ok(())
@@ -367,6 +391,10 @@ impl AgentRegistry {
             if let Some(set) = self.org_index.get(oid) {
                 set.remove(agent_id);
             }
+        }
+        // AAASM-2008 — drop the credential reverse-index entry too.
+        if !record.credential_token.is_empty() {
+            self.credential_index.remove(&record.credential_token);
         }
 
         // Apply orphan policy to each direct child recursively.
@@ -961,6 +989,14 @@ impl AgentRegistry {
             .get(org_id)
             .map(|s| s.iter().map(|k| *k).collect())
             .unwrap_or_default()
+    }
+
+    /// AAASM-2008 — find the agent key that owns the given credential
+    /// token. Returns `None` when no agent has registered with this
+    /// token (and `validate_credential_token` should reject any non-empty
+    /// token whose owner is unknown).
+    pub fn find_by_credential_token(&self, token: &str) -> Option<[u8; 16]> {
+        self.credential_index.get(token).map(|e| *e.value())
     }
 
     /// Return the registry keys of all root agents (depth == 0).
