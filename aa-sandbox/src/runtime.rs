@@ -18,6 +18,9 @@
 //! Fuel + memory-store limits land in AAASM-2018; ToolRegistry dispatch +
 //! audit-event emission land in AAASM-2019.
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use wasmtime::{Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
@@ -112,6 +115,7 @@ impl SandboxRuntime {
     pub fn new(config: SandboxConfig) -> Result<Self, SandboxError> {
         let mut engine_config = Config::new();
         engine_config.consume_fuel(true);
+        engine_config.epoch_interruption(true);
         let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         let mut linker: Linker<StoreState> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |s| &mut s.wasi).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
@@ -166,6 +170,32 @@ impl SandboxRuntime {
         store
             .set_fuel(self.config.limits.fuel)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        store.set_epoch_deadline(1);
+        store.epoch_deadline_trap();
+
+        // Wall-clock watchdog — spawn a thread that fires
+        // `Engine::increment_epoch` after `wall_clock_ms` unless the call
+        // completes first. `Engine::increment_epoch` ticks the global
+        // counter; since this store armed `set_epoch_deadline(1)` against
+        // the engine's current epoch + 1, that single tick trips the
+        // deadline and traps the guest with `Trap::Interrupt`.
+        //
+        // The watchdog blocks on an mpsc channel with `recv_timeout` so
+        // the main thread can wake it early — keeps fast-completing
+        // calls from paying the full `wall_clock_ms` latency.
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+        let watchdog = {
+            let engine = self.engine.clone();
+            let wall_clock_ms = self.config.limits.wall_clock_ms;
+            std::thread::spawn(move || {
+                if matches!(
+                    cancel_rx.recv_timeout(Duration::from_millis(wall_clock_ms)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    engine.increment_epoch();
+                }
+            })
+        };
 
         let instance = self
             .linker
@@ -175,7 +205,15 @@ impl SandboxRuntime {
             .get_typed_func::<(), ()>(&mut store, "_start")
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
 
-        match start.call(&mut store, ()) {
+        let call_result = start.call(&mut store, ());
+
+        // Cancel the watchdog and reap it. Sending on the cancel channel
+        // wakes the watchdog's `recv_timeout` immediately so `join()`
+        // returns without paying the remaining `wall_clock_ms`.
+        let _ = cancel_tx.send(());
+        let _ = watchdog.join();
+
+        match call_result {
             Ok(()) => Ok(SandboxOutput { exit_code: 0 }),
             Err(trap) => {
                 if let Some(I32Exit(code)) = trap.downcast_ref::<I32Exit>() {
@@ -186,6 +224,8 @@ impl SandboxRuntime {
                     }
                 } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
                     Err(SandboxError::CpuTimeout)
+                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::Interrupt)) {
+                    Err(SandboxError::WallClockTimeout)
                 } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
                     Err(SandboxError::MemoryExhausted)
                 } else {
