@@ -18,7 +18,7 @@
 //! Fuel + memory-store limits land in AAASM-2018; ToolRegistry dispatch +
 //! audit-event emission land in AAASM-2019.
 
-use wasmtime::{Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, Linker, Module, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
@@ -60,7 +60,9 @@ impl SandboxRuntime {
     /// practice this only happens on a programming error — duplicate
     /// import name).
     pub fn new(config: SandboxConfig) -> Result<Self, SandboxError> {
-        let engine = Engine::default();
+        let mut engine_config = Config::new();
+        engine_config.consume_fuel(true);
+        let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |cx| cx).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         Ok(Self { engine, linker, config })
@@ -85,9 +87,11 @@ impl SandboxRuntime {
     ///   fixtures).
     /// * [`SandboxError::InvalidWasm`] if wasmtime cannot parse/validate
     ///   the module bytes.
-    /// * [`SandboxError::Wasmtime`] for any other trap; this is the
-    ///   fallback bucket that AAASM-2018 (fuel/limiter) narrows into
-    ///   `CpuTimeout` and `MemoryExhausted`.
+    /// * [`SandboxError::CpuTimeout`] if the guest exhausts its fuel
+    ///   budget (`Trap::OutOfFuel`).
+    /// * [`SandboxError::Wasmtime`] for any other trap (further
+    ///   narrowed by `MemoryExhausted` / `WallClockTimeout` mappings
+    ///   landing on this branch).
     pub fn run_tool(&self, wasm_bytes: &[u8], _args: &[u8]) -> Result<SandboxOutput, SandboxError> {
         let module =
             Module::from_binary(&self.engine, wasm_bytes).map_err(|e| SandboxError::InvalidWasm(e.to_string()))?;
@@ -105,6 +109,9 @@ impl SandboxRuntime {
         }
         let wasi = builder.build_p1();
         let mut store = Store::new(&self.engine, wasi);
+        store
+            .set_fuel(self.config.limits.fuel)
+            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
 
         let instance = self
             .linker
@@ -123,6 +130,8 @@ impl SandboxRuntime {
                     } else {
                         Err(SandboxError::FilesystemBlocked { errno: *code as u32 })
                     }
+                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
+                    Err(SandboxError::CpuTimeout)
                 } else {
                     Err(SandboxError::Wasmtime(trap.to_string()))
                 }
