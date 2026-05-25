@@ -116,6 +116,10 @@ impl AuditServiceImpl {
                 // requires a separate registry lookup by name — deferred to a follow-up.
                 parent_agent_id: None,
                 team_id: record.team_id.clone(),
+                // AAASM-2008 — populated in a follow-up commit once AgentRecord
+                // gains a first-class org_id field. Placeholder None preserves
+                // existing audit hash output until that field lands.
+                org_id: None,
                 delegation_reason: record.delegation_reason.clone(),
                 spawned_by_tool: record.spawned_by_tool.clone(),
                 depth: Some(record.depth),
