@@ -151,6 +151,13 @@ message ToolCallDetail {
   bool   succeeded     = 4;
   // Populated when succeeded = false; contains the error message.
   string error_message = 5;
+  // JSON-encoded arguments the agent passed to the tool, copied from the
+  // request-side `ToolCallContext.args_json`. The producer (e.g. aa-proxy
+  // for MCP) MUST run the credential scanner against this payload before
+  // populating; secrets are replaced with `[REDACTED:<Kind>]` markers so
+  // the audit chain never carries raw credentials. Empty when the
+  // producer has no args context (legacy LLM intercepts).
+  bytes  args_json     = 6;
 }
 
 // FileOpDetail records the outcome of a filesystem operation.
