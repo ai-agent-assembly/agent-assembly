@@ -60,6 +60,12 @@ pub struct BudgetTracker {
     pub(crate) per_agent: DashMap<AgentId, BudgetState>,
     /// Per-team daily/monthly spend rollup. `pub(crate)` for test date manipulation.
     pub(crate) team_budgets: DashMap<String, BudgetState>,
+    /// AAASM-2022 — Per-org daily/monthly spend rollup. Mirrors `team_budgets`
+    /// at the multi-tenancy tier so an org's agents share a single spend
+    /// envelope independent of how teams are named across orgs. Used by
+    /// `record_cost` for org-tier enforcement and by `org_state` for read-back.
+    #[allow(dead_code)] // consumed by record_cost in the next commit
+    pub(crate) org_budgets: DashMap<String, BudgetState>,
     pub(crate) global: Mutex<BudgetState>,
     pricing: PricingTable,
     daily_limit_usd: Option<Decimal>,
@@ -68,6 +74,15 @@ pub struct BudgetTracker {
     team_daily_limit_usd: Option<Decimal>,
     /// Per-team monthly spend limit. Applied to each team independently.
     team_monthly_limit_usd: Option<Decimal>,
+    /// AAASM-2022 — Per-org daily spend limit. Applied to each org
+    /// independently. `None` leaves the org tier unconstrained (only
+    /// per-agent / per-team / global limits enforce in that case).
+    #[allow(dead_code)] // consumed by record_cost in the next commit
+    org_daily_limit_usd: Option<Decimal>,
+    /// AAASM-2022 — Per-org monthly spend limit. Applied to each org
+    /// independently.
+    #[allow(dead_code)] // consumed by record_cost in the next commit
+    org_monthly_limit_usd: Option<Decimal>,
     /// Per-agent daily/monthly limits set via [`BudgetTracker::with_agent_limit`].
     pub(crate) agent_limits: DashMap<AgentId, AgentLimit>,
     /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
@@ -111,12 +126,15 @@ impl BudgetTracker {
         Self {
             per_agent: DashMap::new(),
             team_budgets: DashMap::new(),
+            org_budgets: DashMap::new(),
             global: Mutex::new(BudgetState::new_for_date(today_in_tz(timezone))),
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
             spend_history: DashMap::new(),
@@ -186,12 +204,19 @@ impl BudgetTracker {
         Self {
             per_agent,
             team_budgets,
+            // AAASM-2022 — Org-tier budgets are not yet persisted; restore as
+            // empty until the persistence schema grows an `org_budgets` field.
+            // A clean restart re-accumulates from zero rather than carrying
+            // stale data across schema bumps.
+            org_budgets: DashMap::new(),
             global: Mutex::new(initial.global),
             pricing,
             daily_limit_usd,
             monthly_limit_usd,
             team_daily_limit_usd: None,
             team_monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
             spend_history: DashMap::new(),
