@@ -292,4 +292,38 @@ mod tests {
             other => panic!("expected SandboxError::FilesystemBlocked, got {:?}", other),
         }
     }
+
+    /// Hand-authored WAT fixture exercising the fuel budget. `_start`
+    /// enters an infinite WebAssembly loop (`(loop (br 0))`); every
+    /// iteration consumes ~1 unit of wasmtime instruction fuel, so a
+    /// small `SandboxLimits::fuel` budget trips `Trap::OutOfFuel`
+    /// within microseconds.
+    const RUNAWAY_LOOP_WAT: &str = r#"
+        (module
+          (func (export "_start")
+            (loop $infinite (br $infinite))
+          )
+        )
+    "#;
+
+    #[test]
+    fn run_tool_kills_runaway_loop_with_cpu_timeout() {
+        let config = SandboxConfig {
+            limits: crate::policy::SandboxLimits {
+                fuel: 1_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("SandboxRuntime with low fuel must construct");
+        let wasm = wat::parse_str(RUNAWAY_LOOP_WAT).expect("runaway-loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::CpuTimeout)),
+            "expected SandboxError::CpuTimeout, got {:?}",
+            result,
+        );
+    }
 }
