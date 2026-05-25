@@ -1,0 +1,25 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-network-allowlist
+  version: "0.1.0"
+
+# AAASM-1943 (F116 ST-W — Scenario 2): demonstrates the policy-DSL shape
+# operators write to declare which outbound hosts a sandboxed tool may
+# reach. The aa-proxy CONNECT handler consults the matching list via the
+# AA_PROXY_NETWORK_ALLOWLIST env var; future work will sync this YAML
+# block to the proxy at gateway startup.
+#
+# Pattern grammar (shared with aa-core::policy::is_host_allowed_by_egress_allowlist):
+# * exact case-insensitive match — `api.openai.com`
+# * leftmost-label wildcard       — `*.openai.com` (matches `chat.openai.com`,
+#                                     not `openai.com` itself, not
+#                                     `evil.openai.com.attacker.net`)
+# * universal wildcard            — `*` (rarely used; escape hatch only)
+
+spec:
+  network:
+    allowlist:
+      - api.openai.com
+      - "*.anthropic.com"
+      - allowed.example.com
