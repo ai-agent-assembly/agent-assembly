@@ -119,6 +119,14 @@ pub struct Lineage {
     /// Team identifier associated with the agent that produced the entry.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     pub team_id: Option<String>,
+    /// AAASM-2008 — organization identifier of the agent that produced the
+    /// entry. Mirrors `team_id` but at the multi-tenancy tier so audit logs,
+    /// compliance exports, and operator queries can filter / scope by Org.
+    /// Present when the gateway can resolve `org_id` from the agent's
+    /// registration metadata; `None` for entries emitted without an
+    /// `AgentContext` or registered without org metadata.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    pub org_id: Option<String>,
     /// Human-readable reason the action was delegated to this agent.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     pub delegation_reason: Option<String>,
@@ -210,6 +218,9 @@ pub struct AuditEntry {
     parent_agent_id: Option<AgentId>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     team_id: Option<String>,
+    /// AAASM-2008 — see [`Lineage::org_id`].
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    org_id: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     delegation_reason: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
@@ -289,6 +300,7 @@ impl AuditEntry {
             root_agent_id: None,
             parent_agent_id: None,
             team_id: None,
+            org_id: None,
             delegation_reason: None,
             spawned_by_tool: None,
             depth: None,
@@ -340,6 +352,7 @@ impl AuditEntry {
             root_agent_id: lineage.root_agent_id,
             parent_agent_id: lineage.parent_agent_id,
             team_id: lineage.team_id,
+            org_id: lineage.org_id,
             delegation_reason: lineage.delegation_reason,
             spawned_by_tool: lineage.spawned_by_tool,
             depth: lineage.depth,
@@ -397,6 +410,7 @@ impl AuditEntry {
             root_agent_id: lineage.root_agent_id,
             parent_agent_id: lineage.parent_agent_id,
             team_id: lineage.team_id,
+            org_id: lineage.org_id,
             delegation_reason: lineage.delegation_reason,
             spawned_by_tool: lineage.spawned_by_tool,
             depth: lineage.depth,
@@ -475,6 +489,13 @@ impl AuditEntry {
         self.team_id.as_deref()
     }
 
+    /// AAASM-2008 — organization identifier associated with the agent, if
+    /// present. Mirrors [`Self::team_id`] at the multi-tenancy tier.
+    #[inline]
+    pub fn org_id(&self) -> Option<&str> {
+        self.org_id.as_deref()
+    }
+
     /// Reason this agent was delegated the action, if present.
     #[inline]
     pub fn delegation_reason(&self) -> Option<&str> {
@@ -530,6 +551,7 @@ impl AuditEntry {
             root_agent_id: self.root_agent_id,
             parent_agent_id: self.parent_agent_id,
             team_id: self.team_id.clone(),
+            org_id: self.org_id.clone(),
             delegation_reason: self.delegation_reason.clone(),
             spawned_by_tool: self.spawned_by_tool.clone(),
             depth: self.depth,
@@ -608,6 +630,12 @@ impl AuditEntry {
         }
         if let Some(d) = lineage.depth {
             hasher.update(d.to_be_bytes());
+        }
+        // AAASM-2008 — org_id appended last in the lineage section so that
+        // entries with org_id=None hash identically to pre-AAASM-2008 output.
+        if let Some(s) = &lineage.org_id {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
         }
         // Redaction — append only when non-default; empty Vec + None contributes 0 bytes
         // so entries constructed via new() / new_with_lineage() hash exactly as before.
@@ -1545,6 +1573,7 @@ mod lineage_tests {
             root_agent_id: Some(ROOT),
             parent_agent_id: Some(PARENT),
             team_id: Some("team-alpha".into()),
+            org_id: None,
             delegation_reason: Some("summarise".into()),
             spawned_by_tool: Some("langgraph".into()),
             depth: Some(2),
@@ -1618,6 +1647,7 @@ mod lineage_tests {
             root_agent_id: Some(ROOT),
             parent_agent_id: Some(PARENT),
             team_id: Some("t1".into()),
+            org_id: Some("o1".into()),
             delegation_reason: Some("r".into()),
             spawned_by_tool: Some("s".into()),
             depth: Some(3),
