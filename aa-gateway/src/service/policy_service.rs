@@ -805,14 +805,37 @@ impl PolicyServiceImpl {
         let registry = self.registry.as_ref()?;
         let proto_agent = req.agent_id.as_ref()?;
         let key = proto_agent_id_to_key(proto_agent);
-        let record = registry.get(&key)?;
+        let record_opt = registry.get(&key);
 
-        let reason = if req.credential_token.is_empty() {
-            "missing credential token"
-        } else if req.credential_token != record.credential_token {
-            "credential token mismatch"
+        let reason = if let Some(record) = &record_opt {
+            // The claimed agent is registered at the claimed (org, team, id)
+            // triple. Standard validation: empty / mismatched token rejects.
+            if req.credential_token.is_empty() {
+                "missing credential token"
+            } else if req.credential_token != record.credential_token {
+                "credential token mismatch"
+            } else {
+                return None;
+            }
         } else {
-            return None;
+            // AAASM-2008 — the claimed agent is NOT registered at the
+            // claimed triple. If the supplied credential_token is registered
+            // to a DIFFERENT agent, this is a cross-org / cross-identity
+            // impersonation attempt and must be rejected. (Empty token +
+            // unregistered agent is the lightweight-fixture path — skip
+            // validation so existing tests that bypass the registry layer
+            // continue working.)
+            if req.credential_token.is_empty() {
+                return None;
+            }
+            if registry.find_by_credential_token(&req.credential_token).is_some() {
+                "credential token registered to a different agent"
+            } else {
+                // Token doesn't belong to any registered agent; could be a
+                // test fixture or an unregistered client. Existing behaviour
+                // (skip) is preserved.
+                return None;
+            }
         };
 
         let response = CheckActionResponse {
