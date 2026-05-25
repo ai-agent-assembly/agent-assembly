@@ -43,6 +43,7 @@ use aa_sandbox::registry::{ToolKind, ToolRegistry};
 
 const FS_PROBE_WAT: &str = include_str!("../fixtures/wasm/fs_probe.wat");
 const RUNAWAY_WAT: &str = include_str!("../fixtures/wasm/runaway.wat");
+const MEM_BOMB_WAT: &str = include_str!("../fixtures/wasm/mem_bomb.wat");
 
 /// Build a [`ToolRegistry`] containing a single WASM tool compiled
 /// from `wat_source` at test time and registered under `name`.
@@ -110,6 +111,35 @@ async fn sandbox_kills_runaway_loop() {
             assert_eq!(
                 audit_events,
                 vec![AuditEventType::SandboxStarted, AuditEventType::SandboxCpuTimeout],
+            );
+        }
+        WasmDispatchResult::NotWasm => panic!("registered Wasm tool must dispatch as Wasm"),
+    }
+}
+
+#[tokio::test]
+async fn sandbox_kills_memory_bomb() {
+    // Default `SandboxLimits::memory_pages = 16` (1 MiB). The fixture
+    // declares 1 page and immediately tries to grow by 100 pages
+    // (~6.4 MiB), well past the cap — the limiter returns
+    // `Err(MemoryExhaustedMarker)` which the runtime surfaces as
+    // `SandboxError::MemoryExhausted`.
+    let reg = registry_with("mem_bomb", MEM_BOMB_WAT, SandboxConfig::default());
+
+    let outcome = tokio::task::spawn_blocking(move || dispatch_wasm_tool("mem_bomb", &[], &reg))
+        .await
+        .expect("dispatch task must not panic");
+
+    match outcome {
+        WasmDispatchResult::Wasm { result, audit_events } => {
+            assert!(
+                matches!(result, Err(SandboxError::MemoryExhausted)),
+                "expected SandboxError::MemoryExhausted, got {:?}",
+                result,
+            );
+            assert_eq!(
+                audit_events,
+                vec![AuditEventType::SandboxStarted, AuditEventType::SandboxOomKilled],
             );
         }
         WasmDispatchResult::NotWasm => panic!("registered Wasm tool must dispatch as Wasm"),
