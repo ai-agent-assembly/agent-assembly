@@ -29,6 +29,11 @@ pub enum AuditCommands {
     Export(export::ExportArgs),
     /// Verify the hash chain of a local JSONL audit log file.
     VerifyChain(verify_chain::VerifyChainArgs),
+    /// Full-fidelity compliance export of a local JSONL audit log file.
+    ///
+    /// Preserves the SHA-256 hash chain, credential findings, and
+    /// delegation lineage for SIEM ingestion and regulatory review.
+    ComplianceExport(compliance::ComplianceExportArgs),
 }
 
 /// Dispatch an audit subcommand.
@@ -37,5 +42,6 @@ pub fn dispatch(args: AuditArgs, ctx: &ResolvedContext, output: OutputFormat) ->
         AuditCommands::List(list_args) => list::run(list_args, ctx, output),
         AuditCommands::Export(export_args) => export::run(export_args, ctx),
         AuditCommands::VerifyChain(vca) => verify_chain::run(vca),
+        AuditCommands::ComplianceExport(cea) => compliance::run(cea),
     }
 }

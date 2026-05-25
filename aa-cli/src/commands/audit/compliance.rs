@@ -9,11 +9,15 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use aa_core::AuditEntry;
+use clap::Args;
 
-use super::models::ComplianceRecord;
+use super::export::compliance_header;
+use super::models::{ComplianceFormat, ComplianceRecord, ExportFormat};
+use crate::commands::logs::format::{is_within_time_range, parse_since, parse_until};
 
 /// Read one per-session audit JSONL file from disk into audit entries in file order.
 ///
@@ -152,6 +156,122 @@ pub fn write_records_csv<W: Write>(
     }
     wtr.flush()?;
     Ok(())
+}
+
+/// Arguments for `aasm audit compliance-export`.
+#[derive(Debug, Args)]
+pub struct ComplianceExportArgs {
+    /// Path to a per-session audit JSONL file produced by the gateway.
+    #[arg(long)]
+    pub input: PathBuf,
+
+    /// Export file format. Defaults to JSONL for SIEM/regulator ingestion.
+    #[arg(long, value_enum, default_value_t = ExportFormat::Jsonl)]
+    pub format: ExportFormat,
+
+    /// Compliance framework header to prepend (EU AI Act or SOC 2).
+    #[arg(long, value_enum)]
+    pub compliance: Option<ComplianceFormat>,
+
+    /// Write output to a file instead of stdout.
+    #[arg(long)]
+    pub output_file: Option<PathBuf>,
+
+    /// Filter by hex-encoded agent identifier (32 hex chars).
+    #[arg(long)]
+    pub agent: Option<String>,
+
+    /// Filter by audit event type label (e.g. `PolicyViolation`).
+    #[arg(long)]
+    pub event_type: Option<String>,
+
+    /// Include entries after this duration shorthand (`30m`, `2h`, `1d`) or
+    /// ISO 8601 timestamp.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Include entries before this ISO 8601 timestamp.
+    #[arg(long)]
+    pub until: Option<String>,
+}
+
+/// Filter mapped compliance records by the args' agent / event-type / time
+/// window. Returns a fresh vector preserving original ordering.
+pub fn filter_records(records: Vec<ComplianceRecord>, args: &ComplianceExportArgs) -> Vec<ComplianceRecord> {
+    let since = args.since.as_deref().and_then(parse_since);
+    let until = args.until.as_deref().and_then(parse_until);
+    records
+        .into_iter()
+        .filter(|r| {
+            if let Some(ref a) = args.agent {
+                if !r.agent_id.eq_ignore_ascii_case(a) {
+                    return false;
+                }
+            }
+            if let Some(ref t) = args.event_type {
+                if r.event_type != *t {
+                    return false;
+                }
+            }
+            is_within_time_range(&r.timestamp, since.as_ref(), until.as_ref())
+        })
+        .collect()
+}
+
+/// Dispatch records to the writer chosen by `args.format`, prepending the
+/// optional compliance framework header.
+fn write_records_to<W: Write>(
+    records: &[ComplianceRecord],
+    args: &ComplianceExportArgs,
+    writer: &mut W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(framework) = args.compliance {
+        let header = compliance_header(framework);
+        writer.write_all(header.as_bytes())?;
+    }
+    match args.format {
+        ExportFormat::Csv => write_records_csv(records, writer),
+        ExportFormat::Json => write_records_json(records, writer),
+        ExportFormat::Jsonl => write_records_jsonl(records, writer),
+    }
+}
+
+/// Execute `aasm audit compliance-export`.
+pub fn run(args: ComplianceExportArgs) -> ExitCode {
+    let entries = match load_jsonl_file(&args.input) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: failed to read {}: {e}", args.input.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let records: Vec<ComplianceRecord> = entries.iter().map(map_audit_entry).collect();
+    let filtered = filter_records(records, &args);
+
+    let write_result: Result<(), Box<dyn std::error::Error>> = if let Some(ref path) = args.output_file {
+        let file = match File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("error: cannot create file {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        let mut w = std::io::BufWriter::new(file);
+        write_records_to(&filtered, &args, &mut w)
+    } else {
+        let stdout = std::io::stdout();
+        let mut w = stdout.lock();
+        write_records_to(&filtered, &args, &mut w)
+    };
+
+    match write_result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: compliance export failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +449,120 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].seq, 0);
         assert_eq!(parsed[1].seq, 1);
+    }
+
+    fn default_args(input: PathBuf) -> ComplianceExportArgs {
+        ComplianceExportArgs {
+            input,
+            format: ExportFormat::Jsonl,
+            compliance: None,
+            output_file: None,
+            agent: None,
+            event_type: None,
+            since: None,
+            until: None,
+        }
+    }
+
+    #[test]
+    fn filter_records_by_agent_id_case_insensitive() {
+        let records = sample_records(2);
+        let mut args = default_args(PathBuf::from("/tmp/none"));
+        // sample_records uses [0xAA; 16] → "a" * 32 hex string.
+        args.agent = Some("A".repeat(32));
+        let kept = filter_records(records, &args);
+        assert_eq!(kept.len(), 2, "uppercase agent filter must match hex value");
+    }
+
+    #[test]
+    fn filter_records_by_event_type_drops_non_matching() {
+        let records = sample_records(2);
+        let mut args = default_args(PathBuf::from("/tmp/none"));
+        args.event_type = Some("PolicyViolation".to_string());
+        let kept = filter_records(records, &args);
+        assert_eq!(kept.len(), 0, "no sample records match PolicyViolation");
+    }
+
+    #[test]
+    fn filter_records_by_until_excludes_future_entries() {
+        let records = sample_records(2);
+        // sample timestamps are ~2023-11-14 — anything before 2023-01-01 should drop both.
+        let mut args = default_args(PathBuf::from("/tmp/none"));
+        args.until = Some("2023-01-01T00:00:00Z".to_string());
+        let kept = filter_records(records, &args);
+        assert_eq!(kept.len(), 0);
+    }
+
+    #[test]
+    fn run_emits_one_jsonl_line_per_entry_to_output_file() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("audit.jsonl");
+        let output = dir.path().join("export.jsonl");
+
+        let agent = fixed_agent();
+        let session = fixed_session();
+        let mut prev = [0u8; 32];
+        let mut f = File::create(&input).unwrap();
+        for seq in 0..4 {
+            let e = AuditEntry::new(
+                seq,
+                1_700_000_000_000_000_000 + seq,
+                AuditEventType::ToolCallIntercepted,
+                agent,
+                session,
+                format!("{{\"seq\":{seq}}}"),
+                prev,
+            );
+            prev = *e.entry_hash();
+            writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
+        }
+        drop(f);
+
+        let mut args = default_args(input);
+        args.output_file = Some(output.clone());
+        let code = run(args);
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 4);
+        for line in lines {
+            let parsed: ComplianceRecord = serde_json::from_str(line).unwrap();
+            assert!(parsed.entry_hash.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
+
+    #[test]
+    fn run_prepends_compliance_header_when_requested() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("audit.jsonl");
+        let output = dir.path().join("export.jsonl");
+
+        let e = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            fixed_agent(),
+            fixed_session(),
+            "{}".to_string(),
+            [0u8; 32],
+        );
+        let mut f = File::create(&input).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&e).unwrap()).unwrap();
+        drop(f);
+
+        let mut args = default_args(input);
+        args.output_file = Some(output.clone());
+        args.compliance = Some(ComplianceFormat::EuAiAct);
+        assert_eq!(run(args), ExitCode::SUCCESS);
+
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(content.starts_with("# EU AI Act Compliance Report"));
+        assert!(content.contains("Regulation 2024/1689"));
     }
 
     #[test]
