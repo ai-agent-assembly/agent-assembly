@@ -805,12 +805,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Dispatch a tool with placeholder-form args.
-         * @description Resolves any `${NAME}` tokens in `args` via the registered
-         *     `SecretsStore`, emits an audit entry tagged
-         *     `AuditEventType::ToolDispatched` carrying the **placeholder-form**
-         *     payload (the resolved value is never recorded), and returns the
-         *     resolved args plus the list of substituted names.
+         * Dispatch a tool by name.
+         * @description Demultiplexes on the registered [`ToolKind`]: WASM tools route through
+         *     the sandbox; native / unknown tools fall through to the existing
+         *     secret-injection resolver.
          */
         post: operations["dispatch_tool"];
         delete?: never;
@@ -2121,25 +2119,39 @@ export interface components {
         DispatchToolRequest: {
             /**
              * @description Placeholder-form args. May contain `${NAME}` tokens that the gateway
-             *     will resolve via the `SecretsStore` before audit + forwarding.
+             *     will resolve via the `SecretsStore` before audit + forwarding. For
+             *     WASM tools (`ToolKind::Wasm`) the args are forwarded as raw bytes to
+             *     the sandbox without placeholder resolution.
              */
             args: unknown;
             /** @description Name of the tool the agent wants to dispatch (e.g. `"call_database"`). */
             tool: string;
         };
-        /** @description Response body for `POST /api/v1/dispatch_tool`. */
+        /**
+         * @description Response body for `POST /api/v1/dispatch_tool`.
+         *
+         *     Two flows fan in through this shape:
+         *
+         *     * **Native / secret-injection** — `resolved_args` + `names_substituted`
+         *       carry the AAASM-1920 result; `sandbox` is `None`.
+         *     * **WASM sandbox** (AAASM-2033) — `sandbox` carries the dispatch
+         *       verdict; `resolved_args` is `null` and `names_substituted` is empty.
+         */
         DispatchToolResponse: {
             /**
              * @description The placeholder names that were resolved during this call. Names
              *     only — never the resolved values. Echoes the audit-log shape so
-             *     callers can correlate dispatches with audit entries.
+             *     callers can correlate dispatches with audit entries. Empty for
+             *     WASM-sandbox dispatches.
              */
             names_substituted: string[];
             /**
              * @description Post-substitution args ready to forward to the tool sink. Contains
              *     the *resolved* credential values; callers must not log these.
+             *     `null` for WASM-sandbox dispatches.
              */
             resolved_args: unknown;
+            sandbox?: null | components["schemas"]["SandboxDispatchOutcome"];
         };
         /** @description Paginated list of directed edges for an agent. */
         EdgeListResponse: {
@@ -2804,6 +2816,36 @@ export interface components {
             resource: string;
             ts: string;
             verb: components["schemas"]["Verb"];
+        };
+        /**
+         * @description Sandbox dispatch outcome — populated on the `sandbox` field of
+         *     [`DispatchToolResponse`] when the named tool routed through
+         *     [`aa_sandbox::wasm_dispatch::dispatch_wasm_tool`].
+         */
+        SandboxDispatchOutcome: {
+            /**
+             * Format: int32
+             * @description WASI errno that triggered `FilesystemBlocked`. `None` for other
+             *     error variants and for success.
+             */
+            errno?: number | null;
+            /**
+             * @description Discriminant name of the [`SandboxError`] variant that fired —
+             *     `FilesystemBlocked`, `CpuTimeout`, `WallClockTimeout`,
+             *     `MemoryExhausted`, `InvalidWasm`, or `Wasmtime`. `None` on success.
+             */
+            error?: string | null;
+            /**
+             * Format: int32
+             * @description WASI exit code surfaced by a clean guest exit (`proc_exit(0)` or a
+             *     `_start` return). `None` when the dispatch failed.
+             */
+            exit_code?: number | null;
+            /**
+             * @description `true` iff the sandbox runtime returned `Ok`. `false` for every
+             *     `SandboxError` variant.
+             */
+            ok: boolean;
         };
         /**
          * @description Aggregate counts for the dashboard SandboxSummaryCard.
@@ -4829,7 +4871,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Tool dispatch resolved */
+            /** @description Tool dispatch resolved (native) or sandboxed (WASM) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4840,6 +4882,15 @@ export interface operations {
             };
             /** @description Unknown placeholder referenced in args */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Sandbox dispatch task panicked */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
