@@ -263,6 +263,146 @@ impl PolicyEngine {
         })
     }
 
+    /// AAASM-2023 — Load **multiple** policy documents from every `*.yaml`
+    /// file in a directory and populate the `scope_index` cascade.
+    ///
+    /// Each YAML file is parsed independently and inserted into the
+    /// `scope_index` keyed by its `scope` field (`Global` / `Org(...)` /
+    /// `Team(...)` / `Agent(...)`). At evaluation time, the cascade
+    /// collector at `evaluate()` walks the scopes for the calling agent's
+    /// lineage and merges every matching document — which finally lets
+    /// `scope: org:<id>` policies fire ONLY for agents in that org
+    /// (closes the gateway-side gap that AAASM-2008 ST-org-4 surfaced).
+    ///
+    /// ## Semantics
+    ///
+    /// * Files are loaded in alphabetical filename order (deterministic).
+    /// * The first Global-scoped document found supplies the budget and
+    ///   data-pattern config; if no Global-scoped document is present,
+    ///   budget limits default to None and the data-pattern set is empty.
+    /// * Files that fail to parse abort the entire load — the caller gets
+    ///   a `PolicyParseError` for the first bad file. (Partial loads would
+    ///   be a worse failure mode than the loud abort.)
+    /// * The `policy: ArcSwap<Arc<PolicyDocument>>` primary field is set
+    ///   to the first Global-scoped document (or a fresh default when
+    ///   none is present). With a non-empty `scope_index`, `evaluate()`
+    ///   routes through `evaluate_with_cascade` and the primary slot is
+    ///   only consulted by callers that bypass the cascade path.
+    /// * No filesystem watcher is attached — the watcher today is
+    ///   single-file. Hot-reload across multiple files is a separate
+    ///   concern; for now the cascade is static-at-load.
+    ///
+    /// ## Example
+    ///
+    /// ```text
+    /// policies/
+    /// ├── 000-global-allow-all.yaml   # scope: global (or omitted)
+    /// ├── 100-org-acme-deny-bash.yaml # scope: org:acme
+    /// └── 200-team-platform.yaml      # scope: team:platform
+    /// ```
+    ///
+    /// Loading this directory gives every agent in `acme/platform` the
+    /// Global rules + the org-acme deny + the team-platform rules.
+    /// Agents in other orgs see only the Global rules.
+    pub fn load_cascade_from_dir(
+        dir: &Path,
+        budget_alert_tx: tokio::sync::broadcast::Sender<crate::budget::BudgetAlert>,
+    ) -> Result<Self, PolicyLoadError> {
+        // Collect *.yaml entries in alphabetical order so the cascade is
+        // deterministic across runs and filesystems with different
+        // dir-iteration orders.
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map_err(PolicyLoadError::Io)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .collect();
+        entries.sort();
+
+        let mut scope_index = ScopeIndex::new();
+        let mut primary: Option<PolicyDocument> = None;
+        let mut compiled_patterns = Vec::new();
+        let mut budget_tz = chrono_tz::UTC;
+        let mut daily_limit: Option<rust_decimal::Decimal> = None;
+        let mut monthly_limit: Option<rust_decimal::Decimal> = None;
+
+        for path in &entries {
+            let yaml = std::fs::read_to_string(path).map_err(PolicyLoadError::Io)?;
+            let output = PolicyValidator::from_yaml(&yaml).map_err(PolicyLoadError::Validation)?;
+            let doc = output.document;
+
+            // First Global-scoped document supplies budget + sensitive-pattern config.
+            if matches!(doc.scope, crate::policy::scope::PolicyScope::Global) && primary.is_none() {
+                compiled_patterns = doc
+                    .data
+                    .as_ref()
+                    .map(|dp| {
+                        dp.sensitive_patterns
+                            .iter()
+                            .filter_map(|p| regex::Regex::new(p).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                budget_tz = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.timezone.as_deref())
+                    .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
+                    .unwrap_or(chrono_tz::UTC);
+                daily_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.daily_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                monthly_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.monthly_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                primary = Some(doc.clone());
+            }
+
+            scope_index.insert(doc);
+        }
+
+        let budget = Arc::new(BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            daily_limit,
+            monthly_limit,
+            budget_tz,
+            budget_alert_tx,
+        ));
+
+        let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
+            name: None,
+            policy_version: None,
+            version: None,
+            scope: crate::policy::scope::PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: std::collections::HashMap::new(),
+            capabilities: None,
+        });
+        let policy_arc = Arc::new(ArcSwap::new(Arc::new(primary_doc)));
+
+        Ok(PolicyEngine {
+            policy: policy_arc,
+            scanner: aa_core::CredentialScanner::new(),
+            compiled_patterns,
+            rate_state: DashMap::new(),
+            budget,
+            scope_index,
+            _watcher: None,
+            registry: None,
+            policy_epoch: Arc::new(AtomicU64::new(0)),
+            decision_cache: DecisionCache::new(100_000),
+        })
+    }
+
     /// Load a policy from a YAML file using a pre-built budget tracker.
     ///
     /// Use this when restoring budget state from disk — the caller constructs
