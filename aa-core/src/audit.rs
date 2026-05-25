@@ -69,6 +69,48 @@ pub enum AuditEventType {
     /// resolvable). The action is denied before policy evaluation runs.
     /// (AAASM-1944 / Zero-trust A2A.)
     A2AImpersonationAttempted = 15,
+    /// A sandboxed (WASM/WASI) tool invocation has begun. Emitted by
+    /// `aa-proxy` immediately before handing the parsed `tools/call`
+    /// envelope to the `aa-sandbox` runtime for execution. Marks the
+    /// start of the lifecycle terminated by [`SandboxTerminated`],
+    /// [`SandboxFilesystemBlocked`], [`SandboxCpuTimeout`], or
+    /// [`SandboxOomKilled`]. (AAASM-1965 / F116 ST-W.)
+    ///
+    /// [`SandboxTerminated`]: Self::SandboxTerminated
+    /// [`SandboxFilesystemBlocked`]: Self::SandboxFilesystemBlocked
+    /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
+    /// [`SandboxOomKilled`]: Self::SandboxOomKilled
+    SandboxStarted = 16,
+    /// A sandboxed tool attempted to read or write outside the WASI
+    /// preopened-dir allowlist. Surfaced by `aa-sandbox::runtime` when
+    /// `path_open` (or another `fd_*` host call) returns `EACCES`
+    /// because the requested path is not under any directory passed to
+    /// `WasiCtxBuilder::preopened_dir`. (AAASM-1965 / F116 ST-W,
+    /// Scenario 1 — filesystem isolation.)
+    SandboxFilesystemBlocked = 17,
+    /// A sandboxed tool was killed because its wasmtime instruction-fuel
+    /// budget (or wall-clock guard) was exhausted. Surfaced by
+    /// `aa-sandbox::runtime` when `Store::set_fuel` drains to zero or
+    /// the wall-clock watcher fires, mapping to
+    /// `SandboxError::CpuTimeout` / `SandboxError::WallClockTimeout`.
+    /// (AAASM-1965 / F116 ST-W, Scenario 2 — runaway-loop kill.)
+    SandboxCpuTimeout = 18,
+    /// A sandboxed tool was killed because wasmtime's `Store::limiter`
+    /// rejected a memory-growth request that would exceed the
+    /// configured `memory_pages` ceiling. Surfaced by
+    /// `aa-sandbox::runtime` mapping to `SandboxError::MemoryExhausted`.
+    /// Distinguished from [`SandboxCpuTimeout`] so audit consumers can
+    /// tell whether the host pressure was instruction-fuel or memory
+    /// pages. (AAASM-1965 / F116 ST-W, Scenario 2 — memory-bomb kill.)
+    ///
+    /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
+    SandboxOomKilled = 19,
+    /// A sandboxed tool invocation completed without being killed by
+    /// any isolation primitive. Emitted by `aa-sandbox::runtime`
+    /// regardless of whether the tool returned a logical success or a
+    /// tool-defined error — this variant marks lifecycle completion,
+    /// not outcome semantics. (AAASM-1965 / F116 ST-W.)
+    SandboxTerminated = 20,
 }
 
 impl AuditEventType {
@@ -93,6 +135,11 @@ impl AuditEventType {
             Self::ToolDispatched => "ToolDispatched",
             Self::A2ACallIntercepted => "A2ACallIntercepted",
             Self::A2AImpersonationAttempted => "A2AImpersonationAttempted",
+            Self::SandboxStarted => "SandboxStarted",
+            Self::SandboxFilesystemBlocked => "SandboxFilesystemBlocked",
+            Self::SandboxCpuTimeout => "SandboxCpuTimeout",
+            Self::SandboxOomKilled => "SandboxOomKilled",
+            Self::SandboxTerminated => "SandboxTerminated",
         }
     }
 }
@@ -960,6 +1007,14 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalRouted.as_str(), "ApprovalRouted");
         assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
         assert_eq!(AuditEventType::ToolDispatched.as_str(), "ToolDispatched");
+        assert_eq!(AuditEventType::SandboxStarted.as_str(), "SandboxStarted");
+        assert_eq!(
+            AuditEventType::SandboxFilesystemBlocked.as_str(),
+            "SandboxFilesystemBlocked"
+        );
+        assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
+        assert_eq!(AuditEventType::SandboxOomKilled.as_str(), "SandboxOomKilled");
+        assert_eq!(AuditEventType::SandboxTerminated.as_str(), "SandboxTerminated");
     }
 
     #[test]
@@ -976,6 +1031,11 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalRouted as u32, 9);
         assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
         assert_eq!(AuditEventType::ToolDispatched as u32, 13);
+        assert_eq!(AuditEventType::SandboxStarted as u32, 16);
+        assert_eq!(AuditEventType::SandboxFilesystemBlocked as u32, 17);
+        assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
+        assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
+        assert_eq!(AuditEventType::SandboxTerminated as u32, 20);
     }
 
     #[test]
@@ -993,6 +1053,11 @@ mod tests {
             AuditEventType::ApprovalRouted,
             AuditEventType::ApprovalEscalated,
             AuditEventType::ToolDispatched,
+            AuditEventType::SandboxStarted,
+            AuditEventType::SandboxFilesystemBlocked,
+            AuditEventType::SandboxCpuTimeout,
+            AuditEventType::SandboxOomKilled,
+            AuditEventType::SandboxTerminated,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
@@ -1170,6 +1235,42 @@ mod tests {
         let entry = make_entry(0);
         let s = alloc::format!("{}", entry);
         assert!(!s.contains("bash"));
+    }
+
+    #[test]
+    fn display_round_trips_sandbox_event_names() {
+        // For each Sandbox* lifecycle variant introduced under AAASM-1965,
+        // assert that AuditEntry's Display surfaces the variant's `as_str()`
+        // label verbatim. Auditors grep the JSONL log by these tokens.
+        let sandbox_events = [
+            (AuditEventType::SandboxStarted, "event=SandboxStarted]"),
+            (
+                AuditEventType::SandboxFilesystemBlocked,
+                "event=SandboxFilesystemBlocked]",
+            ),
+            (AuditEventType::SandboxCpuTimeout, "event=SandboxCpuTimeout]"),
+            (AuditEventType::SandboxOomKilled, "event=SandboxOomKilled]"),
+            (AuditEventType::SandboxTerminated, "event=SandboxTerminated]"),
+        ];
+        for (event_type, expected_tail) in sandbox_events {
+            let entry = AuditEntry::new(
+                0,
+                1_714_222_134_000_000_000,
+                event_type,
+                AgentId::from_bytes(AGENT_BYTES),
+                SessionId::from_bytes(SESSION_BYTES),
+                alloc::string::String::from("{}"),
+                GENESIS_HASH,
+            );
+            let rendered = alloc::format!("{}", entry);
+            assert!(
+                rendered.ends_with(expected_tail),
+                "Display for {:?} should end with `{}` but was `{}`",
+                event_type,
+                expected_tail,
+                rendered,
+            );
+        }
     }
 
     // --- AuditLog helpers ---
