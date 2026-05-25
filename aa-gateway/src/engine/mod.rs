@@ -1678,6 +1678,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,
@@ -1702,6 +1704,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,
@@ -1726,6 +1730,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(10.0),
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,
@@ -1745,6 +1751,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(2.0),
             monthly_limit_usd: Some(5.0),
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,
@@ -1770,6 +1778,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Deny,
             window: None,
@@ -1794,6 +1804,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Suspend,
             window: None,
@@ -1818,6 +1830,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Suspend,
             window: None,
@@ -1842,6 +1856,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::Deny,
             window: None,
@@ -2146,6 +2162,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,
@@ -2168,6 +2186,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
             timezone: None,
             action_on_exceed: ActionOnExceed::default(),
             window: None,

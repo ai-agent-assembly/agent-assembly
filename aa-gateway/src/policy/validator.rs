@@ -261,6 +261,33 @@ impl PolicyValidator {
             }
         }
 
+        // AAASM-2022 — Per-org limits use the same validation rules as the
+        // global limits: positive, and monthly >= daily.
+        if let Some(limit) = raw.org_daily_limit_usd {
+            if limit <= 0.0 {
+                errors.push(ValidationError::new(
+                    "budget.org_daily_limit_usd",
+                    "must be greater than 0",
+                ));
+            }
+        }
+        if let Some(limit) = raw.org_monthly_limit_usd {
+            if limit <= 0.0 {
+                errors.push(ValidationError::new(
+                    "budget.org_monthly_limit_usd",
+                    "must be greater than 0",
+                ));
+            }
+            if let Some(daily) = raw.org_daily_limit_usd {
+                if limit < daily {
+                    errors.push(ValidationError::new(
+                        "budget.org_monthly_limit_usd",
+                        "must be >= org_daily_limit_usd",
+                    ));
+                }
+            }
+        }
+
         // Validate timezone string if provided
         if let Some(tz_str) = &raw.timezone {
             if tz_str.parse::<chrono_tz::Tz>().is_err() {
@@ -310,6 +337,8 @@ impl PolicyValidator {
         Some(BudgetPolicy {
             daily_limit_usd: raw.daily_limit_usd,
             monthly_limit_usd: raw.monthly_limit_usd,
+            org_daily_limit_usd: raw.org_daily_limit_usd,
+            org_monthly_limit_usd: raw.org_monthly_limit_usd,
             timezone: raw.timezone,
             action_on_exceed,
             window,
