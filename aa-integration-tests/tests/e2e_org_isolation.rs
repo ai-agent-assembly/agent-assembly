@@ -241,11 +241,11 @@ async fn st_org_2_registry_org_members_scopes_topology_by_org() {
 // ── ST-org-3 ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "AAASM-2009: explicit Org-tier budget tracking — BudgetTracker keys by team_id today; \
+#[ignore = "AAASM-2022: explicit Org-tier budget tracking — BudgetTracker keys by team_id today; \
     cross-org isolation works for non-pathological setups (orgs with distinct team_ids) but the \
     AC asks for an explicit Org tier that this PR does not wire"]
 async fn st_org_3_cross_org_budget_isolation() {
-    // When AAASM-2009 ships:
+    // When AAASM-2022 ships:
     //
     // 1. Configure org-alpha with a daily budget of $1 and org-beta with $10.
     // 2. Drive enough cost-bearing actions from an org-alpha agent to exhaust
@@ -255,18 +255,18 @@ async fn st_org_3_cross_org_budget_isolation() {
     //    budget was not affected by org-alpha's exhaustion).
     // 5. Assert the budget-exceeded audit events for org-alpha do not appear
     //    in a `/api/v1/logs?org_id=org-beta` query.
-    unimplemented!("AAASM-2009 — explicit Org-tier budget enforcement");
+    unimplemented!("AAASM-2022 — explicit Org-tier budget enforcement");
 }
 
 // ── ST-org-4 ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "AAASM-2010: PolicyEngine::load_from_file does not populate the scope_index, so org-scoped \
+#[ignore = "AAASM-2023: PolicyEngine::load_from_file does not populate the scope_index, so org-scoped \
     policies route through evaluate_primary and apply globally. The engine's scope_index cascade \
     DOES handle PolicyScope::Org correctly (covered by aa-gateway/tests/cascade_merge_test.rs), but \
     exercising it E2E here requires a multi-document loader — filed as a follow-up subtask"]
 async fn st_org_4_policy_with_org_scope_fires_only_for_matching_org() {
-    // When AAASM-2010 ships a `PolicyEngine::load_cascade_from_dir(...)` or
+    // When AAASM-2023 ships a `PolicyEngine::load_cascade_from_dir(...)` or
     // equivalent multi-document loader, this test will:
     //
     // 1. Load TWO policy documents: a Global allow-all + an
@@ -280,9 +280,9 @@ async fn st_org_4_policy_with_org_scope_fires_only_for_matching_org() {
     // The pure-logic equivalent (cascade evaluator + PolicyScope::Org
     // filtering) is already unit-tested in
     // aa-gateway/tests/cascade_merge_test.rs::cascade_merge_org_team_agent.
-    // This E2E test is the F116 acceptance lens; un-ignored when AAASM-2010
+    // This E2E test is the F116 acceptance lens; un-ignored when AAASM-2023
     // wires the gateway-side multi-document loader.
-    unimplemented!("AAASM-2010 — gateway multi-document cascade loader");
+    unimplemented!("AAASM-2023 — gateway multi-document cascade loader");
 }
 
 // ── ST-org-5 ────────────────────────────────────────────────────────────────
