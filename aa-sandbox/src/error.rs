@@ -38,8 +38,28 @@ pub enum SandboxError {
     #[error("invalid WASM module: {0}")]
     InvalidWasm(String),
     /// A wasmtime-level error that does not yet have a deterministic
-    /// variant. Placeholder for the fuel / limiter mappings landing in
-    /// AAASM-2018; carries the wasmtime error's `Display` representation.
+    /// variant. Carries the wasmtime error's `Display` representation.
     #[error("wasmtime error: {0}")]
     Wasmtime(String),
+    /// The guest exhausted its wasmtime instruction-fuel budget — typically
+    /// a runaway loop. Mapped from a `Trap::OutOfFuel` wasmtime error.
+    /// (AAASM-2018 / F116 ST-W Scenario 2 — CPU half.)
+    #[error("sandbox CPU budget exhausted (fuel ran out)")]
+    CpuTimeout,
+    /// The wall-clock deadline (`SandboxLimits::wall_clock_ms`) elapsed
+    /// before the guest returned. Mapped from a wasmtime epoch-interrupt
+    /// trap fired by a watchdog thread. Distinguished from
+    /// [`SandboxError::CpuTimeout`] so audit consumers can tell whether
+    /// the kill was driven by instruction fuel (`CpuTimeout`) or by
+    /// real-time stalls in non-fuel-instrumented code paths
+    /// (`WallClockTimeout`). (AAASM-2018 / F116 ST-W Scenario 2.)
+    #[error("sandbox wall-clock deadline exceeded")]
+    WallClockTimeout,
+    /// The guest attempted to grow linear memory beyond
+    /// `SandboxLimits::memory_pages * 64 KiB`. Mapped from
+    /// [`wasmtime::ResourceLimiter::memory_growing`] returning `Err`
+    /// with the crate-internal marker error. (AAASM-2018 / F116 ST-W
+    /// Scenario 2 — memory half.)
+    #[error("sandbox memory store limit exhausted")]
+    MemoryExhausted,
 }
