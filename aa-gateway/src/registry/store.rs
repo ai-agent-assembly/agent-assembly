@@ -108,6 +108,16 @@ pub struct AgentRecord {
     pub parent_agent_id: Option<String>,
     /// Team this agent belongs to; `None` if not provided at registration.
     pub team_id: Option<String>,
+    /// AAASM-2008 — Organization (tenant) this agent belongs to; `None` if
+    /// not provided at registration. First-class field mirroring `team_id`
+    /// at the multi-tenancy tier; used by topology / audit / budget
+    /// scope-by-org filtering and by Org-scoped policy evaluation.
+    ///
+    /// Historically the org tag flowed only through the `metadata.get("org_id")`
+    /// map; promoting it to a first-class field lets the registry maintain a
+    /// secondary index (org_index) and lets the audit pipeline propagate it
+    /// into [`aa_core::Lineage::org_id`] without parsing the metadata BTreeMap.
+    pub org_id: Option<String>,
     /// Delegation depth in the agent hierarchy — 0 for root agents.
     pub depth: u32,
     /// Human-readable reason the parent delegated to this agent.
@@ -1013,6 +1023,7 @@ mod tree_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1280,6 +1291,7 @@ mod lineage_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1420,6 +1432,7 @@ mod cascade_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1586,6 +1599,7 @@ mod orphan_mode_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1796,6 +1810,7 @@ mod cross_mode_integration {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
@@ -1940,6 +1955,7 @@ mod sweep_aged_agents_tests {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            org_id: None,
         }
     }
 
