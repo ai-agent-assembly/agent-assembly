@@ -53,6 +53,21 @@ pub struct ProxyConfig {
     /// Empty means allow all hosts.
     pub denied_hosts: Vec<String>,
 
+    /// AAASM-1943 — network egress allowlist. When **non-empty**, the proxy
+    /// permits CONNECT only to hosts matching at least one pattern; all
+    /// others are blocked with HTTP 403 + `A2AImpersonationAttempted`-style
+    /// audit event. When **empty** (the default), no allowlist filter is
+    /// applied — the `denied_hosts` block-list continues to be the only
+    /// host-level gate.
+    ///
+    /// Patterns share grammar with
+    /// [`aa_core::policy::is_host_allowed_by_egress_allowlist`]: exact
+    /// case-insensitive match, leftmost-label wildcard (`*.openai.com`), or
+    /// universal `*`.
+    ///
+    /// Comma-separated list from env var `AA_PROXY_NETWORK_ALLOWLIST`.
+    pub network_allowlist: Vec<String>,
+
     /// When `true`, the proxy skips TLS certificate verification when
     /// connecting to upstream servers. Intended for integration tests only —
     /// never enable in production.
@@ -127,6 +142,15 @@ impl ProxyConfig {
             _ => Vec::new(),
         };
 
+        let network_allowlist = match std::env::var("AA_PROXY_NETWORK_ALLOWLIST") {
+            Ok(val) if !val.is_empty() => val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        };
+
         let skip_upstream_tls_verify = match std::env::var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY") {
             Ok(val) => val == "1" || val.to_lowercase() == "true",
             Err(_) => false,
@@ -148,6 +172,7 @@ impl ProxyConfig {
             cert_cache_capacity,
             llm_only,
             denied_hosts,
+            network_allowlist,
             skip_upstream_tls_verify,
             credential_action,
             upstream_override: None,

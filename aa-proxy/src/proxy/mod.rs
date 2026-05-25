@@ -483,6 +483,25 @@ impl ProxyServer {
                 return Ok(());
             }
 
+            // AAASM-1943: network egress allowlist enforcement. When the
+            // configured allowlist is non-empty, only hosts matching at
+            // least one pattern (exact / *.suffix / *) may CONNECT. Empty
+            // allowlist preserves the pre-AAASM-1943 default-open behaviour.
+            if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
+                tracing::info!(
+                    %host,
+                    patterns = self.config.network_allowlist.len(),
+                    "CONNECT denied by network allowlist"
+                );
+                let inner = reader.into_inner();
+                let mut stream = inner;
+                stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+                self.interceptor.emit_policy_decision(host, true).await;
+                return Ok(());
+            }
+
             // Send 200 Connection Established to tell the client the tunnel is open.
             let inner = reader.into_inner();
             let mut stream = inner;

@@ -32,6 +32,7 @@ fn proxy_config(ca_dir: &std::path::Path, denied_hosts: Vec<String>) -> ProxyCon
         cert_cache_capacity: 10,
         llm_only: false,
         denied_hosts,
+        network_allowlist: Vec::new(),
         skip_upstream_tls_verify: true,
         credential_action: CredentialAction::default(),
         upstream_override: None,
