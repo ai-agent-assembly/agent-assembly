@@ -69,6 +69,18 @@ pub enum AuditEventType {
     /// resolvable). The action is denied before policy evaluation runs.
     /// (AAASM-1944 / Zero-trust A2A.)
     A2AImpersonationAttempted = 15,
+    /// A sandboxed (WASM/WASI) tool invocation has begun. Emitted by
+    /// `aa-proxy` immediately before handing the parsed `tools/call`
+    /// envelope to the `aa-sandbox` runtime for execution. Marks the
+    /// start of the lifecycle terminated by [`SandboxTerminated`],
+    /// [`SandboxFilesystemBlocked`], [`SandboxCpuTimeout`], or
+    /// [`SandboxOomKilled`]. (AAASM-1965 / F116 ST-W.)
+    ///
+    /// [`SandboxTerminated`]: Self::SandboxTerminated
+    /// [`SandboxFilesystemBlocked`]: Self::SandboxFilesystemBlocked
+    /// [`SandboxCpuTimeout`]: Self::SandboxCpuTimeout
+    /// [`SandboxOomKilled`]: Self::SandboxOomKilled
+    SandboxStarted = 16,
 }
 
 impl AuditEventType {
@@ -93,6 +105,7 @@ impl AuditEventType {
             Self::ToolDispatched => "ToolDispatched",
             Self::A2ACallIntercepted => "A2ACallIntercepted",
             Self::A2AImpersonationAttempted => "A2AImpersonationAttempted",
+            Self::SandboxStarted => "SandboxStarted",
         }
     }
 }
@@ -960,6 +973,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalRouted.as_str(), "ApprovalRouted");
         assert_eq!(AuditEventType::ApprovalEscalated.as_str(), "ApprovalEscalated");
         assert_eq!(AuditEventType::ToolDispatched.as_str(), "ToolDispatched");
+        assert_eq!(AuditEventType::SandboxStarted.as_str(), "SandboxStarted");
     }
 
     #[test]
@@ -976,6 +990,7 @@ mod tests {
         assert_eq!(AuditEventType::ApprovalRouted as u32, 9);
         assert_eq!(AuditEventType::ApprovalEscalated as u32, 10);
         assert_eq!(AuditEventType::ToolDispatched as u32, 13);
+        assert_eq!(AuditEventType::SandboxStarted as u32, 16);
     }
 
     #[test]
@@ -993,6 +1008,7 @@ mod tests {
             AuditEventType::ApprovalRouted,
             AuditEventType::ApprovalEscalated,
             AuditEventType::ToolDispatched,
+            AuditEventType::SandboxStarted,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
