@@ -7,6 +7,7 @@ use clap::{Args, Subcommand};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
+pub mod compliance;
 pub mod export;
 pub mod list;
 pub mod models;
