@@ -35,6 +35,7 @@
 - [In-Flight Ops Registry](operations/ops-registry-architecture.md)
 - [Sandbox / Dry-Run Mode](operations/sandbox-dry-run.md)
 - [Compliance Export](operations/compliance-export.md)
+- [Agent-to-Agent Identity](operations/a2a-identity.md)
 
 # Benchmarks
 
