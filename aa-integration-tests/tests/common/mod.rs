@@ -149,6 +149,13 @@ pub struct TopologyTestEnv {
     /// so lifecycle endpoints can be exercised without a gRPC registration path.
     #[allow(dead_code)]
     pub ops_registry: Arc<OpsRegistry>,
+    /// `tools/call` registry — clone-by-refcount shares the underlying
+    /// `Arc<RwLock<HashMap>>` with the running server, so registering a
+    /// `ToolKind::Wasm` here makes it dispatchable through the live
+    /// `POST /api/v1/dispatch_tool` HTTP route (AAASM-2033 / F116 ST-W
+    /// production data-path).
+    #[allow(dead_code)]
+    pub tool_registry: ToolRegistry,
     /// Trigger to stop the background axum task.
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// Handle for the spawned axum task; awaited during teardown.
@@ -192,6 +199,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -222,6 +230,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -242,6 +251,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -272,6 +282,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -299,6 +310,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -329,6 +341,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -356,6 +369,7 @@ impl TopologyTestEnv {
         let approval_queue = Arc::clone(&state.approval_queue);
         let budget_tracker = Arc::clone(&state.budget_tracker);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
         let events = Arc::clone(&state.events);
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
@@ -389,6 +403,7 @@ impl TopologyTestEnv {
             events,
             replay_buffer,
             next_event_id,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -416,6 +431,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -446,6 +462,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -471,6 +488,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -501,6 +519,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -525,6 +544,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -555,6 +575,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
@@ -601,6 +622,7 @@ impl TopologyTestEnv {
         let replay_buffer = state.replay_buffer.clone();
         let next_event_id = Arc::clone(&state.next_event_id);
         let ops_registry = Arc::clone(&state.ops_registry);
+        let tool_registry = state.tool_registry.clone();
 
         let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
@@ -631,6 +653,7 @@ impl TopologyTestEnv {
             replay_buffer,
             next_event_id,
             ops_registry,
+            tool_registry,
             shutdown_tx: Some(shutdown_tx),
             server_handle: Some(server_handle),
             cleaned: false,
