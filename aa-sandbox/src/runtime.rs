@@ -18,12 +18,62 @@
 //! Fuel + memory-store limits land in AAASM-2018; ToolRegistry dispatch +
 //! audit-event emission land in AAASM-2019.
 
-use wasmtime::{Config, Engine, Linker, Module, Store, Trap};
+use wasmtime::{Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
 use crate::policy::SandboxConfig;
+
+/// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
+/// when a `memory.grow` would exceed the configured byte cap. The
+/// runtime's call-result branch downcasts to this type to surface
+/// [`SandboxError::MemoryExhausted`].
+#[derive(Debug)]
+struct MemoryExhaustedMarker;
+
+impl std::fmt::Display for MemoryExhaustedMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox memory store limit exceeded")
+    }
+}
+
+impl std::error::Error for MemoryExhaustedMarker {}
+
+/// Per-store linear-memory cap enforced via [`Store::limiter`].
+///
+/// `memory_growing` denies any grow that would push the guest above
+/// `max_bytes` by returning [`MemoryExhaustedMarker`] inside the
+/// `wasmtime::Error` channel — the wasmtime runtime then surfaces that
+/// error from the call's `start.call(...)` return value, which the
+/// runtime maps to [`SandboxError::MemoryExhausted`].
+struct MemoryLimit {
+    max_bytes: usize,
+}
+
+impl ResourceLimiter for MemoryLimit {
+    fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        if desired > self.max_bytes {
+            Err(wasmtime::Error::new(MemoryExhaustedMarker))
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn table_growing(&mut self, _current: usize, _desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Per-store state combining the WASI context with the memory limiter.
+///
+/// Wraps the [`WasiP1Ctx`] previously held directly by the store; the
+/// linker's WASI projection closure now returns `&mut state.wasi`, and
+/// `Store::limiter` projects to `&mut state.limiter`.
+struct StoreState {
+    wasi: WasiP1Ctx,
+    limiter: MemoryLimit,
+}
 
 /// Successful sandboxed-tool invocation outcome.
 ///
@@ -48,7 +98,7 @@ pub struct SandboxOutput {
 /// leaks between tools.
 pub struct SandboxRuntime {
     engine: Engine,
-    linker: Linker<WasiP1Ctx>,
+    linker: Linker<StoreState>,
     config: SandboxConfig,
 }
 
@@ -63,8 +113,8 @@ impl SandboxRuntime {
         let mut engine_config = Config::new();
         engine_config.consume_fuel(true);
         let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
-        let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-        p1::add_to_linker_sync(&mut linker, |cx| cx).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        let mut linker: Linker<StoreState> = Linker::new(&engine);
+        p1::add_to_linker_sync(&mut linker, |s| &mut s.wasi).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         Ok(Self { engine, linker, config })
     }
 
@@ -108,7 +158,11 @@ impl SandboxRuntime {
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
-        let mut store = Store::new(&self.engine, wasi);
+        let limiter = MemoryLimit {
+            max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
+        };
+        let mut store = Store::new(&self.engine, StoreState { wasi, limiter });
+        store.limiter(|s| &mut s.limiter);
         store
             .set_fuel(self.config.limits.fuel)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
@@ -132,6 +186,8 @@ impl SandboxRuntime {
                     }
                 } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
                     Err(SandboxError::CpuTimeout)
+                } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
+                    Err(SandboxError::MemoryExhausted)
                 } else {
                     Err(SandboxError::Wasmtime(trap.to_string()))
                 }
