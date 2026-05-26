@@ -388,7 +388,7 @@ jobs:
       issues: write
     steps:
       - name: Open an Issue with the list of failed smoke jobs
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         with:
