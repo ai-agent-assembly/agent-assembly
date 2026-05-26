@@ -223,7 +223,7 @@ jobs:
           git -C . diff -- Formula/aasm.rb || true
 
       - name: Open tap PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
