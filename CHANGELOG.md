@@ -5,6 +5,58 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.2] — 2026-05-28 (pre-release)
+
+> **Not for production use.** Second pre-release in the v0.0.1 dry-run series.
+> Continues exercising the release CD pipeline while verifying the 6
+> release-infra fixes that landed since alpha-1.
+
+### Release-infra fixes verified by this tag
+
+* **AAASM-2093** — `docker.yml` language images now push to the correct
+  `ghcr.io/ai-agent-assembly/` namespace (was `ghcr.io/agent-assembly/`,
+  which caused `denied: not_found: owner not found`).
+* **AAASM-2094** — `aa-cli/Cargo.toml` workspace path-deps now carry
+  explicit `version` literals so `cargo publish -p aa-cli` passes
+  manifest verification (the deeper crates.io dep-resolution issue is
+  tracked separately; the publish job will still fail at that step).
+* **AAASM-2095** — `release.yml` now sets `prerelease: true` on the
+  GitHub Release object for SemVer pre-release tags (`-alpha.*`,
+  `-rc.*`).
+* **AAASM-2096** — F119 smoke-test now chains off `release.yml` via
+  `workflow_call` instead of `release: published` (which was blocked
+  by the GITHUB_TOKEN downstream-trigger restriction).
+* **AAASM-2097** (node-sdk) — `pnpm publish` now derives the npm
+  dist-tag from the SemVer pre-release identifier (`--tag alpha` for
+  `-alpha.*`, `--tag rc` for `-rc.*`, etc.) instead of hardcoded
+  `--tag alpha`.
+* **AAASM-2098** (node-sdk) — `pnpm-lock.yaml` no longer drifts when
+  the workspace version bumps; `optionalDependencies` use the
+  `workspace:*` protocol.
+
+### What remains unfixed (still expected to surface on alpha-2)
+
+* **crates.io publish** — still fails at dep resolution (internal
+  crates not on crates.io). Architectural decision under AAASM-1200.
+* **F119 smoke-test channel jobs** — the 6 AAASM-1253 findings (PyPI
+  name, curl endpoint, Docker tag scheme, Homebrew tap GA, smoke-test
+  PyPI name, curl pipefail) are still pending.
+
+### Install
+
+```bash
+cargo install aasm --version 0.0.1-alpha.2
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm  # version-pinned to alpha.2 via tap formula
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.2
+```
+
+### Refs
+
+* Verify ticket: `AAASM-2107` — alpha-2 cross-repo release verification
+* Predecessor: `AAASM-1936` — alpha-1 release-pipeline verification
+
+---
+
 ## [0.0.1-alpha.1] — 2026-05-25 (pre-release)
 
 > **Not for production use.** This is the first pre-release of AI Agent Assembly,
