@@ -137,6 +137,7 @@ jobs:
             artifacts/aasm-*.tar.gz
             artifacts/SHA256SUMS
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   publish-crate:
     name: Publish to crates.io
