@@ -151,8 +151,8 @@ jobs:
           # parent Story's "`:latest` per language still routes to the F114
           # variant" AC bullet. See AAASM-1446.
           tags: |
-            ghcr.io/agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
-            ${{ matrix.is_latest && format('ghcr.io/agent-assembly/{0}:latest', matrix.lang) || '' }}
+            ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
+            ${{ matrix.is_latest && format('ghcr.io/ai-agent-assembly/{0}:latest', matrix.lang) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -163,7 +163,7 @@ jobs:
       - name: Smoke run (PR only)
         if: github.event_name == 'pull_request'
         env:
-          IMAGE: ghcr.io/agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
+          IMAGE: ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
           SMOKE_RUN: ${{ matrix.smoke_run }}
         run: |
           docker run --rm "$IMAGE" aasm --version
