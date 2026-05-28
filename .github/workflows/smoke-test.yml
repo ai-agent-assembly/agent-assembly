@@ -15,6 +15,12 @@ on:
         description: "Release version to smoke-test, without the leading 'v' (e.g. 0.0.1). Defaults to the release tag that triggered the workflow."
         required: false
         type: string
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version to smoke-test, without the leading 'v' (e.g. 0.0.1)."
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,7 +29,7 @@ permissions:
 
 # Avoid concurrent smoke runs for the same release tag.
 concurrency:
-  group: smoke-test-${{ github.event.release.tag_name || github.event.inputs.version || github.ref }}
+  group: smoke-test-${{ github.event.release.tag_name || inputs.version || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -37,10 +43,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -80,10 +86,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -127,10 +133,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -178,10 +184,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -225,10 +231,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -272,10 +278,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -329,10 +335,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#v}"
           else
             version="${TAG#v}"
           fi
@@ -380,7 +386,7 @@ jobs:
     # Fire only when the workflow is genuinely broken — `failure()` covers
     # any failed `needs:` job; the `release` event guard avoids dispatching
     # notifications during manual `workflow_dispatch` reruns.
-    if: failure() && github.event_name == 'release'
+    if: failure() && (github.event_name == 'release' || github.event_name == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
