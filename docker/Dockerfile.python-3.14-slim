@@ -33,9 +33,16 @@ WORKDIR /build
 # BuildKit cache mounts let us re-use the cargo registry and target dir
 # across PR builds — same pattern as `aa-runtime/Dockerfile`.
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
+# Each language-image matrix entry must use a distinct cache `id` to avoid
+# concurrent buildx-cache write contention with the other matrix entries —
+# the default `sharing=shared` would let two parallel builds race on unpacking
+# the same crate into `/usr/local/cargo/registry`, producing
+# `File exists (os error 17)`. The `id=` namespace separates them; the
+# `sharing=locked` lock makes concurrent writes within the same id wait
+# instead of racing.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=aasm-builder-cargo-registry-python-3.14,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,id=aasm-builder-cargo-git-python-3.14,sharing=locked \
+    --mount=type=cache,target=/build/target,id=aasm-builder-target-python-3.14,sharing=locked \
     cargo build --release -p aa-cli --bin aasm \
  && cp /build/target/release/aasm /usr/local/bin/aasm
 
