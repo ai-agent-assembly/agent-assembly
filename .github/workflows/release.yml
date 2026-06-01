@@ -144,13 +144,13 @@ jobs:
     # cargo-workspaces. AAASM-2340 (resolves AAASM-2094).
     #
     # Crates that publish: aa-core, aa-proto, aa-runtime, aa-ebpf-common,
-    # aa-ebpf, aa-proxy, aa-gateway, aa-devtool, aa-devtool-codex,
+    # aa-ebpf, aa-proxy, aa-sandbox, aa-gateway, aa-devtool, aa-devtool-codex,
     # aa-devtool-windsurf, aa-cli (the binary). cargo-workspaces computes
     # the topo order automatically + polls crates.io between publishes
     # for indexing latency.
     #
     # Crates excluded (publish = false in their Cargo.toml):
-    #   aa-ffi-{go,python,node}, aa-wasm, aa-sandbox, aa-api,
+    #   aa-ffi-{go,python,node}, aa-wasm, aa-api,
     #   conformance, aa-devtool-claude-code, aa-devtool-copilot,
     #   aa-devtool-saas, aa-integration-tests, examples/*
     #
@@ -202,6 +202,21 @@ jobs:
           # Verify the SPA entry-point made it
           test -f aa-cli/_embedded/dashboard/dist/index.html
           echo "✓ aa-cli/_embedded/dashboard/dist/ staged ($(find aa-cli/_embedded -type f | wc -l) files)"
+
+      - name: Populate aa-proto + aa-ebpf _embedded mirrors via build.rs
+        # AAASM-2340: aa-proto/build.rs mirrors `proto/` -> `aa-proto/_embedded/proto/`;
+        # aa-ebpf/build.rs mirrors `aa-ebpf-probes/` -> `aa-ebpf/_embedded/aa-ebpf-probes/`.
+        # `cargo check` is the cheapest way to trigger both build scripts.
+        # Required because cargo's tarball file-enumeration runs BEFORE
+        # build.rs during `cargo publish`, so the mirrors must already
+        # exist on disk when `cargo workspaces publish` is invoked.
+        run: |
+          set -euo pipefail
+          cargo check -p aa-proto -p aa-ebpf
+          test -f aa-proto/_embedded/proto/common.proto
+          test -f aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
+          echo "✓ aa-proto/_embedded/proto/ staged ($(find aa-proto/_embedded -type f | wc -l) files)"
+          echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
       - name: Install cargo-workspaces
         run: cargo install cargo-workspaces --locked --version ^0.4
