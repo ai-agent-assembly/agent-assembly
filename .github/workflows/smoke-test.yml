@@ -60,7 +60,7 @@ jobs:
       - name: Install aasm via Homebrew tap
         run: |
           brew update
-          brew install agent-assembly/tap/aasm
+          brew install ai-agent-assembly/agent-assembly/aasm
 
       - name: Verify aasm --version matches release tag
         env:
@@ -107,7 +107,7 @@ jobs:
       - name: Install aasm via Homebrew tap
         run: |
           brew update
-          brew install agent-assembly/tap/aasm
+          brew install ai-agent-assembly/agent-assembly/aasm
 
       - name: Verify aasm --version matches release tag
         env:
@@ -202,10 +202,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install agent-assembly-python[runtime] from PyPI
+      - name: Install agent-assembly from PyPI
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly-python[runtime]'
+          pip install --no-cache-dir 'agent-assembly'
 
       - name: Verify agent_assembly.__version__ matches release tag
         env:
@@ -249,10 +249,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install agent-assembly-python[runtime] from PyPI
+      - name: Install agent-assembly from PyPI
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly-python[runtime]'
+          pip install --no-cache-dir 'agent-assembly'
 
       - name: Verify the bundled aasm binary prints the release tag
         env:
@@ -326,7 +326,7 @@ jobs:
           }
 
   smoke-docker:
-    name: Smoke — Docker (ghcr.io/agent-assembly/python)
+    name: Smoke — Docker (ghcr.io/ai-agent-assembly/python)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -357,12 +357,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      - name: Run aasm --version inside ghcr.io/agent-assembly/python
+      - name: Run aasm --version inside ghcr.io/ai-agent-assembly/python
         env:
           EXPECTED: ${{ steps.expected.outputs.version }}
         shell: bash
         run: |
-          image="ghcr.io/agent-assembly/python:${EXPECTED}"
+          image="ghcr.io/ai-agent-assembly/python:${EXPECTED}"
           got=$(docker run --rm "${image}" aasm --version)
           want="aasm ${EXPECTED}"
           echo "Image:     ${image}"
