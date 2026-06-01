@@ -36,6 +36,12 @@ resolver = "2"
 
 [workspace.package]
 version = "0.0.1-alpha.3"
+# `publish = false` makes all workspace members default to not-publishable
+# to crates.io. aa-cli is distributed via GitHub Releases binary tarballs,
+# Homebrew tap (ai-agent-assembly/agent-assembly/aasm), and GHCR Docker
+# images. crates.io is not a target distribution channel. Tracked under
+# AAASM-2338.
+publish = false
 edition = "2021"
 license = "Apache-2.0"
 license-file = "LICENSE"
