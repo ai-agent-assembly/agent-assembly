@@ -5,6 +5,46 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.3] — 2026-06-01 (pre-release)
+
+> **Not for production use.** Third pre-release in the v0.0.1 dry-run
+> series. Verifies the 3 release-infra fixes that landed since alpha-2.
+
+### Release-infra fixes verified by this tag
+
+* **AAASM-2188 (PR #832)** — Docker matrix parallel cargo cache race
+  (`File exists (os error 17)` when unpacking same crate concurrently).
+  Fixed by per-Dockerfile cache `id` + `sharing=locked` on all 6
+  language Dockerfiles.
+* **AAASM-2189 (python-sdk#68)** — `Release Python SDK` maturin wheel
+  builds missing protoc. Fixed by downloading official protoc 32.1
+  binary in `before-script-linux` with SHA256 verification + retry.
+* **AAASM-2190 (node-sdk#59)** — `release.yml` `pnpm publish` E402
+  for scoped package. Fixed by adding `--access public`.
+
+### Still unfixed (separately tracked, not blocking this dry-run)
+
+* `Publish to crates.io` — AAASM-2094 deeper issue (internal crates
+  not on crates.io). Architectural decision pending under AAASM-1200.
+* `node-sdk release-node` cross-repo race (release not found).
+* `smoke-test.yml` Docker pull uses old namespace.
+* 6× AAASM-1253 smoke-test findings.
+
+### Install
+
+```bash
+cargo install aasm --version 0.0.1-alpha.3
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.3
+```
+
+### Refs
+
+* Verify: `AAASM-2316`
+* Predecessor: `AAASM-2107` (alpha-2)
+
+---
+
 ## [0.0.1-alpha.2] — 2026-05-28 (pre-release)
 
 > **Not for production use.** Second pre-release in the v0.0.1 dry-run series.

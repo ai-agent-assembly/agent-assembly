@@ -18,6 +18,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 |---|---|---|---|---|
 | v0.0.1-alpha.1 | v0.0.1-alpha.1 (PyPI `0.0.1a1`) ✓ | v0.0.1-alpha.1 ✓ | v0.0.1-alpha.1 ✓ | protocol/v1 |
 | v0.0.1-alpha.2 | v0.0.1-alpha.2 (PyPI `0.0.1a2`) ✓ | v0.0.1-alpha.2 ✓ | v0.0.1-alpha.2 ✓ | protocol/v1 |
+| v0.0.1-alpha.3 | v0.0.1-alpha.3 (PyPI `0.0.1a3`) ✓ | v0.0.1-alpha.3 ✓ | v0.0.1-alpha.3 ✓ | protocol/v1 |
 | v0.0.1 | v0.0.1 ✓ | v0.0.1 ✓ | v0.0.1 ✓ | protocol/v1 |
 
 **Legend:**
@@ -45,6 +46,7 @@ A runtime version may support multiple protocol versions to allow SDK upgrades w
 |---|---|
 | v0.0.1-alpha.1 | protocol/v1 |
 | v0.0.1-alpha.2 | protocol/v1 |
+| v0.0.1-alpha.3 | protocol/v1 |
 | v0.0.1 | protocol/v1 |
 
 ---
