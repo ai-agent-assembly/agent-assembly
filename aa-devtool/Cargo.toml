@@ -1,6 +1,7 @@
 [package]
 name = "aa-devtool"
 version.workspace = true
+publish = false  # AAASM-2340: dev-tool subsystem held back from this alpha — user directive
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
