@@ -144,15 +144,22 @@ jobs:
     # cargo-workspaces. AAASM-2340 (resolves AAASM-2094).
     #
     # Crates that publish: aa-core, aa-proto, aa-runtime, aa-ebpf-common,
-    # aa-ebpf, aa-proxy, aa-sandbox, aa-gateway, aa-devtool, aa-devtool-codex,
-    # aa-devtool-windsurf, aa-cli (the binary). cargo-workspaces computes
-    # the topo order automatically + polls crates.io between publishes
-    # for indexing latency.
+    # aa-ebpf, aa-proxy, aa-sandbox, aa-gateway, aa-cli (the binary).
+    # cargo-workspaces computes the topo order automatically + polls
+    # crates.io between publishes for indexing latency.
     #
     # Crates excluded (publish = false in their Cargo.toml):
-    #   aa-ffi-{go,python,node}, aa-wasm, aa-api,
-    #   conformance, aa-devtool-claude-code, aa-devtool-copilot,
-    #   aa-devtool-saas, aa-integration-tests, examples/*
+    #   * aa-ffi-{go,python,node}, aa-wasm — SDK FFI scaffolding; each
+    #     SDK repo (python-sdk, node-sdk, go-sdk) carries its own
+    #     ffi crate and ships via PyPI / npm / Go module proxy.
+    #   * aa-devtool, aa-devtool-codex, aa-devtool-windsurf,
+    #     aa-devtool-claude-code, aa-devtool-copilot, aa-devtool-saas
+    #     — dev-tool subsystem held back from this alpha (user
+    #     directive: not feature-complete). aa-cli omits the related
+    #     `aasm run` / `aasm tools` subcommands accordingly; they
+    #     return once the subsystem is finished in a future PR.
+    #   * aa-api, conformance, aa-integration-tests, examples/* —
+    #     cloud/enterprise consumers and workspace-internal tooling.
     #
     # Dashboard bundling: aa-cli embeds the dashboard SPA via include_dir!
     # reading from aa-cli/_embedded/dashboard/dist/. That path is inside
