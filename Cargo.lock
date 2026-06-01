@@ -58,9 +58,6 @@ name = "aa-cli"
 version = "0.0.1-alpha.3"
 dependencies = [
  "aa-core",
- "aa-devtool",
- "aa-devtool-codex",
- "aa-devtool-windsurf",
  "aa-gateway",
  "aa-proxy",
  "aa-sandbox",
