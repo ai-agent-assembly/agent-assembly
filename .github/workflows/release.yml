@@ -139,10 +139,23 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-  publish-crate:
-    name: Publish to crates.io
+  publish-crates:
+    # Publishes the workspace to crates.io in topological order via
+    # cargo-workspaces. AAASM-2340 (resolves AAASM-2094).
+    #
+    # Crates that publish: aa-core, aa-proto, aa-runtime, aa-ebpf-common,
+    # aa-ebpf, aa-proxy, aa-gateway, aa-devtool, aa-devtool-codex,
+    # aa-devtool-windsurf, aa-cli (the binary). cargo-workspaces computes
+    # the topo order automatically + polls crates.io between publishes
+    # for indexing latency.
+    #
+    # Crates excluded (publish = false in their Cargo.toml):
+    #   aa-ffi-{go,python,node}, aa-wasm, aa-sandbox, aa-api,
+    #   conformance, aa-devtool-claude-code, aa-devtool-copilot,
+    #   aa-devtool-saas, aa-integration-tests, examples/*
+    name: Publish workspace to crates.io
     runs-on: ubuntu-latest
-    needs: build
+    needs: publish
     if: github.event_name == 'push'
 
     steps:
@@ -155,10 +168,22 @@ jobs:
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Publish aa-cli to crates.io
+      - name: Install cargo-workspaces
+        run: cargo install cargo-workspaces --locked --version ^0.4
+
+      - name: Publish workspace crates in topological order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: cargo publish -p aa-cli
+        run: |
+          # cargo-workspaces: --from-git uses the current git tag,
+          # --no-git-push avoids creating/pushing tags (we already
+          # have one from the upstream tag push), --yes skips
+          # confirmation prompts.
+          cargo workspaces publish \
+            --from-git \
+            --no-git-push \
+            --yes \
+            --token "$CARGO_REGISTRY_TOKEN"
 
   update-homebrew-tap:
     name: Update Homebrew tap formula

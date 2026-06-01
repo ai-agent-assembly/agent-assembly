@@ -1,6 +1,7 @@
 [package]
 name = "aa-api"
 version.workspace = true
+publish = false  # AAASM-2340: not a transitive dep of aa-cli
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

@@ -14,8 +14,8 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core                     = { path = "../aa-core" }
-aa-proto                    = { path = "../aa-proto" }
+aa-core                     = { path = "../aa-core", version = "0.0.1-alpha.3" }
+aa-proto                    = { path = "../aa-proto", version = "0.0.1-alpha.3" }
 axum                        = "0.8"
 bitflags                    = "2"
 dashmap                     = "6"
@@ -35,7 +35,7 @@ tracing-subscriber          = { version = "0.3", features = ["json", "env-filter
 which                       = "8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aa-ebpf = { path = "../aa-ebpf" }
+aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-alpha.3" }
 libc    = "0.2"
 
 [dev-dependencies]
