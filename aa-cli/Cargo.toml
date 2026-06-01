@@ -17,6 +17,7 @@ aa-devtool-codex     = { path = "../aa-devtool-codex", version = "0.0.1-alpha.3"
 aa-devtool-windsurf  = { path = "../aa-devtool-windsurf", version = "0.0.1-alpha.3" }
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.3" }
 aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.3" }
+aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.3" }
 anyhow         = "1"
 async-trait    = "0.1"
 axum           = "0.8"

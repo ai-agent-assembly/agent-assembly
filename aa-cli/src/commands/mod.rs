@@ -25,6 +25,7 @@ pub mod pidfile;
 pub mod policy;
 pub mod proxy;
 pub mod run;
+pub mod sandbox;
 pub mod start;
 pub mod status;
 pub mod stop;
@@ -68,6 +69,8 @@ pub enum Commands {
     Gateway(gateway::GatewayArgs),
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
+    /// Run a WebAssembly tool inside the Agent Assembly sandbox (filesystem + CPU + memory + wall-clock isolation).
+    Sandbox(sandbox::SandboxArgs),
     /// List and manage AI dev tools on this system.
     Tools(tools::ToolsArgs),
     /// Visualize agent topology, trees, lineage, and statistics.
@@ -99,6 +102,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Gateway(args) => gateway::dispatch(args),
         Commands::Run(args) => run::dispatch(args, ctx, output),
+        Commands::Sandbox(args) => sandbox::dispatch(args),
         Commands::Tools(args) => tools::dispatch(args),
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
         Commands::Proxy(args) => proxy::dispatch(args),
