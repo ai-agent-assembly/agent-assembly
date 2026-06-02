@@ -62,7 +62,20 @@ jobs:
         # exclusion is applied via sonar.exclusions so aa-ebpf sources are skipped.
         run: cargo clippy --all-targets --all-features --exclude aa-ebpf --exclude aa-ffi-python --message-format=json 2>&1 | tee clippy-report.json || true
 
+      - name: Pre-build aasm binary (AAASM-2340)
+        # Compiling aa-cli uninstrumented to target/debug/ keeps llvm-cov's
+        # target/llvm-cov-target/ separate. Integration tests then spawn
+        # the pre-built binary via AASM_BIN_PATH, skipping the cargo-run
+        # graph walk that compounds badly under llvm-cov's 2-5x slowdown
+        # (dashboard_start_sigint_clean_shutdown / _then_stop_cleans_pidfile
+        # timed out at 90s otherwise). aa-cli dispatch is already covered
+        # by its own unit tests; the loss from running the subprocess
+        # uninstrumented is negligible.
+        run: cargo build --quiet -p aa-cli --bin aasm
+
       - name: Generate coverage report (LCOV for SonarCloud)
+        env:
+          AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python development headers for linking — excluded.
         # aa-devtool-claude-code is run separately without docker-integration:

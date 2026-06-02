@@ -287,7 +287,13 @@ jobs:
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
+      - name: Pre-build aasm binary (AAASM-2340)
+        # See sonar.yml for the rationale — same pattern, same reason.
+        run: cargo build --quiet -p aa-cli --bin aasm
+
       - name: Generate coverage report
+        env:
+          AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python dev headers for linking — excluded.
         # aa-devtool-claude-code is run separately (step 2) without docker-integration:
