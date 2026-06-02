@@ -30,8 +30,8 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core        = { path = "../aa-core", version = "0.0.1-alpha.3" }
-aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-alpha.3", features = ["std"] }
+aa-core        = { path = "../aa-core", version = "0.0.1-alpha.4" }
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-alpha.4", features = ["std"] }
 anyhow         = "1"
 bytes          = "1"
 thiserror      = "2"
