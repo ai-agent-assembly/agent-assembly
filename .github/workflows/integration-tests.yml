@@ -114,10 +114,20 @@ jobs:
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
 
+      - name: Pre-build aasm binary (AAASM-2340)
+        # Compiling aa-cli (which pulls wasmtime via aa-sandbox) once serially
+        # before nextest skips per-test `cargo run -p aa-cli` overhead — under
+        # --test-threads=1 every test paid that overhead in sequence, which is
+        # what pushed this workflow past the 20-minute timeout-minutes ceiling.
+        run: cargo build --quiet -p aa-cli --bin aasm
+
       - name: Run integration tests
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
           GO_SDK_PATH: ${{ github.workspace }}/go-sdk
+          # AAASM-2340: spawn the binary pre-built in the previous step
+          # instead of paying cargo-run overhead per test under --test-threads=1.
+          AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
         run: cargo nextest run -p aa-integration-tests --test-threads=1
 
 
