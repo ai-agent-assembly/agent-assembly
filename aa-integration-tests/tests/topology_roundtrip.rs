@@ -26,8 +26,6 @@
 
 mod common;
 
-use std::process::Command;
-
 use common::scenario::{hex_id, register_parent_child};
 use common::TopologyTestEnv;
 
@@ -104,27 +102,13 @@ async fn cli_topology_tree_renders_both_agents() {
 
     // `assert_cmd::Command::cargo_bin` requires `CARGO_BIN_EXE_<name>` which
     // Cargo only sets for the bin's own crate. `aasm` lives in `aa-cli`, a
-    // sibling crate — so we invoke via `cargo run` from this crate's manifest
-    // dir. The binary is cached after the first build.
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "aa-cli",
-            "--bin",
-            "aasm",
-            "--",
-            "--api-url",
-            &api_url,
-            "--output",
-            "json",
-            "topology",
-            "tree",
-            &root_id,
-        ])
+    // sibling crate — `common::cli::aasm_command` honours `AASM_BIN_PATH`
+    // (set by CI after a one-shot pre-build) and otherwise falls back to
+    // `cargo run -p aa-cli --bin aasm --` for local dev.
+    let output = common::cli::aasm_command()
+        .args(["--api-url", &api_url, "--output", "json", "topology", "tree", &root_id])
         .output()
-        .expect("aasm topology tree should execute via cargo run");
+        .expect("aasm topology tree should execute");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

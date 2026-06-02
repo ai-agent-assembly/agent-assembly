@@ -584,15 +584,8 @@ async fn dashboard_start_invalid_gateway_url() {
     let port = free_port();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let child = std::process::Command::new(env!("CARGO"))
+    let child = common::cli::aasm_command()
         .args([
-            "run",
-            "--quiet",
-            "-p",
-            "aa-cli",
-            "--bin",
-            "aasm",
-            "--",
             "--api-url",
             "http://nope.invalid:1",
             "dashboard",

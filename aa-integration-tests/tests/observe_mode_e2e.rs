@@ -320,20 +320,15 @@ async fn st_r_2_observe_mode_allow_decision_emits_no_shadow_metadata() {
 /// without strengthening the F116 contract.
 #[test]
 fn st_r_3_aasm_run_observe_emits_banner_and_env_injection() {
-    let out = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "aa-cli",
-            "--bin",
-            "aasm",
-            "--",
-            "run",
-            "claude",
-            "--observe",
-            "--dry-run",
-        ])
+    let mut cmd = if let Some(bin) = std::env::var_os("AASM_BIN_PATH") {
+        std::process::Command::new(bin)
+    } else {
+        let mut c = std::process::Command::new(env!("CARGO"));
+        c.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--"]);
+        c
+    };
+    let out = cmd
+        .args(["run", "claude", "--observe", "--dry-run"])
         .output()
         .expect("aasm run --observe --dry-run must execute");
 

@@ -25,7 +25,7 @@
 mod common;
 
 use std::collections::{BTreeMap, VecDeque};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use aa_gateway::registry::{AgentRecord, AgentStatus};
@@ -245,19 +245,8 @@ async fn status_exits_1_with_hint_when_gateway_is_unreachable() {
     // CLI now exits 1 (was 2) and writes a documented hint to stderr.
     // Building Command by hand because `CliFixture::cmd()` always wires
     // --api-url to the live fixture URL.
-    let mut cmd = Command::new(env!("CARGO"));
-    cmd.args([
-        "run",
-        "--quiet",
-        "-p",
-        "aa-cli",
-        "--bin",
-        "aasm",
-        "--",
-        "--api-url",
-        "http://127.0.0.1:1",
-        "status",
-    ]);
+    let mut cmd = common::cli::aasm_command();
+    cmd.args(["--api-url", "http://127.0.0.1:1", "status"]);
     let out = cmd.output().expect("aasm status should execute");
     let stderr = String::from_utf8_lossy(&out.stderr);
 

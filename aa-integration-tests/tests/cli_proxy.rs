@@ -67,12 +67,19 @@ impl ProxyFixture {
         self.data_dir.path()
     }
 
-    /// Returns a `Command` that runs `aasm` via `cargo run` with `AA_DATA_DIR`
-    /// pre-set so PID-file reads/writes are isolated per test.
+    /// Returns a `Command` that runs `aasm` with `AA_DATA_DIR` pre-set so
+    /// PID-file reads/writes are isolated per test. CI can stage a pre-built
+    /// binary via `AASM_BIN_PATH`; absent that env var, falls back to
+    /// `cargo run -p aa-cli --bin aasm --` for local dev.
     fn cmd(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--"])
-            .env("AA_DATA_DIR", self.data_dir());
+        let mut cmd = if let Some(bin) = std::env::var_os("AASM_BIN_PATH") {
+            Command::new(bin)
+        } else {
+            let mut c = Command::new(env!("CARGO"));
+            c.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--"]);
+            c
+        };
+        cmd.env("AA_DATA_DIR", self.data_dir());
         cmd
     }
 }

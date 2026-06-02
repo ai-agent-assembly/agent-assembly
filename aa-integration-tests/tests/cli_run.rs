@@ -33,12 +33,13 @@ use std::process::Command;
 
 use rstest::rstest;
 
-/// Build a fresh `cargo run` command for `aasm run …` invocations. Inherits
-/// the integration-test crate's cargo so the workspace lockfile is reused.
+mod common;
+
+/// Build a fresh command for `aasm run …` invocations. Delegates to the
+/// shared [`common::cli::aasm_command`] helper so CI's pre-built binary
+/// path (via `AASM_BIN_PATH`) is honoured here too.
 fn aasm_cmd() -> Command {
-    let mut cmd = Command::new(env!("CARGO"));
-    cmd.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--"]);
-    cmd
+    common::cli::aasm_command()
 }
 
 // =============================================================================
