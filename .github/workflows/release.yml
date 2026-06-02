@@ -370,3 +370,52 @@ jobs:
       packages: read
     with:
       version: ${{ github.ref_name }}
+
+  notify-downstream:
+    # Cross-repo trigger: after agent-assembly's Release object is
+    # published (binaries available on the GH Release page), fire a
+    # repository_dispatch event to the downstream SDK repos so their
+    # consume-the-binaries workflows know it's safe to run.
+    #
+    # Without this, node-sdk's release-node.yml fires on its OWN tag
+    # push (in parallel with agent-assembly's release), tries to
+    # `gh release download` aasm-*.tar.gz, and gets "release not found"
+    # because agent-assembly hasn't finished publishing yet.
+    #
+    # AAASM-2336. Supersedes the retry-with-backoff workaround in
+    # node-sdk's release-node.yml (AAASM-2328).
+    name: Notify downstream SDK repos
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Dispatch to node-sdk
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3.0.0
+        with:
+          token: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
+          repository: ai-agent-assembly/node-sdk
+          event-type: agent-assembly-release-published
+          client-payload: '{"release_tag": "${{ github.ref_name }}"}'
+
+      - name: Dispatch to python-sdk
+        # python-sdk's release-python.yml downloads `aasm-*` binaries from
+        # the agent-assembly GH Release across four runners (linux x86_64,
+        # linux aarch64, macos arm64, macos x86_64). Its current `gh release
+        # download … 2>/dev/null` swallow ships a wheel without the bundled
+        # binary on race; dispatching here is the only loud signal for that
+        # race. Companion PR on python-sdk will switch its release trigger
+        # from `push: tags` to `on: repository_dispatch` (tracked separately).
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3.0.0
+        with:
+          token: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
+          repository: ai-agent-assembly/python-sdk
+          event-type: agent-assembly-release-published
+          client-payload: '{"release_tag": "${{ github.ref_name }}"}'
+
+      # go-sdk intentionally NOT dispatched: pure-Go module, no aasm
+      # binary consumption in its release pipeline (`goreleaser.yaml`
+      # is a check-only workflow; Go module proxy auto-indexes from
+      # git tags directly). Add a dispatch step here if that ever
+      # changes.
