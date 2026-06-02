@@ -285,5 +285,23 @@ jobs:
           event-type: agent-assembly-release-published
           client-payload: '{"release_tag": "${{ github.ref_name }}"}'
 
-      # Future: also dispatch to python-sdk + go-sdk if they ever
-      # need to consume agent-assembly binaries the same way.
+      - name: Dispatch to python-sdk
+        # python-sdk's release-python.yml downloads `aasm-*` binaries from
+        # the agent-assembly GH Release across four runners (linux x86_64,
+        # linux aarch64, macos arm64, macos x86_64). Its current `gh release
+        # download … 2>/dev/null` swallow ships a wheel without the bundled
+        # binary on race; dispatching here is the only loud signal for that
+        # race. Companion PR on python-sdk will switch its release trigger
+        # from `push: tags` to `on: repository_dispatch` (tracked separately).
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3.0.0
+        with:
+          token: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
+          repository: ai-agent-assembly/python-sdk
+          event-type: agent-assembly-release-published
+          client-payload: '{"release_tag": "${{ github.ref_name }}"}'
+
+      # go-sdk intentionally NOT dispatched: pure-Go module, no aasm
+      # binary consumption in its release pipeline (`goreleaser.yaml`
+      # is a check-only workflow; Go module proxy auto-indexes from
+      # git tags directly). Add a dispatch step here if that ever
+      # changes.
