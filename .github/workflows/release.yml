@@ -210,19 +210,43 @@ jobs:
           test -f aa-cli/_embedded/dashboard/dist/index.html
           echo "✓ aa-cli/_embedded/dashboard/dist/ staged ($(find aa-cli/_embedded -type f | wc -l) files)"
 
-      - name: Populate aa-proto + aa-ebpf _embedded mirrors via build.rs
-        # AAASM-2340: aa-proto/build.rs mirrors `proto/` -> `aa-proto/_embedded/proto/`;
-        # aa-ebpf/build.rs mirrors `aa-ebpf-probes/` -> `aa-ebpf/_embedded/aa-ebpf-probes/`.
-        # `cargo check` is the cheapest way to trigger both build scripts.
-        # Required because cargo's tarball file-enumeration runs BEFORE
-        # build.rs during `cargo publish`, so the mirrors must already
-        # exist on disk when `cargo workspaces publish` is invoked.
+      - name: Populate aa-proto _embedded/proto/ mirror via build.rs
+        # AAASM-2340: aa-proto/build.rs mirrors `proto/` -> `aa-proto/_embedded/proto/`.
+        # `cargo check` is the cheapest way to trigger it. Required because
+        # cargo's tarball file-enumeration runs BEFORE build.rs during
+        # `cargo publish`, so the mirror must already exist on disk when
+        # `cargo workspaces publish` is invoked.
         run: |
           set -euo pipefail
-          cargo check -p aa-proto -p aa-ebpf
+          cargo check -p aa-proto
           test -f aa-proto/_embedded/proto/common.proto
-          test -f aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
           echo "✓ aa-proto/_embedded/proto/ staged ($(find aa-proto/_embedded -type f | wc -l) files)"
+
+      - name: Stage aa-ebpf/_embedded/aa-ebpf-probes/ for crates.io publish
+        # AAASM-2340: aa-ebpf/build.rs prefers the sibling `../aa-ebpf-probes/`
+        # for compilation when present (the dev / CI flow) and never writes to
+        # `_embedded/` outside of the publish-staging step here. This step
+        # mirrors the probes source into `_embedded/`, rewrites its
+        # `aa-ebpf-common` path-dep to the crates.io version (because the
+        # sibling `aa-ebpf-common` crate is absent in the published aa-ebpf
+        # tarball), and stages the manifest as `Cargo.toml.embedded` so
+        # cargo's nested-package detection does not drop the subtree from
+        # the tarball file enumeration.
+        run: |
+          set -euo pipefail
+          rm -rf aa-ebpf/_embedded
+          mkdir -p aa-ebpf/_embedded
+          cp -r aa-ebpf-probes aa-ebpf/_embedded/aa-ebpf-probes
+          # Strip any inner target/ artifacts that might have crept in
+          rm -rf aa-ebpf/_embedded/aa-ebpf-probes/target
+          # Rewrite the path-dep -> crates.io version
+          sed -i 's|aa-ebpf-common = { path = "../aa-ebpf-common" }|aa-ebpf-common = "0.0.1-alpha.3"|' \
+              aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml
+          grep -q 'aa-ebpf-common = "0.0.1-alpha.3"' aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml \
+              || { echo "::error::path-dep rewrite produced unexpected result"; exit 1; }
+          # Stage manifest as Cargo.toml.embedded (cargo skips nested Cargo.toml subtrees)
+          mv aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml \
+             aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
           echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
       - name: Strip held-back surface from aa-cli for crates.io publish
