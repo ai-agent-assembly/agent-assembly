@@ -225,6 +225,14 @@ jobs:
           echo "✓ aa-proto/_embedded/proto/ staged ($(find aa-proto/_embedded -type f | wc -l) files)"
           echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
+      - name: Strip held-back surface from aa-cli for crates.io publish
+        # AAASM-2340: removes the `aa-devtool*` deps and the source files
+        # that consume them (`aasm run` + `aasm tools` subcommands) before
+        # publishing. Operates on the working tree only — committed
+        # sources keep the full surface so local development is
+        # unaffected. See `.ci/strip-for-publish.sh` for what's stripped.
+        run: bash .ci/strip-for-publish.sh
+
       - name: Install cargo-workspaces
         run: cargo install cargo-workspaces --locked --version ^0.4
 
