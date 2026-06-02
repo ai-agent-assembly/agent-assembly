@@ -14,29 +14,24 @@
 //!
 //! ## Source location: sibling vs `_embedded/`
 //!
-//! AAASM-2340: when building from a checkout of the workspace the probes
-//! source lives at `../aa-ebpf-probes/`. When building from a crates.io
-//! tarball that sibling is gone, so the probes source must travel inside
-//! the crate at `_embedded/aa-ebpf-probes/`. Mirror sibling → `_embedded`
-//! when sibling exists so dev edits flow through; otherwise compile from
-//! whatever is in `_embedded/`.
+//! AAASM-2340: there are two possible source locations for the probes.
 //!
-//! ### Cargo nested-package quirk
+//! * **`../aa-ebpf-probes/` (sibling)** — present in a workspace checkout.
+//!   In this case the probes' inner Cargo.toml carries
+//!   `aa-ebpf-common = { path = "../aa-ebpf-common" }`, which resolves to
+//!   the sibling workspace crate. This is the dev / CI path.
 //!
-//! Cargo's tarball file-enumeration **excludes any subdirectory that
-//! contains a `Cargo.toml`**, treating it as a nested package — even when
-//! `[package].include` explicitly lists that subtree. To work around
-//! this we stage the mirrored manifest as `Cargo.toml.embedded` (a name
-//! cargo doesn't recognise as a manifest) and `OUTER_BUILD` (build.rs)
-//! restores it to `Cargo.toml` before invoking nightly cargo on the
-//! inner workspace. The mirrored manifest also gets its
-//! `aa-ebpf-common` path-dep rewritten to a crates.io version because
-//! the sibling `../aa-ebpf-common/` does not exist inside the published
-//! tarball.
+//! * **`aa-ebpf/_embedded/aa-ebpf-probes/` (bundled)** — present when
+//!   built from a crates.io-published tarball. The bundled copy is
+//!   staged by `.ci/stage-embedded-for-publish.sh` *before* publish;
+//!   its inner Cargo.toml is rewritten to depend on the crates.io
+//!   version of `aa-ebpf-common` (because the sibling crate is absent
+//!   in the published tarball) and renamed to `Cargo.toml.embedded` so
+//!   cargo's "nested package" tarball-exclusion doesn't drop it.
 //!
-//! The mirror runs on all host OSes so the tarball produced from a release
-//! CI runner (which may or may not be Linux) carries the probe source. The
-//! actual BPF compilation only runs on Linux (where aya works).
+//! Sibling takes priority — using it directly avoids any manifest
+//! rewriting on dev / CI builds and keeps `_embedded/` untouched outside
+//! of the publish flow.
 //!
 //! ## Graceful fallback
 //!
@@ -55,45 +50,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sibling_probes = manifest_dir.join("../aa-ebpf-probes");
     let embedded_probes = manifest_dir.join("_embedded/aa-ebpf-probes");
 
-    // Step 1: ensure `_embedded/aa-ebpf-probes/` exists and is current.
-    // Cross-platform so the tarball produced on any release runner carries
-    // the probe source.
-    if sibling_probes.join("Cargo.toml").exists() {
-        let _ = std::fs::remove_dir_all(&embedded_probes);
-        copy_dir_recursive(&sibling_probes, &embedded_probes)
-            .expect("failed to mirror ../aa-ebpf-probes/ into _embedded/aa-ebpf-probes/");
-        stage_manifest_for_publish(&embedded_probes).expect("failed to stage embedded manifest for publish");
+    // Resolve the probes source dir. Sibling takes priority over _embedded;
+    // never touch _embedded outside of the publish-staging flow.
+    let probes_dir: Option<PathBuf> = if sibling_probes.join("Cargo.toml").exists() {
         println!("cargo:rerun-if-changed={}", sibling_probes.display());
-    }
-    println!("cargo:rerun-if-changed={}", embedded_probes.display());
+        Some(sibling_probes)
+    } else if embedded_probes.join(STAGED_MANIFEST).exists() || embedded_probes.join("Cargo.toml").exists() {
+        // crates.io install — sibling is gone, fall back to the bundled copy.
+        restore_manifest_from_stage(&embedded_probes)?;
+        println!("cargo:rerun-if-changed={}", embedded_probes.display());
+        Some(embedded_probes)
+    } else {
+        None
+    };
 
-    // Step 2: BPF compilation is Linux-only. On macOS/Windows we are done
-    // after mirroring; the userspace constants in lib.rs are gated with
-    // the same cfg predicate as aya.
+    // BPF compilation is Linux-only. On macOS/Windows the build script is a no-op;
+    // the userspace constants in lib.rs are gated with the same cfg predicate.
     #[cfg(target_os = "linux")]
     {
         use std::{env, fs, process::Command};
 
-        // Restore the staged manifest before invoking nightly cargo.
-        let probes_dir =
-            if embedded_probes.join(STAGED_MANIFEST).exists() || embedded_probes.join("Cargo.toml").exists() {
-                restore_manifest_from_stage(&embedded_probes).expect("failed to restore embedded manifest");
-                Some(embedded_probes.clone())
-            } else {
-                None
-            };
-
         let out_dir = env::var("OUT_DIR")?;
+        // Mirror the path layout used by aya-build: OUT_DIR/<package-name>/…
+        // lib.rs embeds the binary at OUT_DIR/aa-ebpf-probes/bpfel-unknown-none/release/aa-hello
         let target_dir = PathBuf::from(&out_dir).join("aa-ebpf-probes");
         let release_dir = target_dir.join("bpfel-unknown-none/release");
         let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes"];
 
         let build_ok = if let Some(dir) = probes_dir.as_ref() {
+            // Run `cargo build --release` inside the probes workspace.
+            // aa-ebpf-probes/.cargo/config.toml sets:
+            //   target      = "bpfel-unknown-none"
+            //   build-std   = ["core"]   (nightly only; rust-toolchain.toml pins nightly)
             let status = Command::new("rustup")
                 .args(["run", "nightly", "cargo", "build", "--release"])
                 .arg("--target-dir")
                 .arg(&target_dir)
                 .current_dir(dir)
+                // Strip cargo's injected RUSTC wrappers so the probes workspace uses
+                // the bare nightly rustc without the parent workspace overlay.
                 .env_remove("RUSTC")
                 .env_remove("RUSTC_WORKSPACE_WRAPPER")
                 .status();
@@ -117,54 +112,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    Ok(())
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        // Skip the inner workspace's target/ — we never want to copy build artifacts.
-        if src_path.file_name().map(|n| n == "target").unwrap_or(false) {
-            continue;
-        }
-        let dst_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if ty.is_file() {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
-}
-
-/// Rename the mirrored `Cargo.toml` to `Cargo.toml.embedded` so cargo's
-/// tarball file-enumeration does not skip the directory as a "nested
-/// package". Also rewrites the `aa-ebpf-common` path-dep to its
-/// crates.io version since the sibling crate is gone in the tarball.
-fn stage_manifest_for_publish(probes_dir: &Path) -> std::io::Result<()> {
-    let real = probes_dir.join("Cargo.toml");
-    let staged = probes_dir.join(STAGED_MANIFEST);
-    if !real.exists() {
-        return Ok(());
-    }
-    let original = std::fs::read_to_string(&real)?;
-    let workspace_version = "0.0.1-alpha.3";
-    let rewritten = original.replace(
-        "aa-ebpf-common = { path = \"../aa-ebpf-common\" }",
-        &format!("aa-ebpf-common = \"{workspace_version}\""),
-    );
-    std::fs::write(&staged, rewritten)?;
-    std::fs::remove_file(&real)?;
+    // Suppress unused warning on non-Linux hosts.
+    let _ = probes_dir;
     Ok(())
 }
 
 /// Restore `Cargo.toml.embedded` → `Cargo.toml` so nightly cargo can
-/// parse and build the inner workspace. Idempotent: if a real
-/// `Cargo.toml` already exists, leave it alone.
-#[cfg(target_os = "linux")]
+/// parse and build the inner workspace from the bundled copy.
+/// Idempotent: if a real `Cargo.toml` already exists, leave it alone.
 fn restore_manifest_from_stage(probes_dir: &Path) -> std::io::Result<()> {
     let real = probes_dir.join("Cargo.toml");
     let staged = probes_dir.join(STAGED_MANIFEST);
