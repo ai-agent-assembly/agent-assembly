@@ -5,6 +5,89 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.4] — 2026-06-02 (pre-release)
+
+> **Not for production use.** Fourth pre-release in the v0.0.1 dry-run
+> series. Verifies the three release-infra fixes that landed since alpha-3,
+> the most significant being that `cargo install aasm` now works for the
+> first time.
+
+### Release-infra fixes verified by this tag
+
+* **AAASM-2340 (PR #843)** — `cargo install aasm` works for the first
+  time. The workspace is published to crates.io in topological order
+  via [cargo-workspaces](https://github.com/pksunkara/cargo-workspaces).
+  Nine crates publish: `aa-core`, `aa-proto`, `aa-runtime`,
+  `aa-ebpf-common`, `aa-ebpf`, `aa-proxy`, `aa-sandbox`, `aa-gateway`,
+  `aa-cli`. Sibling content needed by the binary is bundled into crate
+  tarballs through `_embedded/` mirrors — the dashboard SPA
+  (`aa-cli/_embedded/dashboard/dist/`), the gRPC proto contract
+  (`aa-proto/_embedded/proto/`), and the BPF probe source
+  (`aa-ebpf/_embedded/aa-ebpf-probes/`, compiled at install time when
+  nightly + `bpfel-unknown-none` are present, otherwise graceful stubs).
+  New `aasm sandbox run` / `aasm sandbox info` subcommands expose the
+  WASI tool-execution sandbox (highlight ④ of the product spec) to OSS
+  users. The dev-tool surface (`aasm run` / `aasm tools` + the three
+  `aa-devtool*` crates) is held back from this alpha via a build-time
+  strip script (`.ci/strip-for-publish.sh`) driven by
+  `strip-for-publish:begin` / `:end` markers; sources remain in the
+  repo and re-publish is a one-line workflow change once the subsystem
+  ships.
+
+* **AAASM-2339 (PR #841)** — `smoke-curl-installer` channel gated with
+  `if: false` until `get.agent-assembly.io` is provisioned. Smoke
+  matrix now runs 6 green channels per release. Wiring preserved so
+  re-enabling at v0.1+ is one flag flip.
+
+* **AAASM-2336 (PR #842 + node-sdk#66)** — `release.yml` gains a
+  `notify-downstream` job that fires `repository_dispatch` (event-type
+  `agent-assembly-release-published`) to BOTH node-sdk and python-sdk
+  after the GH Release object is published. node-sdk's `release-node`
+  listens for the dispatch and drops its retry-with-backoff workaround
+  (AAASM-2328 superseded). python-sdk's listener (AAASM-2342 / PR
+  python-sdk#73) lands in the same release cycle.
+
+### CI performance work (AAASM-2340 follow-up)
+
+* `aa-integration-tests/tests/common/cli.rs` adds an `aasm_command()`
+  helper that honours `AASM_BIN_PATH`; CI workflows pre-build `aasm`
+  once and export the path to nextest, skipping per-test `cargo run`
+  overhead. Cut the Test job from ~60 min → ~9 min, Coverage from
+  ~60 min+ → ~18 min, SonarCloud from failing → ~22 min SUCCESS,
+  and both Integration tests jobs from 20-min timeout → ~10–15 min.
+
+### Install
+
+```bash
+# NEW — works for the first time
+cargo install aasm --version 0.0.1-alpha.4
+
+# Existing channels (homebrew, docker, language SDKs)
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.4
+pip install --pre agent-assembly==0.0.1a4
+npm install @agent-assembly/sdk@0.0.1-alpha.4
+go get github.com/AI-agent-assembly/go-sdk@v0.0.1-alpha.4
+```
+
+### Behaviour delta on the published `aasm` binary
+
+The crates.io-published `aasm` binary omits the `aasm run <tool>` and
+`aasm tools` subcommands while the dev-tool subsystem is being
+finished. Local source builds (`cargo build -p aa-cli`) expose the
+full surface unchanged. See `docs/src/compatibility.md` for the
+restoration recipe.
+
+### Refs
+
+* Verify: `AAASM-2343` (this tag's prep) + the standing AAASM-2340 ACs
+  (clean-machine `cargo install aasm` smoke test, publish-crates
+  pipeline observed on this real tag)
+* Predecessor: `AAASM-2312` (alpha-3)
+* Companion: `AAASM-2342` (python-sdk repository_dispatch listener)
+
+---
+
 ## [0.0.1-alpha.3] — 2026-06-01 (pre-release)
 
 > **Not for production use.** Third pre-release in the v0.0.1 dry-run
