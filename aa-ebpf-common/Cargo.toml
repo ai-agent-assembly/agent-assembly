@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 description = "Shared no_std types between eBPF kernel probes and userspace loader"
 
 # no_std by default so this crate can be compiled for both the host target

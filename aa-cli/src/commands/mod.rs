@@ -24,11 +24,16 @@ pub mod permissions;
 pub mod pidfile;
 pub mod policy;
 pub mod proxy;
+// strip-for-publish:begin devtool
 pub mod run;
+// strip-for-publish:end devtool
+pub mod sandbox;
 pub mod start;
 pub mod status;
 pub mod stop;
+// strip-for-publish:begin devtool
 pub mod tools;
+// strip-for-publish:end devtool
 pub mod topology;
 pub mod trace;
 pub mod version;
@@ -66,10 +71,16 @@ pub enum Commands {
     Dashboard(dashboard::DashboardArgs),
     /// Manage the aa-gateway governance daemon — agent registry, policy engine, audit log.
     Gateway(gateway::GatewayArgs),
+    // strip-for-publish:begin devtool
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
+    // strip-for-publish:end devtool
+    /// Run a WebAssembly tool inside the Agent Assembly sandbox (filesystem + CPU + memory + wall-clock isolation).
+    Sandbox(sandbox::SandboxArgs),
+    // strip-for-publish:begin devtool
     /// List and manage AI dev tools on this system.
     Tools(tools::ToolsArgs),
+    // strip-for-publish:end devtool
     /// Visualize agent topology, trees, lineage, and statistics.
     Topology(topology::TopologyArgs),
     /// Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing.
@@ -98,8 +109,13 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Cost(args) => cost::dispatch(args, ctx, output),
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Gateway(args) => gateway::dispatch(args),
+        // strip-for-publish:begin devtool
         Commands::Run(args) => run::dispatch(args, ctx, output),
+        // strip-for-publish:end devtool
+        Commands::Sandbox(args) => sandbox::dispatch(args),
+        // strip-for-publish:begin devtool
         Commands::Tools(args) => tools::dispatch(args),
+        // strip-for-publish:end devtool
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
         Commands::Proxy(args) => proxy::dispatch(args),
         Commands::Start(args) => start::run(args),

@@ -53,6 +53,27 @@ use super::TopologyTestEnv;
 /// parallel cargo nextest test binaries.
 static AGENT_SEED_COUNTER: AtomicU16 = AtomicU16::new(0);
 
+/// Build a [`Command`] that invokes the `aasm` binary.
+///
+/// When the `AASM_BIN_PATH` env var is set (CI sets this after a one-shot
+/// `cargo build -p aa-cli --bin aasm`), the pre-built binary is invoked
+/// directly. Otherwise the call falls back to `cargo run -p aa-cli --bin
+/// aasm --`, which is what local `cargo nextest run` expects.
+///
+/// Skipping cargo's per-invocation build-graph + lockfile dance on CI cuts
+/// minutes from the Test job: `cargo run` re-walks the graph every time and
+/// concurrent nextest workers serialise on the build lock, which compounds
+/// once `aa-cli` started pulling `wasmtime` via `aa-sandbox` (AAASM-2340).
+pub fn aasm_command() -> Command {
+    if let Some(bin) = std::env::var_os("AASM_BIN_PATH") {
+        Command::new(bin)
+    } else {
+        let mut cmd = Command::new(env!("CARGO"));
+        cmd.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--"]);
+        cmd
+    }
+}
+
 /// CLI integration test fixture.
 ///
 /// Holds the in-process gateway (`env`) and provides helpers for invoking
@@ -90,14 +111,13 @@ impl CliFixture {
     /// Returns a [`std::process::Command`] pre-wired with `--api-url
     /// <fixture URL>`. Caller adds the subcommand + flags.
     ///
-    /// The binary is built via `cargo run -p aa-cli --bin aasm` because
-    /// `assert_cmd::Command::cargo_bin` only works for the bin's own crate
-    /// (it relies on `CARGO_BIN_EXE_<name>`, which Cargo only sets for the
-    /// owning crate's integration tests). The first invocation per test
-    /// binary triggers a build; subsequent invocations hit the cache.
+    /// The underlying invocation goes through [`aasm_command`], which prefers
+    /// a pre-built `aasm` binary path (via `AASM_BIN_PATH`) when CI has
+    /// staged one and falls back to `cargo run -p aa-cli --bin aasm --` for
+    /// local dev. See that helper's docs for the cost rationale.
     pub fn cmd(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["run", "--quiet", "-p", "aa-cli", "--bin", "aasm", "--", "--api-url"])
+        let mut cmd = aasm_command();
+        cmd.arg("--api-url")
             .arg(self.env.base_url())
             .env("AA_DATA_DIR", self.data_dir());
         cmd

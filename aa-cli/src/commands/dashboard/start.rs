@@ -18,7 +18,7 @@ use crate::config::{resolve_dashboard_port, CliConfig, ResolvedContext};
 
 use super::pid;
 
-static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../dashboard/dist");
+static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/_embedded/dashboard/dist");
 
 /// Arguments for `aasm dashboard start`.
 #[derive(Debug, Args)]

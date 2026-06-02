@@ -1,14 +1,14 @@
 [package]
 name = "aa-devtool-windsurf"
 version.workspace = true
+publish = false  # AAASM-2340: dev-tool subsystem held back from this alpha — user directive
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "DevToolAdapter for Windsurf Cascade — admin settings sync, MCP registry control, terminal allow/deny"
-publish = false
 
 [dependencies]
-aa-core      = { path = "../aa-core", features = ["std", "serde"] }
+aa-core      = { path = "../aa-core", version = "0.0.1-alpha.3", features = ["std", "serde"] }
 async-trait  = "0.1"
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"

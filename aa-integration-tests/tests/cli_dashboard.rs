@@ -207,7 +207,7 @@ async fn dashboard_start_serves_index_html() {
         .spawn()
         .expect("aasm dashboard start should spawn");
 
-    let status = wait_for_http(&url, Duration::from_secs(30)).await;
+    let status = wait_for_http(&url, Duration::from_secs(90)).await;
     assert_eq!(
         status,
         Some(200),
@@ -243,7 +243,7 @@ async fn dashboard_start_returns_200_for_root_repeatedly() {
         .expect("aasm dashboard start should spawn");
 
     assert_eq!(
-        wait_for_http(&url, Duration::from_secs(30)).await,
+        wait_for_http(&url, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should become reachable",
     );
@@ -278,7 +278,7 @@ async fn dashboard_start_serves_static_assets() {
         .expect("aasm dashboard start should spawn");
 
     assert_eq!(
-        wait_for_http(&url, Duration::from_secs(30)).await,
+        wait_for_http(&url, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should become reachable",
     );
@@ -356,7 +356,7 @@ async fn dashboard_start_then_stop_cleans_pidfile() {
         .expect("aasm dashboard start should spawn");
 
     assert_eq!(
-        wait_for_http(&url, Duration::from_secs(30)).await,
+        wait_for_http(&url, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should become reachable",
     );
@@ -427,7 +427,7 @@ async fn dashboard_start_sigint_clean_shutdown() {
         .expect("aasm dashboard start should spawn");
 
     assert_eq!(
-        wait_for_http(&url, Duration::from_secs(30)).await,
+        wait_for_http(&url, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should become reachable",
     );
@@ -516,7 +516,7 @@ async fn dashboard_start_proxies_gateway_api() {
         .expect("aasm dashboard start should spawn");
 
     assert_eq!(
-        wait_for_http(&dashboard_root, Duration::from_secs(30)).await,
+        wait_for_http(&dashboard_root, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should become reachable",
     );
@@ -584,15 +584,8 @@ async fn dashboard_start_invalid_gateway_url() {
     let port = free_port();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let child = std::process::Command::new(env!("CARGO"))
+    let child = common::cli::aasm_command()
         .args([
-            "run",
-            "--quiet",
-            "-p",
-            "aa-cli",
-            "--bin",
-            "aasm",
-            "--",
             "--api-url",
             "http://nope.invalid:1",
             "dashboard",
@@ -610,7 +603,7 @@ async fn dashboard_start_invalid_gateway_url() {
     // lazily on `/api/*` calls, so an unreachable gateway does NOT prevent
     // boot or block static-file serving at `/`.
     assert_eq!(
-        wait_for_http(&url, Duration::from_secs(30)).await,
+        wait_for_http(&url, Duration::from_secs(90)).await,
         Some(200),
         "dashboard should still serve `/` even with an unreachable gateway",
     );

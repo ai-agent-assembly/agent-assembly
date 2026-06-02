@@ -676,7 +676,12 @@ async fn gateway_logs_follow_streams_new_entries() {
     // to 3-5s, far exceeding a fixed sleep. Each iteration writes a fresh line
     // so once the process has seeked to EOF and is polling, the next append is
     // immediately visible.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    //
+    // AAASM-2340: bumped 20s → 90s after PR #843 added `aa-sandbox` (→ wasmtime)
+    // as a transitive dep of aa-cli; the heavier binary + nextest concurrent
+    // subprocess load pushed cold-`cargo run` past the 20s threshold (observed
+    // 21.6s on a CI runner).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut found = false;
     let mut count = 0u32;
     while tokio::time::Instant::now() < deadline && !found {

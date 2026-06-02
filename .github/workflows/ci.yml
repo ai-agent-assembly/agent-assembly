@@ -192,6 +192,13 @@ jobs:
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
+      - name: Pre-build aasm binary (AAASM-2340)
+        # Compiling aa-cli (which transitively pulls wasmtime via aa-sandbox)
+        # once serially is cheaper than letting concurrent nextest workers
+        # serialise on the build lock — each per-test `cargo run -p aa-cli`
+        # re-walks the build graph and blocks on the lock under contention.
+        # Tests then spawn the pre-built binary directly via AASM_BIN_PATH.
+        run: cargo build --quiet -p aa-cli --bin aasm
       - name: Run tests
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
         # unit tests. Validated by the dedicated ebpf-build job.
@@ -204,6 +211,11 @@ jobs:
         env:
           AA_BENCH_SLA_P99_MS: "5000"
           AAASM_DATABASE_URL: "postgres://aasm:aasm@localhost:5432/aasm_test"
+          # AAASM-2340: skip per-test cargo-run overhead by spawning the
+          # binary pre-built in the previous step. CliFixture::cmd and the
+          # in-test command builders honour AASM_BIN_PATH; absent it they
+          # fall back to cargo run for local dev.
+          AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
         run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf
 
   coverage:
@@ -275,7 +287,17 @@ jobs:
       - name: Install TypeScript fixture dependencies (e2e_sdk_node)
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
+      - name: Pre-build aasm binary (AAASM-2340)
+        # See sonar.yml for the rationale — same pattern, same reason.
+        run: |
+          cargo build --quiet -p aa-cli --bin aasm
+          mkdir -p "$RUNNER_TEMP/aasm-bin"
+          mv target/debug/aasm "$RUNNER_TEMP/aasm-bin/aasm"
+          rm -rf target/debug
+
       - name: Generate coverage report
+        env:
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python dev headers for linking — excluded.
         # aa-devtool-claude-code is run separately (step 2) without docker-integration:

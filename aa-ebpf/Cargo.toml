@@ -6,6 +6,22 @@ license.workspace = true
 repository.workspace = true
 description = "eBPF-based kernel-level monitoring hooks for Agent Assembly"
 
+# AAASM-2340: explicit include list lets `_embedded/aa-ebpf-probes/` (a
+# build-time mirror of the sibling `../aa-ebpf-probes/` standalone BPF
+# workspace) ship in the published tarball even though it's gitignored.
+# Without this, `cargo install aasm` would always degrade to BPF stubs
+# even on machines that have nightly + bpfel-unknown-none installed.
+include = [
+    "src/**",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "_embedded/aa-ebpf-probes/Cargo.toml.embedded",
+    "_embedded/aa-ebpf-probes/rust-toolchain.toml",
+    "_embedded/aa-ebpf-probes/.cargo/**",
+    "_embedded/aa-ebpf-probes/src/**",
+]
+
 [features]
 default = []
 # Enables integration tests that load BPF programs into a live kernel.
@@ -14,8 +30,8 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core        = { path = "../aa-core" }
-aa-ebpf-common = { path = "../aa-ebpf-common", features = ["std"] }
+aa-core        = { path = "../aa-core", version = "0.0.1-alpha.3" }
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-alpha.3", features = ["std"] }
 anyhow         = "1"
 bytes          = "1"
 thiserror      = "2"

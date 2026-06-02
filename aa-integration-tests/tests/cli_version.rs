@@ -176,21 +176,8 @@ async fn version_gateway_unreachable_degrades_gracefully() {
     drop(listener);
     let dead_url = format!("http://127.0.0.1:{port}");
 
-    let out = std::process::Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "aa-cli",
-            "--bin",
-            "aasm",
-            "--",
-            "--api-url",
-            &dead_url,
-            "version",
-            "--output",
-            "json",
-        ])
+    let out = common::cli::aasm_command()
+        .args(["--api-url", &dead_url, "version", "--output", "json"])
         .output()
         .expect("aasm version should execute even against a dead gateway");
     assert!(
