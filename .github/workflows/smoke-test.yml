@@ -125,6 +125,16 @@ jobs:
 
   smoke-curl-installer:
     name: Smoke — curl installer
+    # AAASM-2339: get.agent-assembly.io is not provisioned yet (no DNS,
+    # no Cloudflare Worker). The job is preserved here under an unconditional
+    # `if: false` so the wiring is ready when the curl|sh install path ships;
+    # until then the job is skipped on every release and emits no signal.
+    # Deliberately kept out of `notify-on-failure`'s `needs:` list so a
+    # skipped run does not propagate to that downstream job. To re-enable:
+    # provision the endpoint, flip `if: false` to `if: true` (or drop the
+    # line), and re-add `- smoke-curl-installer` to notify-on-failure's
+    # `needs:`.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -378,7 +388,6 @@ jobs:
     needs:
       - smoke-homebrew-macos
       - smoke-homebrew-linux
-      - smoke-curl-installer
       - smoke-python-pypi-import
       - smoke-python-pypi-runtime
       - smoke-npm
