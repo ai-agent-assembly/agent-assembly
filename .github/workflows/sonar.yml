@@ -71,11 +71,15 @@ jobs:
         # timed out at 90s otherwise). aa-cli dispatch is already covered
         # by its own unit tests; the loss from running the subprocess
         # uninstrumented is negligible.
-        run: cargo build --quiet -p aa-cli --bin aasm
+        run: |
+          cargo build --quiet -p aa-cli --bin aasm
+          mkdir -p "$RUNNER_TEMP/aasm-bin"
+          mv target/debug/aasm "$RUNNER_TEMP/aasm-bin/aasm"
+          rm -rf target/debug
 
       - name: Generate coverage report (LCOV for SonarCloud)
         env:
-          AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-ffi-python requires Python development headers for linking — excluded.
         # aa-devtool-claude-code is run separately without docker-integration:
@@ -110,13 +114,6 @@ jobs:
                --skip selftest_ --skip handle_shutdown_
           cargo llvm-cov --no-report -p aa-devtool-claude-code
           cargo llvm-cov --no-run --lcov --output-path lcov.info
-      - name: Free disk space before SonarCloud scan (AAASM-2340)
-        # The pre-built target/debug/ plus llvm-cov target/llvm-cov-target/
-        # together exhaust ubuntu-latest disk and crash the runner mid-scan
-        # ("No space left on device"). aasm + its build artefacts are no
-        # longer needed once tests pass; lcov.info lives at the workspace root.
-        run: rm -rf target/debug
-
 
 
       - name: Restore TypeScript coverage from cache
