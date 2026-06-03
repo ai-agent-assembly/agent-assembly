@@ -48,3 +48,27 @@ pub struct Policy {
     /// Statements that revoke capabilities (evaluated after `allow`).
     pub deny: Vec<Rule>,
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_round_trip {
+    use super::{Policy, Rule};
+    use proptest::prelude::*;
+
+    fn rule_strategy() -> impl Strategy<Value = Rule> {
+        ("[a-z.]{1,12}", "[a-z0-9.*/_-]{1,20}").prop_map(|(capability, resource)| Rule { capability, resource })
+    }
+
+    proptest! {
+        #[test]
+        fn policy_round_trips(
+            policy_version in any::<u64>(),
+            allow in prop::collection::vec(rule_strategy(), 0..4),
+            deny in prop::collection::vec(rule_strategy(), 0..4),
+        ) {
+            let original = Policy { policy_version, allow, deny };
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: Policy = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(original, restored);
+        }
+    }
+}
