@@ -62,3 +62,25 @@ impl SanitizedAuditEvent {
         self.0
     }
 }
+
+/// A collapsed heartbeat. Per-beat records are never stored; instead a
+/// heartbeat event becomes a single "last seen at" update on the agent row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatUpdate {
+    /// Agent the heartbeat belongs to (empty when the event omitted it).
+    pub agent_id: String,
+    /// Heartbeat timestamp as carried by the event, left as the raw JSON
+    /// scalar (`Null` when absent) so the storage layer owns parsing and may
+    /// fall back to `now()`.
+    pub last_heartbeat_at: Value,
+}
+
+/// The result of sanitizing a raw audit event — either an audit row to INSERT
+/// or a heartbeat to collapse into an agent "last seen" update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SanitizeOutcome {
+    /// A normal event: write this sanitized row to `audit_logs`.
+    Audit(SanitizedAuditEvent),
+    /// A heartbeat: update `agents.last_heartbeat` instead of inserting a row.
+    Heartbeat(HeartbeatUpdate),
+}

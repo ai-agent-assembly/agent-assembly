@@ -16,4 +16,4 @@
 mod event;
 mod rules;
 
-pub use event::{RawAuditEvent, SanitizedAuditEvent};
+pub use event::{HeartbeatUpdate, RawAuditEvent, SanitizeOutcome, SanitizedAuditEvent};
