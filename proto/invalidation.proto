@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package assembly.gateway.v1;
+
+// InvalidationService is the gateway → Assembly push channel that keeps the
+// in-process L1 cache fresh without relying on TTL expiry alone.
+//
+// A revoked agent must stop executing the instant an admin mutates policy —
+// not after the L1 TTL lapses. The gateway publishes a `PolicyInvalidated`
+// event over a persistent bidi stream; every subscribed Assembly invalidates
+// the matching L1 entry within ~100 ms.
+//
+// The same stream is reserved to carry approval-result notifications
+// (`ApprovalResolved`) so blocked agents subscribe instead of poll — one
+// stream, two consumers (the approval half ships in the next Story).
+//
+// Consumed by: aa-runtime/src/invalidation_client.rs (client side)
+//              aa-gateway/src/invalidation/           (server side)
+service InvalidationService {
+  // Subscribe opens the persistent bidi stream. The Assembly sends an initial
+  // `SubscribeRequest` (with the highest sequence number it has already seen,
+  // for replay-on-reconnect) and thereafter acks delivered events; the gateway
+  // streams `InvalidationEvent`s as policy mutations occur.
+  rpc Subscribe(stream SubscribeRequest) returns (stream InvalidationEvent);
+}
+
+// ── Client → gateway ──────────────────────────────────────────────────────────
+
+// SubscribeRequest is sent by the Assembly on the client→server half of the
+// stream: once on connect (`Initial`) and then once per delivered event (`Ack`).
+message SubscribeRequest {
+  // Stable identifier of the subscribing Assembly instance. Used by the gateway
+  // to key the per-subscriber replay buffer across reconnects.
+  string assembly_id = 1;
+
+  // Exactly one of the following is set per message.
+  oneof kind {
+    // First message on a freshly opened stream. Carries the last sequence the
+    // Assembly already applied so the gateway can replay anything missed.
+    SubscribeInitial initial = 2;
+    // Steady-state acknowledgement that `seq` was applied to the L1 cache.
+    SubscribeAck     ack     = 3;
+  }
+}
+
+// SubscribeInitial is the handshake message opening (or reopening) a stream.
+message SubscribeInitial {
+  // Highest `InvalidationEvent.seq` the Assembly has already applied. The
+  // gateway replays every buffered event with a strictly greater seq. Zero on
+  // a cold start (no prior subscription).
+  uint64 last_seq_seen = 1;
+}
+
+// SubscribeAck confirms a single event was applied, letting the gateway advance
+// its per-subscriber low-water mark and trim the replay buffer.
+message SubscribeAck {
+  // Sequence number of the `InvalidationEvent` that was applied.
+  uint64 seq = 1;
+}
+
+// ── Gateway → client ──────────────────────────────────────────────────────────
+
+// InvalidationEvent is the gateway→Assembly half of the stream. Each event
+// carries a monotonically increasing per-subscriber sequence number so the
+// Assembly can detect gaps and request replay on reconnect.
+message InvalidationEvent {
+  // Monotonic, per-subscriber sequence number. Strictly increasing; gaps mean
+  // the Assembly missed events and should reconnect with `last_seq_seen`.
+  uint64 seq = 1;
+
+  // Exactly one payload is set per event.
+  oneof payload {
+    // A policy mutation invalidated the cached decision for an agent.
+    PolicyInvalidated policy_invalidated = 2;
+    // A held action was resolved by a human reviewer. Reserved here; the
+    // gateway begins broadcasting this in the approval-reuse Story.
+    ApprovalResolved  approval_resolved  = 3;
+  }
+}
+
+// PolicyInvalidated signals that the cached policy decision for `agent_id` is
+// stale and must be dropped from the L1 cache.
+message PolicyInvalidated {
+  // Agent whose cached policy decision is now stale.
+  string agent_id = 1;
+  // Monotonic policy version after the mutation (see Epic A's `policy_version`).
+  uint64 policy_version = 2;
+}
+
+// ApprovalResolved signals that a previously held action has a final decision.
+// Reserved for the approval-reuse Story; defined here so the wire contract is
+// stable before the server begins broadcasting it.
+message ApprovalResolved {
+  // Identifier of the approval request that was resolved.
+  string   request_id = 1;
+  // The reviewer's verdict.
+  Decision decision   = 2;
+}
+
+// Decision is the human reviewer's verdict on a held action, as delivered over
+// the invalidation channel's `ApprovalResolved` event.
+enum Decision {
+  // Default / unset — never sent by a conforming gateway.
+  DECISION_UNSPECIFIED = 0;
+  // The reviewer approved the held action.
+  APPROVED             = 1;
+  // The reviewer denied the held action.
+  DENIED               = 2;
+  // The request is still awaiting a reviewer verdict.
+  PENDING              = 3;
+}
