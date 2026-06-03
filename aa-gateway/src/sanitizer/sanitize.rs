@@ -129,4 +129,14 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "prompt"));
     }
+
+    #[test]
+    fn drops_completion_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "completion": "the model completion text",
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "completion"));
+    }
 }
