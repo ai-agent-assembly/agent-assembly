@@ -13,4 +13,7 @@
 //! them so a newly-emitting sender is noticed), and collapses heartbeats into a
 //! single "last seen" update instead of a per-beat row.
 
+mod event;
 mod rules;
+
+pub use event::RawAuditEvent;
