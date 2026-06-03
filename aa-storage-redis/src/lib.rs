@@ -9,9 +9,12 @@
 mod config;
 mod error;
 mod pool;
+mod session;
+mod util;
 
 pub use config::RedisStorageConfig;
 pub use pool::build_pool;
+pub use session::{RedisSessionStore, SESSION_TTL_SECS};
 
 /// The name this driver registers under in storage configuration, i.e. the
 /// `[storage.<name>]` subsection and the registry key (`storage.backend = "redis"`).
