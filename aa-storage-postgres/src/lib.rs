@@ -11,5 +11,7 @@
 //! re-exports the public surface a caller needs to wire the driver up.
 
 pub mod config;
+pub mod pool;
 
 pub use config::PostgresPoolConfig;
+pub use pool::{PostgresPool, MIGRATOR};
