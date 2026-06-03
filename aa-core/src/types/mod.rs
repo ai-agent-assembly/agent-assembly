@@ -12,5 +12,7 @@
 //! identifier, distinct from the opaque 16-byte [`crate::identity::AgentId`].
 
 mod agent_id;
+mod policy;
 
 pub use agent_id::{AgentId, AgentIdParseError};
+pub use policy::{Policy, Rule};
