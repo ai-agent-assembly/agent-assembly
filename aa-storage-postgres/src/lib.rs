@@ -10,6 +10,7 @@
 //! `PgLifecycleStore`) land alongside the connection-pool wrapper; this module
 //! re-exports the public surface a caller needs to wire the driver up.
 
+pub mod audit_sink;
 pub mod config;
 pub mod credential_store;
 pub mod lifecycle_store;
@@ -17,6 +18,7 @@ pub mod policy_store;
 pub mod pool;
 pub mod support;
 
+pub use audit_sink::PgAuditSink;
 pub use config::PostgresPoolConfig;
 pub use credential_store::PgCredentialStore;
 pub use lifecycle_store::PgLifecycleStore;
