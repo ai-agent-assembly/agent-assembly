@@ -133,3 +133,35 @@ impl<S: CacheSource> L1Cache<S> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use aa_core::storage::AgentId;
+
+    use crate::testing::{sample_policy, MemoryPolicyStore};
+    use crate::L1Cache;
+
+    fn agent(seed: u8) -> AgentId {
+        AgentId::from_bytes([seed; 16])
+    }
+
+    #[tokio::test]
+    async fn miss_populates_then_serves_from_cache() {
+        let id = agent(1);
+        let store = MemoryPolicyStore::with_policy(id, sample_policy(1));
+        let cache = L1Cache::new(store, Duration::from_secs(60));
+
+        // First get is a miss: hits the store and populates the cache.
+        let first = cache.get(id).await.expect("policy present");
+        assert_eq!(first.version, 1);
+        assert_eq!(cache.inner().call_count(), 1);
+        assert_eq!(cache.len(), 1);
+
+        // Second get is a hit: served from memory, the store is not touched again.
+        let second = cache.get(id).await.expect("policy present");
+        assert_eq!(second.version, 1);
+        assert_eq!(cache.inner().call_count(), 1);
+    }
+}
