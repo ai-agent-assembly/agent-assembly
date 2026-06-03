@@ -19,11 +19,13 @@
 //! verbatim, so `aa_storage::*` and `aa_core::storage::*` are interchangeable.
 
 mod audit_sink;
+mod credential_store;
 mod error;
 mod policy_store;
 mod session_store;
 
 pub use audit_sink::AuditSink;
+pub use credential_store::CredentialStore;
 pub use error::{Result, StorageError};
 pub use policy_store::PolicyStore;
 pub use session_store::{SessionRecord, SessionStore};
