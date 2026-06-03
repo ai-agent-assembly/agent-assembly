@@ -33,3 +33,23 @@ pub struct Credential {
     /// Reference to the key-encryption-key used to seal `ciphertext`.
     pub kek_ref: String,
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_round_trip {
+    use super::Credential;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn credential_round_trips(
+            placeholder in r"\$\{[A-Z_]{1,20}\}",
+            ciphertext in prop::collection::vec(any::<u8>(), 0..32),
+            kek_ref in "[a-z]{1,6}://[a-z0-9/._-]{1,24}",
+        ) {
+            let original = Credential { placeholder, ciphertext, kek_ref };
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: Credential = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(original, restored);
+        }
+    }
+}
