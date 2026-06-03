@@ -2,8 +2,10 @@
 //! via `testcontainers-modules`. Each test spins up its own fresh Postgres 18
 //! container, so the cases are isolated and require Docker to run.
 
-use aa_storage::{AgentId, LifecycleStore, StorageError};
-use aa_storage_postgres::{PgLifecycleStore, PostgresPool, PostgresPoolConfig};
+use aa_core::EnforcementMode;
+use aa_storage::conformance::assert_policy_store_conformance;
+use aa_storage::{AgentId, LifecycleStore, PolicyDocument, StorageError};
+use aa_storage_postgres::{PgLifecycleStore, PgPolicyStore, PostgresPool, PostgresPoolConfig};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -90,4 +92,39 @@ async fn lifecycle_register_heartbeat_deregister() {
         .deregister(&absent)
         .await
         .expect("deregister(absent) is idempotent");
+}
+
+#[tokio::test]
+async fn policy_store_satisfies_conformance() {
+    let (_pg, pool) = setup_pg().await;
+
+    let present = AgentId::from_bytes([1u8; 16]);
+    let absent = AgentId::from_bytes([2u8; 16]);
+
+    // Seed: the policies FK requires the agent row, so register it first, then
+    // insert one policy version for the present agent.
+    PgLifecycleStore::new(pool.clone())
+        .register(&present)
+        .await
+        .expect("register present agent");
+
+    let doc = PolicyDocument {
+        version: 1,
+        name: "test".to_owned(),
+        rules: Vec::new(),
+        enforcement_mode: EnforcementMode::default(),
+    };
+    let body = serde_json::to_value(&doc).expect("serialize policy");
+    let agent_text = uuid::Uuid::from_bytes(*present.as_bytes()).to_string();
+    sqlx::query("INSERT INTO policies (agent_id, policy_version, body) VALUES ($1, $2, $3)")
+        .bind(&agent_text)
+        .bind(1_i64)
+        .bind(body)
+        .execute(pool.pool())
+        .await
+        .expect("seed policy row");
+
+    let store = PgPolicyStore::new(pool.clone());
+    // Coerces to `&dyn PolicyStore`, exercising object-safety too.
+    assert_policy_store_conformance(&store, &present, &absent).await;
 }
