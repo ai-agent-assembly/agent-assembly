@@ -486,22 +486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aa-storage-redis"
-version = "0.0.1-alpha.5"
-dependencies = [
- "aa-core",
- "aa-storage",
- "async-trait",
- "deadpool-redis",
- "redis",
- "serde",
- "serde_json",
- "testcontainers-modules",
- "tokio",
- "toml 0.8.23",
-]
-
-[[package]]
 name = "aa-storage-postgres"
 version = "0.0.1-alpha.5"
 dependencies = [
@@ -517,6 +501,22 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "uuid",
+]
+
+[[package]]
+name = "aa-storage-redis"
+version = "0.0.1-alpha.5"
+dependencies = [
+ "aa-core",
+ "aa-storage",
+ "async-trait",
+ "deadpool-redis",
+ "redis",
+ "serde",
+ "serde_json",
+ "testcontainers-modules",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
