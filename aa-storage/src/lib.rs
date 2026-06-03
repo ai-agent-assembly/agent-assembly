@@ -35,6 +35,7 @@
 #![warn(missing_docs)]
 
 mod audit_sink;
+pub mod conformance;
 mod credential_store;
 mod error;
 mod lifecycle_store;
