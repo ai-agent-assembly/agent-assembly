@@ -13,10 +13,12 @@
 
 mod agent_id;
 mod audit_event;
+mod credential;
 mod policy;
 mod session_ctx;
 
 pub use agent_id::{AgentId, AgentIdParseError};
 pub use audit_event::AuditEvent;
+pub use credential::Credential;
 pub use policy::{Policy, Rule};
 pub use session_ctx::SessionCtx;
