@@ -33,3 +33,32 @@ impl From<Value> for RawAuditEvent {
         Self::new(value)
     }
 }
+
+/// An audit event that has passed the write-boundary sanitizer: guaranteed to
+/// contain none of the banned keys at any depth and only vetted top-level
+/// metadata.
+///
+/// The inner value is private and the constructor is crate-private, so the
+/// **only** way to obtain one is [`sanitize`](super::sanitize). Postgres
+/// handlers accept this type and nothing else, which makes "raw events never
+/// get INSERTed" a compile-time guarantee rather than a convention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedAuditEvent(Value);
+
+impl SanitizedAuditEvent {
+    /// Mints the sanitized wrapper. Crate-private on purpose: only the
+    /// sanitizer may vouch that a value is safe to persist.
+    pub(crate) fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    /// Borrows the sanitized JSON value for persistence.
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+
+    /// Consumes the wrapper, yielding the sanitized JSON value.
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+}

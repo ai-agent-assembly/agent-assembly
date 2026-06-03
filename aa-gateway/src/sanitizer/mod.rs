@@ -16,4 +16,4 @@
 mod event;
 mod rules;
 
-pub use event::RawAuditEvent;
+pub use event::{RawAuditEvent, SanitizedAuditEvent};
