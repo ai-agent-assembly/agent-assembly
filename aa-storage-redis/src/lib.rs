@@ -6,6 +6,10 @@
 
 #![warn(missing_docs)]
 
+mod config;
+
+pub use config::RedisStorageConfig;
+
 /// The name this driver registers under in storage configuration, i.e. the
 /// `[storage.<name>]` subsection and the registry key (`storage.backend = "redis"`).
 pub const DRIVER_NAME: &str = "redis";
