@@ -9,11 +9,13 @@
 mod config;
 mod error;
 mod pool;
+mod rate_limit;
 mod session;
 mod util;
 
 pub use config::RedisStorageConfig;
 pub use pool::build_pool;
+pub use rate_limit::RedisRateLimitCounter;
 pub use session::{RedisSessionStore, SESSION_TTL_SECS};
 
 /// The name this driver registers under in storage configuration, i.e. the
