@@ -213,9 +213,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install agent-assembly from PyPI
+        env:
+          VERSION: ${{ steps.expected.outputs.version }}
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly'
+          # AAASM-2455: pin to the just-published prerelease so we don't resolve
+          # to the bogus PyPI 0.0.2 squat (AAASM-2454). PEP-440 form:
+          # 0.0.1-alpha.N → 0.0.1aN.
+          pep440="${VERSION//-alpha./a}"
+          pip install --no-cache-dir --pre "agent-assembly==${pep440}"
 
       - name: Verify agent_assembly.__version__ matches release tag
         env:
@@ -259,10 +265,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install agent-assembly from PyPI
+      - name: Install agent-assembly[runtime] from PyPI
+        env:
+          VERSION: ${{ steps.expected.outputs.version }}
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly'
+          # AAASM-2455: pin to the just-published prerelease + add [runtime]
+          # extra so the bundled aasm sidecar is installed (this is what
+          # `aasm --version` below expects to find). The job name promised
+          # the extra but the previous install command was missing it.
+          # PEP-440 form: 0.0.1-alpha.N → 0.0.1aN.
+          pep440="${VERSION//-alpha./a}"
+          pip install --no-cache-dir --pre "agent-assembly[runtime]==${pep440}"
 
       - name: Verify the bundled aasm binary prints the release tag
         env:
