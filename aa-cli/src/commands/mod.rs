@@ -14,6 +14,7 @@ pub mod approvals;
 pub mod audit;
 pub mod budget;
 pub mod completion;
+pub mod config;
 pub mod context;
 pub mod cost;
 pub mod dashboard;
@@ -55,6 +56,8 @@ pub enum Commands {
     Policy(policy::PolicyArgs),
     /// Manage named API contexts (connection profiles).
     Context(context::ContextArgs),
+    /// Validate an `agent-assembly.toml` runtime configuration file.
+    Config(config::ConfigArgs),
     /// Generate shell completion scripts.
     Completion(completion::CompletionArgs),
     /// Show fleet health, agents, approvals, and budget at a glance.
@@ -101,6 +104,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Logs(args) => logs::dispatch(args, ctx),
         Commands::Policy(args) => policy::dispatch(args, ctx, output),
         Commands::Context(args) => context::dispatch(args),
+        Commands::Config(args) => config::dispatch(args),
         Commands::Completion(args) => completion::run(args),
         Commands::Status(args) => status::dispatch(args, ctx, output),
         Commands::Version => version::run(ctx, output),

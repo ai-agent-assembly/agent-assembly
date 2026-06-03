@@ -14,6 +14,12 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      version and introduces no version change to aa-runtime or any SDK; this
      comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2367: added the `aa-storage-memory` crate to root Cargo.toml
+     workspace members (in-memory storage driver for tests / local dev). It
+     inherits the workspace version and introduces no version change to
+     aa-runtime or any SDK; this comment satisfies the compatibility-matrix
+     CI gate. -->
+
 <!-- AAASM-2379: added the `aa-cache` crate to root Cargo.toml workspace
      members (in-process L1 cache wrapper over the storage traits). It inherits
      the workspace version and introduces no version change to aa-runtime or any
