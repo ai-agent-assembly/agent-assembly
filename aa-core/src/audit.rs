@@ -22,6 +22,7 @@ use crate::{AgentId, SessionId};
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum AuditEventType {
     /// A tool call was intercepted by the governance layer before execution.
     ToolCallIntercepted = 0,
