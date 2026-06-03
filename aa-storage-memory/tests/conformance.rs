@@ -4,10 +4,12 @@
 use aa_core::{AuditEventType, EnforcementMode};
 use aa_storage::conformance::{
     assert_audit_sink_conformance, assert_credential_store_conformance, assert_policy_store_conformance,
-    assert_session_store_conformance,
+    assert_rate_limit_counter_conformance, assert_session_store_conformance,
 };
 use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId, SessionRecord};
-use aa_storage_memory::{MemoryAuditSink, MemoryCredentialStore, MemoryPolicyStore, MemorySessionStore};
+use aa_storage_memory::{
+    MemoryAuditSink, MemoryCredentialStore, MemoryPolicyStore, MemoryRateLimitCounter, MemorySessionStore,
+};
 
 fn sample_policy() -> PolicyDocument {
     PolicyDocument {
@@ -61,4 +63,10 @@ async fn session_store_conformance() {
 async fn credential_store_conformance() {
     let store = MemoryCredentialStore::new();
     assert_credential_store_conformance(&store, "openai/api_key", b"sk-secret".to_vec()).await;
+}
+
+#[tokio::test]
+async fn rate_limit_counter_conformance() {
+    let counter = MemoryRateLimitCounter::new();
+    assert_rate_limit_counter_conformance(&counter, "team-1:tokens").await;
 }
