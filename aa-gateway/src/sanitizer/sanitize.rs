@@ -189,4 +189,14 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "tool_args"));
     }
+
+    #[test]
+    fn drops_tool_result_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "tool_result": { "stdout": "result bytes" },
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "tool_result"));
+    }
 }
