@@ -46,3 +46,11 @@ Filed as a Bug subtask under AAASM-2354 per this ticket's instruction #4 (do not
 
 All implementable ACs pass. The lone exception (AC #4) is infeasible-by-cycle and recorded as a Bug
 subtask with the agreed resolution (`aa_storage::*` as the single import path). No code defects found.
+
+## Update — AC #4 resolved (AAASM-2458)
+
+The Cargo-cycle obstacle was removed by **hosting the trait module inside `aa-core`** (`aa_core::storage`)
+and making `aa-storage` a re-export facade (`pub use aa_core::storage::*`). The canonical
+`aa_core::storage::*` path now resolves, and `aa_storage::*` remains valid — the two are interchangeable.
+`aa-storage/tests/object_safety.rs` asserts object-safety of all six traits through **both** paths. AC #4
+is therefore satisfied; the resolution introduces no cycle (dependency still points `aa-storage → aa-core`).
