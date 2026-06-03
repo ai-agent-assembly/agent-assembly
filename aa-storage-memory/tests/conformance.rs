@@ -3,10 +3,11 @@
 
 use aa_core::{AuditEventType, EnforcementMode};
 use aa_storage::conformance::{
-    assert_audit_sink_conformance, assert_policy_store_conformance, assert_session_store_conformance,
+    assert_audit_sink_conformance, assert_credential_store_conformance, assert_policy_store_conformance,
+    assert_session_store_conformance,
 };
 use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId, SessionRecord};
-use aa_storage_memory::{MemoryAuditSink, MemoryPolicyStore, MemorySessionStore};
+use aa_storage_memory::{MemoryAuditSink, MemoryCredentialStore, MemoryPolicyStore, MemorySessionStore};
 
 fn sample_policy() -> PolicyDocument {
     PolicyDocument {
@@ -54,4 +55,10 @@ async fn session_store_conformance() {
         started_at_ns: 42,
     };
     assert_session_store_conformance(&store, record).await;
+}
+
+#[tokio::test]
+async fn credential_store_conformance() {
+    let store = MemoryCredentialStore::new();
+    assert_credential_store_conformance(&store, "openai/api_key", b"sk-secret".to_vec()).await;
 }
