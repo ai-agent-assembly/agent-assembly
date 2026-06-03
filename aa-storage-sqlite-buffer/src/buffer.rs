@@ -2,13 +2,43 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use aa_core::storage::{Result, StorageError};
-use rusqlite::Connection;
+use aa_core::storage::{AuditEntry, Result, StorageError};
+use rusqlite::{params, Connection};
 
 /// Map a `rusqlite` error onto the storage contract's backend variant.
 fn backend_err(err: rusqlite::Error) -> StorageError {
     StorageError::Backend(err.to_string())
+}
+
+/// Nanoseconds since the Unix epoch, saturating to `0` if the clock predates it.
+fn now_unix_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Delete the oldest events until at most `cap` remain, returning the count
+/// removed.
+fn prune_to_cap(conn: &Connection, cap: usize) -> Result<usize> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .map_err(backend_err)?;
+    let cap = cap as i64;
+    if count <= cap {
+        return Ok(0);
+    }
+    let excess = count - cap;
+    let deleted = conn
+        .execute(
+            "DELETE FROM events WHERE id IN \
+             (SELECT id FROM events ORDER BY id ASC LIMIT ?1)",
+            params![excess],
+        )
+        .map_err(backend_err)?;
+    Ok(deleted)
 }
 
 /// A restart-safe, FIFO event buffer backed by a single SQLite file.
@@ -77,5 +107,30 @@ impl EventBuffer {
     /// Whether the buffer currently holds no events.
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
+    }
+
+    /// Append `event` to the buffer.
+    ///
+    /// The entry is serialized to JSON and stored as a BLOB. When the buffer
+    /// would exceed its cap, the oldest events are evicted to make room and the
+    /// [`METRIC_EVENTS_DROPPED`](crate::METRIC_EVENTS_DROPPED) counter is bumped
+    /// by the number dropped — the loss is metered, never silent. Each accepted
+    /// event bumps [`METRIC_EVENTS_BUFFERED`](crate::METRIC_EVENTS_BUFFERED).
+    pub fn enqueue(&self, event: &AuditEntry) -> Result<()> {
+        let payload = serde_json::to_vec(event).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let enqueued_at = now_unix_nanos();
+        let conn = self.conn.lock().expect("event buffer mutex poisoned");
+        conn.execute(
+            "INSERT INTO events (payload, enqueued_at) VALUES (?1, ?2)",
+            params![payload, enqueued_at],
+        )
+        .map_err(backend_err)?;
+        metrics::counter!(crate::METRIC_EVENTS_BUFFERED).increment(1);
+
+        let dropped = prune_to_cap(&conn, self.cap)?;
+        if dropped > 0 {
+            metrics::counter!(crate::METRIC_EVENTS_DROPPED).increment(dropped as u64);
+        }
+        Ok(())
     }
 }
