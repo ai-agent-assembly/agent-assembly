@@ -18,9 +18,11 @@
 //! The [`aa-storage`](https://docs.rs/aa-storage) crate re-exports this module
 //! verbatim, so `aa_storage::*` and `aa_core::storage::*` are interchangeable.
 
+mod audit_sink;
 mod error;
 mod policy_store;
 
+pub use audit_sink::AuditSink;
 pub use error::{Result, StorageError};
 pub use policy_store::PolicyStore;
 
