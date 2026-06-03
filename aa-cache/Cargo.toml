@@ -1,0 +1,25 @@
+[package]
+name = "aa-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-process L1 cache wrapper (DashMap + TTL + stampede protection) for the Agent Assembly storage traits"
+
+[dependencies]
+aa-core = { path = "../aa-core" }
+async-trait = "0.1"
+dashmap = "6"
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[features]
+# Exposes the in-memory `MemoryPolicyStore` test/bench double. Off by default so
+# downstream consumers never pull the test scaffolding; enabled for this crate's
+# own benches via the self dev-dependency below.
+test-utils = ["tokio/time"]
+
+[lints]
+workspace = true
