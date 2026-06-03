@@ -26,3 +26,12 @@
 mod config;
 
 pub use config::{default_path, SqliteBufferConfig, DEFAULT_CAP};
+
+/// Counter incremented once per event accepted into the buffer.
+pub const METRIC_EVENTS_BUFFERED: &str = "aa_events_buffered";
+
+/// Counter incremented when the cap is exceeded and an oldest event is evicted.
+pub const METRIC_EVENTS_DROPPED: &str = "aa_events_dropped_total";
+
+/// Counter incremented once per event successfully flushed to the sink.
+pub const METRIC_EVENTS_FLUSHED: &str = "aa_events_flushed_total";
