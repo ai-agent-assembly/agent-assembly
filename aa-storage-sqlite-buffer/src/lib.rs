@@ -22,3 +22,7 @@
 //! ```
 
 #![warn(missing_docs)]
+
+mod config;
+
+pub use config::{default_path, SqliteBufferConfig, DEFAULT_CAP};
