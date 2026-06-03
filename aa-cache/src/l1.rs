@@ -179,4 +179,25 @@ mod tests {
         cache.get(id).await.expect("policy present");
         assert_eq!(cache.inner().call_count(), 2);
     }
+
+    #[tokio::test]
+    async fn invalidate_evicts_the_cached_entry() {
+        let id = agent(3);
+        let store = MemoryPolicyStore::with_policy(id, sample_policy(1));
+        let cache = L1Cache::new(store, Duration::from_secs(60));
+
+        cache.get(id).await.expect("policy present");
+        assert_eq!(cache.len(), 1);
+
+        // Invalidate removes the entry and reports it was present.
+        assert!(cache.invalidate(&id));
+        assert_eq!(cache.len(), 0);
+
+        // Invalidating the now-absent key reports nothing was removed.
+        assert!(!cache.invalidate(&id));
+
+        // The next get is a fresh miss that reloads from the store.
+        cache.get(id).await.expect("policy present");
+        assert_eq!(cache.inner().call_count(), 2);
+    }
 }
