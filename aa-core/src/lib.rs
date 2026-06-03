@@ -40,6 +40,8 @@ pub mod risk_tier;
 pub mod scanner;
 pub mod time;
 pub mod topology;
+#[cfg(feature = "alloc")]
+pub mod types;
 
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
