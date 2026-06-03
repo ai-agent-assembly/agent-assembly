@@ -74,3 +74,20 @@ fn maliciously_crafted_event_yields_no_banned_keys() {
     // The unknown top-level field is dropped as well.
     assert!(!contains_key_recursive(&sanitized, "exfiltration_attempt"));
 }
+
+#[test]
+fn malicious_heartbeat_never_becomes_audit_row() {
+    // A heartbeat that smuggles a prompt must still route to a last-seen
+    // update, never an audit row.
+    let raw = RawAuditEvent::new(json!({
+        "kind": "heartbeat",
+        "agent_id": "acme/bot",
+        "ts": "2026-06-03T12:00:00Z",
+        "prompt": "smuggled prompt on a heartbeat",
+        "heartbeat_seq": 123,
+    }));
+    match sanitize(raw) {
+        SanitizeOutcome::Heartbeat(hb) => assert_eq!(hb.agent_id, "acme/bot"),
+        SanitizeOutcome::Audit(_) => panic!("a heartbeat must not produce an audit row"),
+    }
+}
