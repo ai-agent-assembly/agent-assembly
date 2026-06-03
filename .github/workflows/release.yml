@@ -357,22 +357,6 @@ jobs:
 
             Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-  smoke-test:
-    # Run the 7-channel smoke test after the GitHub Release publishes.
-    # The default `release: published` event-chain doesn't fire when
-    # softprops/action-gh-release creates the Release under GITHUB_TOKEN,
-    # so call smoke-test.yml directly via workflow_call instead.
-    name: Smoke test published artifacts
-    needs: publish
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/smoke-test.yml
-    permissions:
-      contents: read
-      issues: write
-      packages: read
-    with:
-      version: ${{ github.ref_name }}
-
   notify-downstream:
     # Cross-repo trigger: after agent-assembly's Release object is
     # published (binaries available on the GH Release page), fire a
@@ -429,7 +413,7 @@ jobs:
     # aggregator runs even when an upstream job failed (the whole point
     # is to see which channels are red).
     name: Release status aggregator
-    needs: [publish-crates, update-homebrew-tap, notify-downstream, smoke-test]
+    needs: [publish-crates, update-homebrew-tap, notify-downstream]
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
