@@ -25,6 +25,11 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      the workspace version and introduces no version change to aa-runtime or any
      SDK; this comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2374: added the `aa-storage-sqlite-buffer` crate to root Cargo.toml
+     workspace members (local SQLite event-buffer driver). It inherits the
+     workspace version and introduces no version change to aa-runtime or any
+     SDK; this comment satisfies the compatibility-matrix CI gate. -->
+
 
 ---
 
