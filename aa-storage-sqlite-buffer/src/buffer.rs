@@ -95,6 +95,22 @@ impl EventBuffer {
         self.cap
     }
 
+    /// The SQLite `journal_mode` in force on this buffer's connection
+    /// (`"wal"` once opened).
+    pub fn journal_mode(&self) -> Result<String> {
+        let conn = self.conn.lock().expect("event buffer mutex poisoned");
+        conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(backend_err)
+    }
+
+    /// The SQLite `synchronous` level in force on this buffer's connection
+    /// (`1` = `NORMAL`).
+    pub fn synchronous(&self) -> Result<i64> {
+        let conn = self.conn.lock().expect("event buffer mutex poisoned");
+        conn.query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .map_err(backend_err)
+    }
+
     /// Number of events currently buffered.
     pub fn len(&self) -> Result<usize> {
         let conn = self.conn.lock().expect("event buffer mutex poisoned");
