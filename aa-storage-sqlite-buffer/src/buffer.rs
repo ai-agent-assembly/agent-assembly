@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aa_core::storage::{AuditEntry, Result, StorageError};
-use rusqlite::{params, Connection};
+use aa_core::storage::{AuditEntry, AuditSink, Result, StorageError};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Map a `rusqlite` error onto the storage contract's backend variant.
 fn backend_err(err: rusqlite::Error) -> StorageError {
@@ -131,6 +131,47 @@ impl EventBuffer {
         if dropped > 0 {
             metrics::counter!(crate::METRIC_EVENTS_DROPPED).increment(dropped as u64);
         }
+        Ok(())
+    }
+
+    /// Replay buffered events to `sink` in insertion (FIFO) order.
+    ///
+    /// Each event is sent and, only after the sink acknowledges it, deleted from
+    /// the buffer — so a crash mid-flush replays at-least-once rather than
+    /// losing data. Draining stops at the first sink failure (the upstream is
+    /// treated as still-unreachable), leaving the remaining events buffered for
+    /// a later retry. Returns the number of events flushed; each one bumps
+    /// [`METRIC_EVENTS_FLUSHED`](crate::METRIC_EVENTS_FLUSHED).
+    pub async fn drain_and_send(&self, sink: &dyn AuditSink) -> Result<usize> {
+        let mut flushed = 0usize;
+        while let Some((id, payload)) = self.peek_oldest()? {
+            let entry: AuditEntry =
+                serde_json::from_slice(&payload).map_err(|e| StorageError::Serialization(e.to_string()))?;
+            if sink.emit(entry).await.is_err() {
+                break;
+            }
+            self.delete(id)?;
+            flushed += 1;
+            metrics::counter!(crate::METRIC_EVENTS_FLUSHED).increment(1);
+        }
+        Ok(flushed)
+    }
+
+    /// Fetch the oldest buffered event as `(id, payload)`, if any.
+    fn peek_oldest(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        let conn = self.conn.lock().expect("event buffer mutex poisoned");
+        conn.query_row("SELECT id, payload FROM events ORDER BY id ASC LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()
+        .map_err(backend_err)
+    }
+
+    /// Delete the buffered event with the given row id.
+    fn delete(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("event buffer mutex poisoned");
+        conn.execute("DELETE FROM events WHERE id = ?1", params![id])
+            .map_err(backend_err)?;
         Ok(())
     }
 }
