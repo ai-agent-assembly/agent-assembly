@@ -14,5 +14,7 @@
 //! is provided by [`L1Cache::invalidate`].
 
 mod cached_value;
+mod source;
 
 pub use cached_value::CachedValue;
+pub use source::CacheSource;
