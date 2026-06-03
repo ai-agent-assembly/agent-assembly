@@ -29,7 +29,13 @@ test-utils = []
 
 [dev-dependencies]
 criterion  = { version = "0.8", features = ["html_reports"] }
+proptest   = "1"
 serde_json = "1"
+# Self dev-dependency: turns on `serde` + `schemars` for aa-core's own test
+# build so the `types::` property tests and JsonSchema derives compile and run
+# under `cargo nextest run -p aa-core` without making those features default
+# for downstream consumers.
+aa-core    = { path = ".", features = ["serde", "schemars"] }
 
 [[bench]]
 name    = "scanner_bench"
