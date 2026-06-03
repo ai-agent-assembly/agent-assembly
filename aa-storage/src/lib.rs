@@ -12,9 +12,11 @@
 
 #![warn(missing_docs)]
 
+mod audit_sink;
 mod error;
 mod policy_store;
 
+pub use audit_sink::AuditSink;
 pub use error::{Result, StorageError};
 pub use policy_store::PolicyStore;
 
