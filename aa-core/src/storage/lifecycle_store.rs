@@ -1,6 +1,6 @@
 //! [`LifecycleStore`] — agent register / heartbeat / deregister bookkeeping.
 
-use crate::{AgentId, Result};
+use super::{AgentId, Result};
 use async_trait::async_trait;
 
 /// Tracks agent liveness through register, heartbeat, and deregister.
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 /// # Example
 ///
 /// ```
-/// use aa_storage::{AgentId, LifecycleStore, Result};
+/// use aa_core::storage::{AgentId, LifecycleStore, Result};
 /// use async_trait::async_trait;
 ///
 /// /// A store that accepts all lifecycle transitions and persists nothing.
@@ -43,7 +43,7 @@ pub trait LifecycleStore: Send + Sync {
 
     /// Refresh the liveness timestamp for `agent_id`.
     ///
-    /// Returns [`StorageError::NotFound`](crate::StorageError::NotFound) when the
+    /// Returns [`StorageError::NotFound`](super::StorageError::NotFound) when the
     /// agent is not currently registered.
     async fn heartbeat(&self, agent_id: &AgentId) -> Result<()>;
 

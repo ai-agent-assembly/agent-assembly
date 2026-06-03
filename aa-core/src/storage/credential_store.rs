@@ -1,8 +1,7 @@
 //! [`CredentialStore`] — storage for named secret material.
 
-use crate::Result;
+use super::Result;
 use async_trait::async_trait;
-use std::vec::Vec;
 
 /// Stores and retrieves named secret material as opaque bytes.
 ///
@@ -14,7 +13,7 @@ use std::vec::Vec;
 /// # Example
 ///
 /// ```
-/// use aa_storage::{CredentialStore, Result, StorageError};
+/// use aa_core::storage::{CredentialStore, Result, StorageError};
 /// use async_trait::async_trait;
 ///
 /// /// A store that holds no secrets.
@@ -39,7 +38,7 @@ use std::vec::Vec;
 pub trait CredentialStore: Send + Sync {
     /// Return the secret bytes stored under `key`.
     ///
-    /// Returns [`StorageError::NotFound`](crate::StorageError::NotFound) when no
+    /// Returns [`StorageError::NotFound`](super::StorageError::NotFound) when no
     /// secret exists for the key.
     async fn get_secret(&self, key: &str) -> Result<Vec<u8>>;
 

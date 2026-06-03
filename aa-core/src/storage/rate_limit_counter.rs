@@ -1,6 +1,6 @@
 //! [`RateLimitCounter`] — read-modify-write counters for rate limiting.
 
-use crate::Result;
+use super::Result;
 use async_trait::async_trait;
 
 /// Atomic counters keyed by an arbitrary string, used for rate limiting.
@@ -14,7 +14,7 @@ use async_trait::async_trait;
 /// # Example
 ///
 /// ```
-/// use aa_storage::{RateLimitCounter, Result};
+/// use aa_core::storage::{RateLimitCounter, Result};
 /// use async_trait::async_trait;
 ///
 /// /// A counter that always reports a single hit (a stand-in for a real backend).

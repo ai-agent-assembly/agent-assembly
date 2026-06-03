@@ -1,6 +1,6 @@
 //! [`AuditSink`] — append-only emission of audit entries.
 
-use crate::{AuditEntry, Result};
+use super::{AuditEntry, Result};
 use async_trait::async_trait;
 
 /// Append-only sink for governance [`AuditEntry`] records.
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 /// # Example
 ///
 /// ```
-/// use aa_storage::{AuditEntry, AuditSink, Result};
+/// use aa_core::storage::{AuditEntry, AuditSink, Result};
 /// use async_trait::async_trait;
 ///
 /// /// A sink that discards every entry (useful as a test double).
@@ -31,7 +31,7 @@ pub trait AuditSink: Send + Sync {
     /// Persist a single audit entry.
     ///
     /// Takes ownership of `event` because the sink is the entry's final
-    /// destination. Returns [`StorageError::Backend`](crate::StorageError::Backend)
+    /// destination. Returns [`StorageError::Backend`](super::StorageError::Backend)
     /// when the entry could not be durably recorded.
     async fn emit(&self, event: AuditEntry) -> Result<()>;
 }

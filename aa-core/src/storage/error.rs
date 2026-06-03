@@ -1,7 +1,5 @@
 //! Error type shared by every storage trait.
 
-use std::string::String;
-
 /// Failure modes common to all storage backends.
 ///
 /// Backends map their native errors (a `sqlx::Error`, a `redis::RedisError`, a

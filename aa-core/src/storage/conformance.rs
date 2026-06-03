@@ -9,7 +9,7 @@
 //! meant to be called from within a `#[test]` (driven by the caller's own async
 //! runtime).
 
-use crate::{AgentId, PolicyStore, StorageError};
+use super::{AgentId, PolicyStore, StorageError};
 
 /// Assert that a [`PolicyStore`] implementation honors the trait contract.
 ///

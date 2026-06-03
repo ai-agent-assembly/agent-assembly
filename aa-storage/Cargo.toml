@@ -7,11 +7,13 @@ repository.workspace = true
 description = "Storage trait abstraction (pure interface) for the Agent Assembly persistence layer"
 
 [dependencies]
-aa-core      = { path = "../aa-core" }
-async-trait  = "0.1"
-thiserror    = "2"
+# Facade crate: the storage traits live in `aa-core::storage` and are re-exported
+# here. Only `aa-core` is needed at build time; `async-trait` is a dev-dep used by
+# the conformance test's example implementation.
+aa-core = { path = "../aa-core" }
 
 [dev-dependencies]
+async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]

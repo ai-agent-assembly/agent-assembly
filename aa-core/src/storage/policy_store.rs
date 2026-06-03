@@ -1,6 +1,6 @@
 //! [`PolicyStore`] — read-side access to an agent's effective policy.
 
-use crate::{AgentId, PolicyDocument, Result};
+use super::{AgentId, PolicyDocument, Result};
 use async_trait::async_trait;
 
 /// Fetches and invalidates the effective [`PolicyDocument`] for an agent.
@@ -14,7 +14,7 @@ use async_trait::async_trait;
 /// # Example
 ///
 /// ```
-/// use aa_storage::{AgentId, PolicyDocument, PolicyStore, Result, StorageError};
+/// use aa_core::storage::{AgentId, PolicyDocument, PolicyStore, Result, StorageError};
 /// use async_trait::async_trait;
 ///
 /// /// A backend that has no policy for any agent.
@@ -35,7 +35,7 @@ use async_trait::async_trait;
 pub trait PolicyStore: Send + Sync {
     /// Return the effective policy for `agent_id`.
     ///
-    /// Returns [`StorageError::NotFound`](crate::StorageError::NotFound) when the
+    /// Returns [`StorageError::NotFound`](super::StorageError::NotFound) when the
     /// agent has no policy on record.
     async fn get_policy(&self, agent_id: &AgentId) -> Result<PolicyDocument>;
 

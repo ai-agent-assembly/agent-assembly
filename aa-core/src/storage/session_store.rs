@@ -1,6 +1,6 @@
 //! [`SessionStore`] — persistence for per-execution session records.
 
-use crate::{AgentId, Result, SessionId};
+use super::{AgentId, Result, SessionId};
 use async_trait::async_trait;
 
 /// A persisted record of a single agent execution session.
@@ -26,8 +26,7 @@ pub struct SessionRecord {
 /// # Example
 ///
 /// ```
-/// use aa_storage::{Result, SessionRecord, SessionStore, StorageError};
-/// use aa_storage::SessionId;
+/// use aa_core::storage::{Result, SessionId, SessionRecord, SessionStore, StorageError};
 /// use async_trait::async_trait;
 ///
 /// /// A store that holds no sessions.
@@ -55,7 +54,7 @@ pub trait SessionStore: Send + Sync {
 
     /// Load the record for `session_id`.
     ///
-    /// Returns [`StorageError::NotFound`](crate::StorageError::NotFound) when no
+    /// Returns [`StorageError::NotFound`](super::StorageError::NotFound) when no
     /// record exists for the id.
     async fn load(&self, session_id: &SessionId) -> Result<SessionRecord>;
 
