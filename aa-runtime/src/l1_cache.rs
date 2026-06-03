@@ -77,3 +77,53 @@ impl<V: Send + Sync> InvalidationSink for PolicyL1Cache<V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_and_get_roundtrip() {
+        let cache: PolicyL1Cache<bool> = PolicyL1Cache::new();
+        cache.insert("agent-a", true);
+        assert_eq!(cache.get("agent-a"), Some(true));
+        assert!(cache.contains("agent-a"));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn invalidate_drops_only_the_named_entry() {
+        let cache: PolicyL1Cache<u8> = PolicyL1Cache::new();
+        cache.insert("agent-a", 1);
+        cache.insert("agent-b", 2);
+
+        cache.invalidate("agent-a");
+
+        assert!(!cache.contains("agent-a"));
+        assert_eq!(cache.get("agent-b"), Some(2));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn sink_named_agent_invalidates_one() {
+        let cache: PolicyL1Cache<u8> = PolicyL1Cache::new();
+        cache.insert("agent-a", 1);
+        cache.insert("agent-b", 2);
+
+        cache.on_policy_invalidated("agent-a");
+
+        assert!(!cache.contains("agent-a"));
+        assert!(cache.contains("agent-b"));
+    }
+
+    #[test]
+    fn sink_empty_agent_invalidates_all() {
+        let cache: PolicyL1Cache<u8> = PolicyL1Cache::new();
+        cache.insert("agent-a", 1);
+        cache.insert("agent-b", 2);
+
+        cache.on_policy_invalidated("");
+
+        assert!(cache.is_empty());
+    }
+}
