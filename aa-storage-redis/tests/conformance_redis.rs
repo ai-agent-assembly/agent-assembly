@@ -1,0 +1,51 @@
+//! Trait-conformance suite for `aa-storage-redis`.
+//!
+//! Each test provisions a throwaway Redis with `testcontainers-modules`, so a
+//! running Docker daemon is required (the same expectation as the Postgres
+//! conformance tests elsewhere in the workspace).
+
+use aa_storage::{AgentId, SessionId, SessionRecord, SessionStore, StorageError};
+use aa_storage_redis::{RedisBackend, RedisStorageConfig};
+use testcontainers_modules::redis::Redis;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::ContainerAsync;
+
+/// Start a Redis container and connect a backend to it. The returned container
+/// guard must be kept alive for the duration of the test — dropping it stops
+/// the container.
+async fn start_redis() -> (ContainerAsync<Redis>, RedisBackend) {
+    let container = Redis::default().start().await.expect("start redis container");
+    let host = container.get_host().await.expect("redis host");
+    let port = container.get_host_port_ipv4(6379).await.expect("redis mapped port");
+    let config = RedisStorageConfig {
+        url: format!("redis://{host}:{port}"),
+        pool_size: 8,
+        tls: false,
+    };
+    let backend = RedisBackend::connect(&config).expect("connect redis backend");
+    (container, backend)
+}
+
+#[tokio::test]
+async fn redis_session_store_roundtrip() {
+    let (_container, backend) = start_redis().await;
+    let store = backend.sessions();
+
+    let session_id = SessionId::from_bytes([7; 16]);
+    let record = SessionRecord {
+        session_id,
+        agent_id: AgentId::from_bytes([3; 16]),
+        started_at_ns: 1_700_000_000_000_000_000,
+    };
+
+    store.save(record.clone()).await.unwrap();
+    assert_eq!(store.load(&session_id).await.unwrap(), record);
+
+    store.delete(&session_id).await.unwrap();
+    match store.load(&session_id).await {
+        Err(StorageError::NotFound(_)) => {}
+        other => panic!("expected NotFound after delete, got {other:?}"),
+    }
+    // Deleting an absent session is idempotent.
+    store.delete(&session_id).await.unwrap();
+}
