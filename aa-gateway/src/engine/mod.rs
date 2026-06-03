@@ -2175,6 +2175,40 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn apply_yaml_broadcasts_invalidation_within_100ms() {
+        use crate::invalidation::InvalidationHub;
+        use crate::policy::history::{FsHistoryStore, HistoryConfig};
+        use aa_proto::assembly::gateway::v1::invalidation_event::Payload;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        // A subscriber connected before the mutation should be notified.
+        let hub = InvalidationHub::new();
+        let mut handle = hub.subscribe("asm-itest", 0);
+        let engine = make_engine(empty_doc()).with_invalidation_hub(Arc::clone(&hub));
+
+        let start = std::time::Instant::now();
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("tester"), &store)
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), handle.receiver.recv())
+            .await
+            .expect("invalidation delivered within 100 ms")
+            .expect("channel open");
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        match event.payload.expect("payload set") {
+            Payload::PolicyInvalidated(p) => assert_eq!(p.policy_version, 1),
+            Payload::ApprovalResolved(_) => panic!("expected PolicyInvalidated"),
+        }
+    }
+
     // ── Budget alert integration ────────────────────────────────────────
 
     fn make_engine_with_alert_sender(
