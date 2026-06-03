@@ -12,6 +12,7 @@ async-trait  = { version = "0.1", optional = true }
 cfg-if       = "1"
 chrono       = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 dirs         = { version = "6", optional = true }
+schemars     = { version = "1", optional = true }
 serde        = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 serde_json   = { version = "1", optional = true }
 serde_yaml   = { version = "0.9", optional = true }
@@ -23,6 +24,7 @@ default    = ["std"]
 std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
 alloc      = ["dep:sha2"]
 serde      = ["dep:serde"]
+schemars   = ["dep:schemars"]
 test-utils = []
 
 [dev-dependencies]
