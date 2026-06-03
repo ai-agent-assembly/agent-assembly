@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+mod backend;
 mod config;
 mod error;
 mod policy;
@@ -14,6 +15,7 @@ mod rate_limit;
 mod session;
 mod util;
 
+pub use backend::RedisBackend;
 pub use config::RedisStorageConfig;
 pub use policy::{RedisPolicyStore, DEFAULT_POLICY_CACHE_TTL_SECS};
 pub use pool::build_pool;
