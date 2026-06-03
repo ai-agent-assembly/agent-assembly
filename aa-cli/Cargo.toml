@@ -11,7 +11,7 @@ name = "aasm"
 path = "src/main.rs"
 
 [dependencies]
-aa-core              = { path = "../aa-core", version = "0.0.1-alpha.4" }
+aa-core              = { path = "../aa-core", version = "0.0.1-alpha.5" }
 # strip-for-publish:begin devtool
 # AAASM-2340: these three deps wire `aasm run` + `aasm tools` to the
 # `aa-devtool*` adapter crates. The dev-tool subsystem isn't ready to
@@ -19,13 +19,13 @@ aa-core              = { path = "../aa-core", version = "0.0.1-alpha.4" }
 # (and the source files that consume it) before `cargo workspaces publish`
 # runs. Source builds keep the full surface — no edits required to
 # develop on `aasm run` / `aasm tools` locally.
-aa-devtool           = { path = "../aa-devtool", version = "0.0.1-alpha.4" }
-aa-devtool-codex     = { path = "../aa-devtool-codex", version = "0.0.1-alpha.4" }
-aa-devtool-windsurf  = { path = "../aa-devtool-windsurf", version = "0.0.1-alpha.4" }
+aa-devtool           = { path = "../aa-devtool", version = "0.0.1-alpha.5" }
+aa-devtool-codex     = { path = "../aa-devtool-codex", version = "0.0.1-alpha.5" }
+aa-devtool-windsurf  = { path = "../aa-devtool-windsurf", version = "0.0.1-alpha.5" }
 # strip-for-publish:end devtool
-aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.4" }
-aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.4" }
-aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.4" }
+aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.5" }
+aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.5" }
+aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.5" }
 anyhow         = "1"
 async-trait    = "0.1"
 axum           = "0.8"

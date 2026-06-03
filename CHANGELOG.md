@@ -5,6 +5,97 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.5] — 2026-06-03 (pre-release)
+
+> **Not for production use.** Fifth pre-release in the v0.0.1 dry-run
+> series. Validates the entire release pipeline end-to-end with all the
+> alpha-4 recovery fixes baked into master.
+
+### Why a fresh bump rather than recovering alpha-4
+
+alpha-4 published successfully to 5 of 6 channels (GH Release,
+Homebrew, npm, PyPI, ghcr.io). Only crates.io is partially-published:
+`aa-core` landed at `0.0.1-alpha.4`, the other 8 crates never
+published because `cargo workspaces publish` tripped on dirty-tree
+before AAASM-2346's `--allow-dirty` fix.
+
+`gh run rerun --failed` uses the workflow definition at the time of
+the original tag push (pre-2346 fix), so re-running cannot pick up
+the post-merged improvements. Bumping to alpha-5 with a fresh tag
+validates the entire release flow end-to-end with all fixes applied.
+
+### Recovery fixes verified by this tag
+
+* **AAASM-2346 (PR #846)** — `cargo workspaces publish` invocation in
+  `release.yml` now passes `--allow-dirty` so the topological publish
+  step does not fail on the transient working-tree dirtiness caused by
+  the `.ci/strip-for-publish.sh` step that runs right before it.
+* **AAASM-2455 (PR #848)** — `smoke-curl-installer` channel `pip`
+  invocation pinned to avoid the newest pip surfacing a transient
+  dependency-resolver bug on the smoke job. (Superseded by AAASM-2457
+  which restructured the smoke matrix.)
+* **AAASM-2456 (PR #849)** — New `docs/release/RUNBOOK.md` operator
+  playbook plus `scripts/release-readiness.sh` (10-check pre-tag gate)
+  and `release-status-aggregator` workflow job that posts a single
+  per-channel verdict comment on each GH Release.
+* **AAASM-2457 (PR #867)** — Smoke matrix restructured: SDK smoke jobs
+  dropped from `release.yml` (each SDK repo owns its own publish-time
+  smoke) and a new `cargo install aasm --version <tag>` smoke channel
+  added. Net 6 → 6 smoke channels with sharper accountability.
+* **AAASM-2459 (python-sdk PR #75)** — `release-python.yml` now syncs
+  `pyproject.toml` `version` AND `agent_assembly/__init__.py`
+  `__version__` to the dispatched tag via a shared composite action
+  (`.github/actions/sync-version/`); previously only `pyproject.toml`
+  was bumped, leaving `__version__` stuck on the previous alpha.
+* **AAASM-2460 (python-sdk PR #76)** — Deleted broken upstream
+  Chisanan232 personal bumper workflows that were duplicating
+  release-time version sync and racing the new composite action.
+
+### Companion fixes in SDK repos
+
+* **node-sdk PR #67 (AAASM-2344)** — `package.json` `repository.url`
+  lowercased to satisfy npm registry strict-mode validation that
+  alpha-4's mixed-case URL had tripped.
+* **python-sdk PR #74 (AAASM-2345)** — Multiple `release-python.yml`
+  Stage-step bugs fixed (artifact name collision, missing env var
+  hoist, wheel-build job ordering).
+
+### Install
+
+```bash
+# Native binaries (Homebrew + GH Release tarballs)
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+curl -L https://github.com/ai-agent-assembly/agent-assembly/releases/download/v0.0.1-alpha.5/aasm-aarch64-apple-darwin.tar.gz | tar xz
+
+# crates.io — first end-to-end validated publish of all 9 crates
+cargo install aasm --version 0.0.1-alpha.5
+
+# Container images
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.5
+docker pull ghcr.io/ai-agent-assembly/python:3.14-slim
+
+# Language SDKs
+pip install --pre agent-assembly==0.0.1a5
+npm install @agent-assembly/sdk@0.0.1-alpha.5
+go get github.com/AI-agent-assembly/go-sdk@v0.0.1-alpha.5
+```
+
+### Behaviour delta on the crates.io `aasm` binary
+
+Unchanged from alpha-4. The published `aasm` binary omits the
+`aasm run <tool>` and `aasm tools` subcommands while the dev-tool
+subsystem is being finished. Local source builds
+(`cargo build -p aa-cli`) expose the full surface unchanged. See
+`docs/src/compatibility.md` for the restoration recipe.
+
+### Refs
+
+* This tag's prep: `AAASM-2461`
+* Predecessor: `AAASM-2343` (alpha-4)
+* Parent Story: `AAASM-1234` (F118 release-notes authoring)
+
+---
+
 ## [0.0.1-alpha.4] — 2026-06-02 (pre-release)
 
 > **Not for production use.** Fourth pre-release in the v0.0.1 dry-run
