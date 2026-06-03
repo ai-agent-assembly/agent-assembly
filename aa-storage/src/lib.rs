@@ -28,3 +28,16 @@
 #![warn(missing_docs)]
 
 pub use aa_core::storage::*;
+
+pub mod builtin;
+pub mod factory;
+
+mod config;
+mod driver_name;
+mod error;
+mod registry;
+
+pub use config::StorageConfig;
+pub use driver_name::DriverName;
+pub use error::ConfigError;
+pub use registry::Registry;
