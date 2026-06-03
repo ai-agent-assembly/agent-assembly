@@ -200,4 +200,29 @@ mod tests {
         cache.get(id).await.expect("policy present");
         assert_eq!(cache.inner().call_count(), 2);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_misses_collapse_to_one_load() {
+        use std::sync::Arc;
+
+        let id = agent(4);
+        // A 50ms inner delay holds the leader long enough for all followers to
+        // pile up behind it before it finishes loading.
+        let store = MemoryPolicyStore::with_policy(id, sample_policy(7)).with_delay(Duration::from_millis(50));
+        let cache = Arc::new(L1Cache::new(store, Duration::from_secs(60)));
+
+        // Fire 100 concurrent gets for the same cold key.
+        let mut handles = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let cache = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move { cache.get(id).await }));
+        }
+        for handle in handles {
+            let policy = handle.await.expect("task joined").expect("policy present");
+            assert_eq!(policy.version, 7);
+        }
+
+        // Every miss collapsed onto a single inner load.
+        assert_eq!(cache.inner().call_count(), 1);
+    }
 }
