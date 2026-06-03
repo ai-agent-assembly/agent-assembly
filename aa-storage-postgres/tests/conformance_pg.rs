@@ -4,8 +4,8 @@
 
 use aa_core::EnforcementMode;
 use aa_storage::conformance::assert_policy_store_conformance;
-use aa_storage::{AgentId, LifecycleStore, PolicyDocument, StorageError};
-use aa_storage_postgres::{PgLifecycleStore, PgPolicyStore, PostgresPool, PostgresPoolConfig};
+use aa_storage::{AgentId, CredentialStore, LifecycleStore, PolicyDocument, StorageError};
+use aa_storage_postgres::{PgCredentialStore, PgLifecycleStore, PgPolicyStore, PostgresPool, PostgresPoolConfig};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -127,4 +127,30 @@ async fn policy_store_satisfies_conformance() {
     let store = PgPolicyStore::new(pool.clone());
     // Coerces to `&dyn PolicyStore`, exercising object-safety too.
     assert_policy_store_conformance(&store, &present, &absent).await;
+}
+
+#[tokio::test]
+async fn credential_store_secret_roundtrip() {
+    let (_pg, pool) = setup_pg().await;
+    let store = PgCredentialStore::new(pool.clone());
+
+    let key = "openai/api_key";
+    match store.get_secret(key).await {
+        Err(StorageError::NotFound(_)) => {}
+        other => panic!("get_secret(absent) should be NotFound, got {other:?}"),
+    }
+
+    store.put_secret(key, b"ciphertext-bytes".to_vec()).await.expect("put");
+    assert_eq!(store.get_secret(key).await.expect("get"), b"ciphertext-bytes");
+
+    // put overwrites.
+    store.put_secret(key, b"rotated".to_vec()).await.expect("overwrite");
+    assert_eq!(store.get_secret(key).await.expect("get rotated"), b"rotated");
+
+    store.delete_secret(key).await.expect("delete");
+    store.delete_secret(key).await.expect("delete(absent) is idempotent");
+    match store.get_secret(key).await {
+        Err(StorageError::NotFound(_)) => {}
+        other => panic!("get_secret after delete should be NotFound, got {other:?}"),
+    }
 }
