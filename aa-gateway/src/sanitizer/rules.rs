@@ -26,7 +26,40 @@ pub(crate) const BANNED_KEYS: &[&str] = &[
     "heartbeat_seq",
 ];
 
+/// Top-level metadata keys the sanitizer keeps. Mirrors the `audit_events`
+/// columns plus the event-routing fields a sender may set (`kind`,
+/// `event_type`, `session_id`, `org_id`, `timestamp`, `policy_version`). The
+/// `payload` container is kept — its dangerous contents are removed by the
+/// recursive [`BANNED_KEYS`] pass, not by dropping the whole object.
+///
+/// Anything else at the top level is dropped and counted via
+/// `aa_audit_dropped_unknown_field_total`, so we notice when a sender starts
+/// emitting a field we have not vetted.
+pub(crate) const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
+    "event_id",
+    "ts",
+    "timestamp",
+    "agent_id",
+    "team_id",
+    "org_id",
+    "session_id",
+    "kind",
+    "event_type",
+    "action",
+    "decision",
+    "dry_run",
+    "shadow_decision",
+    "matched_rule_id",
+    "policy_version",
+    "payload",
+];
+
 /// Returns `true` if `key` is on the recursive banned list.
 pub(crate) fn is_banned(key: &str) -> bool {
     BANNED_KEYS.contains(&key)
+}
+
+/// Returns `true` if `key` is an allowed top-level metadata key.
+pub(crate) fn is_allowed_top_level(key: &str) -> bool {
+    ALLOWED_TOP_LEVEL_KEYS.contains(&key)
 }
