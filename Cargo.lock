@@ -449,6 +449,7 @@ dependencies = [
  "aa-core",
  "async-trait",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
