@@ -4,7 +4,7 @@
 //! running Docker daemon is required (the same expectation as the Postgres
 //! conformance tests elsewhere in the workspace).
 
-use aa_storage::{AgentId, SessionId, SessionRecord, SessionStore, StorageError};
+use aa_storage::{AgentId, RateLimitCounter, SessionId, SessionRecord, SessionStore, StorageError};
 use aa_storage_redis::{RedisBackend, RedisStorageConfig};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -48,4 +48,20 @@ async fn redis_session_store_roundtrip() {
     }
     // Deleting an absent session is idempotent.
     store.delete(&session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn redis_rate_limit_counter_increments_and_resets() {
+    let (_container, backend) = start_redis().await;
+    let counter = backend.rate_limiter();
+
+    assert_eq!(counter.current("alpha").await.unwrap(), 0);
+    assert_eq!(counter.increment("alpha", 1, 60).await.unwrap(), 1);
+    assert_eq!(counter.increment("alpha", 2, 60).await.unwrap(), 3);
+    assert_eq!(counter.current("alpha").await.unwrap(), 3);
+
+    counter.reset("alpha").await.unwrap();
+    assert_eq!(counter.current("alpha").await.unwrap(), 0);
+    // Resetting an absent key is idempotent.
+    counter.reset("alpha").await.unwrap();
 }
