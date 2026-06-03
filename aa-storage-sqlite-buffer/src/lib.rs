@@ -23,9 +23,15 @@
 
 #![warn(missing_docs)]
 
+mod buffer;
 mod config;
 
+pub use buffer::EventBuffer;
 pub use config::{default_path, SqliteBufferConfig, DEFAULT_CAP};
+
+// Re-export the storage-contract types that appear in this crate's public API
+// so callers reach the buffer and its event/sink types from a single path.
+pub use aa_core::storage::{AuditEntry, AuditSink, Result, StorageError};
 
 /// Counter incremented once per event accepted into the buffer.
 pub const METRIC_EVENTS_BUFFERED: &str = "aa_events_buffered";
