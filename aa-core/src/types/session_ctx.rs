@@ -33,3 +33,30 @@ pub struct SessionCtx {
     /// invalid once the wall clock passes this instant.
     pub expires_at: Timestamp,
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_round_trip {
+    use super::SessionCtx;
+    use crate::time::Timestamp;
+    use crate::types::AgentId;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn session_ctx_round_trips(
+            tenant in "[a-z][a-z0-9-]{0,7}",
+            agent in "[a-z][a-z0-9-]{0,7}",
+            session_id in "[A-Z0-9]{1,26}",
+            expires_at in any::<u64>(),
+        ) {
+            let original = SessionCtx {
+                agent_id: AgentId::parse(format!("{tenant}/{agent}")).unwrap(),
+                session_id,
+                expires_at: Timestamp::from_nanos(expires_at),
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: SessionCtx = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(original, restored);
+        }
+    }
+}
