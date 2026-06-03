@@ -20,7 +20,7 @@ mod session_store;
 pub use audit_sink::AuditSink;
 pub use error::{Result, StorageError};
 pub use policy_store::PolicyStore;
-pub use session_store::SessionRecord;
+pub use session_store::{SessionRecord, SessionStore};
 
 // Re-export the shared `aa-core` domain types the traits reference so call sites
 // import the storage contract and its types from a single path (`aa_storage::*`).
