@@ -2,9 +2,11 @@
 //! memory backend through a `&dyn` reference, exercising object-safety too.
 
 use aa_core::{AuditEventType, EnforcementMode};
-use aa_storage::conformance::{assert_audit_sink_conformance, assert_policy_store_conformance};
-use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId};
-use aa_storage_memory::{MemoryAuditSink, MemoryPolicyStore};
+use aa_storage::conformance::{
+    assert_audit_sink_conformance, assert_policy_store_conformance, assert_session_store_conformance,
+};
+use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId, SessionRecord};
+use aa_storage_memory::{MemoryAuditSink, MemoryPolicyStore, MemorySessionStore};
 
 fn sample_policy() -> PolicyDocument {
     PolicyDocument {
@@ -41,4 +43,15 @@ async fn audit_sink_conformance() {
     let sink = MemoryAuditSink::new();
     assert_audit_sink_conformance(&sink, sample_audit_entry()).await;
     assert_eq!(sink.len(), 1, "emitted entry should be buffered");
+}
+
+#[tokio::test]
+async fn session_store_conformance() {
+    let store = MemorySessionStore::new();
+    let record = SessionRecord {
+        session_id: SessionId::from_bytes([3; 16]),
+        agent_id: AgentId::from_bytes([1; 16]),
+        started_at_ns: 42,
+    };
+    assert_session_store_conformance(&store, record).await;
 }
