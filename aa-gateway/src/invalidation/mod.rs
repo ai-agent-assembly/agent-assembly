@@ -6,5 +6,7 @@
 //! ~100 ms of a policy mutation instead of waiting for TTL expiry.
 
 mod hub;
+mod service;
 
 pub use hub::{AssemblyId, InvalidationHub, SubscriptionHandle};
+pub use service::InvalidationServiceImpl;
