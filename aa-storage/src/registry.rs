@@ -236,3 +236,172 @@ impl Registry {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::factory::{
+        AuditSinkFactory, CredentialStoreFactory, LifecycleStoreFactory, RateLimitCounterFactory, SessionStoreFactory,
+    };
+    use crate::{AgentId, PolicyDocument, StorageError};
+
+    /// A policy store that exists only so a factory has something to return.
+    struct FakePolicyStore;
+
+    #[async_trait::async_trait]
+    impl PolicyStore for FakePolicyStore {
+        async fn get_policy(&self, _agent_id: &AgentId) -> crate::Result<PolicyDocument> {
+            Err(StorageError::NotFound("fake".into()))
+        }
+        async fn invalidate(&self, _agent_id: &AgentId) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// One factory registerable for every kind. Only the policy-store build is
+    /// exercised; the other kinds only need to be *present* for `validate`.
+    struct FakeFactory;
+
+    impl PolicyStoreFactory for FakeFactory {
+        fn build(&self, _config: &toml::Value) -> crate::Result<Arc<dyn PolicyStore>> {
+            Ok(Arc::new(FakePolicyStore))
+        }
+    }
+    macro_rules! unused_factory {
+        ($trait:ident, $store:ident) => {
+            impl $trait for FakeFactory {
+                fn build(&self, _config: &toml::Value) -> crate::Result<Arc<dyn crate::$store>> {
+                    Err(StorageError::Backend("unused in tests".into()))
+                }
+            }
+        };
+    }
+    unused_factory!(AuditSinkFactory, AuditSink);
+    unused_factory!(SessionStoreFactory, SessionStore);
+    unused_factory!(CredentialStoreFactory, CredentialStore);
+    unused_factory!(RateLimitCounterFactory, RateLimitCounter);
+    unused_factory!(LifecycleStoreFactory, LifecycleStore);
+
+    /// Registry with the `"memory"` driver registered for every kind.
+    fn registry_with_memory() -> Registry {
+        let mut r = Registry::new();
+        r.register_policy_store("memory", Box::new(FakeFactory));
+        r.register_audit_sink("memory", Box::new(FakeFactory));
+        r.register_session_store("memory", Box::new(FakeFactory));
+        r.register_credential_store("memory", Box::new(FakeFactory));
+        r.register_rate_limit_counter("memory", Box::new(FakeFactory));
+        r.register_lifecycle_store("memory", Box::new(FakeFactory));
+        r
+    }
+
+    fn parse(toml_str: &str) -> StorageConfig {
+        toml::from_str(toml_str).expect("fixture parses")
+    }
+
+    const VALID: &str = r#"
+policy_store       = "memory"
+audit_sink         = "memory"
+session_store      = "memory"
+credential_store   = "memory"
+rate_limit_counter = "memory"
+lifecycle_store    = "memory"
+
+[memory]
+flush_every = 100
+"#;
+
+    const UNKNOWN_DRIVER: &str = r#"
+policy_store       = "mongodb"
+audit_sink         = "memory"
+session_store      = "memory"
+credential_store   = "memory"
+rate_limit_counter = "memory"
+lifecycle_store    = "memory"
+
+[memory]
+flush_every = 100
+
+[mongodb]
+url = "mongodb://localhost"
+"#;
+
+    const MISSING_SUBSECTION: &str = r#"
+policy_store       = "memory"
+audit_sink         = "memory"
+session_store      = "memory"
+credential_store   = "memory"
+rate_limit_counter = "memory"
+lifecycle_store    = "memory"
+"#;
+
+    #[test]
+    fn storage_section_flattens_known_keys_and_subsections() {
+        let config = parse(VALID);
+        assert_eq!(config.policy_store.as_str(), "memory");
+        assert_eq!(config.lifecycle_store.as_str(), "memory");
+        // The `[memory]` table is captured as a per-driver subsection.
+        assert!(config.driver_section(&DriverName::new("memory")).is_some());
+    }
+
+    #[test]
+    fn valid_combination_passes_validate_and_builds() {
+        let registry = registry_with_memory();
+        let config = parse(VALID);
+        assert!(registry.validate(&config).is_ok());
+        assert!(registry.build_policy_store(&config).is_ok());
+    }
+
+    #[test]
+    fn unknown_driver_reports_kind_name_and_available() {
+        let registry = registry_with_memory();
+        let config = parse(UNKNOWN_DRIVER);
+        let err = registry.validate(&config).unwrap_err();
+        match err {
+            ConfigError::UnknownDriver { kind, name, available } => {
+                assert_eq!(kind, "policy_store");
+                assert_eq!(name, "mongodb");
+                assert_eq!(available, vec!["memory".to_string()]);
+            }
+            other => panic!("expected UnknownDriver, got {other:?}"),
+        }
+        // The valid names appear in the rendered error message.
+        let rendered = registry.validate(&config).unwrap_err().to_string();
+        assert!(rendered.contains("memory"), "error lists valid names: {rendered}");
+    }
+
+    #[test]
+    fn missing_per_driver_subsection_is_rejected() {
+        let registry = registry_with_memory();
+        let config = parse(MISSING_SUBSECTION);
+        let err = registry.validate(&config).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::MissingDriverSection { ref name, .. } if name == "memory"),
+            "expected MissingDriverSection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_registry_accepts_known_oss_driver_names() {
+        let mut registry = Registry::new();
+        crate::builtin::register_builtin_drivers(&mut registry);
+        let config = parse(
+            r#"
+policy_store       = "redis"
+audit_sink         = "postgres"
+session_store      = "redis"
+credential_store   = "postgres"
+rate_limit_counter = "redis"
+lifecycle_store    = "postgres"
+
+[redis]
+url = "redis://localhost:6379"
+
+[postgres]
+url = "postgresql://localhost:5432/assembly"
+"#,
+        );
+        assert!(registry.validate(&config).is_ok());
+        // But building a not-yet-implemented backend surfaces a clear error.
+        assert!(registry.build_policy_store(&config).is_err());
+    }
+}
