@@ -273,6 +273,7 @@ jobs:
             --no-git-push \
             --yes \
             --allow-dirty \
+            --no-verify \
             --token "$CARGO_REGISTRY_TOKEN"
 
   update-homebrew-tap:
