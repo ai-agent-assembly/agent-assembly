@@ -219,4 +219,14 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "packet_payload"));
     }
+
+    #[test]
+    fn drops_heartbeat_seq_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "heartbeat_seq": 42,
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "heartbeat_seq"));
+    }
 }
