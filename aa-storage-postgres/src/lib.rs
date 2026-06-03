@@ -9,3 +9,7 @@
 //! The trait implementations (`PgPolicyStore`, `PgAuditSink`, `PgCredentialStore`,
 //! `PgLifecycleStore`) land alongside the connection-pool wrapper; this module
 //! re-exports the public surface a caller needs to wire the driver up.
+
+pub mod config;
+
+pub use config::PostgresPoolConfig;

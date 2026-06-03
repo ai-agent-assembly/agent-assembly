@@ -1,0 +1,90 @@
+//! Connection-pool configuration for the Postgres driver.
+//!
+//! Parsed from the `[storage.postgres]` subsection of the Agent Assembly config
+//! file. Only the knobs an OSS operator needs to point the driver at their own
+//! Postgres are exposed here; TimescaleDB and retention tuning live elsewhere.
+
+use serde::Deserialize;
+
+/// Default maximum pooled-connection count when unspecified.
+const DEFAULT_MAX_CONNECTIONS: u32 = 10;
+
+/// Default per-statement timeout in milliseconds. `0` disables the cap.
+const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 0;
+
+/// Connection-pool settings for [`PostgresPool`](crate::PostgresPool).
+///
+/// Deserialized from `[storage.postgres]`:
+///
+/// ```toml
+/// [storage.postgres]
+/// url = "postgres://aasm:secret@localhost:5432/aasm"
+/// max_connections = 20
+/// statement_timeout_ms = 5000
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PostgresPoolConfig {
+    /// PostgreSQL connection URL (`postgres://user:pass@host:port/db`).
+    pub url: String,
+    /// Maximum number of pooled connections.
+    pub max_connections: u32,
+    /// Per-statement timeout in milliseconds, applied via `SET statement_timeout`
+    /// on each connection. `0` leaves the server default in place.
+    pub statement_timeout_ms: u64,
+}
+
+impl Default for PostgresPoolConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            statement_timeout_ms: DEFAULT_STATEMENT_TIMEOUT_MS,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `[storage.postgres]` subsection deserializes all three knobs.
+    #[derive(Debug, Deserialize)]
+    struct Storage {
+        postgres: PostgresPoolConfig,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Root {
+        storage: Storage,
+    }
+
+    #[test]
+    fn parses_storage_postgres_subsection() {
+        let doc = r#"
+            [storage.postgres]
+            url = "postgres://aasm:secret@localhost:5432/aasm"
+            max_connections = 25
+            statement_timeout_ms = 5000
+        "#;
+
+        let root: Root = toml::from_str(doc).expect("config should parse");
+
+        assert_eq!(root.storage.postgres.url, "postgres://aasm:secret@localhost:5432/aasm");
+        assert_eq!(root.storage.postgres.max_connections, 25);
+        assert_eq!(root.storage.postgres.statement_timeout_ms, 5000);
+    }
+
+    #[test]
+    fn applies_defaults_for_omitted_knobs() {
+        let doc = r#"
+            [storage.postgres]
+            url = "postgres://localhost/aasm"
+        "#;
+
+        let root: Root = toml::from_str(doc).expect("config should parse");
+
+        assert_eq!(root.storage.postgres.max_connections, DEFAULT_MAX_CONNECTIONS);
+        assert_eq!(root.storage.postgres.statement_timeout_ms, DEFAULT_STATEMENT_TIMEOUT_MS);
+    }
+}
