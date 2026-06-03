@@ -9,6 +9,28 @@
 //! The OSS Postgres/Redis/memory drivers and the Enterprise gateway driver all
 //! implement the same contract, so swapping the persistence backend never
 //! changes any caller code.
+//!
+//! # Traits
+//!
+//! - [`PolicyStore`] — fetch and invalidate an agent's effective policy
+//! - [`AuditSink`] — append-only emission of audit entries
+//! - [`SessionStore`] — persist, load, and delete per-execution session records
+//! - [`CredentialStore`] — store and retrieve named secret material
+//! - [`RateLimitCounter`] — read-modify-write counters for rate limiting
+//! - [`LifecycleStore`] — agent register / heartbeat / deregister bookkeeping
+//!
+//! Every method returns [`Result`], whose error is the backend-agnostic
+//! [`StorageError`].
+//!
+//! # Single import path
+//!
+//! Callers import the traits and the shared domain types they reference from one
+//! place — this crate re-exports [`AgentId`], [`SessionId`], [`PolicyDocument`],
+//! and [`AuditEntry`] from `aa-core`:
+//!
+//! ```
+//! use aa_storage::{AgentId, AuditSink, PolicyDocument, PolicyStore};
+//! ```
 
 #![warn(missing_docs)]
 
