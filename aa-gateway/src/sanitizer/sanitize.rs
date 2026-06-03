@@ -149,4 +149,14 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "llm_input"));
     }
+
+    #[test]
+    fn drops_llm_output_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "llm_output": "raw llm output text",
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "llm_output"));
+    }
 }
