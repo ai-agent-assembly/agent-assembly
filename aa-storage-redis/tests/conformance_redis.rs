@@ -88,3 +88,26 @@ async fn redis_policy_store_satisfies_conformance() {
     // Coerces to `&dyn PolicyStore`, exercising object-safety.
     assert_policy_store_conformance(&store, &present, &absent).await;
 }
+
+/// Fire 100 concurrent `increment`s of 1 across a multi-threaded runtime and
+/// assert the final total is exactly 100. A non-atomic read-modify-write would
+/// lose updates and land below 100; the Lua `INCRBY` + `EXPIRE` script keeps
+/// every increment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redis_rate_limit_counter_is_atomic_under_concurrency() {
+    let (_container, backend) = start_redis().await;
+    let counter = backend.rate_limiter();
+
+    let mut handles = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let counter = counter.clone();
+        handles.push(tokio::spawn(async move {
+            counter.increment("concurrent", 1, 60).await.unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    assert_eq!(counter.current("concurrent").await.unwrap(), 100);
+}
