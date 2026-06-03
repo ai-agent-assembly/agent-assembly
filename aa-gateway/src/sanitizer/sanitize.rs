@@ -159,4 +159,14 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "llm_output"));
     }
+
+    #[test]
+    fn drops_tool_payload_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "tool_payload": { "args": { "path": "/etc/passwd" } },
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "tool_payload"));
+    }
 }
