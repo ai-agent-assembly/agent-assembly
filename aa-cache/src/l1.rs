@@ -164,4 +164,19 @@ mod tests {
         assert_eq!(second.version, 1);
         assert_eq!(cache.inner().call_count(), 1);
     }
+
+    #[tokio::test]
+    async fn expired_entry_is_treated_as_a_miss() {
+        let id = agent(2);
+        let store = MemoryPolicyStore::with_policy(id, sample_policy(1));
+        let cache = L1Cache::new(store, Duration::from_millis(20));
+
+        cache.get(id).await.expect("policy present");
+        assert_eq!(cache.inner().call_count(), 1);
+
+        // Let the entry age past its TTL; the next get must reload from the store.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        cache.get(id).await.expect("policy present");
+        assert_eq!(cache.inner().call_count(), 2);
+    }
 }
