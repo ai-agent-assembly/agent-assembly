@@ -42,3 +42,45 @@ pub struct AuditEvent {
     /// Policy version in force when the event was recorded, if any.
     pub policy_version: Option<u64>,
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_round_trip {
+    use super::AuditEvent;
+    use crate::audit::AuditEventType;
+    use crate::time::Timestamp;
+    use crate::types::AgentId;
+    use proptest::prelude::*;
+
+    fn event_type_strategy() -> impl Strategy<Value = AuditEventType> {
+        prop_oneof![
+            Just(AuditEventType::ToolCallIntercepted),
+            Just(AuditEventType::PolicyViolation),
+            Just(AuditEventType::CredentialLeakBlocked),
+            Just(AuditEventType::ApprovalGranted),
+            Just(AuditEventType::BudgetLimitExceeded),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn audit_event_round_trips(
+            tenant in "[a-z][a-z0-9-]{0,7}",
+            agent in "[a-z][a-z0-9-]{0,7}",
+            session_id in "[A-Z0-9]{1,26}",
+            event_type in event_type_strategy(),
+            ts in any::<u64>(),
+            policy_version in proptest::option::of(any::<u64>()),
+        ) {
+            let original = AuditEvent {
+                agent_id: AgentId::parse(format!("{tenant}/{agent}")).unwrap(),
+                session_id,
+                event_type,
+                timestamp: Timestamp::from_nanos(ts),
+                policy_version,
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: AuditEvent = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(original, restored);
+        }
+    }
+}
