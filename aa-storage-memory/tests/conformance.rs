@@ -1,10 +1,10 @@
 //! Trait-conformance suite: the shared `aa-storage` harnesses run against every
 //! memory backend through a `&dyn` reference, exercising object-safety too.
 
-use aa_core::EnforcementMode;
-use aa_storage::conformance::assert_policy_store_conformance;
-use aa_storage::{AgentId, PolicyDocument};
-use aa_storage_memory::MemoryPolicyStore;
+use aa_core::{AuditEventType, EnforcementMode};
+use aa_storage::conformance::{assert_audit_sink_conformance, assert_policy_store_conformance};
+use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId};
+use aa_storage_memory::{MemoryAuditSink, MemoryPolicyStore};
 
 fn sample_policy() -> PolicyDocument {
     PolicyDocument {
@@ -15,6 +15,18 @@ fn sample_policy() -> PolicyDocument {
     }
 }
 
+fn sample_audit_entry() -> AuditEntry {
+    AuditEntry::new(
+        0,
+        0,
+        AuditEventType::ToolCallIntercepted,
+        AgentId::from_bytes([1; 16]),
+        SessionId::from_bytes([9; 16]),
+        "{}".to_owned(),
+        [0u8; 32],
+    )
+}
+
 #[tokio::test]
 async fn policy_store_conformance() {
     let present = AgentId::from_bytes([1; 16]);
@@ -22,4 +34,11 @@ async fn policy_store_conformance() {
     let store = MemoryPolicyStore::new();
     store.insert(&present, sample_policy());
     assert_policy_store_conformance(&store, &present, &absent).await;
+}
+
+#[tokio::test]
+async fn audit_sink_conformance() {
+    let sink = MemoryAuditSink::new();
+    assert_audit_sink_conformance(&sink, sample_audit_entry()).await;
+    assert_eq!(sink.len(), 1, "emitted entry should be buffered");
 }
