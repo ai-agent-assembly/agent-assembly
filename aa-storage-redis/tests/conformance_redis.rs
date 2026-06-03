@@ -4,8 +4,9 @@
 //! running Docker daemon is required (the same expectation as the Postgres
 //! conformance tests elsewhere in the workspace).
 
-use aa_storage::{AgentId, RateLimitCounter, SessionId, SessionRecord, SessionStore, StorageError};
-use aa_storage_redis::{RedisBackend, RedisStorageConfig};
+use aa_storage::conformance::assert_policy_store_conformance;
+use aa_storage::{AgentId, PolicyDocument, RateLimitCounter, SessionId, SessionRecord, SessionStore, StorageError};
+use aa_storage_redis::{RedisBackend, RedisStorageConfig, DEFAULT_POLICY_CACHE_TTL_SECS};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ContainerAsync;
@@ -64,4 +65,26 @@ async fn redis_rate_limit_counter_increments_and_resets() {
     assert_eq!(counter.current("alpha").await.unwrap(), 0);
     // Resetting an absent key is idempotent.
     counter.reset("alpha").await.unwrap();
+}
+
+#[tokio::test]
+async fn redis_policy_store_satisfies_conformance() {
+    let (_container, backend) = start_redis().await;
+    let store = backend.policies();
+
+    let present = AgentId::from_bytes([1; 16]);
+    let absent = AgentId::from_bytes([2; 16]);
+    let policy = PolicyDocument {
+        version: 1,
+        name: "conformance".to_owned(),
+        rules: Vec::new(),
+        enforcement_mode: Default::default(),
+    };
+    store
+        .cache_policy(&present, &policy, DEFAULT_POLICY_CACHE_TTL_SECS)
+        .await
+        .unwrap();
+
+    // Coerces to `&dyn PolicyStore`, exercising object-safety.
+    assert_policy_store_conformance(&store, &present, &absent).await;
 }
