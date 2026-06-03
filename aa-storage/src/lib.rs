@@ -13,8 +13,10 @@
 #![warn(missing_docs)]
 
 mod error;
+mod policy_store;
 
 pub use error::{Result, StorageError};
+pub use policy_store::PolicyStore;
 
 // Re-export the shared `aa-core` domain types the traits reference so call sites
 // import the storage contract and its types from a single path (`aa_storage::*`).
