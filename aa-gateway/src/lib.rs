@@ -16,6 +16,7 @@ pub mod edges;
 pub mod engine;
 pub mod events;
 pub mod iam;
+pub mod invalidation;
 pub mod local_mode;
 pub mod message_router;
 pub mod ops;
