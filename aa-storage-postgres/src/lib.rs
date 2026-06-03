@@ -12,6 +12,7 @@
 
 pub mod config;
 pub mod pool;
+pub mod support;
 
 pub use config::PostgresPoolConfig;
 pub use pool::{PostgresPool, MIGRATOR};
