@@ -24,3 +24,17 @@ pub use credential_store::PgCredentialStore;
 pub use lifecycle_store::PgLifecycleStore;
 pub use policy_store::PgPolicyStore;
 pub use pool::{PostgresPool, MIGRATOR};
+
+/// The name this driver registers under in the storage registry. An operator
+/// selects it with `backend = "postgres"` (or `[storage.postgres]`).
+pub const NAME: &str = "postgres";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn driver_registers_as_postgres() {
+        assert_eq!(NAME, "postgres");
+    }
+}
