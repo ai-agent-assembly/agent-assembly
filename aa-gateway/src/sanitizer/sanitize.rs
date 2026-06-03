@@ -229,4 +229,22 @@ mod tests {
         }));
         assert!(!contains_key_recursive(&audit_value(raw), "heartbeat_seq"));
     }
+
+    #[test]
+    fn drops_banned_keys_nested_in_payload() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "payload": {
+                "tool_call": { "prompt": "nested secret prompt" },
+                "steps": [{ "completion": "deep completion" }],
+            },
+        }));
+        let out = audit_value(raw);
+        // The vetted `payload` container survives...
+        assert!(contains_key_recursive(&out, "payload"));
+        // ...but banned keys nested anywhere inside it are gone.
+        assert!(!contains_key_recursive(&out, "prompt"));
+        assert!(!contains_key_recursive(&out, "completion"));
+    }
 }
