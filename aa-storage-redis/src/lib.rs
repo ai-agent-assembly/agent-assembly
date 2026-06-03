@@ -7,8 +7,11 @@
 #![warn(missing_docs)]
 
 mod config;
+mod error;
+mod pool;
 
 pub use config::RedisStorageConfig;
+pub use pool::build_pool;
 
 /// The name this driver registers under in storage configuration, i.e. the
 /// `[storage.<name>]` subsection and the registry key (`storage.backend = "redis"`).
