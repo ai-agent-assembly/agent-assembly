@@ -6,7 +6,11 @@
 
 use serde_json::Value;
 
+use super::event::HeartbeatUpdate;
 use super::rules;
+
+/// The `kind` discriminant that marks a heartbeat event.
+const HEARTBEAT_KIND: &str = "heartbeat";
 
 /// Recursively removes every [`rules::BANNED_KEYS`] entry from a JSON value,
 /// descending into nested objects and array elements. Mutates in place.
@@ -42,5 +46,32 @@ fn drop_unknown_top_level(map: &mut serde_json::Map<String, Value>) {
     for field in unknown {
         map.remove(&field);
         metrics::counter!("aa_audit_dropped_unknown_field_total", "field" => field).increment(1);
+    }
+}
+
+/// Returns `true` when the event's top-level `kind` is `"heartbeat"`.
+fn is_heartbeat(value: &Value) -> bool {
+    value.get("kind").and_then(Value::as_str) == Some(HEARTBEAT_KIND)
+}
+
+/// Collapses a heartbeat event into a single agent "last seen" update.
+///
+/// Missing fields degrade gracefully: an absent agent id becomes the empty
+/// string and an absent timestamp becomes `Value::Null`, leaving the storage
+/// layer free to default to `now()`.
+fn collapse_heartbeat(value: &Value) -> HeartbeatUpdate {
+    let agent_id = value
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let last_heartbeat_at = value
+        .get("ts")
+        .or_else(|| value.get("timestamp"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    HeartbeatUpdate {
+        agent_id,
+        last_heartbeat_at,
     }
 }
