@@ -6,6 +6,8 @@
 
 mod audit_sink;
 mod credential_store;
+mod lifecycle_store;
 
 pub use audit_sink::MemoryAuditSink;
 pub use credential_store::MemoryCredentialStore;
+pub use lifecycle_store::MemoryLifecycleStore;
