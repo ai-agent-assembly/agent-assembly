@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage"
-version = "0.0.1-alpha.4"
+version = "0.0.1-alpha.5"
 dependencies = [
  "aa-core",
  "async-trait",

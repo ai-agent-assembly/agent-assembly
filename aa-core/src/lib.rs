@@ -38,6 +38,8 @@ pub mod policy;
 pub mod risk_tier;
 #[cfg(feature = "std")]
 pub mod scanner;
+#[cfg(feature = "std")]
+pub mod storage;
 pub mod time;
 pub mod topology;
 #[cfg(feature = "alloc")]
