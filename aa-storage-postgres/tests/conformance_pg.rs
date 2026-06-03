@@ -5,7 +5,9 @@
 use aa_core::EnforcementMode;
 use aa_storage::conformance::assert_policy_store_conformance;
 use aa_storage::{AgentId, CredentialStore, LifecycleStore, PolicyDocument, StorageError};
-use aa_storage_postgres::{PgCredentialStore, PgLifecycleStore, PgPolicyStore, PostgresPool, PostgresPoolConfig};
+use aa_storage_postgres::{
+    PgAuditSink, PgCredentialStore, PgLifecycleStore, PgPolicyStore, PostgresPool, PostgresPoolConfig,
+};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -153,4 +155,45 @@ async fn credential_store_secret_roundtrip() {
         Err(StorageError::NotFound(_)) => {}
         other => panic!("get_secret after delete should be NotFound, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn audit_sink_writes_metadata_only_row() {
+    use aa_core::audit::{AuditEntry, AuditEventType};
+    use aa_storage::{AuditSink, SessionId};
+
+    let (_pg, pool) = setup_pg().await;
+    let sink = PgAuditSink::new(pool.clone());
+
+    let agent = AgentId::from_bytes([3u8; 16]);
+    let session = SessionId::from_bytes([4u8; 16]);
+    let entry = AuditEntry::new(
+        0,
+        1_700_000_000_000_000_000,
+        AuditEventType::ToolDispatched,
+        agent,
+        session,
+        // A payload carrying a secret — the sink must NOT persist it.
+        r#"{"tool":"shell","secret":"should-not-be-stored"}"#.to_owned(),
+        [0u8; 32],
+    );
+
+    sink.emit(entry).await.expect("emit");
+
+    let agent_text = uuid::Uuid::from_bytes(*agent.as_bytes()).to_string();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE agent_id = $1")
+        .bind(&agent_text)
+        .fetch_one(pool.pool())
+        .await
+        .expect("count audit rows");
+    assert_eq!(count, 1, "emit should write exactly one audit row");
+
+    let (tool_name, decision): (String, String) =
+        sqlx::query_as("SELECT tool_name, decision FROM audit_logs WHERE agent_id = $1")
+            .bind(&agent_text)
+            .fetch_one(pool.pool())
+            .await
+            .expect("fetch audit row");
+    assert_eq!(tool_name, "ToolDispatched");
+    assert_eq!(decision, "allow");
 }
