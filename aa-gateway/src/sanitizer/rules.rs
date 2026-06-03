@@ -1,9 +1,5 @@
 //! Field-classification rule sets for the write-boundary sanitizer.
 
-// Consumed by `sanitize` once the entrypoint is wired up; until then the rule
-// sets are introduced ahead of their first caller.
-#![allow(dead_code)]
-
 /// Keys whose values are **never** persisted. Stripped recursively at every
 /// depth of the event tree before an audit row is constructed.
 ///

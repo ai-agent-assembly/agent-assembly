@@ -1,12 +1,8 @@
 //! The write-boundary sanitizer entrypoint and its field-drop helpers.
 
-// Helpers are wired together by `sanitize` in this same module; each is
-// introduced just ahead of its caller.
-#![allow(dead_code)]
-
 use serde_json::Value;
 
-use super::event::HeartbeatUpdate;
+use super::event::{HeartbeatUpdate, RawAuditEvent, SanitizeOutcome, SanitizedAuditEvent};
 use super::rules;
 
 /// The `kind` discriminant that marks a heartbeat event.
@@ -74,4 +70,28 @@ fn collapse_heartbeat(value: &Value) -> HeartbeatUpdate {
         agent_id,
         last_heartbeat_at,
     }
+}
+
+/// Sanitizes a raw inbound audit event at the Gateway write boundary.
+///
+/// Heartbeats collapse to a [`HeartbeatUpdate`]; every other event has its
+/// banned keys stripped recursively and its unknown top-level fields dropped,
+/// then is wrapped as a [`SanitizedAuditEvent`] ready to INSERT. This is the
+/// single entrypoint the consumer (AAASM-2388) calls before persisting.
+pub fn sanitize(raw: RawAuditEvent) -> SanitizeOutcome {
+    let mut value = raw.into_value();
+
+    // Heartbeats never become audit rows — collapse to a last-seen update.
+    if is_heartbeat(&value) {
+        return SanitizeOutcome::Heartbeat(collapse_heartbeat(&value));
+    }
+
+    // Defense-in-depth: drop never-store keys at every depth first, so the
+    // unknown-field accounting only sees genuinely unexpected keys.
+    strip_banned_keys(&mut value);
+    if let Value::Object(map) = &mut value {
+        drop_unknown_top_level(map);
+    }
+
+    SanitizeOutcome::Audit(SanitizedAuditEvent::new(value))
 }

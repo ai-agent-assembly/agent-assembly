@@ -1,10 +1,6 @@
 //! Newtypes that mark the trust boundary between raw inbound audit events and
 //! the sanitized form the storage layer is allowed to persist.
 
-// Accessors are consumed once `sanitize` is wired up; introduced here with the
-// types they belong to.
-#![allow(dead_code)]
-
 use serde_json::Value;
 
 /// An audit event exactly as received off the wire (NATS subject

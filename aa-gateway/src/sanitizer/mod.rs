@@ -18,3 +18,4 @@ mod rules;
 mod sanitize;
 
 pub use event::{HeartbeatUpdate, RawAuditEvent, SanitizeOutcome, SanitizedAuditEvent};
+pub use sanitize::sanitize;
