@@ -1,0 +1,19 @@
+# Fixture: `policy_store` names a driver that is not registered. Even though a
+# [storage.mongodb] subsection is present, validation fails with UnknownDriver
+# and lists the valid driver names.
+[storage]
+policy_store       = "mongodb"
+audit_sink         = "postgres"
+session_store      = "redis"
+credential_store   = "postgres"
+rate_limit_counter = "redis"
+lifecycle_store    = "postgres"
+
+[storage.mongodb]
+url = "mongodb://localhost:27017"
+
+[storage.redis]
+url = "redis://localhost:6379"
+
+[storage.postgres]
+url = "postgresql://localhost:5432/assembly"

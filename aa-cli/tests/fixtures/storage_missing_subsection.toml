@@ -1,0 +1,12 @@
+# Fixture: `policy_store = "redis"` names a registered driver, but there is no
+# [storage.redis] subsection. Validation fails with MissingDriverSection.
+[storage]
+policy_store       = "redis"
+audit_sink         = "postgres"
+session_store      = "redis"
+credential_store   = "postgres"
+rate_limit_counter = "redis"
+lifecycle_store    = "postgres"
+
+[storage.postgres]
+url = "postgresql://localhost:5432/assembly"
