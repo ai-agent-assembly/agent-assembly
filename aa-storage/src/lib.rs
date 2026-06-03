@@ -15,6 +15,7 @@
 mod audit_sink;
 mod credential_store;
 mod error;
+mod lifecycle_store;
 mod policy_store;
 mod rate_limit_counter;
 mod session_store;
@@ -22,6 +23,7 @@ mod session_store;
 pub use audit_sink::AuditSink;
 pub use credential_store::CredentialStore;
 pub use error::{Result, StorageError};
+pub use lifecycle_store::LifecycleStore;
 pub use policy_store::PolicyStore;
 pub use rate_limit_counter::RateLimitCounter;
 pub use session_store::{SessionRecord, SessionStore};
