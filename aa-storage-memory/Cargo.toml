@@ -1,0 +1,20 @@
+[package]
+name = "aa-storage-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory aa-storage driver (DashMap-backed) for tests and local development"
+
+[dependencies]
+aa-core = { path = "../aa-core" }
+aa-storage = { path = "../aa-storage" }
+async-trait = "0.1"
+dashmap = "6"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

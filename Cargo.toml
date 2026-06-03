@@ -2,6 +2,7 @@
 members = [
     "aa-core",
     "aa-storage",
+    "aa-storage-memory",
     "aa-proto",
     "aa-runtime",
     "aa-ebpf",
