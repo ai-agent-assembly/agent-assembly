@@ -11,8 +11,10 @@
 //! re-exports the public surface a caller needs to wire the driver up.
 
 pub mod config;
+pub mod lifecycle_store;
 pub mod pool;
 pub mod support;
 
 pub use config::PostgresPoolConfig;
+pub use lifecycle_store::PgLifecycleStore;
 pub use pool::{PostgresPool, MIGRATOR};
