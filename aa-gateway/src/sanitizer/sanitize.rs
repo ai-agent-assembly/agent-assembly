@@ -95,3 +95,38 @@ pub fn sanitize(raw: RawAuditEvent) -> SanitizeOutcome {
 
     SanitizeOutcome::Audit(SanitizedAuditEvent::new(value))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+    use crate::sanitizer::{RawAuditEvent, SanitizeOutcome};
+    use serde_json::{json, Value};
+
+    /// Recursively reports whether `key` appears anywhere in the JSON tree.
+    fn contains_key_recursive(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(map) => map.contains_key(key) || map.values().any(|v| contains_key_recursive(v, key)),
+            Value::Array(items) => items.iter().any(|v| contains_key_recursive(v, key)),
+            _ => false,
+        }
+    }
+
+    /// Sanitizes `raw`, asserting it produced an audit row, and returns the
+    /// sanitized JSON for inspection.
+    fn audit_value(raw: RawAuditEvent) -> Value {
+        match sanitize(raw) {
+            SanitizeOutcome::Audit(ev) => ev.into_value(),
+            other => panic!("expected Audit outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drops_prompt_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "prompt": "the raw system prompt",
+        }));
+        assert!(!contains_key_recursive(&audit_value(raw), "prompt"));
+    }
+}
