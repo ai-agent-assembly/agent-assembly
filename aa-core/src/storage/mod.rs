@@ -19,6 +19,7 @@
 //! verbatim, so `aa_storage::*` and `aa_core::storage::*` are interchangeable.
 
 mod audit_sink;
+pub mod conformance;
 mod credential_store;
 mod error;
 mod lifecycle_store;
