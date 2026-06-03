@@ -2,7 +2,7 @@
 
 use std::hash::Hash;
 
-use aa_core::storage::Result;
+use aa_core::storage::{AgentId, PolicyDocument, PolicyStore, Result};
 use async_trait::async_trait;
 
 /// The backing store an [`L1Cache`](crate::L1Cache) fronts.
@@ -21,4 +21,16 @@ pub trait CacheSource: Send + Sync {
 
     /// Load the value for `key` from the underlying store.
     async fn load(&self, key: &Self::Key) -> Result<Self::Value>;
+}
+
+/// Every [`PolicyStore`] is a [`CacheSource`] keyed by [`AgentId`] returning a
+/// [`PolicyDocument`], so `L1Cache<P>` fronts any policy backend directly.
+#[async_trait]
+impl<P: PolicyStore> CacheSource for P {
+    type Key = AgentId;
+    type Value = PolicyDocument;
+
+    async fn load(&self, key: &AgentId) -> Result<PolicyDocument> {
+        self.get_policy(key).await
+    }
 }
