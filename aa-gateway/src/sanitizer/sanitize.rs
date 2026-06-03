@@ -247,4 +247,21 @@ mod tests {
         assert!(!contains_key_recursive(&out, "prompt"));
         assert!(!contains_key_recursive(&out, "completion"));
     }
+
+    #[test]
+    fn heartbeat_routes_to_last_seen_update() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "heartbeat",
+            "agent_id": "acme/bot",
+            "ts": "2026-06-03T00:00:00Z",
+            "heartbeat_seq": 7,
+        }));
+        match sanitize(raw) {
+            SanitizeOutcome::Heartbeat(hb) => {
+                assert_eq!(hb.agent_id, "acme/bot");
+                assert_eq!(hb.last_heartbeat_at, json!("2026-06-03T00:00:00Z"));
+            }
+            SanitizeOutcome::Audit(_) => panic!("heartbeat must not become an audit row"),
+        }
+    }
 }
