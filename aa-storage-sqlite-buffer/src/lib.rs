@@ -1,10 +1,10 @@
 //! Local in-process SQLite **event buffer** for Agent Assembly.
 //!
 //! When the upstream NATS/gateway is briefly unreachable, Assembly keeps
-//! emitting governance [`AuditEntry`](aa_core::storage::AuditEntry) records into
-//! this buffer instead of dropping them. Once the connection recovers, the
-//! buffer flushes its backlog — in insertion order — through the upstream
-//! [`AuditSink`](aa_core::storage::AuditSink). This gives Assembly **partial
+//! emitting governance [`AuditEntry`] records into this buffer instead of
+//! dropping them. Once the connection recovers, the buffer flushes its backlog
+//! — in insertion order — through the upstream [`AuditSink`]. This gives
+//! Assembly **partial
 //! autonomy** so a transient outage never silently loses audit-trail data.
 //!
 //! The buffer is a single SQLite file opened in WAL mode, so a buffered event
