@@ -264,4 +264,18 @@ mod tests {
             SanitizeOutcome::Audit(_) => panic!("heartbeat must not become an audit row"),
         }
     }
+
+    #[test]
+    fn drops_unknown_top_level_field() {
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "mystery_field": "who put this here",
+        }));
+        let out = audit_value(raw);
+        // The unvetted key is dropped (and counted via the metric)...
+        assert!(!contains_key_recursive(&out, "mystery_field"));
+        // ...while vetted metadata is retained.
+        assert!(contains_key_recursive(&out, "agent_id"));
+    }
 }
