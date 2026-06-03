@@ -11,3 +11,7 @@
 //! changes any caller code.
 
 #![warn(missing_docs)]
+
+mod error;
+
+pub use error::{Result, StorageError};
