@@ -13,6 +13,7 @@ pub mod gateway_client;
 pub mod health;
 pub mod invalidation_client;
 pub mod ipc;
+pub mod l1_cache;
 pub mod layer;
 pub mod lifecycle;
 pub mod pipeline;
