@@ -9,6 +9,11 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      claimed by the agent-assembly workspace. No version change introduced
      by that PR; this comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2357: added the `aa-storage` crate to root Cargo.toml workspace
+     members (pure-interface storage trait crate). It inherits the workspace
+     version and introduces no version change to aa-runtime or any SDK; this
+     comment satisfies the compatibility-matrix CI gate. -->
+
 
 ---
 

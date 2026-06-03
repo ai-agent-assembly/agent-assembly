@@ -443,6 +443,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-storage"
+version = "0.0.1-alpha.4"
+dependencies = [
+ "aa-core",
+ "async-trait",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "aa-wasm"
 version = "0.0.1-alpha.5"
 dependencies = [

@@ -1,0 +1,18 @@
+[package]
+name = "aa-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Storage trait abstraction (pure interface) for the Agent Assembly persistence layer"
+
+[dependencies]
+aa-core      = { path = "../aa-core" }
+async-trait  = "0.1"
+thiserror    = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
