@@ -184,10 +184,10 @@ jobs:
             exit 1
           }
 
-  smoke-python-pypi-import:
-    name: Smoke — Python pip (import + __version__)
+  smoke-cargo-install:
+    name: Smoke — cargo install aasm (crates.io)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Compute expected aasm version
         id: expected
@@ -207,64 +207,16 @@ jobs:
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python 3.12 on a clean runner
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Install agent-assembly from PyPI
-        run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly'
-
-      - name: Verify agent_assembly.__version__ matches release tag
+      - name: Install aasm from crates.io
         env:
-          EXPECTED: ${{ steps.expected.outputs.version }}
-        shell: bash
+          VERSION: ${{ steps.expected.outputs.version }}
         run: |
-          got=$(python -c "import agent_assembly; print(agent_assembly.__version__)")
-          want="${EXPECTED}"
-          echo "Installed: ${got}"
-          echo "Expected:  ${want}"
-          [ "${got}" = "${want}" ] || {
-            echo "::error::agent_assembly.__version__ mismatch — got '${got}', want '${want}'"
-            exit 1
-          }
+          cargo install aasm --version "${VERSION}" --locked
 
-  smoke-python-pypi-runtime:
-    name: Smoke — Python pip (aasm --version via [runtime] extra)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Compute expected aasm version
-        id: expected
-        shell: bash
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION#v}"
-          else
-            version="${TAG#v}"
-          fi
-          if [ -z "${version}" ]; then
-            echo "::error::Could not resolve release version from event payload" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Python 3.12 on a clean runner
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install agent-assembly from PyPI
-        run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir 'agent-assembly'
-
-      - name: Verify the bundled aasm binary prints the release tag
+      - name: Verify aasm --version matches release tag
         env:
           EXPECTED: ${{ steps.expected.outputs.version }}
         shell: bash
@@ -275,63 +227,6 @@ jobs:
           echo "Expected:  ${want}"
           [ "${got}" = "${want}" ] || {
             echo "::error::aasm --version mismatch — got '${got}', want '${want}'"
-            exit 1
-          }
-
-  smoke-npm:
-    name: Smoke — npm (@agent-assembly/sdk install + require)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Compute expected aasm version
-        id: expected
-        shell: bash
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [ -n "${INPUT_VERSION}" ]; then
-            version="${INPUT_VERSION#v}"
-          else
-            version="${TAG#v}"
-          fi
-          if [ -z "${version}" ]; then
-            echo "::error::Could not resolve release version from event payload" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Node.js 20 LTS on a clean runner
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-
-      - name: Install @agent-assembly/sdk from the public npm registry
-        run: |
-          # Smoke test runs from /tmp on a fresh runner so that no
-          # repo-local package.json can shadow the install.
-          mkdir -p /tmp/aa-npm-smoke
-          cd /tmp/aa-npm-smoke
-          npm init -y >/dev/null
-          npm install --no-audit --no-fund @agent-assembly/sdk
-
-      - name: Verify the package loads via require() without throwing
-        run: |
-          cd /tmp/aa-npm-smoke
-          node -e "require('@agent-assembly/sdk')"
-
-      - name: Verify installed package version matches release tag
-        env:
-          EXPECTED: ${{ steps.expected.outputs.version }}
-        shell: bash
-        run: |
-          cd /tmp/aa-npm-smoke
-          got=$(node -p "require('@agent-assembly/sdk/package.json').version")
-          want="${EXPECTED}"
-          echo "Installed: ${got}"
-          echo "Expected:  ${want}"
-          [ "${got}" = "${want}" ] || {
-            echo "::error::@agent-assembly/sdk version mismatch — got '${got}', want '${want}'"
             exit 1
           }
 
@@ -388,9 +283,7 @@ jobs:
     needs:
       - smoke-homebrew-macos
       - smoke-homebrew-linux
-      - smoke-python-pypi-import
-      - smoke-python-pypi-runtime
-      - smoke-npm
+      - smoke-cargo-install
       - smoke-docker
     # Fire only when the workflow is genuinely broken — `failure()` covers
     # any failed `needs:` job; the `release` event guard avoids dispatching
