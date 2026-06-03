@@ -1,0 +1,33 @@
+[package]
+name = "aa-storage-sqlite-buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local in-process SQLite event buffer that survives brief gateway/queue outages and flushes audit events on reconnect"
+
+[dependencies]
+# The buffer serializes and replays the storage contract's `AuditEntry` through
+# the `AuditSink` trait, both reached from `aa-core`. `serde` is enabled so
+# `AuditEntry` can be encoded into the on-disk BLOB.
+aa-core = { path = "../aa-core", features = ["serde"] }
+# Pinned to the rusqlite line that depends on `libsqlite3-sys 0.30`, matching
+# the `sqlx-sqlite 0.8.6` already resolved for `aa-gateway`. Only one crate in
+# the workspace may link the native `sqlite3` library, so both must resolve to
+# the same `libsqlite3-sys 0.30.x`. An older rusqlite (0.31 -> libsqlite3-sys
+# 0.28) would force `sqlx` down to 0.8.0 and pull vulnerable rustls/webpki;
+# a newer one (0.33+ -> libsqlite3-sys 0.31+) breaks the `links = "sqlite3"`
+# uniqueness rule against sqlx.
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+metrics = "0.24"
+dirs = "6"
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt"] }
+tempfile = "3"
+
+[lints]
+workspace = true
