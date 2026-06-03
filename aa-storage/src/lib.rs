@@ -15,3 +15,7 @@
 mod error;
 
 pub use error::{Result, StorageError};
+
+// Re-export the shared `aa-core` domain types the traits reference so call sites
+// import the storage contract and its types from a single path (`aa_storage::*`).
+pub use aa_core::{AgentId, AuditEntry, PolicyDocument, SessionId};
