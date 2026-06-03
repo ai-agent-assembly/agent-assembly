@@ -103,3 +103,25 @@ impl core::fmt::Display for AgentIdParseError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for AgentIdParseError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_well_formed_id() {
+        let id = AgentId::parse("acme/billing-bot").unwrap();
+        assert_eq!(id.as_str(), "acme/billing-bot");
+        assert_eq!(id.tenant(), "acme");
+        assert_eq!(id.agent(), "billing-bot");
+    }
+
+    #[test]
+    fn parse_rejects_malformed_input_with_typed_error() {
+        assert_eq!(AgentId::parse(""), Err(AgentIdParseError::Empty));
+        assert_eq!(AgentId::parse("no-slash"), Err(AgentIdParseError::NotExactlyOneSlash));
+        assert_eq!(AgentId::parse("a/b/c"), Err(AgentIdParseError::NotExactlyOneSlash));
+        assert_eq!(AgentId::parse("/agent"), Err(AgentIdParseError::EmptyTenant));
+        assert_eq!(AgentId::parse("tenant/"), Err(AgentIdParseError::EmptyAgent));
+    }
+}
