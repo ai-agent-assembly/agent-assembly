@@ -3,12 +3,13 @@
 
 use aa_core::{AuditEventType, EnforcementMode};
 use aa_storage::conformance::{
-    assert_audit_sink_conformance, assert_credential_store_conformance, assert_policy_store_conformance,
-    assert_rate_limit_counter_conformance, assert_session_store_conformance,
+    assert_audit_sink_conformance, assert_credential_store_conformance, assert_lifecycle_store_conformance,
+    assert_policy_store_conformance, assert_rate_limit_counter_conformance, assert_session_store_conformance,
 };
 use aa_storage::{AgentId, AuditEntry, PolicyDocument, SessionId, SessionRecord};
 use aa_storage_memory::{
-    MemoryAuditSink, MemoryCredentialStore, MemoryPolicyStore, MemoryRateLimitCounter, MemorySessionStore,
+    MemoryAuditSink, MemoryCredentialStore, MemoryLifecycleStore, MemoryPolicyStore, MemoryRateLimitCounter,
+    MemorySessionStore,
 };
 
 fn sample_policy() -> PolicyDocument {
@@ -69,4 +70,12 @@ async fn credential_store_conformance() {
 async fn rate_limit_counter_conformance() {
     let counter = MemoryRateLimitCounter::new();
     assert_rate_limit_counter_conformance(&counter, "team-1:tokens").await;
+}
+
+#[tokio::test]
+async fn lifecycle_store_conformance() {
+    let present = AgentId::from_bytes([1; 16]);
+    let absent = AgentId::from_bytes([2; 16]);
+    let store = MemoryLifecycleStore::new();
+    assert_lifecycle_store_conformance(&store, &present, &absent).await;
 }
