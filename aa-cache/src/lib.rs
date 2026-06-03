@@ -17,6 +17,9 @@ mod cached_value;
 mod l1;
 mod source;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod testing;
+
 pub use cached_value::CachedValue;
 pub use l1::L1Cache;
 pub use source::CacheSource;
