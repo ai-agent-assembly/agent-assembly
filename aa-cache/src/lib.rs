@@ -12,3 +12,7 @@
 //!
 //! Invalidation (this is what the Epic C push-invalidation channel will call)
 //! is provided by [`L1Cache::invalidate`].
+
+mod cached_value;
+
+pub use cached_value::CachedValue;
