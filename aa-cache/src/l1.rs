@@ -41,6 +41,15 @@ impl<S: CacheSource> L1Cache<S> {
         &self.inner
     }
 
+    /// Drop the cached entry for `key`; returns whether one was present.
+    ///
+    /// This is the hook the Epic C push-invalidation channel calls when the
+    /// Gateway reports that an agent's policy changed: the next `get` reloads
+    /// from the source of truth rather than serving a stale entry.
+    pub fn invalidate(&self, key: &S::Key) -> bool {
+        self.entries.remove(key).is_some()
+    }
+
     /// Return a fresh (non-expired) cached value for `key`, if present.
     fn fresh(&self, key: &S::Key) -> Option<S::Value> {
         let entry = self.entries.get(key)?;
