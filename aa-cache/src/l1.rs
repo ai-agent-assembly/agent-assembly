@@ -41,6 +41,24 @@ impl<S: CacheSource> L1Cache<S> {
         &self.inner
     }
 
+    /// Number of entries currently held (including any past their TTL but not
+    /// yet evicted). Intended for diagnostics, not control flow.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the cache holds no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Drop every cached entry.
+    pub fn clear(&self) {
+        self.entries.clear();
+    }
+
     /// Drop the cached entry for `key`; returns whether one was present.
     ///
     /// This is the hook the Epic C push-invalidation channel calls when the
