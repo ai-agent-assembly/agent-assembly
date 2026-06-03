@@ -100,6 +100,7 @@ pub fn sanitize(raw: RawAuditEvent) -> SanitizeOutcome {
 mod tests {
     use super::sanitize;
     use crate::sanitizer::{RawAuditEvent, SanitizeOutcome};
+    use proptest::prelude::*;
     use serde_json::{json, Value};
 
     /// Recursively reports whether `key` appears anywhere in the JSON tree.
@@ -277,5 +278,46 @@ mod tests {
         assert!(!contains_key_recursive(&out, "mystery_field"));
         // ...while vetted metadata is retained.
         assert!(contains_key_recursive(&out, "agent_id"));
+    }
+
+    /// Generates object keys, biased toward the banned set so the invariant is
+    /// actually exercised rather than almost never hitting a banned key.
+    fn key_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            proptest::sample::select(crate::sanitizer::rules::BANNED_KEYS).prop_map(String::from),
+            "[a-z_]{1,12}",
+        ]
+    }
+
+    /// Generates an arbitrary, possibly deeply-nested `serde_json::Value`.
+    fn arb_json() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(|n| Value::Number(n.into())),
+            ".*".prop_map(Value::String),
+        ];
+        leaf.prop_recursive(4, 64, 8, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..8).prop_map(Value::Array),
+                prop::collection::vec((key_strategy(), inner), 0..8)
+                    .prop_map(|pairs| Value::Object(pairs.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        /// The core invariant: no banned key survives anywhere in the tree of a
+        /// sanitized audit event, for any random input.
+        #[test]
+        fn proptest_no_banned_keys(value in arb_json()) {
+            if let SanitizeOutcome::Audit(ev) = sanitize(RawAuditEvent::new(value)) {
+                for banned in crate::sanitizer::rules::BANNED_KEYS {
+                    prop_assert!(!contains_key_recursive(ev.as_value(), banned));
+                }
+            }
+        }
     }
 }
