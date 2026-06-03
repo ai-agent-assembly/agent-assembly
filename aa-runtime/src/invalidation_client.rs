@@ -110,3 +110,18 @@ async fn subscribe_once(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_then_caps_at_32s() {
+        // 1s → 2 → 4 → 8 → 16 → 32 → 32 (capped).
+        let schedule: Vec<u64> = std::iter::successors(Some(INITIAL_BACKOFF), |&d| Some(next_backoff(d)))
+            .take(7)
+            .map(|d| d.as_secs())
+            .collect();
+        assert_eq!(schedule, vec![1, 2, 4, 8, 16, 32, 32]);
+    }
+}
