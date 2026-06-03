@@ -125,3 +125,22 @@ mod tests {
         assert_eq!(AgentId::parse("tenant/"), Err(AgentIdParseError::EmptyAgent));
     }
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_round_trip {
+    use super::AgentId;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn agent_id_round_trips(
+            tenant in "[a-z][a-z0-9-]{0,15}",
+            agent in "[a-z][a-z0-9-]{0,15}",
+        ) {
+            let original = AgentId::parse(format!("{tenant}/{agent}")).unwrap();
+            let json = serde_json::to_string(&original).unwrap();
+            let restored: AgentId = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(original, restored);
+        }
+    }
+}
