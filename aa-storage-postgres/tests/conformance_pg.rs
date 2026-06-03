@@ -2,7 +2,8 @@
 //! via `testcontainers-modules`. Each test spins up its own fresh Postgres 18
 //! container, so the cases are isolated and require Docker to run.
 
-use aa_storage_postgres::{PostgresPool, PostgresPoolConfig};
+use aa_storage::{AgentId, LifecycleStore, StorageError};
+use aa_storage_postgres::{PgLifecycleStore, PostgresPool, PostgresPoolConfig};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -64,4 +65,29 @@ async fn migrations_apply_cleanly_and_audit_logs_is_metadata_only() {
             "audit_logs must not contain a {forbidden} column"
         );
     }
+}
+
+#[tokio::test]
+async fn lifecycle_register_heartbeat_deregister() {
+    let (_pg, pool) = setup_pg().await;
+    let store = PgLifecycleStore::new(pool.clone());
+
+    let present = AgentId::from_bytes([7u8; 16]);
+    let absent = AgentId::from_bytes([9u8; 16]);
+
+    store.register(&present).await.expect("register");
+    // Re-registration overwrites the stale row without error.
+    store.register(&present).await.expect("re-register is idempotent");
+    store.heartbeat(&present).await.expect("heartbeat present");
+
+    match store.heartbeat(&absent).await {
+        Err(StorageError::NotFound(_)) => {}
+        other => panic!("heartbeat(absent) should be NotFound, got {other:?}"),
+    }
+
+    store.deregister(&present).await.expect("deregister");
+    store
+        .deregister(&absent)
+        .await
+        .expect("deregister(absent) is idempotent");
 }
