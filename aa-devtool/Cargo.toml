@@ -9,15 +9,15 @@ description = "Dev tool auto-discovery for Agent Assembly"
 
 [dependencies]
 aa-core = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["std", "serde"] }
-async-trait = "0.1"
-futures = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-dirs = "6"
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+dirs = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 
 [lints]
 workspace = true
