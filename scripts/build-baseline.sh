@@ -121,17 +121,32 @@ else
   echo "(warm rebuild skipped: $WARM_FILE not found)" >"$WARM_LOG"
 fi
 
-# --- 3. Test build + run wall-clock ---------------------------------------
-# `--no-fail-fast` so a single flaky/slow test (e.g. a timing-sensitive
-# integration assertion) does not truncate the wall-clock — the baseline must
-# reflect compiling every test binary plus running the whole suite, matching
-# what CI does. Test failures are expected to leave the number unchanged.
-TEST_LOG="$OUT/nextest.log"
-echo ">>> test build+run: $CARGO nextest run --workspace ${EXCLUDE[*]} --no-fail-fast"
-TEST_START=$SECONDS
-$CARGO nextest run --workspace "${EXCLUDE[@]}" --no-fail-fast >"$TEST_LOG" 2>&1
-TEST_REAL=$(( SECONDS - TEST_START ))
-echo "    test build+run: ${TEST_REAL}s  (log: $TEST_LOG)"
+# --- 3a. Test-binary build (compile only) ---------------------------------
+# This is the build-time signal for the test path: `--no-run` compiles every
+# test binary without executing any test, so it is deterministic and free of
+# Docker / timing-flake noise — exactly the cost the profile, linker, and
+# dedup Stories move.
+TESTBUILD_LOG="$OUT/nextest-build.log"
+echo ">>> test build (compile only): $CARGO nextest run --workspace ${EXCLUDE[*]} --no-run"
+TESTBUILD_START=$SECONDS
+$CARGO nextest run --workspace "${EXCLUDE[@]}" --no-run >"$TESTBUILD_LOG" 2>&1
+TESTBUILD_REAL=$(( SECONDS - TESTBUILD_START ))
+echo "    test build: ${TESTBUILD_REAL}s  (log: $TESTBUILD_LOG)"
+
+# --- 3b. Test build+run (opt-in) ------------------------------------------
+# The full suite run is dominated by Docker-backed integration tests, not
+# compilation, so it is OFF by default. Enable with BUILD_BASELINE_RUN_TESTS=1.
+# `--no-fail-fast` keeps a single flaky test from truncating the wall-clock.
+# Because 3a already compiled the test binaries, this measures the run cost.
+TEST_REAL=""
+if [ "${BUILD_BASELINE_RUN_TESTS:-0}" = "1" ]; then
+  TEST_LOG="$OUT/nextest-run.log"
+  echo ">>> test run: $CARGO nextest run --workspace ${EXCLUDE[*]} --no-fail-fast"
+  TEST_START=$SECONDS
+  $CARGO nextest run --workspace "${EXCLUDE[@]}" --no-fail-fast >"$TEST_LOG" 2>&1
+  TEST_REAL=$(( SECONDS - TEST_START ))
+  echo "    test run: ${TEST_REAL}s  (log: $TEST_LOG)"
+fi
 
 # --- 4. Duplicate-dependency report ---------------------------------------
 DUPS_LOG="$OUT/cargo-tree-dups.txt"
@@ -160,7 +175,10 @@ SUMMARY="$OUT/summary.md"
   echo "|---|---|"
   echo "| Cold build (\`build --workspace --timings\`) | ${COLD_REAL}s |"
   echo "| Warm rebuild (touch \`${WARM_FILE}\`) | ${WARM_REAL:-n/a}s |"
-  echo "| Test build+run (\`nextest run --workspace\`) | ${TEST_REAL}s |"
+  echo "| Test build (\`nextest run --no-run\`) | ${TESTBUILD_REAL}s |"
+  if [ -n "$TEST_REAL" ]; then
+    echo "| Test run (\`nextest run --no-fail-fast\`) | ${TEST_REAL}s |"
+  fi
   echo "| Packages built in >1 version (\`cargo tree -d\`) | ${DUP_PKGS_MULTIVER} |"
   echo "| Distinct duplicate (name, version) units | ${DUP_UNIT_COUNT} |"
 } >"$SUMMARY"
