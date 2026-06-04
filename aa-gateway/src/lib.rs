@@ -9,6 +9,12 @@ pub mod anomaly;
 pub mod app_state;
 pub mod approval;
 pub mod audit;
+// strip-for-publish:begin audit-consumer
+// AAASM-2388: gateway-internal NATS->Postgres audit consumer. Compiled only
+// under the `audit-consumer` feature (held back from crates.io publish).
+#[cfg(feature = "audit-consumer")]
+pub mod audit_consumer;
+// strip-for-publish:end audit-consumer
 pub mod audit_reader;
 pub mod budget;
 pub mod dashboard_server;
