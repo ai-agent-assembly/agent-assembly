@@ -12,18 +12,18 @@ publish = false
 [dependencies]
 aa-core    = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["serde"] }
 aa-storage = { path = "../aa-storage", version = "0.0.1-alpha.5" }
-async-trait = "0.1"
-sqlx       = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
-serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid       = { version = "1", features = ["v4", "serde"] }
-chrono     = { version = "0.4", features = ["clock", "serde"] }
-thiserror  = "2"
+async-trait = { workspace = true }
+sqlx       = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true, features = ["v4", "serde"] }
+chrono     = { workspace = true, features = ["clock", "serde"] }
+thiserror  = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-toml  = "1.1"
-testcontainers-modules = { version = "0.15", features = ["postgres"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml  = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres"] }
 
 [lints]
 workspace = true
