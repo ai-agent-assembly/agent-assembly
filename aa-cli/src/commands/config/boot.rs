@@ -120,3 +120,28 @@ pub fn run(args: BootArgs) -> ExitCode {
 
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(name)
+    }
+
+    #[test]
+    fn all_memory_config_boots_successfully() {
+        let args = BootArgs {
+            file: fixture("storage_all_memory.toml"),
+        };
+        assert_eq!(run(args), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn missing_file_exits_failure() {
+        let args = BootArgs {
+            file: PathBuf::from("/tmp/nonexistent-aaasm-boot-xyz.toml"),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+}
