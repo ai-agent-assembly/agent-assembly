@@ -66,3 +66,34 @@ impl Default for NatsConfig {
         }
     }
 }
+
+/// The `[gateway]` table, holding the nested `nats` configuration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GatewaySection {
+    nats: NatsConfig,
+}
+
+/// Document root used to reach `[gateway.nats]` from a full
+/// `agent-assembly.toml`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ConfigRoot {
+    gateway: GatewaySection,
+}
+
+impl NatsConfig {
+    /// Parse the `[gateway.nats]` table out of an `agent-assembly.toml` document.
+    ///
+    /// A document with neither `[gateway]` nor `[gateway.nats]` yields the
+    /// [`Default`] configuration, so callers can pass the whole config file
+    /// unconditionally.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`toml::de::Error`] when the document is not valid
+    /// TOML or the `[gateway.nats]` table has a type-incompatible value.
+    pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
+        Ok(toml::from_str::<ConfigRoot>(toml)?.gateway.nats)
+    }
+}
