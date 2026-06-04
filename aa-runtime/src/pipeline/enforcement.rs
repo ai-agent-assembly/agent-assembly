@@ -215,3 +215,48 @@ impl RuntimeScanner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::event::EventSource;
+    use aa_proto::assembly::audit::v1::{AuditEvent, ToolCallDetail};
+
+    /// An AWS access-key id — detected via the `AKIA` literal pattern.
+    const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    /// Build an [`EnrichedEvent`] wrapping `detail` with throwaway metadata.
+    fn event_with(detail: Detail) -> EnrichedEvent {
+        EnrichedEvent {
+            inner: AuditEvent {
+                detail: Some(detail),
+                ..Default::default()
+            },
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        }
+    }
+
+    #[test]
+    fn tool_call_args_json_secret_is_redacted_in_place() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: format!(r#"{{"api_key": "{AWS_KEY}"}}"#).into_bytes(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        let scanned = String::from_utf8(tc.args_json).expect("redacted text is utf-8");
+        assert!(!scanned.contains(AWS_KEY), "raw secret must not survive");
+        assert!(scanned.contains("[REDACTED:"), "redaction marker present");
+        assert_eq!(outcome.findings.len(), 1);
+        assert!(!outcome.is_clean());
+    }
+}
