@@ -50,11 +50,14 @@ pub fn run(args: BootArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    // Built-in driver names, then the real in-memory driver — `register_*` is
-    // last-write-wins, so this replaces the "memory" placeholder.
+    // Built-in driver names, then the real OSS drivers — `register_*` is
+    // last-write-wins, so these replace the matching placeholders. The Redis
+    // driver only registers the L2 kinds it backs (policy / session /
+    // rate-limit); the durable kinds stay on the placeholder.
     let mut registry = Registry::new();
     aa_storage::builtin::register_builtin_drivers(&mut registry);
     aa_storage_memory::register(&mut registry);
+    aa_storage_redis::register(&mut registry);
 
     if let Err(e) = registry.validate(&storage) {
         eprintln!("error: {e}");
