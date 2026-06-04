@@ -15,6 +15,8 @@
 //! - `serde`: enables `Serialize`/`Deserialize` derives on the public types.
 #![warn(missing_docs)]
 
+pub mod redaction;
 pub mod scanner;
 
+pub use redaction::Redaction;
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
