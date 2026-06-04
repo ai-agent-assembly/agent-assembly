@@ -5,6 +5,7 @@
 //! coordination, and lifecycle hooks.
 
 pub mod approval;
+pub mod approval_sink;
 pub mod audit_publisher;
 pub mod config;
 pub mod correlation;
