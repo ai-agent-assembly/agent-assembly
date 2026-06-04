@@ -13,13 +13,13 @@ use crate::support::{agent_id_to_text, backend_err};
 ///
 /// Unlike [`AuditEntry`] — which the sink hashes into a row — this carries the
 /// columns directly. The async audit consumer (AAASM-2388) builds one from a
-/// sanitized event, using the event's own `event_id` as [`id`](Self::id) so
-/// that the table's `ON CONFLICT (id) DO NOTHING` primary key doubles as
-/// event-id idempotency without a schema change.
+/// sanitized event, carrying the event's own `event_id` as the
+/// [`event_id`](Self::event_id) primary key so that `ON CONFLICT (event_id)
+/// DO NOTHING` gives idempotency on retried publishes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditLogRecord {
-    /// Primary key. Set to the event's `event_id` for idempotent inserts.
-    pub id: Uuid,
+    /// Primary key — the event's `event_id`, the idempotency key.
+    pub event_id: Uuid,
     /// Canonical agent identifier (stored verbatim in the `TEXT` column).
     pub agent_id: String,
     /// Action surface recorded in `tool_name`.
@@ -53,16 +53,16 @@ impl PgAuditSink {
     /// INSERT a pre-resolved [`AuditLogRecord`], deduplicating on its primary key.
     ///
     /// Returns `Ok(true)` when a new row was written and `Ok(false)` when the
-    /// `id` already existed (`ON CONFLICT (id) DO NOTHING` matched zero rows).
-    /// The async audit consumer uses the boolean to count duplicates without a
-    /// second round-trip.
+    /// `event_id` already existed (`ON CONFLICT (event_id) DO NOTHING` matched
+    /// zero rows). The async audit consumer uses the boolean to count duplicates
+    /// without a second round-trip.
     pub async fn insert_audit_log(&self, record: &AuditLogRecord) -> Result<bool> {
         let result = sqlx::query(
-            "INSERT INTO audit_logs (id, agent_id, tool_name, decision, latency_ms, ts) \
+            "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts) \
              VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (id) DO NOTHING",
+             ON CONFLICT (event_id) DO NOTHING",
         )
-        .bind(record.id)
+        .bind(record.event_id)
         .bind(&record.agent_id)
         .bind(&record.tool_name)
         .bind(&record.decision)

@@ -364,7 +364,7 @@ async fn process_message(
 fn audit_log_record(event: &SanitizedAuditEvent) -> AuditLogRecord {
     let value = event.as_value();
     AuditLogRecord {
-        id: extract_event_id(value),
+        event_id: extract_event_id(value),
         agent_id: string_field(value, "agent_id").unwrap_or_default(),
         tool_name: string_field(value, "action")
             .or_else(|| string_field(value, "event_type"))
@@ -444,7 +444,7 @@ mod tests {
             "decision": "deny",
             "ts": "2026-06-04T12:00:00Z",
         })));
-        assert_eq!(record.id, Uuid::parse_str(id).unwrap());
+        assert_eq!(record.event_id, Uuid::parse_str(id).unwrap());
         assert_eq!(record.agent_id, "acme/bot");
         assert_eq!(record.tool_name, "fs.read");
         assert_eq!(record.decision, "deny");
