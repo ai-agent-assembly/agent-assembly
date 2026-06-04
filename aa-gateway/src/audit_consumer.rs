@@ -157,6 +157,22 @@ impl AuditConsumerHandle {
     }
 }
 
+/// Boot-wiring convenience: build a config from the environment and spawn the
+/// consumer, returning `None` when it is not configured (env vars unset).
+///
+/// A startup failure is logged and returns `None` rather than propagating, so a
+/// misconfigured consumer never prevents the gateway from serving.
+pub async fn spawn_from_env() -> Option<AuditConsumerHandle> {
+    let config = AuditConsumerConfig::from_env()?;
+    match spawn(config, CancellationToken::new()).await {
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            tracing::warn!(error = %err, "audit consumer disabled — failed to start");
+            None
+        }
+    }
+}
+
 /// Connect to NATS and Postgres, ensure the stream/consumer exist, and spawn
 /// the producer + DB-writer tasks. Returns once both are running.
 pub async fn spawn(
