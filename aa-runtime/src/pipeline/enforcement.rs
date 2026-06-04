@@ -12,6 +12,8 @@
 //! The scanner / redaction primitives are sourced from [`aa_core`] today; they
 //! move to `aa-security` under AAASM-2567, which is an import-only change here.
 
+use aa_core::CredentialFinding;
+
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
 ///
@@ -51,5 +53,32 @@ impl Default for EnforcementConfig {
             max_field_bytes: DEFAULT_MAX_FIELD_BYTES,
             oversized_policy: OversizedPolicy::default(),
         }
+    }
+}
+
+/// Summary of the work performed by a single [`RuntimeScanner::enforce`] call.
+///
+/// Carries only finding metadata (kind + offset + redacted label) — never a
+/// raw secret. Consumed by the metrics layer (AAASM-2585) and the verification
+/// suite (AAASM-2587).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnforcementOutcome {
+    /// Every credential finding across all scanned fields of the event.
+    pub findings: Vec<CredentialFinding>,
+    /// Number of fields that hit the size cap and were redacted whole.
+    pub oversized_fields: usize,
+    /// Total bytes actually handed to the scanner across all fields.
+    pub scanned_bytes: usize,
+}
+
+impl EnforcementOutcome {
+    /// `true` when nothing was redacted: no findings and no oversized fields.
+    pub fn is_clean(&self) -> bool {
+        self.findings.is_empty() && self.oversized_fields == 0
+    }
+
+    /// Total number of redactions applied (findings + oversized fields).
+    pub fn redaction_count(&self) -> usize {
+        self.findings.len() + self.oversized_fields
     }
 }
