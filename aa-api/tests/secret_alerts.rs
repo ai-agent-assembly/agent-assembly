@@ -13,8 +13,9 @@ mod common;
 
 use std::time::Duration;
 
-use aa_core::{AgentId, CredentialKind};
+use aa_core::AgentId;
 use aa_gateway::alerts::SecretAlert;
+use aa_security::CredentialKind;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;

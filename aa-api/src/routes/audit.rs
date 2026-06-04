@@ -504,8 +504,8 @@ mod tests {
 
     // ── aggregate_sandbox_summary ────────────────────────────────────────────
 
-    use aa_core::audit::Redaction;
-    use aa_core::scanner::CredentialFinding;
+    use aa_security::CredentialFinding;
+    use aa_security::Redaction;
 
     fn entry_with_findings(agent: AgentId, payload: &str, findings: Vec<CredentialFinding>) -> AuditEntry {
         AuditEntry::new_with_lineage_and_redaction(

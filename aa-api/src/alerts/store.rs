@@ -250,7 +250,7 @@ impl AlertStore for InMemoryAlertStore {
 mod tests {
     use super::*;
     use aa_core::AgentId;
-    use aa_core::CredentialKind;
+    use aa_security::CredentialKind;
 
     fn test_alert(threshold_pct: u8) -> BudgetAlert {
         BudgetAlert {
