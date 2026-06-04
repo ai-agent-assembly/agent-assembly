@@ -9,15 +9,15 @@ description = "In-memory aa-storage driver (DashMap-backed) for tests and local 
 [dependencies]
 aa-core = { path = "../aa-core" }
 aa-storage = { path = "../aa-storage" }
-async-trait = "0.1"
-dashmap = "6"
-parking_lot = "0.12"
-# `toml` (same 0.9 pin as `aa-storage`) backs the driver-factory signatures,
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+# `toml` (same pin as `aa-storage`) backs the driver-factory signatures,
 # which take the `[storage.memory]` subsection as a `toml::Value`.
-toml = "1.1"
+toml = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
