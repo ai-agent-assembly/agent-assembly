@@ -12,12 +12,13 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage, Redaction};
+use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{
     BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
     OpControlSubscribeRequest,
 };
+use aa_security::Redaction;
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 

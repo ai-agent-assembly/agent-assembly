@@ -241,7 +241,8 @@ pub enum AuditError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::{AgentId, AuditEventType, CredentialScanner, Lineage, Redaction, SessionId};
+    use aa_core::{AgentId, AuditEventType, Lineage, SessionId};
+    use aa_security::{CredentialScanner, Redaction};
 
     /// Synthetic AWS access key from AWS public documentation. Not a real credential.
     const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";

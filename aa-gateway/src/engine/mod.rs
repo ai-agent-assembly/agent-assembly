@@ -55,7 +55,7 @@ pub struct EvaluationResult {
     pub redacted_payload: Option<String>,
     /// All credential and PII findings detected during the scanner pass.
     /// Empty when the payload was clean.
-    pub credential_findings: Vec<aa_core::CredentialFinding>,
+    pub credential_findings: Vec<aa_security::CredentialFinding>,
     /// Optional side-effect action for the service layer when the decision is `Deny`.
     /// `None` means no side-effect beyond denying the request.
     pub deny_action: Option<DenyAction>,
@@ -156,9 +156,9 @@ pub struct PolicyEngine {
     policy: Arc<ArcSwap<PolicyDocument>>,
     /// Pre-compiled Aho-Corasick credential scanner (built-in patterns).
     ///
-    /// Built once at construction time from [`aa_core::CredentialScanner`].
+    /// Built once at construction time from [`aa_security::CredentialScanner`].
     /// Always active — scans every action payload regardless of policy data section.
-    scanner: aa_core::CredentialScanner,
+    scanner: aa_security::CredentialScanner,
     /// Pre-compiled regex patterns from the policy's `data.sensitive_patterns`.
     ///
     /// Compiled once at load time to avoid re-compiling on every `evaluate()` call.
@@ -275,7 +275,7 @@ impl PolicyEngine {
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
         Ok(PolicyEngine {
             policy: policy_arc,
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
             rate_state: DashMap::new(),
             budget,
@@ -436,7 +436,7 @@ impl PolicyEngine {
 
         Ok(PolicyEngine {
             policy: policy_arc,
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
             rate_state: DashMap::new(),
             budget,
@@ -471,7 +471,7 @@ impl PolicyEngine {
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
         Ok(PolicyEngine {
             policy: policy_arc,
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
             rate_state: DashMap::new(),
             budget,
@@ -514,7 +514,7 @@ impl PolicyEngine {
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
             policy: policy_arc,
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns: vec![],
             rate_state: DashMap::new(),
             budget,
@@ -799,7 +799,7 @@ impl PolicyEngine {
         // Pass 2: policy-defined regex patterns.
         for re in &self.compiled_patterns {
             for m in re.find_iter(text) {
-                all_findings.push(aa_core::CredentialFinding::from_regex_match(m.start(), m.end()));
+                all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
             }
         }
 
@@ -846,7 +846,7 @@ impl PolicyEngine {
                 );
                 (None, all_findings)
             } else {
-                let merged = aa_core::ScanResult {
+                let merged = aa_security::ScanResult {
                     findings: all_findings.clone(),
                 };
                 let redacted = merged.redact(text);
@@ -1015,7 +1015,7 @@ impl PolicyEngine {
                 for pattern in &dp.sensitive_patterns {
                     if let Ok(re) = regex::Regex::new(pattern) {
                         for m in re.find_iter(text) {
-                            all_findings.push(aa_core::CredentialFinding::from_regex_match(m.start(), m.end()));
+                            all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
                         }
                     }
                 }
@@ -1061,7 +1061,7 @@ impl PolicyEngine {
                 );
                 (None, all_findings)
             } else {
-                let merged = aa_core::ScanResult {
+                let merged = aa_security::ScanResult {
                     findings: all_findings.clone(),
                 };
                 let redacted = merged.redact(text);
@@ -1465,7 +1465,7 @@ mod tests {
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
         PolicyEngine {
             policy: Arc::new(ArcSwap::new(Arc::new(doc))),
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
             rate_state: DashMap::new(),
             budget: Arc::new(BudgetTracker::new(
@@ -2045,7 +2045,7 @@ mod tests {
         assert!(!result.credential_findings.is_empty());
         let kinds: Vec<_> = result.credential_findings.iter().map(|f| f.kind.clone()).collect();
         assert!(
-            kinds.contains(&aa_core::CredentialKind::OpenAiKey),
+            kinds.contains(&aa_security::CredentialKind::OpenAiKey),
             "expected OpenAiKey finding, got: {:?}",
             kinds
         );
@@ -2086,7 +2086,7 @@ mod tests {
         assert_eq!(result.decision, PolicyResult::Allow);
         let kinds: Vec<_> = result.credential_findings.iter().map(|f| f.kind.clone()).collect();
         assert!(
-            kinds.contains(&aa_core::CredentialKind::Custom),
+            kinds.contains(&aa_security::CredentialKind::Custom),
             "expected Custom finding, got: {:?}",
             kinds
         );
@@ -2246,7 +2246,7 @@ mod tests {
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
         PolicyEngine {
             policy: Arc::new(ArcSwap::new(Arc::new(doc))),
-            scanner: aa_core::CredentialScanner::new(),
+            scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
             rate_state: DashMap::new(),
             budget: Arc::new(BudgetTracker::new_with_alert_sender(
