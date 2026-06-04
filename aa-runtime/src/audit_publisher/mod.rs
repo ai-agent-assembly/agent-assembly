@@ -12,6 +12,10 @@
 //! Assembly-side component that knows about it, so swapping in Kafka later does
 //! not touch the agent-facing API.
 
+mod config;
+
+pub use config::{NatsConfig, NatsTlsConfig, DEFAULT_MAX_INFLIGHT, DEFAULT_URL};
+
 /// Counter incremented once per event accepted by the NATS sink.
 pub const METRIC_PUBLISHED: &str = "aa_audit_published_total";
 
