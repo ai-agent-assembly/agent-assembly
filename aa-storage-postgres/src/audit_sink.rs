@@ -3,9 +3,34 @@
 use aa_core::audit::AuditEventType;
 use aa_storage::{AuditEntry, AuditSink, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::pool::PostgresPool;
 use crate::support::{agent_id_to_text, backend_err};
+
+/// A fully-resolved `audit_logs` row, ready to INSERT verbatim.
+///
+/// Unlike [`AuditEntry`] — which the sink hashes into a row — this carries the
+/// columns directly. The async audit consumer (AAASM-2388) builds one from a
+/// sanitized event, using the event's own `event_id` as [`id`](Self::id) so
+/// that the table's `ON CONFLICT (id) DO NOTHING` primary key doubles as
+/// event-id idempotency without a schema change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditLogRecord {
+    /// Primary key. Set to the event's `event_id` for idempotent inserts.
+    pub id: Uuid,
+    /// Canonical agent identifier (stored verbatim in the `TEXT` column).
+    pub agent_id: String,
+    /// Action surface recorded in `tool_name`.
+    pub tool_name: String,
+    /// Coarse governance posture recorded in `decision`.
+    pub decision: String,
+    /// Optional decision latency; `None` leaves the column NULL.
+    pub latency_ms: Option<i32>,
+    /// Event timestamp.
+    pub ts: DateTime<Utc>,
+}
 
 /// Postgres-backed [`AuditSink`].
 ///
