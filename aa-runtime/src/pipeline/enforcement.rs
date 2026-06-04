@@ -220,7 +220,9 @@ impl RuntimeScanner {
 mod tests {
     use super::*;
     use crate::pipeline::event::EventSource;
-    use aa_proto::assembly::audit::v1::{AuditEvent, FileOpDetail, ProcessExecDetail, ToolCallDetail};
+    use aa_proto::assembly::audit::v1::{
+        AuditEvent, FileOpDetail, NetworkCallDetail, ProcessExecDetail, ToolCallDetail,
+    };
 
     /// An AWS access-key id — detected via the `AKIA` literal pattern.
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
@@ -366,5 +368,26 @@ mod tests {
         assert!(!body.contains(AWS_KEY), "raw secret must not survive");
         assert_eq!(outcome.oversized_fields, 1);
         assert!(!outcome.is_clean());
+    }
+
+    #[test]
+    fn non_allowlisted_detail_is_not_scanned() {
+        let scanner = RuntimeScanner::new();
+        // NetworkCallDetail carries only host/port/status — no free-text field
+        // is on the allowlist, so the stage skips it entirely.
+        let mut event = event_with(Detail::Network(NetworkCallDetail {
+            host: "api.example.com".to_string(),
+            port: 443,
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::Network(n)) = event.inner.detail else {
+            unreachable!("detail was a Network");
+        };
+        assert_eq!(n.host, "api.example.com", "non-allowlisted field untouched");
+        assert!(outcome.is_clean());
+        assert_eq!(outcome.scanned_bytes, 0);
     }
 }
