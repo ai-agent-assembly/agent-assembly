@@ -97,3 +97,33 @@ impl NatsConfig {
         Ok(toml::from_str::<ConfigRoot>(toml)?.gateway.nats)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_gateway_nats_table() {
+        let toml = r#"
+            [gateway.nats]
+            url = "tls://nats.example.com:4222"
+            token = "s3cr3t"
+            max_inflight = 4096
+
+            [gateway.nats.tls]
+            ca = "/etc/aa/ca.pem"
+            cert = "/etc/aa/client.pem"
+            key = "/etc/aa/client.key"
+        "#;
+
+        let cfg = NatsConfig::from_toml_str(toml).expect("valid config");
+
+        assert_eq!(cfg.url, "tls://nats.example.com:4222");
+        assert_eq!(cfg.token.as_deref(), Some("s3cr3t"));
+        assert_eq!(cfg.max_inflight, 4096);
+        let tls = cfg.tls.expect("tls table present");
+        assert_eq!(tls.ca, Some(PathBuf::from("/etc/aa/ca.pem")));
+        assert_eq!(tls.cert, Some(PathBuf::from("/etc/aa/client.pem")));
+        assert_eq!(tls.key, Some(PathBuf::from("/etc/aa/client.key")));
+    }
+}
