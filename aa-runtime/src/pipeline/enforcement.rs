@@ -409,4 +409,25 @@ mod tests {
         assert!(outcome.is_clean());
         assert_eq!(outcome.scanned_bytes, 0);
     }
+
+    #[test]
+    fn one_scanner_redacts_across_multiple_events() {
+        // The single precompiled scanner is reused for every event.
+        let scanner = RuntimeScanner::new();
+        for _ in 0..3 {
+            let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"key": "{AWS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            }));
+
+            let outcome = scanner.enforce(&mut event);
+
+            let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+                unreachable!("detail was a ToolCall");
+            };
+            let contains_secret = tc.args_json.windows(AWS_KEY.len()).any(|w| w == AWS_KEY.as_bytes());
+            assert!(!contains_secret, "raw secret must not survive any iteration");
+            assert!(!outcome.is_clean());
+        }
+    }
 }
