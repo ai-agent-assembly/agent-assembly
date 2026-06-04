@@ -38,3 +38,38 @@ fn sanitize_token(raw: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::audit::{AuditEventType, Lineage};
+    use aa_core::{AgentId, SessionId};
+
+    const AGENT_BYTES: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+    /// Build an audit entry carrying the given optional org/team lineage.
+    fn entry_with(org: Option<&str>, team: Option<&str>) -> AuditEntry {
+        let lineage = Lineage {
+            org_id: org.map(str::to_string),
+            team_id: team.map(str::to_string),
+            ..Lineage::default()
+        };
+        AuditEntry::new_with_lineage(
+            1,
+            0,
+            AuditEventType::ToolCallIntercepted,
+            AgentId::from_bytes(AGENT_BYTES),
+            SessionId::from_bytes(AGENT_BYTES),
+            "{}".to_string(),
+            [0u8; 32],
+            lineage,
+        )
+    }
+
+    #[test]
+    fn defaults_tenant_and_renders_agent_uuid() {
+        let entry = entry_with(None, None);
+        let expected_agent = uuid::Uuid::from_bytes(AGENT_BYTES);
+        assert_eq!(subject_for(&entry), format!("assembly.audit.default.{expected_agent}"));
+    }
+}
