@@ -96,6 +96,43 @@ impl NatsConfig {
     pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
         Ok(toml::from_str::<ConfigRoot>(toml)?.gateway.nats)
     }
+
+    /// Build the [`async_nats::ConnectOptions`] described by this configuration.
+    ///
+    /// Applies the bearer token when set and, when a `[gateway.nats.tls]` table
+    /// is present, requires TLS and installs the configured root certificate
+    /// and (for mutual TLS) the client certificate/key. `max_inflight` caps the
+    /// client's internal channel capacity.
+    ///
+    /// Enabling TLS requires a process-wide `rustls` crypto provider to be
+    /// installed by the host binary before [`connect`](Self::connect) is called.
+    #[must_use]
+    pub fn connect_options(&self) -> async_nats::ConnectOptions {
+        let mut opts = async_nats::ConnectOptions::new().client_capacity(self.max_inflight.max(1));
+        if let Some(token) = &self.token {
+            opts = opts.token(token.clone());
+        }
+        if let Some(tls) = &self.tls {
+            opts = opts.require_tls(true);
+            if let Some(ca) = &tls.ca {
+                opts = opts.add_root_certificates(ca.clone());
+            }
+            if let (Some(cert), Some(key)) = (&tls.cert, &tls.key) {
+                opts = opts.add_client_certificate(cert.clone(), key.clone());
+            }
+        }
+        opts
+    }
+
+    /// Connect to the configured NATS server using [`connect_options`](Self::connect_options).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`async_nats::ConnectError`] when the initial connection
+    /// cannot be established.
+    pub async fn connect(&self) -> Result<async_nats::Client, async_nats::ConnectError> {
+        self.connect_options().connect(self.url.clone()).await
+    }
 }
 
 #[cfg(test)]
