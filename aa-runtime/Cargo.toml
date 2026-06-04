@@ -50,6 +50,9 @@ tower = { version = "0.5", features = ["util"] }
 # Captures emitted metric values so the audit-publisher metric tests can assert
 # the exact counter values recorded by `metrics::counter!`.
 metrics-util = { version = "0.20", features = ["debugging"] }
+# Real NATS server for the audit-publisher reconnect integration test. Requires
+# Docker; re-exports the `testcontainers` core runner.
+testcontainers-modules = { version = "0.15", features = ["nats"] }
 
 [lints]
 workspace = true
