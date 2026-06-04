@@ -82,22 +82,22 @@ fi
 TOP_LOG="$OUT/top-crates.txt"
 if [ -n "$TIMING_HTML" ] && command -v python3 >/dev/null 2>&1; then
   python3 - "$OUT/cargo-timing.html" "$TOP_N" >"$TOP_LOG" <<'PY'
-import json, re, sys
+import json, sys
 html = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 top_n = int(sys.argv[2])
-# cargo embeds the per-unit timing data as JSON objects carrying both a
-# "name" and a "duration" key; pull them out tolerantly of the surrounding JS.
-units = {}
-for m in re.finditer(r'\{[^{}]*?"duration":[0-9.]+[^{}]*?\}', html):
-    try:
-        o = json.loads(m.group(0))
-    except Exception:
-        continue
-    if "name" in o and "duration" in o:
-        # A crate may compile twice (lib + test/bench); keep the largest unit.
-        key = "%s %s" % (o.get("name"), o.get("version", ""))
-        units[key] = max(units.get(key, 0.0), float(o["duration"]))
-ranked = sorted(units.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+# cargo embeds the per-unit timing data as a pretty-printed JSON array
+# assigned to `const UNIT_DATA = [ ... ];`. Slice that array out and parse it.
+seg = html.split("const UNIT_DATA", 1)[1]
+seg = seg.split("\nconst ", 1)[0]
+arr = seg[seg.index("["): seg.rindex("]") + 1]
+data = json.loads(arr)
+# A crate compiles as several units (build-script, lib, codegen); sum them
+# per (name, version) to get the crate's total wall-clock compile cost.
+agg = {}
+for o in data:
+    key = "%s %s" % (o.get("name"), o.get("version", ""))
+    agg[key] = agg.get(key, 0.0) + float(o.get("duration", 0.0))
+ranked = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 print("rank  duration(s)  crate")
 for i, (name, dur) in enumerate(ranked, 1):
     print("%4d  %11.1f  %s" % (i, dur, name.strip()))
@@ -133,8 +133,15 @@ echo "    test build+run: ${TEST_REAL}s  (log: $TEST_LOG)"
 DUPS_LOG="$OUT/cargo-tree-dups.txt"
 echo ">>> cargo tree -d (duplicate versions)"
 $CARGO tree -d >"$DUPS_LOG" 2>&1 || true
-DUP_COUNT="$(grep -cE '^[a-zA-Z0-9_-]+ v[0-9]' "$DUPS_LOG" 2>/dev/null || echo 0)"
-echo "    duplicate roots: ${DUP_COUNT}  (report: $DUPS_LOG)"
+# Column-0 lines are the duplicate-group headers ("<name> v<ver>"); the
+# indented lines below each are the dependents. The headline metric is the
+# number of packages that appear with MORE THAN ONE version — those are the
+# crates compiled twice (what AAASM-2555's dedup targets). Same-version repeats
+# (feature/dep-kind splits) compile once, so they are not counted.
+DUP_PAIRS="$(grep -E '^[A-Za-z0-9][A-Za-z0-9_+.-]* v[0-9]' "$DUPS_LOG" | awk '{print $1, $2}' | sort -u)"
+DUP_PKGS_MULTIVER="$(printf '%s\n' "$DUP_PAIRS" | awk 'NF{c[$1]++} END{n=0; for(k in c) if(c[k]>1) n++; print n+0}')"
+DUP_UNIT_COUNT="$(printf '%s\n' "$DUP_PAIRS" | awk 'NF' | wc -l | tr -d ' ')"
+echo "    packages with >1 version: ${DUP_PKGS_MULTIVER}  (distinct duplicate units: ${DUP_UNIT_COUNT}; report: $DUPS_LOG)"
 
 # --- Summary ---------------------------------------------------------------
 SUMMARY="$OUT/summary.md"
@@ -150,7 +157,8 @@ SUMMARY="$OUT/summary.md"
   echo "| Cold build (\`build --workspace --timings\`) | ${COLD_REAL}s |"
   echo "| Warm rebuild (touch \`${WARM_FILE}\`) | ${WARM_REAL:-n/a}s |"
   echo "| Test build+run (\`nextest run --workspace\`) | ${TEST_REAL}s |"
-  echo "| \`cargo tree -d\` duplicate roots | ${DUP_COUNT} |"
+  echo "| Packages built in >1 version (\`cargo tree -d\`) | ${DUP_PKGS_MULTIVER} |"
+  echo "| Distinct duplicate (name, version) units | ${DUP_UNIT_COUNT} |"
 } >"$SUMMARY"
 
 echo
