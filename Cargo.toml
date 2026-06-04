@@ -116,6 +116,12 @@ testcontainers-modules = "0.15"
 dirs = "6"
 which = "8"
 libc = "0.2"
+# Dev / test tooling
+criterion = "0.8"
+proptest = "1"
+tempfile = "3"
+rstest = "0.26"
+wat = "1"
 
 [workspace.lints.clippy]
 all = "warn"
