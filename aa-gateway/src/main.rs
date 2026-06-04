@@ -195,7 +195,14 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Optionally spawn the webhook delivery loop (reads AA_WEBHOOK_URL).
     let _webhook_handle = aa_gateway::events::startup::maybe_spawn_webhook(&approval_queue, budget_alert_rx);
 
-    if let Some(socket_path) = &cli.socket {
+    // strip-for-publish:begin audit-consumer
+    // AAASM-2388: spawn the NATS->Postgres audit consumer when configured via
+    // AA_AUDIT_NATS_URL + AA_AUDIT_POSTGRES_URL. Drained after serve returns.
+    #[cfg(feature = "audit-consumer")]
+    let audit_consumer = aa_gateway::audit_consumer::spawn_from_env().await;
+    // strip-for-publish:end audit-consumer
+
+    let serve_result = if let Some(socket_path) = &cli.socket {
         aa_gateway::server::serve_uds(
             &policy,
             socket_path,
@@ -215,7 +222,17 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Some(storage),
         )
         .await
+    };
+
+    // strip-for-publish:begin audit-consumer
+    // Graceful drain: stop pulling, flush the channel into Postgres, then exit.
+    #[cfg(feature = "audit-consumer")]
+    if let Some(handle) = audit_consumer {
+        handle.shutdown().await;
     }
+    // strip-for-publish:end audit-consumer
+
+    serve_result
 }
 
 /// Remote Control-Plane Mode entry: load the persisted `GatewayConfig`

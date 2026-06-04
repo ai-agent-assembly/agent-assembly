@@ -45,6 +45,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKED_FILES=(
     "${REPO_ROOT}/aa-cli/Cargo.toml"
     "${REPO_ROOT}/aa-cli/src/commands/mod.rs"
+    # AAASM-2388: gateway NATS audit consumer (async-nats + publish=false
+    # aa-storage-postgres). Removed so the published gateway has no held-back deps.
+    "${REPO_ROOT}/aa-gateway/Cargo.toml"
+    "${REPO_ROOT}/aa-gateway/src/lib.rs"
+    "${REPO_ROOT}/aa-gateway/src/main.rs"
 )
 
 # ---- Files to delete outright (they consume held-back deps) ----
@@ -53,21 +58,25 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
+    # AAASM-2388: the audit consumer module + its integration test.
+    "${REPO_ROOT}/aa-gateway/src/audit_consumer.rs"
+    "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
 )
 
-# Strip region. Uses awk to drop lines from
-# `strip-for-publish:begin <region>` through `strip-for-publish:end <region>`
-# inclusive. Lines are matched anywhere on the line (not just column 0) so
-# both Rust `// ...` and TOML `# ...` comment styles work.
+# Strip region. Uses awk to drop lines from any
+# `strip-for-publish:begin <region>` through its matching
+# `strip-for-publish:end <region>` (inclusive), regardless of region name, so a
+# single file may carry several independently-named regions. Lines are matched
+# anywhere on the line (not just column 0) so both Rust `// ...` and TOML
+# `# ...` comment styles work.
 strip_regions() {
     local file="$1"
-    local region="devtool"
     local tmp
     tmp="$(mktemp)"
-    awk -v r="$region" '
+    awk '
         BEGIN { in_region = 0 }
-        index($0, "strip-for-publish:begin " r) > 0 { in_region = 1; next }
-        index($0, "strip-for-publish:end " r) > 0   { in_region = 0; next }
+        index($0, "strip-for-publish:begin ") > 0 { in_region = 1; next }
+        index($0, "strip-for-publish:end ") > 0   { in_region = 0; next }
         in_region == 0 { print }
     ' "$file" > "$tmp"
     mv "$tmp" "$file"
@@ -98,3 +107,9 @@ echo ""
 echo "AAASM-2340 strip-for-publish: verifying aa-cli still builds after strip"
 ( cd "$REPO_ROOT" && cargo check -p aa-cli ) >/dev/null
 echo "  ✓ aa-cli compiles cleanly without dev-tool surface"
+
+# AAASM-2388: aa-gateway must still compile without the audit-consumer surface.
+echo ""
+echo "AAASM-2388 strip-for-publish: verifying aa-gateway still builds after strip"
+( cd "$REPO_ROOT" && cargo check -p aa-gateway ) >/dev/null
+echo "  ✓ aa-gateway compiles cleanly without audit-consumer surface"

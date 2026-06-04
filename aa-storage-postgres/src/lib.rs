@@ -18,7 +18,7 @@ pub mod policy_store;
 pub mod pool;
 pub mod support;
 
-pub use audit_sink::PgAuditSink;
+pub use audit_sink::{AuditLogRecord, PgAuditSink};
 pub use config::PostgresPoolConfig;
 pub use credential_store::PgCredentialStore;
 pub use lifecycle_store::PgLifecycleStore;
