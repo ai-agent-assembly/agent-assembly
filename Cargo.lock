@@ -510,6 +510,7 @@ version = "0.0.1-alpha.5"
 dependencies = [
  "aa-core",
  "aa-storage",
+ "aa-storage-memory",
  "async-trait",
  "deadpool-redis",
  "redis",
@@ -517,7 +518,7 @@ dependencies = [
  "serde_json",
  "testcontainers-modules",
  "tokio",
- "toml 0.8.23",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
