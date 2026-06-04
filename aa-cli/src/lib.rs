@@ -8,6 +8,9 @@ pub mod config;
 pub mod error;
 pub mod output;
 
+#[cfg(test)]
+mod test_support;
+
 /// Agent Assembly CLI — governance gateway management tool.
 #[derive(Parser)]
 #[command(name = "aasm", version, about)]
