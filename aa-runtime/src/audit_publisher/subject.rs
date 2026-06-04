@@ -83,4 +83,11 @@ mod tests {
             format!("assembly.audit.acme_corp_eu.{expected_agent}")
         );
     }
+
+    #[test]
+    fn falls_back_to_team_id_when_org_absent() {
+        let entry = entry_with(None, Some("payments"));
+        let expected_agent = uuid::Uuid::from_bytes(AGENT_BYTES);
+        assert_eq!(subject_for(&entry), format!("assembly.audit.payments.{expected_agent}"));
+    }
 }
