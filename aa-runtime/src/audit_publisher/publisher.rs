@@ -171,4 +171,17 @@ mod tests {
         assert_eq!(sink.captured_seqs(), vec![1]);
         assert_eq!(publisher.buffered_len().unwrap(), 0, "nothing should be buffered");
     }
+
+    #[tokio::test]
+    async fn buffers_when_sink_down() {
+        let (_dir, buffer) = new_buffer();
+        let sink = Arc::new(FakeSink::new(false));
+        let publisher = AuditPublisher::new(sink.clone(), buffer.clone());
+
+        publisher.publish(entry(1)).await;
+        publisher.publish(entry(2)).await;
+
+        assert!(sink.captured_seqs().is_empty(), "sink is down, nothing delivered");
+        assert_eq!(publisher.buffered_len().unwrap(), 2, "both events buffered");
+    }
 }
