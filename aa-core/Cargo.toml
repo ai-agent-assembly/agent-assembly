@@ -8,16 +8,16 @@ description = "Pure domain logic for Agent Assembly — no_std compatible"
 
 [dependencies]
 aho-corasick = { version = "1", optional = true }
-async-trait  = { version = "0.1", optional = true }
+async-trait  = { workspace = true, optional = true }
 cfg-if       = "1"
-chrono       = { version = "0.4", default-features = false, features = ["clock"], optional = true }
-dirs         = { version = "6", optional = true }
+chrono       = { workspace = true, default-features = false, features = ["clock"], optional = true }
+dirs         = { workspace = true, optional = true }
 schemars     = { version = "1", optional = true }
-serde        = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
-serde_json   = { version = "1", optional = true }
-serde_yaml   = { version = "0.9", optional = true }
-sha2         = { version = "0.11", default-features = false, optional = true }
-thiserror    = { version = "2", optional = true }
+serde        = { workspace = true, default-features = false, features = ["alloc"], optional = true }
+serde_json   = { workspace = true, optional = true }
+serde_yaml   = { workspace = true, optional = true }
+sha2         = { workspace = true, default-features = false, optional = true }
+thiserror    = { workspace = true, optional = true }
 
 [features]
 default    = ["std"]
@@ -28,9 +28,9 @@ schemars   = ["dep:schemars"]
 test-utils = []
 
 [dev-dependencies]
-criterion  = { version = "0.8", features = ["html_reports"] }
-proptest   = "1"
-serde_json = "1"
+criterion  = { workspace = true, features = ["html_reports"] }
+proptest   = { workspace = true }
+serde_json = { workspace = true }
 # Self dev-dependency: turns on `serde` + `schemars` for aa-core's own test
 # build so the `types::` property tests and JsonSchema derives compile and run
 # under `cargo nextest run -p aa-core` without making those features default
