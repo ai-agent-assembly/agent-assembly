@@ -28,6 +28,9 @@ dirs = "6"
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt"] }
 tempfile = "3"
+# Captures emitted metric values so the cap-eviction test can assert the exact
+# `aa_events_dropped_total` count.
+metrics-util = { version = "0.20", features = ["debugging"] }
 
 [lints]
 workspace = true
