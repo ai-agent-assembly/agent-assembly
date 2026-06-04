@@ -16,7 +16,7 @@ use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::approval::ApprovalQueue;
 use aa_runtime::ipc::{new_response_router, IpcFrame};
 use aa_runtime::pipeline::{run, PipelineConfig, PipelineEvent, PipelineMetrics};
-use aa_runtime::policy::PolicyRules;
+use aa_runtime::policy::{PolicyRule, PolicyRules};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -95,5 +95,21 @@ async fn drive_one(policy: PolicyRules) -> PipelineEvent {
 #[tokio::test]
 async fn gate_redacts_on_batch_path() {
     let event = drive_one(PolicyRules::default()).await;
+    assert_redacted(event);
+}
+
+/// AC: redaction also happens on the violation path. A rule blocking `TOOL_CALL`
+/// routes the secret-bearing event onto the immediate broadcast path, which must
+/// still be redacted — the gate is independent of the forwarding decision.
+#[tokio::test]
+async fn gate_redacts_on_violation_path() {
+    let policy = PolicyRules {
+        rules: vec![PolicyRule {
+            name: "block-tools".to_string(),
+            blocked_actions: vec!["TOOL_CALL".to_string()],
+            ..Default::default()
+        }],
+    };
+    let event = drive_one(policy).await;
     assert_redacted(event);
 }
