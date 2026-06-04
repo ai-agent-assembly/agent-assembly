@@ -259,4 +259,23 @@ mod tests {
         assert_eq!(outcome.findings.len(), 1);
         assert!(!outcome.is_clean());
     }
+
+    #[test]
+    fn tool_call_error_message_secret_is_redacted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            succeeded: false,
+            error_message: format!("upstream auth failed using {AWS_KEY}"),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        assert!(!tc.error_message.contains(AWS_KEY));
+        assert!(tc.error_message.contains("[REDACTED:"));
+        assert_eq!(outcome.findings.len(), 1);
+    }
 }
