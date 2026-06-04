@@ -89,6 +89,15 @@ utoipa = { version = "5", features = ["axum_extras"] }
 tokio-tungstenite = "0.29"
 url = "2"
 clap = "4"
+# TLS / crypto
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = "0.14"
+sha2 = "0.11"
+hex = "0.4"
+hmac = "0.13"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+time = "0.3"
 
 [workspace.lints.clippy]
 all = "warn"
