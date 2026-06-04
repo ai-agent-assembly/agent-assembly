@@ -26,7 +26,7 @@ use aa_proto::assembly::secrets::v1::secrets_service_server::SecretsServiceServe
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyServiceServer;
 use tokio::sync::broadcast;
 
-use aa_runtime::approval::ApprovalQueue;
+use aa_runtime::approval::{ApprovalQueue, ApprovalResolvedNotifier};
 
 use crate::approval::clock::SystemClock;
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
@@ -373,6 +373,11 @@ pub async fn serve_tcp(
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
+    // Reuse the push channel for approval notifications: a dashboard verdict
+    // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
+    // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
+    let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
+    approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
@@ -445,6 +450,11 @@ pub async fn serve_uds(
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
+    // Reuse the push channel for approval notifications: a dashboard verdict
+    // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
+    // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
+    let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
+    approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
