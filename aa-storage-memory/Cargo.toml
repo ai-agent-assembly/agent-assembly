@@ -14,7 +14,7 @@ dashmap = "6"
 parking_lot = "0.12"
 # `toml` (same 0.9 pin as `aa-storage`) backs the driver-factory signatures,
 # which take the `[storage.memory]` subsection as a `toml::Value`.
-toml = "0.9"
+toml = "1.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

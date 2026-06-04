@@ -22,7 +22,7 @@ thiserror  = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-toml  = "0.8"
+toml  = "1.1"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [lints]
