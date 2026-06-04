@@ -51,6 +51,14 @@ axum-server  = { version = "0.8", features = ["tls-rustls"] }
 tower-http   = { version = "0.6", features = ["fs"] }
 x509-parser  = "0.18"
 redis        = { version = "1.2", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+# strip-for-publish:begin audit-consumer
+# AAASM-2388: gateway-side NATS JetStream audit consumer. Held back from the
+# crates.io publish set — aa-storage-postgres is `publish = false`, so cargo
+# would reject the published gateway for depending on it. This whole block is
+# removed by .ci/strip-for-publish.sh before `cargo workspaces publish`.
+async-nats   = { version = "0.49", optional = true }
+aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
+# strip-for-publish:end audit-consumer
 
 [dev-dependencies]
 # Path-only (the driver is publish=false). The migration-drift test runs the
@@ -66,7 +74,7 @@ insta        = "1"
 tower        = { version = "0.5", features = ["util"] }
 rcgen        = { version = "0.14", features = ["pem"] }
 time         = "0.3"
-testcontainers-modules = { version = "0.15", features = ["postgres"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "nats"] }
 rustls       = "0.23"
 
 [features]
@@ -75,6 +83,11 @@ default = []
 # Off by default — the gateway runs with `PolicyCache::Disabled` unless a
 # downstream binary explicitly enables this feature.
 redis-cache = ["dep:redis"]
+# strip-for-publish:begin audit-consumer
+# AAASM-2388: gateway-internal NATS->Postgres audit consumer worker. Default
+# OFF; enabled in dev/CI via `--all-features`. Stripped before crates.io publish.
+audit-consumer = ["dep:async-nats", "dep:aa-storage-postgres"]
+# strip-for-publish:end audit-consumer
 
 [[bin]]
 name = "aa-gateway"
