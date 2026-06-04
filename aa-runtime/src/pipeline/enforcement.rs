@@ -247,6 +247,7 @@ mod tests {
     use aa_proto::assembly::audit::v1::{
         AuditEvent, FileOpDetail, NetworkCallDetail, ProcessExecDetail, ToolCallDetail,
     };
+    use metrics_exporter_prometheus::PrometheusBuilder;
 
     /// An AWS access-key id — detected via the `AKIA` literal pattern.
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
@@ -453,5 +454,26 @@ mod tests {
             assert!(!contains_secret, "raw secret must not survive any iteration");
             assert!(!outcome.is_clean());
         }
+    }
+
+    #[test]
+    fn enforce_emits_scan_metrics() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            let scanner = RuntimeScanner::new();
+            let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"key": "{AWS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            }));
+            scanner.enforce(&mut event);
+        });
+
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_scan_latency_seconds"));
+        assert!(rendered.contains("aa_runtime_scan_payload_bytes"));
+        assert!(rendered.contains("aa_runtime_scan_findings_total"));
+        // The finding metric is labelled by kind; the raw secret never appears.
+        assert!(!rendered.contains(AWS_KEY));
     }
 }
