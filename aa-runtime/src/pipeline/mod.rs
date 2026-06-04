@@ -76,6 +76,10 @@ pub async fn run(
     let mut ticker = tokio::time::interval(config.flush_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // GATE (AAASM-2568): one precompiled scanner, constructed once and reused
+    // for every event. The runtime is the authoritative scan/redact point.
+    let scanner = enforcement::RuntimeScanner::new();
+
     loop {
         tokio::select! {
             biased;
@@ -91,7 +95,11 @@ pub async fn run(
             Some((connection_id, frame)) = rx.recv() => {
                 match frame {
                     IpcFrame::EventReport(event) => {
-                        let enriched = enrich(event, &config.agent_id, connection_id, &seq);
+                        let mut enriched = enrich(event, &config.agent_id, connection_id, &seq);
+                        // GATE: scan + redact + normalize before any forward or
+                        // audit, on every path. Unconditional — no SDK signal can
+                        // skip this.
+                        scanner.enforce(&mut enriched);
                         tracing::debug!(sequence_number = enriched.sequence_number, connection_id, "event enriched");
                         metrics.record_processed(1);
                         ::metrics::counter!("aa_events_received_total").increment(1);
