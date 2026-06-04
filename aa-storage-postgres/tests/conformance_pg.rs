@@ -57,18 +57,29 @@ async fn migrations_apply_cleanly_and_audit_logs_is_metadata_only() {
         assert!(exists, "table {table} should exist after migrations");
     }
 
-    // audit_logs must carry no payload/prompt/body column (spec line 7551).
+    // audit_logs must carry no payload/body/prompt/completion column (spec line 7551).
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_logs'")
             .fetch_all(pool.pool())
             .await
             .expect("query audit_logs columns");
-    for forbidden in ["payload", "prompt", "body"] {
+    for forbidden in ["payload", "body", "prompt", "completion"] {
         assert!(
             !columns.iter().any(|c| c == forbidden),
             "audit_logs must not contain a {forbidden} column"
         );
     }
+
+    // The dashboard reads audit_logs by (agent_id, ts DESC); that covering
+    // index must survive a fresh migrate() (AAASM-2389 AC).
+    let has_index: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes \
+         WHERE tablename = 'audit_logs' AND indexname = 'idx_audit_logs_agent_ts')",
+    )
+    .fetch_one(pool.pool())
+    .await
+    .expect("query audit_logs indexes");
+    assert!(has_index, "idx_audit_logs_agent_ts must exist after migrations");
 }
 
 #[tokio::test]
