@@ -72,4 +72,15 @@ mod tests {
         let expected_agent = uuid::Uuid::from_bytes(AGENT_BYTES);
         assert_eq!(subject_for(&entry), format!("assembly.audit.default.{expected_agent}"));
     }
+
+    #[test]
+    fn prefers_org_id_and_sanitizes_unsafe_chars() {
+        // org_id wins over team_id; the space and dot are not subject-safe.
+        let entry = entry_with(Some("acme corp.eu"), Some("payments"));
+        let expected_agent = uuid::Uuid::from_bytes(AGENT_BYTES);
+        assert_eq!(
+            subject_for(&entry),
+            format!("assembly.audit.acme_corp_eu.{expected_agent}")
+        );
+    }
 }
