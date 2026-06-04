@@ -130,21 +130,26 @@ impl RuntimeScanner {
     /// enumeration fields are left untouched.
     pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
         let mut outcome = EnforcementOutcome::default();
-        let Some(detail) = event.inner.detail.as_mut() else {
-            return outcome;
-        };
+        if let Some(detail) = event.inner.detail.as_mut() {
+            self.scan_detail(detail, &mut outcome);
+        }
+        outcome
+    }
+
+    /// Scan and redact the allowlisted secret-bearing fields of `detail`.
+    fn scan_detail(&self, detail: &mut Detail, outcome: &mut EnforcementOutcome) {
         match detail {
             Detail::ToolCall(tc) => {
-                self.scan_bytes(&mut tc.args_json, &mut outcome);
-                self.scan_string(&mut tc.error_message, &mut outcome);
+                self.scan_bytes(&mut tc.args_json, outcome);
+                self.scan_string(&mut tc.error_message, outcome);
             }
             Detail::FileOp(f) => {
-                self.scan_string(&mut f.path, &mut outcome);
+                self.scan_string(&mut f.path, outcome);
             }
             Detail::Process(p) => {
-                self.scan_string(&mut p.command, &mut outcome);
+                self.scan_string(&mut p.command, outcome);
                 for arg in p.args.iter_mut() {
-                    self.scan_string(arg, &mut outcome);
+                    self.scan_string(arg, outcome);
                 }
             }
             // No free-text secret-bearing fields: LlmCall / Network / Violation
@@ -153,7 +158,6 @@ impl RuntimeScanner {
             // until its secret-bearing fields are triaged here.
             Detail::LlmCall(_) | Detail::Network(_) | Detail::Violation(_) | Detail::Approval(_) => {}
         }
-        outcome
     }
 
     /// Scan and redact a UTF-8 string field in place.
