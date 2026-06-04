@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -244,6 +244,25 @@ impl std::fmt::Display for ApprovalError {
 impl std::error::Error for ApprovalError {}
 
 // ---------------------------------------------------------------------------
+// ApprovalResolvedNotifier
+// ---------------------------------------------------------------------------
+
+/// Sink notified the instant a human reviewer settles an approval request, so a
+/// blocked agent can be woken over a push channel instead of polling.
+///
+/// The gateway's invalidation hub implements this (see
+/// `aa-gateway/src/invalidation/hub.rs`) to fan an `ApprovalResolved` event out
+/// to subscribed Assemblies. Wired into an [`ApprovalQueue`] via
+/// [`ApprovalQueue::set_resolved_notifier`]; the queue invokes it from
+/// [`decide`](ApprovalQueue::decide) on every human verdict. The implementor
+/// decides which decisions to forward — timeouts are reported here too but the
+/// gateway only broadcasts genuine human verdicts (spec line 7699 / AAASM-2378).
+pub trait ApprovalResolvedNotifier: Send + Sync {
+    /// Called after `request_id` is resolved with `decision`.
+    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision);
+}
+
+// ---------------------------------------------------------------------------
 // ApprovalQueue
 // ---------------------------------------------------------------------------
 
@@ -275,6 +294,12 @@ pub struct ApprovalQueue {
     /// Separate from `event_tx` so subscribers can distinguish submission
     /// from expiry without inspecting payload contents. AAASM-1453.
     expiry_event_tx: broadcast::Sender<ApprovalRequest>,
+    /// Optional push sink notified on every resolution (AAASM-2378). When set
+    /// (via [`set_resolved_notifier`](Self::set_resolved_notifier)), the gateway
+    /// fans an `ApprovalResolved` event out to blocked Assemblies so they need
+    /// not poll. `OnceLock` keeps the resolve hot path lock-free; the notifier
+    /// is installed once at startup.
+    resolved_notifier: OnceLock<Arc<dyn ApprovalResolvedNotifier>>,
 }
 
 /// Hash a string into a 16-byte identifier using SHA-256 truncation.
@@ -300,6 +325,7 @@ impl ApprovalQueue {
             audit_last_hash: Mutex::new([0u8; 32]),
             event_tx,
             expiry_event_tx,
+            resolved_notifier: OnceLock::new(),
         })
     }
 
@@ -320,6 +346,7 @@ impl ApprovalQueue {
             audit_last_hash: Mutex::new([0u8; 32]),
             event_tx,
             expiry_event_tx,
+            resolved_notifier: OnceLock::new(),
         })
     }
 
@@ -340,7 +367,18 @@ impl ApprovalQueue {
             audit_last_hash: Mutex::new(initial_hash),
             event_tx,
             expiry_event_tx,
+            resolved_notifier: OnceLock::new(),
         })
+    }
+
+    /// Install the push sink notified on every resolution (AAASM-2378).
+    ///
+    /// Wires the queue to the gateway's invalidation hub so a human verdict is
+    /// fanned out to blocked Assemblies as an `ApprovalResolved` event. Idempotent
+    /// per queue: the first call wins and later calls are ignored (the notifier
+    /// is installed once at startup). Returns `true` if this call installed it.
+    pub fn set_resolved_notifier(&self, notifier: Arc<dyn ApprovalResolvedNotifier>) -> bool {
+        self.resolved_notifier.set(notifier).is_ok()
     }
 
     /// Subscribe to approval request events.
@@ -656,6 +694,14 @@ impl ApprovalQueue {
             // AAASM-1453.
             if matches!(decision, ApprovalDecision::TimedOut { .. }) {
                 let _ = self.expiry_event_tx.send(req.clone());
+            }
+
+            // Wake any push subscriber (a blocked agent awaiting over the
+            // invalidation channel) before settling the local oneshot. The
+            // gateway hub forwards only genuine human verdicts as
+            // `ApprovalResolved`; timeouts are ignored there. AAASM-2378.
+            if let Some(notifier) = self.resolved_notifier.get() {
+                notifier.notify_resolved(&req.request_id.to_string(), &decision);
             }
 
             // Ignore send errors: the receiver may have been dropped (caller
