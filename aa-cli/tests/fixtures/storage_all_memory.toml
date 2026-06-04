@@ -1,0 +1,12 @@
+# Fixture: every storage kind uses the in-memory driver. `aasm config boot`
+# builds all six backends and serves a sample policy lookup; exits 0.
+[storage]
+policy_store       = "memory"
+audit_sink         = "memory"
+session_store      = "memory"
+credential_store   = "memory"
+rate_limit_counter = "memory"
+lifecycle_store    = "memory"
+
+# The in-memory driver needs no connection settings.
+[storage.memory]

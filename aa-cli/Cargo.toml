@@ -27,6 +27,7 @@ aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.5" }
 aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.5" }
 aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.5" }
 aa-storage           = { path = "../aa-storage", version = "0.0.1-alpha.5" }
+aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-alpha.5" }
 anyhow         = "1"
 async-trait    = "0.1"
 axum           = "0.8"
