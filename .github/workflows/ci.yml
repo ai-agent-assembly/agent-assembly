@@ -437,6 +437,25 @@ jobs:
           TIMESCALEDB_AVAILABLE: "1"
         run: cargo nextest run -p aa-gateway timescale
 
+  migration-drift-check:
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    name: Migration drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run gateway migration drift test
+        # Boots a throwaway Postgres (testcontainers) and applies the
+        # aa-storage-postgres MIGRATOR through the gateway. Fails if the
+        # canonical MVP migrations no longer apply cleanly or audit_logs drifts.
+        run: cargo nextest run -p aa-gateway -E 'binary(migration_boot)'
+
   deny:
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'

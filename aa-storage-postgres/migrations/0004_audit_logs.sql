@@ -4,8 +4,13 @@
 -- request body — only the metadata needed to answer "who did what, and what did
 -- governance decide". There is deliberately no foreign key on `agent_id`: the
 -- append-only sink must never fail because an agent row is absent or expired.
+--
+-- `event_id` is the idempotency key: a UUID derived from the event's content
+-- hash. PRIMARY KEY makes it UNIQUE NOT NULL, so a retried publish collapses to
+-- a single row (`INSERT … ON CONFLICT (event_id) DO NOTHING`) and the async
+-- Gateway consumer never double-inserts.
 CREATE TABLE audit_logs (
-    id         UUID PRIMARY KEY,
+    event_id   UUID PRIMARY KEY,
     agent_id   TEXT NOT NULL,
     tool_name  TEXT NOT NULL,
     decision   TEXT NOT NULL,
