@@ -281,4 +281,25 @@ mod tests {
         assert_eq!(reconnect_a.replay[0].seq, 1);
         assert_eq!(reconnect_b.replay[0].seq, 1);
     }
+
+    #[tokio::test]
+    async fn broadcast_approval_resolved_reaches_subscriber() {
+        let hub = InvalidationHub::new();
+        let mut handle = hub.subscribe("asm-1", 0);
+
+        hub.broadcast_approval_resolved("req-42", Decision::Approved);
+
+        let event = tokio::time::timeout(Duration::from_millis(100), handle.receiver.recv())
+            .await
+            .expect("event delivered within 100 ms")
+            .expect("channel open");
+        assert_eq!(event.seq, 1);
+        match event.payload.expect("payload set") {
+            Payload::ApprovalResolved(ar) => {
+                assert_eq!(ar.request_id, "req-42");
+                assert_eq!(ar.decision(), Decision::Approved);
+            }
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
+    }
 }
