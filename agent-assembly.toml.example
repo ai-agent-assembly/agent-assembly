@@ -1,0 +1,28 @@
+# agent-assembly.toml — example runtime configuration
+#
+# Validate a copy of this file with:
+#
+#     aasm config validate agent-assembly.toml
+#
+# ---------------------------------------------------------------------------
+# [storage] — persistence backend selection
+# ---------------------------------------------------------------------------
+# Each storage kind picks a driver *by name*. The runtime resolves the name to
+# a registered backend at boot, so you can switch Redis -> Postgres -> memory
+# without recompiling Assembly. The OSS driver names are `memory`, `redis`, and
+# `postgres` (their backends ship in a later milestone).
+[storage]
+policy_store       = "redis"
+audit_sink         = "postgres"
+session_store      = "redis"
+credential_store   = "postgres"
+rate_limit_counter = "redis"
+lifecycle_store    = "postgres"
+
+# Per-driver connection settings live under `[storage.<driver-name>]`. Provide a
+# subsection for every driver named above; each driver parses the keys it needs.
+[storage.redis]
+url = "redis://localhost:6379"
+
+[storage.postgres]
+url = "postgresql://localhost:5432/assembly"
