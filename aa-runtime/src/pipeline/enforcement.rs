@@ -12,7 +12,10 @@
 //! The scanner / redaction primitives are sourced from [`aa_core`] today; they
 //! move to `aa-security` under AAASM-2567, which is an import-only change here.
 
-use aa_core::CredentialFinding;
+use aa_core::{CredentialFinding, CredentialScanner};
+use aa_proto::assembly::audit::v1::audit_event::Detail;
+
+use super::event::EnrichedEvent;
 
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
@@ -80,5 +83,135 @@ impl EnforcementOutcome {
     /// Total number of redactions applied (findings + oversized fields).
     pub fn redaction_count(&self) -> usize {
         self.findings.len() + self.oversized_fields
+    }
+}
+
+/// Authoritative, reusable scan / redact / normalize stage.
+///
+/// Holds **one** precompiled [`CredentialScanner`]: construct it once at
+/// pipeline start (see AAASM-2586) and call [`enforce`](Self::enforce) per
+/// event. The scanner is never rebuilt per event.
+pub struct RuntimeScanner {
+    scanner: CredentialScanner,
+    config: EnforcementConfig,
+}
+
+impl Default for RuntimeScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RuntimeScanner {
+    /// Build with the default [`EnforcementConfig`] and a freshly compiled scanner.
+    pub fn new() -> Self {
+        Self::with_config(EnforcementConfig::default())
+    }
+
+    /// Build with explicit configuration.
+    pub fn with_config(config: EnforcementConfig) -> Self {
+        Self {
+            scanner: CredentialScanner::new(),
+            config,
+        }
+    }
+
+    /// The active configuration.
+    pub fn config(&self) -> &EnforcementConfig {
+        &self.config
+    }
+
+    /// Scan, redact, and normalize every secret-bearing field of `event`,
+    /// mutating it in place, and return an [`EnforcementOutcome`].
+    ///
+    /// Runs **unconditionally** — no field of the event can request that
+    /// scanning be skipped, and there is no SDK trust marker on the wire. Only
+    /// the allowlisted secret-bearing fields are scanned; opaque numeric and
+    /// enumeration fields are left untouched.
+    pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
+        let mut outcome = EnforcementOutcome::default();
+        let Some(detail) = event.inner.detail.as_mut() else {
+            return outcome;
+        };
+        match detail {
+            Detail::ToolCall(tc) => {
+                self.scan_bytes(&mut tc.args_json, &mut outcome);
+                self.scan_string(&mut tc.error_message, &mut outcome);
+            }
+            Detail::FileOp(f) => {
+                self.scan_string(&mut f.path, &mut outcome);
+            }
+            Detail::Process(p) => {
+                self.scan_string(&mut p.command, &mut outcome);
+                for arg in p.args.iter_mut() {
+                    self.scan_string(arg, &mut outcome);
+                }
+            }
+            // No free-text secret-bearing fields: LlmCall / Network / Violation
+            // / Approval carry only identifiers, enums, and counters. Matched
+            // explicitly (no wildcard) so a new detail variant fails to compile
+            // until its secret-bearing fields are triaged here.
+            Detail::LlmCall(_) | Detail::Network(_) | Detail::Violation(_) | Detail::Approval(_) => {}
+        }
+        outcome
+    }
+
+    /// Scan and redact a UTF-8 string field in place.
+    fn scan_string(&self, field: &mut String, outcome: &mut EnforcementOutcome) {
+        if field.is_empty() {
+            return;
+        }
+        if field.len() > self.config.max_field_bytes {
+            self.apply_oversized_str(field, outcome);
+            return;
+        }
+        outcome.scanned_bytes += field.len();
+        let result = self.scanner.scan(field);
+        if !result.is_clean() {
+            *field = result.redact(field);
+            outcome.findings.extend(result.findings);
+        }
+    }
+
+    /// Normalize a `bytes` field to UTF-8, then scan and redact it in place.
+    ///
+    /// The original bytes are left untouched when the field is clean; they are
+    /// rewritten (from the normalized, redacted text) only when a finding is
+    /// present.
+    fn scan_bytes(&self, field: &mut Vec<u8>, outcome: &mut EnforcementOutcome) {
+        if field.is_empty() {
+            return;
+        }
+        if field.len() > self.config.max_field_bytes {
+            self.apply_oversized_bytes(field, outcome);
+            return;
+        }
+        // Normalize: a `bytes` payload is scanned as lossy UTF-8 text.
+        let text = String::from_utf8_lossy(field);
+        outcome.scanned_bytes += text.len();
+        let result = self.scanner.scan(&text);
+        if !result.is_clean() {
+            let redacted = result.redact(&text);
+            *field = redacted.into_bytes();
+            outcome.findings.extend(result.findings);
+        }
+    }
+
+    fn apply_oversized_str(&self, field: &mut String, outcome: &mut EnforcementOutcome) {
+        match self.config.oversized_policy {
+            OversizedPolicy::RedactWhole => {
+                *field = OVERSIZED_MARKER.to_string();
+                outcome.oversized_fields += 1;
+            }
+        }
+    }
+
+    fn apply_oversized_bytes(&self, field: &mut Vec<u8>, outcome: &mut EnforcementOutcome) {
+        match self.config.oversized_policy {
+            OversizedPolicy::RedactWhole => {
+                *field = OVERSIZED_MARKER.as_bytes().to_vec();
+                outcome.oversized_fields += 1;
+            }
+        }
     }
 }
