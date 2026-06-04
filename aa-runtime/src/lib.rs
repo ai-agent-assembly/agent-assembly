@@ -6,6 +6,7 @@
 
 pub mod approval;
 pub mod approval_sink;
+pub mod audit_publisher;
 pub mod config;
 pub mod correlation;
 #[cfg(target_os = "linux")]
