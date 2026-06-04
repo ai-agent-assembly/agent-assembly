@@ -601,7 +601,8 @@ jobs:
 
   ebpf-build:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
+    if: needs.changes.outputs.ebpf == 'true'
     name: eBPF probes build (Linux nightly)
     runs-on: ubuntu-latest
     defaults:
