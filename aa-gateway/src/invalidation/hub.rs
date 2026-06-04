@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
 use aa_proto::assembly::gateway::v1::invalidation_event::Payload;
-use aa_proto::assembly::gateway::v1::{InvalidationEvent, PolicyInvalidated};
+use aa_proto::assembly::gateway::v1::{ApprovalResolved, Decision, InvalidationEvent, PolicyInvalidated};
+use aa_runtime::approval::{ApprovalDecision, ApprovalResolvedNotifier};
 
 /// Stable identifier of a subscribing Assembly instance.
 pub type AssemblyId = String;
@@ -111,16 +112,37 @@ impl InvalidationHub {
     /// [`REPLAY_RING_CAPACITY`]). An empty `agent_id` is the "invalidate all
     /// cached agents" convention used for a global policy swap.
     pub fn broadcast_policy_invalidated(&self, agent_id: impl Into<String>, policy_version: u64) {
-        let agent_id = agent_id.into();
+        self.fan_out(Payload::PolicyInvalidated(PolicyInvalidated {
+            agent_id: agent_id.into(),
+            policy_version,
+        }));
+    }
+
+    /// Fan an `ApprovalResolved` event out to every connected Assembly.
+    ///
+    /// Reuses the same push channel as [`broadcast_policy_invalidated`]: a
+    /// blocked agent that subscribed (via an `ApprovalSink`) is woken the
+    /// instant a human reviewer's verdict is recorded, instead of polling.
+    /// `request_id` identifies the resolved approval request; `decision` is
+    /// the reviewer's verdict. AAASM-2378.
+    pub fn broadcast_approval_resolved(&self, request_id: impl Into<String>, decision: Decision) {
+        self.fan_out(Payload::ApprovalResolved(ApprovalResolved {
+            request_id: request_id.into(),
+            decision: decision as i32,
+        }));
+    }
+
+    /// Fan a single payload out to every connected Assembly under each
+    /// subscriber's own monotonic sequence number, recording a copy in its
+    /// replay ring (oldest trimmed past [`REPLAY_RING_CAPACITY`]) so a
+    /// reconnecting Assembly can recover anything missed.
+    fn fan_out(&self, payload: Payload) {
         let subscribers = self.subscribers.read().expect("invalidation subscribers lock poisoned");
         for subscriber in subscribers.values() {
             let seq = subscriber.next_seq.fetch_add(1, Ordering::Relaxed);
             let event = InvalidationEvent {
                 seq,
-                payload: Some(Payload::PolicyInvalidated(PolicyInvalidated {
-                    agent_id: agent_id.clone(),
-                    policy_version,
-                })),
+                payload: Some(payload.clone()),
             };
             {
                 let mut ring = subscriber.ring.lock().expect("replay ring lock poisoned");
@@ -155,6 +177,22 @@ impl InvalidationHub {
             .read()
             .expect("invalidation subscribers lock poisoned")
             .len()
+    }
+}
+
+/// Bridges [`ApprovalQueue`](aa_runtime::approval::ApprovalQueue) resolutions to
+/// the push channel: a human verdict becomes an `ApprovalResolved` event fanned
+/// out to subscribed Assemblies. Timeouts are *not* broadcast — they are not a
+/// human response, and a blocked agent handles its own deadline locally via
+/// `ApprovalSink::wait_for_approval`. AAASM-2378.
+impl ApprovalResolvedNotifier for InvalidationHub {
+    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision) {
+        let wire = match decision {
+            ApprovalDecision::Approved { .. } => Decision::Approved,
+            ApprovalDecision::Rejected { .. } => Decision::Denied,
+            ApprovalDecision::TimedOut { .. } => return,
+        };
+        self.broadcast_approval_resolved(request_id, wire);
     }
 }
 
@@ -242,5 +280,26 @@ mod tests {
         assert_eq!(reconnect_b.replay.len(), 1);
         assert_eq!(reconnect_a.replay[0].seq, 1);
         assert_eq!(reconnect_b.replay[0].seq, 1);
+    }
+
+    #[tokio::test]
+    async fn broadcast_approval_resolved_reaches_subscriber() {
+        let hub = InvalidationHub::new();
+        let mut handle = hub.subscribe("asm-1", 0);
+
+        hub.broadcast_approval_resolved("req-42", Decision::Approved);
+
+        let event = tokio::time::timeout(Duration::from_millis(100), handle.receiver.recv())
+            .await
+            .expect("event delivered within 100 ms")
+            .expect("channel open");
+        assert_eq!(event.seq, 1);
+        match event.payload.expect("payload set") {
+            Payload::ApprovalResolved(ar) => {
+                assert_eq!(ar.request_id, "req-42");
+                assert_eq!(ar.decision(), Decision::Approved);
+            }
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
     }
 }
