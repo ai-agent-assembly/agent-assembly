@@ -414,3 +414,106 @@ fn parse_ts(value: &Value) -> Option<DateTime<Utc>> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// RFC 3339 string parsed straight to a `DateTime<Utc>` for comparisons.
+    fn utc(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339).unwrap().with_timezone(&Utc)
+    }
+
+    /// Sanitize a JSON object into an audit event, panicking on a heartbeat.
+    fn audit_event(value: Value) -> SanitizedAuditEvent {
+        match sanitize(RawAuditEvent::new(value)) {
+            SanitizeOutcome::Audit(event) => event,
+            SanitizeOutcome::Heartbeat(_) => panic!("expected an audit event, got a heartbeat"),
+        }
+    }
+
+    #[test]
+    fn record_uses_event_id_as_primary_key() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let record = audit_log_record(&audit_event(json!({
+            "kind": "tool_call",
+            "event_id": id,
+            "agent_id": "acme/bot",
+            "action": "fs.read",
+            "decision": "deny",
+            "ts": "2026-06-04T12:00:00Z",
+        })));
+        assert_eq!(record.id, Uuid::parse_str(id).unwrap());
+        assert_eq!(record.agent_id, "acme/bot");
+        assert_eq!(record.tool_name, "fs.read");
+        assert_eq!(record.decision, "deny");
+        assert!(record.latency_ms.is_none());
+        assert_eq!(record.ts, utc("2026-06-04T12:00:00Z"));
+    }
+
+    #[test]
+    fn record_falls_back_to_event_type_and_review() {
+        // No `action` → tool_name uses event_type; no `decision` → "review".
+        let record = audit_log_record(&audit_event(json!({
+            "kind": "tool_call",
+            "event_id": "550e8400-e29b-41d4-a716-446655440000",
+            "agent_id": "acme/bot",
+            "event_type": "tool_call_intercepted",
+        })));
+        assert_eq!(record.tool_name, "tool_call_intercepted");
+        assert_eq!(record.decision, "review");
+    }
+
+    #[test]
+    fn record_tool_name_unknown_without_action_or_event_type() {
+        let record = audit_log_record(&audit_event(json!({
+            "kind": "tool_call",
+            "event_id": "550e8400-e29b-41d4-a716-446655440000",
+            "agent_id": "acme/bot",
+        })));
+        assert_eq!(record.tool_name, "unknown");
+    }
+
+    #[test]
+    fn missing_event_id_falls_back_to_stable_content_hash() {
+        // Same body → same id (retries dedupe); different body → different id.
+        let a = json!({"kind": "tool_call", "agent_id": "acme/bot", "action": "fs.read"});
+        let b = json!({"kind": "tool_call", "agent_id": "acme/other", "action": "fs.read"});
+        assert_eq!(extract_event_id(&a), extract_event_id(&a));
+        assert_ne!(extract_event_id(&a), extract_event_id(&b));
+    }
+
+    #[test]
+    fn invalid_event_id_falls_back_deterministically() {
+        let value = json!({"event_id": "not-a-uuid", "agent_id": "acme/bot"});
+        assert_eq!(extract_event_id(&value), extract_event_id(&value));
+    }
+
+    #[test]
+    fn parse_ts_accepts_rfc3339_and_epochs() {
+        assert_eq!(
+            parse_ts(&json!("2026-06-04T12:00:00Z")).unwrap(),
+            utc("2026-06-04T12:00:00Z")
+        );
+        assert_eq!(
+            parse_ts(&json!(1_000_000_000_i64)).unwrap(),
+            DateTime::from_timestamp(1_000_000_000, 0).unwrap()
+        );
+        assert_eq!(
+            parse_ts(&json!(1_700_000_000_000_i64)).unwrap(),
+            DateTime::from_timestamp_millis(1_700_000_000_000).unwrap()
+        );
+        assert!(parse_ts(&Value::Null).is_none());
+        assert!(parse_ts(&json!("not a date")).is_none());
+    }
+
+    #[test]
+    fn extract_ts_prefers_ts_then_timestamp() {
+        assert_eq!(
+            extract_ts(&json!({"timestamp": "2026-01-01T00:00:00Z"})).unwrap(),
+            utc("2026-01-01T00:00:00Z")
+        );
+        assert!(extract_ts(&json!({"agent_id": "x"})).is_none());
+    }
+}
