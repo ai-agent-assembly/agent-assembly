@@ -16,6 +16,7 @@
 //! assembly::event::v1    — internal event bus envelope (paths ⑤ ⑥)
 //! assembly::approval::v1 — human-in-the-loop approval queue
 //! assembly::topology::v1 — agent tree, lineage, and team-member queries
+//! assembly::gateway::v1  — L1 cache push-invalidation channel
 //! ```
 
 pub mod assembly {
@@ -67,6 +68,12 @@ pub mod assembly {
     pub mod secrets {
         pub mod v1 {
             tonic::include_proto!("assembly.secrets.v1");
+        }
+    }
+
+    pub mod gateway {
+        pub mod v1 {
+            tonic::include_proto!("assembly.gateway.v1");
         }
     }
 }
