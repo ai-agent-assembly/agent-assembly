@@ -108,7 +108,12 @@ chrono = "0.4"
 chrono-tz = "0.10"
 bytes = "1"
 # Storage backends
-sqlx = { version = "0.8", default-features = false }
+# `default-features` is intentionally left at the default (on) here: aa-gateway
+# relies on sqlx's default `any` feature, and pinning it off at the workspace
+# level split the sqlx-core feature unification. Members that want it off
+# (aa-storage-postgres, aa-integration-tests) set `default-features = false`
+# themselves, matching their pre-centralization manifests.
+sqlx = { version = "0.8" }
 redis = { version = "1.2", default-features = false }
 async-nats = "0.49"
 testcontainers-modules = "0.15"

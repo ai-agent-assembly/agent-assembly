@@ -37,7 +37,7 @@ aa-sandbox  = { path = "../aa-sandbox" }
 # AAASM-2394 audit-consumer verification (Docker-backed) test deps.
 async-nats  = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-sqlx        = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "macros"] }
+sqlx        = { workspace = true, default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
 testcontainers-modules = { workspace = true, features = ["postgres", "nats"] }
 
 anyhow      = { workspace = true }
