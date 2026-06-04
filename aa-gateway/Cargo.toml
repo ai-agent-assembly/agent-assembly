@@ -10,53 +10,53 @@ description = "Control plane — policy enforcement engine and agent registry fo
 aa-core      = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["serde"] }
 aa-proto     = { path = "../aa-proto", version = "0.0.1-alpha.5" }
 aa-runtime   = { path = "../aa-runtime", version = "0.0.1-alpha.5" }
-tokio        = { version = "1", features = ["full"] }
+tokio        = { workspace = true, features = ["full"] }
 regex        = "1"
-serde        = { version = "1", features = ["derive"] }
-serde_json   = "1"
-serde_yaml   = "0.9"
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+serde_yaml   = { workspace = true }
 arc-swap     = "1"
-dashmap      = "6"
+dashmap      = { workspace = true }
 ed25519-dalek = { version = "2", features = ["std"] }
-hex          = "0.4"
+hex          = { workspace = true }
 notify       = { version = "8", features = [] }
-chrono       = { version = "0.4", features = ["clock", "serde"] }
-chrono-tz    = { version = "0.10", features = ["serde"] }
+chrono       = { workspace = true, features = ["clock", "serde"] }
+chrono-tz    = { workspace = true, features = ["serde"] }
 cron         = "0.16"
-rust_decimal = { version = "1", features = ["serde-str"] }
-thiserror    = "2"
-dirs         = "6"
+rust_decimal = { workspace = true, features = ["serde-str"] }
+thiserror    = { workspace = true }
+dirs         = { workspace = true }
 async-stream = "0.3"
-async-trait  = "0.1"
-sha2         = "0.11"
+async-trait  = { workspace = true }
+sha2         = { workspace = true }
 similar      = "3"
-tokio-stream = "0.1"
-tonic        = { version = "0.14", features = ["transport"] }
-tracing      = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest      = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-uuid         = { version = "1", features = ["v4", "v5", "v7", "serde"] }
-clap         = { version = "4", features = ["derive"] }
-moka         = { version = "0.12", features = ["sync"] }
+tokio-stream = { workspace = true }
+tonic        = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+reqwest      = { workspace = true, features = ["json", "rustls-tls"] }
+uuid         = { workspace = true, features = ["v4", "v5", "v7", "serde"] }
+clap         = { workspace = true, features = ["derive"] }
+moka         = { workspace = true, features = ["sync"] }
 strsim       = "0.11"
 humantime    = "2"
 ahash        = "0.8"
-metrics      = "0.24"
-sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
-tokio-util   = "0.7"
-parking_lot  = "0.12"
-utoipa       = { version = "5", features = ["axum_extras"] }
-axum         = "0.8"
+metrics      = { workspace = true }
+sqlx         = { workspace = true, features = ["runtime-tokio-rustls", "sqlite", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+tokio-util   = { workspace = true }
+parking_lot  = { workspace = true }
+utoipa       = { workspace = true }
+axum         = { workspace = true }
 axum-server  = { version = "0.8", features = ["tls-rustls"] }
-tower-http   = { version = "0.6", features = ["fs"] }
+tower-http   = { workspace = true, features = ["fs"] }
 x509-parser  = "0.18"
-redis        = { version = "1.2", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+redis        = { workspace = true, features = ["tokio-comp", "connection-manager"], optional = true }
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-side NATS JetStream audit consumer. Held back from the
 # crates.io publish set — aa-storage-postgres is `publish = false`, so cargo
 # would reject the published gateway for depending on it. This whole block is
 # removed by .ci/strip-for-publish.sh before `cargo workspaces publish`.
-async-nats   = { version = "0.49", optional = true }
+async-nats   = { workspace = true, optional = true }
 aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # strip-for-publish:end audit-consumer
 
@@ -65,17 +65,17 @@ aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # driver's own embedded MIGRATOR so the gateway can never drift from the
 # canonical MVP schema (AAASM-2389).
 aa-storage-postgres = { path = "../aa-storage-postgres" }
-criterion    = { version = "0.8", features = ["async_tokio"] }
-proptest     = "1"
-tempfile     = "3"
-tokio        = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
-tokio-stream = "0.1"
+criterion    = { workspace = true, features = ["async_tokio"] }
+proptest     = { workspace = true }
+tempfile     = { workspace = true }
+tokio        = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+tokio-stream = { workspace = true }
 insta        = "1"
-tower        = { version = "0.5", features = ["util"] }
-rcgen        = { version = "0.14", features = ["pem"] }
-time         = "0.3"
-testcontainers-modules = { version = "0.15", features = ["postgres", "nats"] }
-rustls       = "0.23"
+tower        = { workspace = true }
+rcgen        = { workspace = true, features = ["pem"] }
+time         = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres", "nats"] }
+rustls       = { workspace = true }
 
 [features]
 default = []
