@@ -16,10 +16,10 @@ mod common;
 
 use std::io::Write as _;
 
-use aa_core::audit::Redaction;
 use aa_core::identity::{AgentId, SessionId};
-use aa_core::scanner::{CredentialKind, CredentialScanner};
 use aa_core::{AuditEntry, AuditEventType, Lineage};
+use aa_security::Redaction;
+use aa_security::{CredentialKind, CredentialScanner};
 use common::cli::CliFixture;
 
 /// Synthetic OpenAI key the test embeds in a payload. Must never appear in

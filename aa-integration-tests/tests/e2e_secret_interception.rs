@@ -58,8 +58,9 @@ use std::path::Path;
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, CredentialKind, GovernanceAction, GovernanceLevel, PolicyResult};
+use aa_core::{AgentContext, GovernanceAction, GovernanceLevel, PolicyResult};
 use aa_gateway::{EvaluationResult, PolicyEngine};
+use aa_security::CredentialKind;
 
 // ── Synthetic secret fixtures ────────────────────────────────────────────────
 
@@ -884,9 +885,9 @@ mod proxy_path {
     ///    audit emission would expose the secret to downstream subscribers.
     #[tokio::test]
     async fn aws_key_in_proxy_intercepted_body_is_redacted() {
-        use aa_core::{CredentialKind, CredentialScanner};
         use aa_proxy::intercept::Interceptor;
         use aa_runtime::pipeline::PipelineEvent;
+        use aa_security::{CredentialKind, CredentialScanner};
         use tokio::sync::broadcast;
 
         let body = openai_chat_body(&format!("my access key is {key}", key = super::FAKE_AWS_ACCESS_KEY));
@@ -997,9 +998,9 @@ mod proxy_path {
     ///    on redaction, not a no-op on observation.
     #[tokio::test]
     async fn short_high_entropy_string_does_not_trigger_proxy_scanner() {
-        use aa_core::CredentialScanner;
         use aa_proxy::intercept::Interceptor;
         use aa_runtime::pipeline::PipelineEvent;
+        use aa_security::CredentialScanner;
         use tokio::sync::broadcast;
 
         let body = openai_chat_body(&format!("id={id}", id = super::SHORT_HIGH_ENTROPY));
