@@ -54,6 +54,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-cache"
+version = "0.0.1-alpha.5"
+dependencies = [
+ "aa-cache",
+ "aa-core",
+ "async-trait",
+ "criterion",
+ "dashmap",
+ "tokio",
+]
+
+[[package]]
 name = "aa-cli"
 version = "0.0.1-alpha.5"
 dependencies = [
