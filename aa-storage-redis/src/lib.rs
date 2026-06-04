@@ -48,6 +48,7 @@
 mod backend;
 mod config;
 mod error;
+pub mod factory;
 mod policy;
 mod pool;
 mod rate_limit;
