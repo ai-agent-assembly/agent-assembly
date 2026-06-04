@@ -49,6 +49,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # AAASM-2579: incremental artifacts bloat the rust-cache and give no
+  # benefit on cold CI runners; pin off uniformly across every Rust job.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   changes:
