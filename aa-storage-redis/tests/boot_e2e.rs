@@ -84,3 +84,27 @@ async fn redis_backed_config_boots_and_serves_real_ops() {
     reg.build_credential_store(&config).expect("memory credential builds");
     reg.build_lifecycle_store(&config).expect("memory lifecycle builds");
 }
+
+#[test]
+fn redis_for_a_durable_kind_is_rejected() {
+    // Redis does not back audit_sink, so `register()` leaves it on the builtin
+    // placeholder — building it must error rather than silently use a cache as
+    // a system of record. No live Redis needed: the placeholder errors before
+    // connecting.
+    let reg = registry();
+    let src = r#"
+policy_store       = "memory"
+audit_sink         = "redis"
+session_store      = "memory"
+credential_store   = "memory"
+rate_limit_counter = "memory"
+lifecycle_store    = "memory"
+
+[redis]
+url = "redis://127.0.0.1:6379"
+
+[memory]
+"#;
+    let config: StorageConfig = toml::from_str(src).expect("config parses");
+    assert!(reg.build_audit_sink(&config).is_err(), "redis must not back audit_sink");
+}
