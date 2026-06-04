@@ -5,6 +5,7 @@
 //! coordination, and lifecycle hooks.
 
 pub mod approval;
+pub mod approval_sink;
 pub mod config;
 pub mod correlation;
 #[cfg(target_os = "linux")]
