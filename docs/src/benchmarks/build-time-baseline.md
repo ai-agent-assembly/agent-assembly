@@ -58,12 +58,78 @@ it on a nightly-capable host. Other tunables: `BUILD_BASELINE_WARM_FILE`,
 
 ## Recorded baseline
 
-<!-- AAASM-2573: measured numbers are recorded in the measurement commit. -->
+Captured **2026-06-05** on Apple M-series (arm64, 16 logical CPUs, 128 GB),
+macOS Darwin 25.4.0, `cargo 1.95.0`, `cargo-nextest 0.9.133`, default
+`[profile.dev]` and `[profile.release]` (i.e. the pre-Epic configuration).
+
+| Measurement | Wall-clock |
+|---|---|
+| Cold build (`cargo build --workspace --timings`) | **124 s** |
+| Warm rebuild (touch `aa-cli/src/main.rs`, relink) | **5 s** |
+| Test build (`cargo nextest run --workspace --no-run`) | **396 s** |
+| Packages built in >1 version (`cargo tree -d`) | **34** |
+| Distinct duplicate `(name, version)` build units | **105** |
+
+> Local wall-clock is noisy: across three runs the cold build measured
+> 91–211 s on this machine (background load / thermal). Treat these as the
+> local order-of-magnitude; the Epic's per-Story before/after pairs must be
+> captured on the same idle machine, and CI numbers are authoritative.
+
+### Top longest-compiling crates
+
+From the archived `cargo build --timings` HTML
+(`target/build-baseline/cargo-timing.html`), summing each crate's units
+(build-script + lib + codegen):
+
+| Rank | Compile (s) | Crate |
+|---|---|---|
+| 1 | 63.6 | `aws-lc-sys` 0.40.0 |
+| 2 | 35.2 | `wasmtime` 45.0.0 |
+| 3 | 33.7 | `cranelift-codegen` 0.132.0 |
+| 4 | 29.8 | `rustls` 0.23.40 |
+| 5 | 25.3 | `object` 0.39.1 |
+| 6 | 25.2 | `libsqlite3-sys` 0.30.1 |
+| 7 | 23.1 | `asn1-rs` 0.7.1 |
+| 8 | 22.9 | `thiserror` 1.0.69 |
+| 9 | 21.0 | `rustix` 1.1.4 |
+| 10 | 21.0 | `wasmtime-internal-jit-debug` 45.0.0 |
+
+The long poles are the **WebAssembly** stack (`wasmtime`, `cranelift-codegen`,
+`wasmtime-internal-jit-debug` — pulled by `aa-wasm`) and **crypto/TLS**
+(`aws-lc-sys`, `rustls`), confirming the Epic's hypothesis. Per-crate seconds
+shift run-to-run with build parallelism, but this set is stable.
+
+### Duplicate dependencies (dedup baseline for AAASM-2555)
+
+`cargo tree -d` reports **34 packages built in more than one version**
+(105 distinct `(name, version)` units). The worst offenders:
+
+| Versions | Package |
+|---|---|
+| 4 | `hashbrown` |
+| 3 | `rand`, `rand_core`, `getrandom` |
+| 2 | `winnow`, `webpki-roots`, `wast`, `wasm-encoder`, `untrusted`, `toml`, `toml_datetime`, `thiserror-impl`, … |
+
+The full report is archived at `target/build-baseline/cargo-tree-dups.txt`.
+AAASM-2555 should re-run `cargo tree -d` after centralizing
+`[workspace.dependencies]` and confirm this count drops.
+
+### Full test build+run (context)
+
+The default harness records test **compile** time only, because the full
+suite's run wall-clock is dominated by integration-test execution rather than
+the build. For reference, one `BUILD_BASELINE_RUN_TESTS=1` capture on the same
+machine measured **3452 s** end-to-end build+run — of which the run phase was
+`Summary [2546 s] 3764 tests run: 3744 passed (228 slow, 4 leaky), 20 failed`.
+The 20 failures are local timing-sensitive integration assertions (e.g. the
+`aa-api` L1-invalidation 100 ms check) and do not affect compile time. This
+number is here for completeness; the profile/linker/dedup Stories should be
+judged against the **compile** rows above, not this run-dominated figure.
 
 ## Acceptance-criteria mapping (AAASM-2557)
 
 | Acceptance criterion | Evidence |
 |---|---|
-| Baseline numbers for cold build, warm rebuild, and test build+run recorded | "Recorded baseline" → wall-clock table |
-| `cargo build --timings` HTML identifies the top 5 longest-compiling crates | "Recorded baseline" → top-crates table (`target/build-baseline/cargo-timing.html`) |
-| `cargo tree -d` attached as the dedup baseline for AAASM-2555 | "Recorded baseline" → duplicate-dependency table (`target/build-baseline/cargo-tree-dups.txt`) |
+| Baseline numbers for cold build, warm rebuild, and test build+run recorded | "Recorded baseline" → wall-clock table (cold/warm/test-build) + "Full test build+run (context)" |
+| `cargo build --timings` HTML identifies the top 5 longest-compiling crates | "Top longest-compiling crates" table (`target/build-baseline/cargo-timing.html`) |
+| `cargo tree -d` attached as the dedup baseline for AAASM-2555 | "Duplicate dependencies" table (`target/build-baseline/cargo-tree-dups.txt`) |
