@@ -75,6 +75,9 @@ tracing-subscriber = "0.3"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 metrics-util = "0.20"
+# Protobuf / gRPC
+prost = "0.14"
+tonic = { version = "0.14", features = ["transport"] }
 
 [workspace.lints.clippy]
 all = "warn"
