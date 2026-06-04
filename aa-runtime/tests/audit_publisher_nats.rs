@@ -55,12 +55,17 @@ fn entry(seq: u64) -> AuditEntry {
 
 /// Subscribe a fresh client to every audit subject. The client is returned
 /// alongside the subscription so it outlives the borrow.
+///
+/// Flushes after subscribing so the `SUB` is registered server-side before the
+/// caller starts publishing — otherwise early messages can race ahead of the
+/// subscription and be missed.
 async fn subscribe(url: &str) -> (async_nats::Client, async_nats::Subscriber) {
     let client = async_nats::connect(url).await.expect("subscriber connect");
     let sub = client
         .subscribe("assembly.audit.>")
         .await
         .expect("subscribe to audit subjects");
+    client.flush().await.expect("flush subscription to server");
     (client, sub)
 }
 
