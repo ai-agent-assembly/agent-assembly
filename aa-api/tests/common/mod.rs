@@ -71,7 +71,15 @@ spec:
 
     let events = Arc::new(EventBroadcast::default());
     let budget_alert_tx = events.budget_sender();
-    let policy_engine = Arc::new(PolicyEngine::load_from_file(&policy_path, budget_alert_tx).unwrap());
+    // Attach a push-invalidation hub so a policy mutation through the HTTP
+    // create_policy route (-> apply_yaml) broadcasts PolicyInvalidated. Tests
+    // that need the hub retrieve it via `policy_engine.invalidation_hub()`;
+    // with no subscribers the broadcast is a harmless no-op (AAASM-2544).
+    let policy_engine = Arc::new(
+        PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+            .unwrap()
+            .with_invalidation_hub(aa_gateway::invalidation::InvalidationHub::new()),
+    );
     let budget_tracker = Arc::new(BudgetTracker::new(
         PricingTable::default_table(),
         None,

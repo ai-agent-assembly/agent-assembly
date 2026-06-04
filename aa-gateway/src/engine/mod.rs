@@ -546,6 +546,15 @@ impl PolicyEngine {
         self
     }
 
+    /// Return the attached push-invalidation hub, if any.
+    ///
+    /// A composition root that builds the engine with [`Self::with_invalidation_hub`]
+    /// uses this to serve the same hub over the `InvalidationService` gRPC, so an
+    /// HTTP policy mutation (`apply_yaml`) and the subscriber stream share one hub.
+    pub fn invalidation_hub(&self) -> Option<Arc<crate::invalidation::InvalidationHub>> {
+        self.invalidation_hub.clone()
+    }
+
     /// Apply a raw YAML policy string: validate, swap into the live slot, and
     /// persist a versioned snapshot to the history store.
     ///
