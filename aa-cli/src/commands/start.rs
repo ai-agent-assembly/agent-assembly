@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     fn check_already_running_returns_some_when_pid_is_self_and_port_listens() {
+        let _net = crate::test_support::net_guard();
         let tmp = tempfile::TempDir::new().unwrap();
         let pid_file = tmp.path().join("gateway.pid");
         let self_pid = std::process::id();
@@ -322,6 +323,7 @@ mod tests {
 
     #[test]
     fn run_background_writes_pid_file_via_injected_spawner() {
+        let _net = crate::test_support::net_guard();
         // Open a listener so `wait_for_ready` succeeds; the test
         // process owns the socket and the mock spawner only needs
         // to hand back the PID we want pinned to disk.
