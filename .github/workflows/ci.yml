@@ -682,7 +682,8 @@ jobs:
 
   e2e-ebpf-linux:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
+    if: needs.changes.outputs.ebpf == 'true'
     # AAASM-1520 / F116 ST-H — Layer 3 (eBPF) end-to-end interception suite.
     # Linux-only, runs as root for CAP_BPF + CAP_PERFMON; the test source is
     # `#[cfg(all(target_os = "linux", feature = "integration-test"))]` so it
