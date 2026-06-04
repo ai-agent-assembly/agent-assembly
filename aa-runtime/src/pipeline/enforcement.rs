@@ -220,10 +220,12 @@ impl RuntimeScanner {
 mod tests {
     use super::*;
     use crate::pipeline::event::EventSource;
-    use aa_proto::assembly::audit::v1::{AuditEvent, ToolCallDetail};
+    use aa_proto::assembly::audit::v1::{AuditEvent, FileOpDetail, ToolCallDetail};
 
     /// An AWS access-key id — detected via the `AKIA` literal pattern.
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+    /// A GitHub PAT — detected via the `ghp_` literal pattern.
+    const GH_PAT: &str = "ghp_0123456789abcdefABCDEF0123456789abcd";
 
     /// Build an [`EnrichedEvent`] wrapping `detail` with throwaway metadata.
     fn event_with(detail: Detail) -> EnrichedEvent {
@@ -277,5 +279,26 @@ mod tests {
         assert!(!tc.error_message.contains(AWS_KEY));
         assert!(tc.error_message.contains("[REDACTED:"));
         assert_eq!(outcome.findings.len(), 1);
+    }
+
+    #[test]
+    fn file_op_path_secret_is_redacted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::FileOp(FileOpDetail {
+            operation: "read".to_string(),
+            path: format!("/var/secrets/{GH_PAT}.pem"),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::FileOp(f)) = event.inner.detail else {
+            unreachable!("detail was a FileOp");
+        };
+        assert!(!f.path.contains(GH_PAT));
+        assert!(f.path.contains("[REDACTED:"));
+        // A 40-char PAT can match both the `ghp_` literal and the
+        // high-entropy detector; assert presence, not an exact count.
+        assert!(!outcome.findings.is_empty());
     }
 }
