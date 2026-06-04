@@ -69,23 +69,21 @@ pub fn dispatch() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::MutexGuard;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard<'a> {
-        _lock: std::sync::MutexGuard<'a, ()>,
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
         prior: Option<String>,
     }
-    impl<'a> EnvGuard<'a> {
+    impl EnvGuard {
         fn set(value: &str) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::test_support::env_guard();
             let prior = std::env::var("AA_DATA_DIR").ok();
             std::env::set_var("AA_DATA_DIR", value);
             Self { _lock: lock, prior }
         }
     }
-    impl Drop for EnvGuard<'_> {
+    impl Drop for EnvGuard {
         fn drop(&mut self) {
             match self.prior.take() {
                 Some(v) => std::env::set_var("AA_DATA_DIR", v),

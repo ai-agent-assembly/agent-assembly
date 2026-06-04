@@ -253,25 +253,21 @@ pub fn wait_for_tcp(addr: &str, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::MutexGuard;
 
-    // Serialises tests that mutate AA_POLICY to prevent race conditions when
-    // the test runner executes tests in the same binary in parallel.
-    static AA_POLICY_LOCK: Mutex<()> = Mutex::new(());
-
-    struct PolicyEnvGuard<'a> {
-        _lock: std::sync::MutexGuard<'a, ()>,
+    struct PolicyEnvGuard {
+        _lock: MutexGuard<'static, ()>,
         prior: Option<String>,
     }
-    impl<'a> PolicyEnvGuard<'a> {
+    impl PolicyEnvGuard {
         fn set(value: &str) -> Self {
-            let lock = AA_POLICY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::test_support::env_guard();
             let prior = std::env::var("AA_POLICY").ok();
             std::env::set_var("AA_POLICY", value);
             Self { _lock: lock, prior }
         }
     }
-    impl Drop for PolicyEnvGuard<'_> {
+    impl Drop for PolicyEnvGuard {
         fn drop(&mut self) {
             match self.prior.take() {
                 Some(v) => std::env::set_var("AA_POLICY", v),
@@ -338,6 +334,7 @@ mod tests {
     #[test]
     fn wait_for_tcp_returns_true_when_port_is_open() {
         use std::net::TcpListener;
+        let _net = crate::test_support::net_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");

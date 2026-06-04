@@ -178,11 +178,7 @@ pub fn resolve_context(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn sample_config() -> CliConfig {
         let mut contexts = BTreeMap::new();
@@ -297,7 +293,7 @@ mod tests {
 
     #[test]
     fn resolve_dashboard_port_env_overrides_all() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_guard();
         std::env::set_var("AASM_DASHBOARD_PORT", "9999");
         let port = resolve_dashboard_port(&CliConfig::default(), Some(5000));
         std::env::remove_var("AASM_DASHBOARD_PORT");
@@ -306,14 +302,14 @@ mod tests {
 
     #[test]
     fn resolve_dashboard_port_flag_beats_config() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_guard();
         std::env::remove_var("AASM_DASHBOARD_PORT");
         assert_eq!(resolve_dashboard_port(&CliConfig::default(), Some(4321)), 4321);
     }
 
     #[test]
     fn resolve_dashboard_port_uses_config_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = crate::test_support::env_guard();
         std::env::remove_var("AASM_DASHBOARD_PORT");
         assert_eq!(resolve_dashboard_port(&CliConfig::default(), None), 3000);
     }

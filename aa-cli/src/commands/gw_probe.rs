@@ -62,6 +62,7 @@ mod tests {
 
     #[test]
     fn probe_tcp_returns_true_against_open_listener() {
+        let _net = crate::test_support::net_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         assert!(probe_tcp(addr, Duration::from_millis(200)));
@@ -69,18 +70,17 @@ mod tests {
 
     #[test]
     fn probe_tcp_returns_false_when_nothing_is_listening() {
-        // Grab an ephemeral port and immediately release it. The
-        // kernel won't instantly hand the same port to another
-        // process, so the addr is reliably "nothing listens here"
-        // for the brief moment we probe it.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // Port 1 (tcpmux) is privileged and never has a listener in CI/dev, so
+        // connecting is reliably refused. Unlike a freed ephemeral port, the OS
+        // never hands it to a concurrent `bind(:0)`, so this is immune to the
+        // port-reuse race (matches `gateway::start`'s closed-port test).
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         assert!(!probe_tcp(addr, Duration::from_millis(200)));
     }
 
     #[test]
     fn wait_for_ready_returns_ok_when_listener_is_already_up() {
+        let _net = crate::test_support::net_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         // 500ms budget is far more than enough; we expect the first
@@ -91,9 +91,9 @@ mod tests {
 
     #[test]
     fn wait_for_ready_returns_timeout_when_nothing_listens() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // `127.0.0.1:1` is reliably closed and reuse-immune — see
+        // `probe_tcp_returns_false_when_nothing_is_listening`.
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         let budget = Duration::from_millis(200);
         let result = wait_for_ready(addr, budget, Duration::from_millis(50));
@@ -110,6 +110,7 @@ mod tests {
 
     #[test]
     fn wait_for_ready_returns_ok_when_listener_appears_mid_wait() {
+        let _net = crate::test_support::net_guard();
         // Reserve an ephemeral port, drop the listener so nothing is
         // listening when `wait_for_ready` begins polling.
         let probe = TcpListener::bind("127.0.0.1:0").unwrap();
