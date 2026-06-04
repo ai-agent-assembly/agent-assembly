@@ -1444,4 +1444,69 @@ mod tests {
 
         token.cancel();
     }
+
+    // -----------------------------------------------------------------------
+    // GATE: runtime enforcement runs before forward/audit on every path
+    // (AAASM-2568)
+    // -----------------------------------------------------------------------
+
+    /// An AWS access-key id the credential scanner detects via the `AKIA` literal.
+    const GATE_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    /// A ToolCall `AuditEvent` whose `args_json` embeds [`GATE_SECRET`].
+    fn tool_call_with_secret() -> AuditEvent {
+        use aa_proto::assembly::audit::v1::ToolCallDetail;
+        AuditEvent {
+            action_type: ActionType::ToolCall as i32,
+            detail: Some(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key": "{GATE_SECRET}"}}"#).into_bytes(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// Assert an audited pipeline event's `args_json` was redacted, not raw.
+    fn assert_args_redacted(event: PipelineEvent) {
+        let enriched = unwrap_audit(event);
+        let Some(Detail::ToolCall(tc)) = enriched.inner.detail else {
+            panic!("expected ToolCall detail");
+        };
+        let body = String::from_utf8(tc.args_json).expect("redacted text is utf-8");
+        assert!(!body.contains(GATE_SECRET), "raw secret must not leave the runtime");
+        assert!(body.contains("[REDACTED:"), "redaction marker present");
+    }
+
+    #[tokio::test]
+    async fn secret_is_redacted_on_batch_path() {
+        let config = test_config(1, 10_000); // flush at size 1; interval won't fire
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics.clone(),
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            crate::ipc::new_response_router(),
+            crate::approval::ApprovalQueue::new(),
+            None,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv())
+            .await
+            .expect("timed out waiting for batched event")
+            .expect("broadcast error");
+        assert_args_redacted(event);
+        token.cancel();
+    }
 }
