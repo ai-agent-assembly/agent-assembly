@@ -94,10 +94,17 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     name: Build
     runs-on: ubuntu-latest
+    env:
+      # AAASM-2581: select mold for host-target links only. Cross targets
+      # (bpfel/wasm32/thumbv7) keep their own linkers — this is per-target,
+      # not a global RUSTFLAGS, on purpose.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
+      - name: Install mold linker
+        run: sudo apt-get install -y mold
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
