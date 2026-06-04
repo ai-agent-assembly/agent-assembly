@@ -124,6 +124,10 @@ mod tests {
             }
         }
 
+        fn set_up(&self, up: bool) {
+            self.up.store(up, Ordering::SeqCst);
+        }
+
         fn captured_seqs(&self) -> Vec<u64> {
             self.captured.lock().unwrap().iter().map(AuditEntry::seq).collect()
         }
@@ -183,5 +187,26 @@ mod tests {
 
         assert!(sink.captured_seqs().is_empty(), "sink is down, nothing delivered");
         assert_eq!(publisher.buffered_len().unwrap(), 2, "both events buffered");
+    }
+
+    #[tokio::test]
+    async fn reconnect_drains_buffer_in_fifo_order() {
+        let (_dir, buffer) = new_buffer();
+        let sink = Arc::new(FakeSink::new(false));
+        let publisher = AuditPublisher::new(sink.clone(), buffer.clone());
+
+        // Sink down: three events accumulate in the buffer.
+        for seq in 1..=3 {
+            publisher.publish(entry(seq)).await;
+        }
+        assert_eq!(publisher.buffered_len().unwrap(), 3);
+
+        // Reconnect and flush: the backlog drains in insertion order.
+        sink.set_up(true);
+        let flushed = publisher.flush_pending().await.unwrap();
+
+        assert_eq!(flushed, 3);
+        assert_eq!(publisher.buffered_len().unwrap(), 0, "buffer fully drained");
+        assert_eq!(sink.captured_seqs(), vec![1, 2, 3], "replayed in FIFO order");
     }
 }
