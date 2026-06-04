@@ -8,13 +8,13 @@ description = "In-process L1 cache wrapper (DashMap + TTL + stampede protection)
 
 [dependencies]
 aa-core = { path = "../aa-core" }
-async-trait = "0.1"
-dashmap = "6"
-tokio = { version = "1", features = ["sync"] }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["async_tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+criterion = { workspace = true, features = ["async_tokio"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 # Self dev-dependency: turns on `test-utils` for this crate's own bench build so
 # `MemoryPolicyStore` is available, without exposing it to downstream consumers.
 aa-cache = { path = ".", features = ["test-utils"] }
