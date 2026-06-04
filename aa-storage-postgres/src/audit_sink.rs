@@ -49,6 +49,30 @@ impl PgAuditSink {
     pub fn new(pool: PostgresPool) -> Self {
         Self { pool }
     }
+
+    /// INSERT a pre-resolved [`AuditLogRecord`], deduplicating on its primary key.
+    ///
+    /// Returns `Ok(true)` when a new row was written and `Ok(false)` when the
+    /// `id` already existed (`ON CONFLICT (id) DO NOTHING` matched zero rows).
+    /// The async audit consumer uses the boolean to count duplicates without a
+    /// second round-trip.
+    pub async fn insert_audit_log(&self, record: &AuditLogRecord) -> Result<bool> {
+        let result = sqlx::query(
+            "INSERT INTO audit_logs (id, agent_id, tool_name, decision, latency_ms, ts) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(record.id)
+        .bind(&record.agent_id)
+        .bind(&record.tool_name)
+        .bind(&record.decision)
+        .bind(record.latency_ms)
+        .bind(record.ts)
+        .execute(self.pool.pool())
+        .await
+        .map_err(backend_err)?;
+        Ok(result.rows_affected() == 1)
+    }
 }
 
 /// Coarse governance posture recorded in `audit_logs.decision`.
