@@ -61,8 +61,8 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build aasm release binary
-        run: cargo build --release --target ${{ matrix.target }} -p aa-cli
+      - name: Build aasm shipping binary (dist profile)
+        run: cargo build --profile dist --target ${{ matrix.target }} -p aa-cli
 
       - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
@@ -71,7 +71,7 @@ jobs:
       - name: Smoke-test aasm binary (size + --version)
         shell: bash
         run: |
-          BIN="target/${{ matrix.target }}/release/aasm"
+          BIN="target/${{ matrix.target }}/dist/aasm"
           ls -lh "$BIN"
           file "$BIN"
           "$BIN" --version
@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           tar -czf "aasm-${{ matrix.target }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" aasm
+            -C "target/${{ matrix.target }}/dist" aasm
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
