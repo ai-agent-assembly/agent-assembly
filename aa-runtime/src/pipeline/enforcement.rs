@@ -220,7 +220,7 @@ impl RuntimeScanner {
 mod tests {
     use super::*;
     use crate::pipeline::event::EventSource;
-    use aa_proto::assembly::audit::v1::{AuditEvent, FileOpDetail, ToolCallDetail};
+    use aa_proto::assembly::audit::v1::{AuditEvent, FileOpDetail, ProcessExecDetail, ToolCallDetail};
 
     /// An AWS access-key id — detected via the `AKIA` literal pattern.
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
@@ -300,5 +300,26 @@ mod tests {
         // A 40-char PAT can match both the `ghp_` literal and the
         // high-entropy detector; assert presence, not an exact count.
         assert!(!outcome.findings.is_empty());
+    }
+
+    #[test]
+    fn process_command_and_args_secrets_are_redacted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::Process(ProcessExecDetail {
+            command: format!("aws-cli --access-key {AWS_KEY}"),
+            args: vec!["--auth".to_string(), format!("token={GH_PAT}")],
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::Process(p)) = event.inner.detail else {
+            unreachable!("detail was a Process");
+        };
+        assert!(!p.command.contains(AWS_KEY));
+        assert!(p.command.contains("[REDACTED:"));
+        assert!(!p.args.iter().any(|a| a.contains(GH_PAT)));
+        assert!(p.args.iter().any(|a| a.contains("[REDACTED:")));
+        assert!(!outcome.is_clean());
     }
 }
