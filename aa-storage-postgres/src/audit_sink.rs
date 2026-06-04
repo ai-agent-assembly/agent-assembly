@@ -56,22 +56,23 @@ fn decision_label(event_type: AuditEventType) -> &'static str {
 #[async_trait]
 impl AuditSink for PgAuditSink {
     async fn emit(&self, event: AuditEntry) -> Result<()> {
-        // Derive a stable row id from the entry hash so re-emitting the same
-        // entry is idempotent rather than duplicating.
-        let mut id_bytes = [0u8; 16];
-        id_bytes.copy_from_slice(&event.entry_hash()[..16]);
-        let id = uuid::Uuid::from_bytes(id_bytes);
+        // Derive a stable event_id from the entry hash so re-emitting the same
+        // entry is idempotent rather than duplicating: the UNIQUE event_id key
+        // makes `ON CONFLICT` collapse a retried publish to a single row.
+        let mut event_id_bytes = [0u8; 16];
+        event_id_bytes.copy_from_slice(&event.entry_hash()[..16]);
+        let event_id = uuid::Uuid::from_bytes(event_id_bytes);
 
         let ns = event.timestamp_ns();
         let ts = chrono::DateTime::from_timestamp((ns / 1_000_000_000) as i64, (ns % 1_000_000_000) as u32)
             .unwrap_or_default();
 
         sqlx::query(
-            "INSERT INTO audit_logs (id, agent_id, tool_name, decision, latency_ms, ts) \
+            "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts) \
              VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (id) DO NOTHING",
+             ON CONFLICT (event_id) DO NOTHING",
         )
-        .bind(id)
+        .bind(event_id)
         .bind(agent_id_to_text(&event.agent_id()))
         .bind(event.event_type().as_str())
         .bind(decision_label(event.event_type()))
