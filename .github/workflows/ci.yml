@@ -255,6 +255,8 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@3f7f2bd74f95d407a45d96b106f26d4f6c238fab # cargo-llvm-cov
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: 10.9.0
@@ -318,12 +320,11 @@ jobs:
           # (`--all-features` activates them but `--exclude aa-ebpf` means the
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
-          cargo llvm-cov --no-report --all-features --workspace \
+          cargo llvm-cov nextest --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
-            -- --skip sustained_load_p99_under_5ms --skip all_layers_run_independently \
-               --skip auth_rate_limit_resets_after_window --skip ebpf_ \
-               --skip handle_shutdown_
-          cargo llvm-cov --no-report -p aa-devtool-claude-code
+            --no-tests=pass \
+            -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
+          cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
           cargo llvm-cov --no-run --codecov --output-path codecov.xml
       - name: Upload to Codecov
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1

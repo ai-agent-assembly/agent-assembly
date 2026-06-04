@@ -53,6 +53,8 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@3f7f2bd74f95d407a45d96b106f26d4f6c238fab # cargo-llvm-cov
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
 
       - name: Generate Clippy report
         # aa-ebpf build.rs invokes nightly (not installed here) — exclude it.
@@ -107,12 +109,11 @@ jobs:
         # bound and the test runner wedges; the regular CI Test job
         # exercises them without instrumentation.
         run: |
-          cargo llvm-cov --no-report --all-features --workspace \
+          cargo llvm-cov nextest --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
-            -- --skip sustained_load_p99_under_5ms --skip all_layers_run_independently \
-               --skip auth_rate_limit_resets_after_window --skip ebpf_ \
-               --skip selftest_ --skip handle_shutdown_
-          cargo llvm-cov --no-report -p aa-devtool-claude-code
+            --no-tests=pass \
+            -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(selftest_) and not test(handle_shutdown_)'
+          cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
           cargo llvm-cov --no-run --lcov --output-path lcov.info
 
 
