@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Pure domain logic for Agent Assembly — no_std compatible"
 
 [dependencies]
-aho-corasick = { version = "1", optional = true }
+aa-security  = { path = "../aa-security", version = "0.0.1-alpha.5", optional = true }
 async-trait  = { version = "0.1", optional = true }
 cfg-if       = "1"
 chrono       = { version = "0.4", default-features = false, features = ["clock"], optional = true }
@@ -21,9 +21,9 @@ thiserror    = { version = "2", optional = true }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
+std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
 alloc      = ["dep:sha2"]
-serde      = ["dep:serde"]
+serde      = ["dep:serde", "aa-security?/serde"]
 schemars   = ["dep:schemars"]
 test-utils = []
 

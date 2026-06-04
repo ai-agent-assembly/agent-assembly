@@ -9,4 +9,12 @@
 //! domain crate. The primitives are progressively moved here from `aa-core`
 //! (see AAASM-2567); `aa-core` keeps temporary `pub use` re-exports for
 //! migration compatibility.
+//!
+//! # Feature Flags
+//!
+//! - `serde`: enables `Serialize`/`Deserialize` derives on the public types.
 #![warn(missing_docs)]
+
+pub mod scanner;
+
+pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
