@@ -12,6 +12,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 aa-core = { path = "../aa-core" }
+aa-security = { path = "../aa-security" }
 aa-proto = { path = "../aa-proto" }
 prost = "0.14"
 pyo3 = "0.28"
