@@ -52,6 +52,7 @@ pub mod factory;
 mod policy;
 mod pool;
 mod rate_limit;
+mod registration;
 mod session;
 mod util;
 
@@ -60,6 +61,7 @@ pub use config::RedisStorageConfig;
 pub use policy::{RedisPolicyStore, DEFAULT_POLICY_CACHE_TTL_SECS};
 pub use pool::build_pool;
 pub use rate_limit::RedisRateLimitCounter;
+pub use registration::register;
 pub use session::{RedisSessionStore, SESSION_TTL_SECS};
 
 /// Pooled Redis connection handle, re-exported for callers that build stores
