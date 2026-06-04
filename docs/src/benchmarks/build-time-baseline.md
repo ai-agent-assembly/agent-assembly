@@ -28,8 +28,15 @@ report) under `target/build-baseline/` (gitignored):
 |---|---|---|
 | 1 | Cold build | `cargo clean` then `cargo build --workspace --timings` |
 | 2 | Warm rebuild | `touch aa-cli/src/main.rs` then `cargo build --workspace` |
-| 3 | Test build+run | `cargo nextest run --workspace` |
+| 3 | Test build | `cargo nextest run --workspace --no-run` (compile only) |
 | 4 | Duplicate deps | `cargo tree -d` |
+
+Measurement 3 deliberately compiles the test binaries **without running**
+them: the build-time signal the profile/linker/dedup Stories move is the
+**compile** cost, whereas the full suite's run wall-clock is dominated by
+Docker-backed integration tests and is sensitive to timing flakes. Set
+`BUILD_BASELINE_RUN_TESTS=1` to additionally run the full suite
+(`--no-fail-fast`) and record its build+run wall-clock.
 
 ### Why `aa-ebpf` is excluded
 
