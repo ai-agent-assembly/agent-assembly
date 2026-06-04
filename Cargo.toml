@@ -4,6 +4,7 @@ members = [
     "aa-storage",
     "aa-storage-memory",
     "aa-storage-redis",
+    "aa-cache",
     "aa-proto",
     "aa-runtime",
     "aa-ebpf",

@@ -23,6 +23,7 @@ pub mod policy;
 pub mod registry;
 pub mod remote_mode;
 pub mod routes;
+pub mod sanitizer;
 pub mod secrets;
 pub mod server;
 pub mod service;
