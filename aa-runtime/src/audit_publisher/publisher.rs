@@ -1,11 +1,13 @@
 //! The fire-and-forget [`AuditPublisher`] with offline buffering.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use aa_core::storage::{AuditEntry, AuditSink, Result};
 use aa_storage_sqlite_buffer::EventBuffer;
+use tokio::task::JoinHandle;
 
-use super::{METRIC_BUFFERED, METRIC_PUBLISHED, METRIC_PUBLISH_ERRORS};
+use super::{METRIC_BUFFERED, METRIC_FLUSHED, METRIC_PUBLISHED, METRIC_PUBLISH_ERRORS};
 
 /// Publishes audit events to a NATS [`AuditSink`] and, when that sink fails,
 /// diverts them to a local SQLite [`EventBuffer`] instead of blocking the agent.
@@ -52,5 +54,45 @@ impl AuditPublisher {
     /// Propagates any error from the underlying buffer query.
     pub fn buffered_len(&self) -> Result<usize> {
         self.buffer.len()
+    }
+
+    /// Replay any buffered events to the sink in FIFO order, returning the count
+    /// flushed.
+    ///
+    /// Draining stops at the first sink failure (the connection is treated as
+    /// still down), leaving the remainder buffered for a later attempt. Each
+    /// replayed event bumps `aa_audit_flushed_total`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates buffer read/decode errors; a sink failure is not an error
+    /// here — it simply ends the drain early.
+    pub async fn flush_pending(&self) -> Result<usize> {
+        if self.buffer.is_empty()? {
+            return Ok(0);
+        }
+        let flushed = self.buffer.drain_and_send(&*self.sink).await?;
+        if flushed > 0 {
+            metrics::counter!(METRIC_FLUSHED).increment(flushed as u64);
+        }
+        Ok(flushed)
+    }
+
+    /// Spawn a background task that periodically flushes the buffer, draining it
+    /// once the NATS connection recovers.
+    ///
+    /// The task ticks every `interval` and calls [`flush_pending`](Self::flush_pending);
+    /// abort the returned [`JoinHandle`] to stop it.
+    #[must_use]
+    pub fn spawn_reconnect_flush_loop(self: Arc<Self>, interval: Duration) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if let Err(err) = self.flush_pending().await {
+                    tracing::warn!(error = %err, "audit buffer flush failed");
+                }
+            }
+        })
     }
 }
