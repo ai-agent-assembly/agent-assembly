@@ -390,4 +390,23 @@ mod tests {
         assert!(outcome.is_clean());
         assert_eq!(outcome.scanned_bytes, 0);
     }
+
+    #[test]
+    fn event_without_detail_is_a_noop() {
+        let scanner = RuntimeScanner::new();
+        let mut event = EnrichedEvent {
+            inner: AuditEvent::default(),
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        };
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(event.inner.detail.is_none());
+        assert!(outcome.is_clean());
+        assert_eq!(outcome.scanned_bytes, 0);
+    }
 }
