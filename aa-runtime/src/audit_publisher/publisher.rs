@@ -209,4 +209,46 @@ mod tests {
         assert_eq!(publisher.buffered_len().unwrap(), 0, "buffer fully drained");
         assert_eq!(sink.captured_seqs(), vec![1, 2, 3], "replayed in FIFO order");
     }
+
+    #[test]
+    fn records_all_four_audit_metrics() {
+        use metrics_util::debugging::DebuggingRecorder;
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        // Drive one of each outcome (published, error+buffered, flushed) under a
+        // thread-local recorder so the assertions never race a global one.
+        metrics::with_local_recorder(&recorder, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let (_dir, buffer) = new_buffer();
+                let sink = Arc::new(FakeSink::new(true));
+                let publisher = AuditPublisher::new(sink.clone(), buffer.clone());
+
+                publisher.publish(entry(1)).await; // -> published
+                sink.set_up(false);
+                publisher.publish(entry(2)).await; // -> publish error + buffered
+                sink.set_up(true);
+                publisher.flush_pending().await.unwrap(); // -> flushed
+            });
+        });
+
+        let names: Vec<String> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .map(|(key, _, _, _)| key.key().name().to_string())
+            .collect();
+
+        for expected in [METRIC_PUBLISHED, METRIC_PUBLISH_ERRORS, METRIC_BUFFERED, METRIC_FLUSHED] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing metric {expected}; got {names:?}"
+            );
+        }
+    }
 }
