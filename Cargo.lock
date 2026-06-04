@@ -285,6 +285,7 @@ dependencies = [
  "aa-core",
  "aa-proto",
  "aa-runtime",
+ "aa-storage-postgres",
  "ahash 0.8.12",
  "arc-swap",
  "async-stream",
