@@ -102,3 +102,47 @@ impl InvalidationSink for ApprovalSink {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_resolves_when_event_arrives() {
+        let sink = ApprovalSink::new();
+        let fut = sink.wait_for_approval("r1", Duration::from_secs(5));
+        assert_eq!(sink.waiter_count(), 1);
+
+        sink.on_approval_resolved("r1", Decision::Approved);
+
+        assert_eq!(fut.await, Decision::Approved);
+        assert_eq!(sink.waiter_count(), 0, "delivered waiter is removed");
+    }
+
+    #[tokio::test]
+    async fn wait_resolves_with_denied_verdict() {
+        let sink = ApprovalSink::new();
+        let fut = sink.wait_for_approval("r1", Duration::from_secs(5));
+
+        sink.on_approval_resolved("r1", Decision::Denied);
+
+        assert_eq!(fut.await, Decision::Denied);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_times_out_to_pending_not_denied() {
+        let sink = ApprovalSink::new();
+
+        let decision = sink.wait_for_approval("r1", Duration::from_millis(50)).await;
+
+        assert_eq!(decision, Decision::Pending, "timeout must not auto-deny");
+        assert_eq!(sink.waiter_count(), 0, "timed-out waiter is dropped");
+    }
+
+    #[tokio::test]
+    async fn event_without_waiter_is_dropped() {
+        let sink = ApprovalSink::new();
+        sink.on_approval_resolved("ghost", Decision::Approved);
+        assert_eq!(sink.waiter_count(), 0);
+    }
+}
