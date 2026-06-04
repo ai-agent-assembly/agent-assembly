@@ -2,27 +2,33 @@
 //!
 //! Phase 1 keeps the audit consumer *inside* the gateway as a pair of Tokio
 //! tasks rather than a separate deployable (spec line 7460). A **producer**
-//! task drains the `assembly.audit.>` JetStream subject and hands each message
-//! to a bounded [`mpsc`] channel; a **DB-writer** task pulls from that channel,
-//! runs the write-boundary [`sanitize`] pass, and persists the result through
+//! task drains the `assembly.audit.>` JetStream subject into a bounded
+//! [`mpsc`] channel; a **DB-writer** task coalesces messages into batches, runs
+//! the write-boundary [`sanitize`] pass, and persists them through
 //! `aa-storage-postgres`.
 //!
 //! The design decisions:
 //!
-//! * **Idempotency.** A normal event becomes an [`AuditLogRecord`] whose `id`
-//!   is the event's own `event_id`, so the table's `ON CONFLICT (id) DO NOTHING`
-//!   primary key deduplicates retries. A conflict bumps
+//! * **Throughput via batching (AAASM-2563).** The writer drains the channel
+//!   into batches of up to `batch_size`, writes each batch with a single
+//!   multi-row `INSERT … ON CONFLICT (event_id) DO NOTHING`, and acks the whole
+//!   batch with one JetStream ack — one DB round-trip and one ack per batch
+//!   instead of per event.
+//! * **Idempotency.** A normal event becomes an [`AuditLogRecord`] keyed by the
+//!   event's own `event_id`; `ON CONFLICT (event_id) DO NOTHING` deduplicates
+//!   retries and intra-batch repeats. Each conflict bumps
 //!   `aa_audit_duplicates_total`.
-//! * **At-least-once.** The JetStream pull-consumer uses explicit ack; a message
-//!   is acked only after its DB write succeeds. A failed write is left un-acked
-//!   so NATS redelivers it after `ack_wait`.
-//! * **Backpressure.** The channel is bounded. When it is full the producer uses
-//!   `try_send` and, on `Full`, drops the message *un-acked* — NATS redelivers
-//!   later once the writer has caught up — and bumps a backpressure counter. The
-//!   in-flight depth is exposed as `aa_audit_consumer_channel_depth`.
+//! * **At-least-once.** The pull-consumer uses `AckPolicy::All`; the batch's
+//!   last message is acked only after the whole batch persists, which — in
+//!   stream order — acknowledges every message up to it. A failed batch is left
+//!   un-acked so NATS redelivers after `ack_wait`.
+//! * **Backpressure.** The channel is bounded; when it is full the producer
+//!   *awaits* room (`send().await`) rather than dropping, so large bursts queue
+//!   durably in JetStream instead of entering redelivery cycles. The in-flight
+//!   depth is exposed as `aa_audit_consumer_channel_depth`.
 //! * **Graceful shutdown.** Cancelling the [`CancellationToken`] stops the
 //!   producer, which drops its channel sender; the writer then drains the
-//!   remaining messages and exits.
+//!   remaining batches and exits.
 //!
 //! This module is compiled only under the `audit-consumer` feature, which pulls
 //! the held-back `async-nats` + `aa-storage-postgres` dependencies.
@@ -51,6 +57,8 @@ const STREAM_NAME: &str = "AUDIT";
 const DURABLE_NAME: &str = "aa-gateway-audit-consumer";
 /// Default bound on the producer→writer channel (spec/AC: 8192).
 const DEFAULT_CHANNEL_CAPACITY: usize = 8192;
+/// Default max events coalesced into one multi-row INSERT + one batch ack.
+const DEFAULT_BATCH_SIZE: usize = 1024;
 /// How long an un-acked message waits before JetStream redelivers it.
 const ACK_WAIT: Duration = Duration::from_secs(30);
 
@@ -83,6 +91,8 @@ pub struct AuditConsumerConfig {
     pub postgres: PostgresPoolConfig,
     /// Bound on the producer→writer channel.
     pub channel_capacity: usize,
+    /// Max events coalesced into one multi-row INSERT + one batch ack.
+    pub batch_size: usize,
     /// JetStream stream name.
     pub stream_name: String,
     /// Durable consumer name.
@@ -99,6 +109,7 @@ impl AuditConsumerConfig {
             nats_url: nats_url.into(),
             postgres,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            batch_size: DEFAULT_BATCH_SIZE,
             stream_name: STREAM_NAME.to_string(),
             durable_name: DURABLE_NAME.to_string(),
             subject: SUBJECT.to_string(),
@@ -203,7 +214,8 @@ pub async fn spawn(
             &config.durable_name,
             consumer::pull::Config {
                 durable_name: Some(config.durable_name.clone()),
-                ack_policy: consumer::AckPolicy::Explicit,
+                // AckPolicy::All lets one ack cover a whole contiguous batch.
+                ack_policy: consumer::AckPolicy::All,
                 ack_wait: ACK_WAIT,
                 ..Default::default()
             },
