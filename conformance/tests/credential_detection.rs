@@ -3,7 +3,7 @@
 //! Each JSON vector in `vectors/credential_detection/` is loaded and driven
 //! against `CredentialScanner::scan()` and `ScanResult::redact()`.
 
-use aa_core::scanner::CredentialScanner;
+use aa_security::CredentialScanner;
 use conformance::{load_vectors, ScanVector};
 
 fn scanner() -> CredentialScanner {
