@@ -284,6 +284,11 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      - name: Free disk space (reclaim runner space for llvm-cov build)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          df -h /
       - uses: actions/checkout@v6
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
         uses: actions/checkout@v6
