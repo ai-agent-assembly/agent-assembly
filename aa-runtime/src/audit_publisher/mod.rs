@@ -13,9 +13,11 @@
 //! not touch the agent-facing API.
 
 mod config;
+mod sink;
 mod subject;
 
 pub use config::{NatsConfig, NatsTlsConfig, DEFAULT_MAX_INFLIGHT, DEFAULT_URL};
+pub use sink::NatsAuditSink;
 pub use subject::subject_for;
 
 /// Counter incremented once per event accepted by the NATS sink.
