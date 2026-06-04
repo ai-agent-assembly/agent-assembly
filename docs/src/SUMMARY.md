@@ -49,3 +49,4 @@
 
 - [Index](adr/README.md)
   - [0001 — Storage Architecture](adr/0001-storage-architecture.md)
+  - [0002 — SDK Security Boundary](adr/0002-sdk-security-boundary.md)
