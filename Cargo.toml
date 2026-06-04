@@ -156,3 +156,8 @@ inherits = "release"
 opt-level = "z"
 lto = true
 codegen-units = 1
+
+[profile.dev]
+# Full debuginfo is a large chunk of link time; line tables keep usable
+# backtraces in test failures while shrinking the link.
+debug = "line-tables-only"
