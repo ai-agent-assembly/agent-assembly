@@ -4,6 +4,11 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 
 > **CI enforcement for SDK version changes is pending cross-repo CI integration.** Until then, SDK version bumps must be accompanied by a manual update to this file.
 
+<!-- AAASM-2526: normalized root LICENSE to canonical Apache-2.0 and removed the
+     redundant `license-file` key from root Cargo.toml (kept the SPDX
+     `license = "Apache-2.0"`). License-metadata only — no version change to
+     aa-runtime or any SDK; this comment satisfies the compatibility-matrix CI gate. -->
+
 <!-- AAASM-1602: workspace.exclude = ["node-sdk"] added to root Cargo.toml so
      the sibling `node-sdk/` checkout used by e2e_sdk_node tests doesn't get
      claimed by the agent-assembly workspace. No version change introduced
