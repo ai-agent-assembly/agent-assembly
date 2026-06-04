@@ -9,6 +9,7 @@ use tonic::transport::Server;
 use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
+use crate::invalidation::{InvalidationHub, InvalidationServiceImpl};
 use crate::registry::AgentRegistry;
 use crate::secrets::InMemorySecretsStore;
 use crate::service::{
@@ -19,6 +20,7 @@ use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;
 use aa_proto::assembly::audit::v1::audit_service_server::AuditServiceServer;
+use aa_proto::assembly::gateway::v1::invalidation_service_server::InvalidationServiceServer;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proto::assembly::secrets::v1::secrets_service_server::SecretsServiceServer;
 use aa_proto::assembly::topology::v1::topology_service_server::TopologyServiceServer;
@@ -365,9 +367,11 @@ pub async fn serve_tcp(
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
+    let invalidation_hub = InvalidationHub::new();
     let engine = Arc::new(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
-            .map_err(|e| format!("failed to load policy: {e:?}"))?,
+            .map_err(|e| format!("failed to load policy: {e:?}"))?
+            .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
@@ -404,6 +408,9 @@ pub async fn serve_tcp(
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
         .add_service(SecretsServiceServer::new(secrets_svc))
+        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
+            Arc::clone(&invalidation_hub),
+        )))
         .serve_with_shutdown(addr, async move {
             shutdown_signal().await;
             db_token.cancel();
@@ -432,9 +439,11 @@ pub async fn serve_uds(
     let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
+    let invalidation_hub = InvalidationHub::new();
     let engine = Arc::new(
         PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
-            .map_err(|e| format!("failed to load policy: {e:?}"))?,
+            .map_err(|e| format!("failed to load policy: {e:?}"))?
+            .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
     let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
@@ -477,6 +486,9 @@ pub async fn serve_uds(
         .add_service(ApprovalServiceServer::new(approval_svc))
         .add_service(TopologyServiceServer::new(topology_svc))
         .add_service(SecretsServiceServer::new(secrets_svc))
+        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
+            Arc::clone(&invalidation_hub),
+        )))
         .serve_with_incoming_shutdown(incoming, async move {
             shutdown_signal().await;
             db_token.cancel();

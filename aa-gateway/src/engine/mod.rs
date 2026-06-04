@@ -185,6 +185,10 @@ pub struct PolicyEngine {
     /// Bounded LRU cache for cascade evaluation results.
     /// Only the cascade path (`evaluate_with_cascade`) consults this cache.
     decision_cache: DecisionCache,
+    /// Optional push-invalidation hub. When set, `apply_yaml` fans a
+    /// `PolicyInvalidated` event out to every subscribed Assembly so their L1
+    /// caches drop stale decisions within ~100 ms instead of awaiting TTL.
+    invalidation_hub: Option<Arc<crate::invalidation::InvalidationHub>>,
 }
 
 /// Error returned when loading a policy from a file fails.
@@ -279,6 +283,7 @@ impl PolicyEngine {
             _watcher: watcher,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
         })
     }
@@ -439,6 +444,7 @@ impl PolicyEngine {
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
         })
     }
@@ -473,6 +479,7 @@ impl PolicyEngine {
             _watcher: watcher,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
         })
     }
@@ -515,6 +522,7 @@ impl PolicyEngine {
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
         }
     }
@@ -525,6 +533,16 @@ impl PolicyEngine {
     /// Call this after `load_from_file` in the server startup path.
     pub fn with_registry(mut self, registry: Arc<AgentRegistry>) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    /// Attach a push-invalidation hub so `apply_yaml` broadcasts a
+    /// `PolicyInvalidated` event to every subscribed Assembly on each mutation.
+    ///
+    /// Call this after construction in the server startup path, sharing the
+    /// same hub instance that backs the `InvalidationService` gRPC server.
+    pub fn with_invalidation_hub(mut self, hub: Arc<crate::invalidation::InvalidationHub>) -> Self {
+        self.invalidation_hub = Some(hub);
         self
     }
 
@@ -549,7 +567,14 @@ impl PolicyEngine {
         self.policy.store(Arc::new(output.document));
 
         // Invalidate cached decisions — stale entries with the old epoch will be ignored.
-        self.policy_epoch.fetch_add(1, Ordering::Relaxed);
+        let new_epoch = self.policy_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+
+        // Push the invalidation out to subscribed Assembly instances so their L1
+        // caches drop stale decisions immediately. An empty agent_id means
+        // "invalidate all cached agents" — a policy swap is global.
+        if let Some(hub) = &self.invalidation_hub {
+            hub.broadcast_policy_invalidated(String::new(), new_epoch);
+        }
 
         Ok(meta)
     }
@@ -1444,6 +1469,7 @@ mod tests {
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(1_024),
         }
     }
@@ -2149,6 +2175,40 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn apply_yaml_broadcasts_invalidation_within_100ms() {
+        use crate::invalidation::InvalidationHub;
+        use crate::policy::history::{FsHistoryStore, HistoryConfig};
+        use aa_proto::assembly::gateway::v1::invalidation_event::Payload;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        // A subscriber connected before the mutation should be notified.
+        let hub = InvalidationHub::new();
+        let mut handle = hub.subscribe("asm-itest", 0);
+        let engine = make_engine(empty_doc()).with_invalidation_hub(Arc::clone(&hub));
+
+        let start = std::time::Instant::now();
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("tester"), &store)
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), handle.receiver.recv())
+            .await
+            .expect("invalidation delivered within 100 ms")
+            .expect("channel open");
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        match event.payload.expect("payload set") {
+            Payload::PolicyInvalidated(p) => assert_eq!(p.policy_version, 1),
+            Payload::ApprovalResolved(_) => panic!("expected PolicyInvalidated"),
+        }
+    }
+
     // ── Budget alert integration ────────────────────────────────────────
 
     fn make_engine_with_alert_sender(
@@ -2191,6 +2251,7 @@ mod tests {
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
+            invalidation_hub: None,
             decision_cache: DecisionCache::new(1_024),
         }
     }
