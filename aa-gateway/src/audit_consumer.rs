@@ -245,12 +245,18 @@ pub async fn spawn(
     })
 }
 
-/// Producer task: pull from JetStream and `try_send` into the bounded channel.
+/// Record a successful enqueue: bump the in-flight depth gauge.
+fn record_enqueued(depth: &Arc<AtomicI64>) {
+    let depth_now = depth.fetch_add(1, Ordering::Relaxed) + 1;
+    metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now as f64);
+}
+
+/// Producer task: pull from JetStream into the bounded channel.
 ///
-/// A full channel drops the message un-acked (NATS redelivers after `ack_wait`),
-/// applying backpressure without blocking the pull loop. Cancellation or a
-/// closed channel stops the loop; dropping `tx` then signals the writer to
-/// drain and exit.
+/// Enqueues with `try_send`; when the channel is full it *awaits* room
+/// (cancellable) rather than dropping, so bursts queue durably in JetStream
+/// instead of entering redelivery cycles. Cancellation or a closed channel stops
+/// the loop; dropping `tx` then signals the writer to drain and exit.
 async fn run_producer(
     consumer: PullConsumer,
     tx: mpsc::Sender<jetstream::Message>,
@@ -274,18 +280,29 @@ async fn run_producer(
             }
             next = messages.next() => match next {
                 Some(Ok(message)) => match tx.try_send(message) {
-                    Ok(()) => {
-                        let depth_now = depth.fetch_add(1, Ordering::Relaxed) + 1;
-                        metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now as f64);
-                    }
-                    Err(mpsc::error::TrySendError::Full(_message)) => {
-                        // Leave un-acked: JetStream redelivers after ack_wait
-                        // once the writer drains the channel.
-                        metrics::counter!(METRIC_BACKPRESSURE).increment(1);
-                    }
+                    Ok(()) => record_enqueued(&depth),
                     Err(mpsc::error::TrySendError::Closed(_message)) => {
                         tracing::warn!("audit consumer: writer channel closed, stopping producer");
                         break;
+                    }
+                    Err(mpsc::error::TrySendError::Full(message)) => {
+                        // Channel full: await room rather than dropping. Bursts
+                        // stay buffered in JetStream; a cancel ends the wait.
+                        metrics::counter!(METRIC_BACKPRESSURE).increment(1);
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => {
+                                tracing::info!("audit consumer: shutdown while awaiting channel room");
+                                break;
+                            }
+                            result = tx.send(message) => match result {
+                                Ok(()) => record_enqueued(&depth),
+                                Err(_) => {
+                                    tracing::warn!("audit consumer: writer channel closed, stopping producer");
+                                    break;
+                                }
+                            }
+                        }
                     }
                 },
                 Some(Err(err)) => {
