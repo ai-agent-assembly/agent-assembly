@@ -124,7 +124,6 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "chrono",
- "criterion",
  "dirs",
  "proptest",
  "schemars 1.2.1",
@@ -481,6 +480,7 @@ name = "aa-security"
 version = "0.0.1-alpha.5"
 dependencies = [
  "aho-corasick",
+ "criterion",
  "serde",
 ]
 

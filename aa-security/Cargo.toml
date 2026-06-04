@@ -13,5 +13,12 @@ serde = { version = "1", features = ["derive"], optional = true }
 [features]
 serde = ["dep:serde"]
 
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "scanner_bench"
+harness = false
+
 [lints]
 workspace = true
