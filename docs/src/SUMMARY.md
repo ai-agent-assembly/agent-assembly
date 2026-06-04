@@ -43,6 +43,7 @@
 # Benchmarks
 
 - [Baseline](benchmarks/BASELINE.md)
+- [Build-Time Baseline](benchmarks/build-time-baseline.md)
 - [Policy Check p99](benchmarks/policy-check-p99.md)
 
 # Architecture Decision Records
