@@ -78,6 +78,7 @@ dependencies = [
  "aa-sandbox",
  "aa-storage",
  "aa-storage-memory",
+ "aa-storage-redis",
  "anyhow",
  "assert_cmd",
  "async-trait",
