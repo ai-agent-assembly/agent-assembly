@@ -12,6 +12,8 @@
 //! The scanner / redaction primitives are sourced from [`aa_core`] today; they
 //! move to `aa-security` under AAASM-2567, which is an import-only change here.
 
+use std::time::{Duration, Instant};
+
 use aa_core::{CredentialFinding, CredentialScanner};
 use aa_proto::assembly::audit::v1::audit_event::Detail;
 
@@ -129,10 +131,12 @@ impl RuntimeScanner {
     /// the allowlisted secret-bearing fields are scanned; opaque numeric and
     /// enumeration fields are left untouched.
     pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
+        let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
         if let Some(detail) = event.inner.detail.as_mut() {
             self.scan_detail(detail, &mut outcome);
         }
+        emit_metrics(&outcome, started.elapsed());
         outcome
     }
 
@@ -217,6 +221,22 @@ impl RuntimeScanner {
                 outcome.oversized_fields += 1;
             }
         }
+    }
+}
+
+/// Emit scan observability metrics for one [`RuntimeScanner::enforce`] call.
+///
+/// Latency is measured around the scan + redact work only. The finding
+/// counter is labelled by [`aa_core::CredentialKind`] and never carries the
+/// raw secret. Emitted on every call, including clean and no-detail events.
+fn emit_metrics(outcome: &EnforcementOutcome, elapsed: Duration) {
+    ::metrics::histogram!("aa_runtime_scan_latency_seconds").record(elapsed.as_secs_f64());
+    ::metrics::histogram!("aa_runtime_scan_payload_bytes").record(outcome.scanned_bytes as f64);
+    if outcome.oversized_fields > 0 {
+        ::metrics::counter!("aa_runtime_scan_oversized_total").increment(outcome.oversized_fields as u64);
+    }
+    for finding in &outcome.findings {
+        ::metrics::counter!("aa_runtime_scan_findings_total", "kind" => finding.kind.as_str()).increment(1);
     }
 }
 
