@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use aa_proto::assembly::gateway::v1::invalidation_event::Payload;
 use aa_proto::assembly::gateway::v1::invalidation_service_client::InvalidationServiceClient;
-use aa_proto::assembly::gateway::v1::{subscribe_request::Kind, SubscribeInitial, SubscribeRequest};
+use aa_proto::assembly::gateway::v1::{subscribe_request::Kind, Decision, SubscribeInitial, SubscribeRequest};
 
 /// First reconnect delay; doubles on each consecutive failure.
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -29,6 +29,15 @@ const MAX_BACKOFF: Duration = Duration::from_secs(32);
 pub trait InvalidationSink: Send + Sync {
     /// Apply a policy invalidation for `agent_id` (empty = invalidate all).
     fn on_policy_invalidated(&self, agent_id: &str);
+
+    /// Deliver a human reviewer's verdict for the approval request
+    /// `request_id` to a blocked waiter. The default is a no-op so that
+    /// policy-only sinks (e.g. the L1 cache) need not care about the
+    /// approval-reuse half of the channel; the [`crate::approval_sink::ApprovalSink`]
+    /// overrides it to wake the matching `wait_for_approval` future. AAASM-2378.
+    fn on_approval_resolved(&self, request_id: &str, decision: Decision) {
+        let _ = (request_id, decision);
+    }
 }
 
 /// Next reconnect delay: double the current one, capped at [`MAX_BACKOFF`].
@@ -97,10 +106,19 @@ async fn subscribe_once(
 
     while let Some(event) = inbound.message().await? {
         let applied_at = Instant::now();
-        if let Some(Payload::PolicyInvalidated(policy)) = &event.payload {
-            for sink in sinks {
-                sink.on_policy_invalidated(&policy.agent_id);
+        match &event.payload {
+            Some(Payload::PolicyInvalidated(policy)) => {
+                for sink in sinks {
+                    sink.on_policy_invalidated(&policy.agent_id);
+                }
             }
+            Some(Payload::ApprovalResolved(approval)) => {
+                let decision = approval.decision();
+                for sink in sinks {
+                    sink.on_approval_resolved(&approval.request_id, decision);
+                }
+            }
+            None => {}
         }
         if event.seq > *last_seq_seen {
             *last_seq_seen = event.seq;
