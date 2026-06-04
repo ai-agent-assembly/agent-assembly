@@ -221,6 +221,12 @@ pub async fn spawn(
                 // AckPolicy::All lets one ack cover a whole contiguous batch.
                 ack_policy: consumer::AckPolicy::All,
                 ack_wait: ACK_WAIT,
+                // Batched acking keeps up to channel_capacity + batch_size
+                // messages delivered-but-un-acked in flight. The server's
+                // default max_ack_pending (1000) would throttle below that and
+                // stall delivery; raise it to match — our real backpressure is
+                // the bounded channel (`send().await`), not this cap.
+                max_ack_pending: (config.channel_capacity + config.batch_size) as i64,
                 ..Default::default()
             },
         )
