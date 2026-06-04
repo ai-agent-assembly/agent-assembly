@@ -126,4 +126,16 @@ mod tests {
         assert_eq!(tls.cert, Some(PathBuf::from("/etc/aa/client.pem")));
         assert_eq!(tls.key, Some(PathBuf::from("/etc/aa/client.key")));
     }
+
+    #[test]
+    fn falls_back_to_defaults_when_table_absent() {
+        // A config document with an unrelated table and no [gateway.nats].
+        let cfg = NatsConfig::from_toml_str("[storage]\naudit_sink = \"postgres\"\n").expect("valid config");
+
+        assert_eq!(cfg, NatsConfig::default());
+        assert_eq!(cfg.url, DEFAULT_URL);
+        assert_eq!(cfg.max_inflight, DEFAULT_MAX_INFLIGHT);
+        assert!(cfg.token.is_none());
+        assert!(cfg.tls.is_none());
+    }
 }
