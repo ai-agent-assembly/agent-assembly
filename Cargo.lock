@@ -65,6 +65,7 @@ dependencies = [
  "aa-proxy",
  "aa-sandbox",
  "aa-storage",
+ "aa-storage-memory",
  "anyhow",
  "assert_cmd",
  "async-trait",
@@ -469,6 +470,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
