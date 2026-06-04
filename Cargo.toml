@@ -98,6 +98,15 @@ hex = "0.4"
 hmac = "0.13"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 time = "0.3"
+# Data structures / domain
+dashmap = "6"
+parking_lot = "0.12"
+moka = "0.12"
+uuid = "1"
+rust_decimal = "1"
+chrono = "0.4"
+chrono-tz = "0.10"
+bytes = "1"
 
 [workspace.lints.clippy]
 all = "warn"
