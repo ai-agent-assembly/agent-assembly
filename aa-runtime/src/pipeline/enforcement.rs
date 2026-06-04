@@ -342,4 +342,29 @@ mod tests {
         assert!(outcome.findings.is_empty());
         assert_eq!(outcome.scanned_bytes, original.len());
     }
+
+    #[test]
+    fn oversized_field_is_redacted_whole_fail_closed() {
+        let scanner = RuntimeScanner::with_config(EnforcementConfig {
+            max_field_bytes: 16,
+            ..Default::default()
+        });
+        // The secret sits past the 16-byte cap: it must never be scanned and
+        // forwarded raw. The whole field is dropped instead.
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: format!("padding-padding-{AWS_KEY}").into_bytes(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        let body = String::from_utf8(tc.args_json).expect("marker is utf-8");
+        assert_eq!(body, OVERSIZED_MARKER);
+        assert!(!body.contains(AWS_KEY), "raw secret must not survive");
+        assert_eq!(outcome.oversized_fields, 1);
+        assert!(!outcome.is_clean());
+    }
 }
