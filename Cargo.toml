@@ -5,6 +5,7 @@ members = [
     "aa-storage-memory",
     "aa-storage-redis",
     "aa-cache",
+    "aa-storage-postgres",
     "aa-proto",
     "aa-runtime",
     "aa-ebpf",
