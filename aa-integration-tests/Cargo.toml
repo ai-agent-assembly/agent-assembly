@@ -16,15 +16,29 @@ default = []
 # Usage: sudo cargo nextest run -p aa-integration-tests --features integration-test --test e2e_ebpf
 integration-test = []
 
+# AAASM-2394: throughput / dedupe / channel-depth verification of the gateway
+# NATS audit consumer. Forwards to aa-gateway's audit-consumer feature and gates
+# `tests/audit_consumer_verify.rs` (Docker-backed: NATS JetStream + Postgres).
+#
+# Usage: cargo nextest run -p aa-integration-tests --features audit-consumer --test audit_consumer_verify
+audit-consumer = ["aa-gateway/audit-consumer"]
+
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
 aa-core     = { path = "../aa-core" }
 aa-devtool  = { path = "../aa-devtool" }
 aa-gateway  = { path = "../aa-gateway" }
+aa-storage-postgres = { path = "../aa-storage-postgres" }
 aa-proto    = { path = "../aa-proto" }
 aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }
 aa-sandbox  = { path = "../aa-sandbox" }
+
+# AAASM-2394 audit-consumer verification (Docker-backed) test deps.
+async-nats  = "0.49"
+metrics-exporter-prometheus = "0.18"
+sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "nats"] }
 
 anyhow      = "1"
 assert_cmd  = "2"
