@@ -8,9 +8,13 @@ description = "Storage trait abstraction (pure interface) for the Agent Assembly
 
 [dependencies]
 # Facade crate: the storage traits live in `aa-core::storage` and are re-exported
-# here. Only `aa-core` is needed at build time; `async-trait` is a dev-dep used by
-# the conformance test's example implementation.
-aa-core = { path = "../aa-core" }
+# here. `serde`/`toml` back the `[storage]` config schema + driver registry; the
+# crate stays a pure interface (no `sqlx`/`redis`/`tonic` backend dependency).
+# `async-trait` is a dev-dep used by the conformance test's example implementation.
+aa-core   = { path = "../aa-core" }
+serde     = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml      = "0.9"
 
 [dev-dependencies]
 async-trait = "0.1"

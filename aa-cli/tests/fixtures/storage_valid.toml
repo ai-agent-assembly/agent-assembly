@@ -1,0 +1,15 @@
+# Fixture: every storage kind selects a registered driver and supplies its
+# per-driver subsection. `aasm config validate` exits 0.
+[storage]
+policy_store       = "redis"
+audit_sink         = "postgres"
+session_store      = "redis"
+credential_store   = "postgres"
+rate_limit_counter = "redis"
+lifecycle_store    = "postgres"
+
+[storage.redis]
+url = "redis://localhost:6379"
+
+[storage.postgres]
+url = "postgresql://localhost:5432/assembly"
