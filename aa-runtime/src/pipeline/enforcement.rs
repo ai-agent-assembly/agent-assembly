@@ -322,4 +322,24 @@ mod tests {
         assert!(p.args.iter().any(|a| a.contains("[REDACTED:")));
         assert!(!outcome.is_clean());
     }
+
+    #[test]
+    fn clean_payload_is_left_untouched() {
+        let scanner = RuntimeScanner::new();
+        let original = br#"{"city": "Taipei", "limit": 42}"#.to_vec();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: original.clone(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        assert_eq!(tc.args_json, original, "clean bytes preserved verbatim");
+        assert!(outcome.is_clean());
+        assert!(outcome.findings.is_empty());
+        assert_eq!(outcome.scanned_bytes, original.len());
+    }
 }
