@@ -477,6 +477,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-security"
+version = "0.0.1-alpha.5"
+
+[[package]]
 name = "aa-storage"
 version = "0.0.1-alpha.5"
 dependencies = [
