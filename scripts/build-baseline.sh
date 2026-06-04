@@ -122,10 +122,14 @@ else
 fi
 
 # --- 3. Test build + run wall-clock ---------------------------------------
+# `--no-fail-fast` so a single flaky/slow test (e.g. a timing-sensitive
+# integration assertion) does not truncate the wall-clock — the baseline must
+# reflect compiling every test binary plus running the whole suite, matching
+# what CI does. Test failures are expected to leave the number unchanged.
 TEST_LOG="$OUT/nextest.log"
-echo ">>> test build+run: $CARGO nextest run --workspace ${EXCLUDE[*]}"
+echo ">>> test build+run: $CARGO nextest run --workspace ${EXCLUDE[*]} --no-fail-fast"
 TEST_START=$SECONDS
-$CARGO nextest run --workspace "${EXCLUDE[@]}" >"$TEST_LOG" 2>&1
+$CARGO nextest run --workspace "${EXCLUDE[@]}" --no-fail-fast >"$TEST_LOG" 2>&1
 TEST_REAL=$(( SECONDS - TEST_START ))
 echo "    test build+run: ${TEST_REAL}s  (log: $TEST_LOG)"
 
