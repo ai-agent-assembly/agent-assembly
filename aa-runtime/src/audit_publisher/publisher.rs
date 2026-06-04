@@ -96,3 +96,79 @@ impl AuditPublisher {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use aa_core::audit::{AuditEntry, AuditEventType};
+    use aa_core::storage::StorageError;
+    use aa_core::{AgentId, SessionId};
+    use async_trait::async_trait;
+    use tempfile::TempDir;
+
+    /// An in-memory [`AuditSink`] whose connectivity can be toggled. It records
+    /// every accepted entry so tests can assert FIFO replay order.
+    struct FakeSink {
+        up: AtomicBool,
+        captured: Mutex<Vec<AuditEntry>>,
+    }
+
+    impl FakeSink {
+        fn new(up: bool) -> Self {
+            Self {
+                up: AtomicBool::new(up),
+                captured: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn captured_seqs(&self) -> Vec<u64> {
+            self.captured.lock().unwrap().iter().map(AuditEntry::seq).collect()
+        }
+    }
+
+    #[async_trait]
+    impl AuditSink for FakeSink {
+        async fn emit(&self, event: AuditEntry) -> Result<()> {
+            if !self.up.load(Ordering::SeqCst) {
+                return Err(StorageError::Backend("fake sink down".to_string()));
+            }
+            self.captured.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// Build a distinct audit entry tagged with `seq`.
+    fn entry(seq: u64) -> AuditEntry {
+        AuditEntry::new(
+            seq,
+            seq,
+            AuditEventType::ToolCallIntercepted,
+            AgentId::from_bytes([0u8; 16]),
+            SessionId::from_bytes([0u8; 16]),
+            format!("{{\"seq\":{seq}}}"),
+            [0u8; 32],
+        )
+    }
+
+    /// Create a fresh on-disk buffer in a temp dir (returned so it outlives the buffer).
+    fn new_buffer() -> (TempDir, Arc<EventBuffer>) {
+        let dir = TempDir::new().expect("temp dir");
+        let buffer = EventBuffer::new(dir.path().join("buffer.db"), 10_000).expect("open buffer");
+        (dir, Arc::new(buffer))
+    }
+
+    #[tokio::test]
+    async fn publish_succeeds_when_sink_up() {
+        let (_dir, buffer) = new_buffer();
+        let sink = Arc::new(FakeSink::new(true));
+        let publisher = AuditPublisher::new(sink.clone(), buffer.clone());
+
+        publisher.publish(entry(1)).await;
+
+        assert_eq!(sink.captured_seqs(), vec![1]);
+        assert_eq!(publisher.buffered_len().unwrap(), 0, "nothing should be buffered");
+    }
+}
