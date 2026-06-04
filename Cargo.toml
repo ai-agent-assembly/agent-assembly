@@ -48,6 +48,19 @@ repository = "https://github.com/AI-agent-assembly/agent-assembly"
 homepage = "https://github.com/AI-agent-assembly/agent-assembly"
 authors = ["Agent Assembly Contributors"]
 
+# Single source of version truth for third-party crates shared by two or more
+# workspace members (AAASM-2555). Members reference these via `dep = { workspace
+# = true }`, layering per-crate `features`/`optional`/`default-features` on top.
+# Crates used by a single member, or pinned to a specific version for a
+# documented reason (e.g. rusqlite ↔ sqlx-sqlite libsqlite3-sys — AAASM-2374),
+# stay declared in that member's manifest.
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "1.1"
+
 [workspace.lints.clippy]
 all = "warn"
 correctness = "deny"
