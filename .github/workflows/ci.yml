@@ -205,7 +205,7 @@ jobs:
         run: cargo doc --no-deps --all-features -p aa-core
 
   test:
-    needs: [changes]
+    needs: [changes, dashboard-assets]
     if: needs.changes.outputs.rust == 'true'
     name: Test
     runs-on: ubuntu-latest
@@ -266,11 +266,11 @@ jobs:
           cache-dependency-path: |
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
-      - name: Build dashboard assets (required by aa-cli)
-        working-directory: dashboard
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+      - name: Download prebuilt dashboard assets (required by aa-cli)
+        uses: actions/download-artifact@v8
+        with:
+          name: dashboard-dist-rust
+          path: dashboard/dist/
       - name: "Symlink node-sdk for TypeScript fixture file: dependency"
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
       - name: Build Node.js native binding + TS dist (e2e_sdk_node real_* tests, AAASM-1602)
