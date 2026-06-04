@@ -25,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `toml` (same 0.9 pin as `aa-storage`) backs the driver-factory signatures,
 # which take the `[storage.redis]` subsection as a `toml::Value`.
-toml = "0.9"
+toml = "1.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
