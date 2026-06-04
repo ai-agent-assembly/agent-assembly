@@ -208,3 +208,39 @@ async fn audit_sink_writes_metadata_only_row() {
     assert_eq!(tool_name, "ToolDispatched");
     assert_eq!(decision, "allow");
 }
+
+#[tokio::test]
+async fn audit_sink_dedups_repeated_emit_on_event_id() {
+    use aa_core::audit::{AuditEntry, AuditEventType};
+    use aa_storage::{AuditSink, SessionId};
+
+    let (_pg, pool) = setup_pg().await;
+    let sink = PgAuditSink::new(pool.clone());
+
+    let agent = AgentId::from_bytes([5u8; 16]);
+    let session = SessionId::from_bytes([6u8; 16]);
+    // Re-emitting an identical entry yields the same content hash → same
+    // event_id → the UNIQUE key collapses the retry to one row.
+    let make_entry = || {
+        AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolDispatched,
+            agent,
+            session,
+            r#"{"tool":"shell"}"#.to_owned(),
+            [0u8; 32],
+        )
+    };
+
+    sink.emit(make_entry()).await.expect("first emit");
+    sink.emit(make_entry()).await.expect("retried emit is idempotent");
+
+    let agent_text = uuid::Uuid::from_bytes(*agent.as_bytes()).to_string();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE agent_id = $1")
+        .bind(&agent_text)
+        .fetch_one(pool.pool())
+        .await
+        .expect("count audit rows");
+    assert_eq!(count, 1, "duplicate event_id must not double-insert");
+}
