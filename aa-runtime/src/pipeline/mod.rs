@@ -1509,4 +1509,51 @@ mod tests {
         assert_args_redacted(event);
         token.cancel();
     }
+
+    #[tokio::test]
+    async fn secret_is_redacted_on_violation_path() {
+        use crate::policy::{PolicyRule, PolicyRules};
+
+        // batch_size=100, long interval — only the violation should arrive,
+        // exercising the immediate-broadcast path.
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+
+        // A rule blocking TOOL_CALL actions routes the secret-bearing event
+        // onto the violation broadcast path instead of the batch.
+        let policy = PolicyRules {
+            rules: vec![PolicyRule {
+                name: "block-tools".to_string(),
+                blocked_actions: vec!["TOOL_CALL".to_string()],
+                ..Default::default()
+            }],
+        };
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics.clone(),
+            token.clone(),
+            Arc::new(policy),
+            crate::ipc::new_response_router(),
+            crate::approval::ApprovalQueue::new(),
+            None,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv())
+            .await
+            .expect("timed out waiting for violation event")
+            .expect("broadcast error");
+        assert_args_redacted(event);
+        token.cancel();
+    }
 }
