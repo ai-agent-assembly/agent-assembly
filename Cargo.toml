@@ -107,6 +107,11 @@ rust_decimal = "1"
 chrono = "0.4"
 chrono-tz = "0.10"
 bytes = "1"
+# Storage backends
+sqlx = { version = "0.8", default-features = false }
+redis = { version = "1.2", default-features = false }
+async-nats = "0.49"
+testcontainers-modules = "0.15"
 
 [workspace.lints.clippy]
 all = "warn"
