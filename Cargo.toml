@@ -69,6 +69,12 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 async-trait = "0.1"
 futures = "0.3"
+# Observability
+tracing = "0.1"
+tracing-subscriber = "0.3"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+metrics-util = "0.20"
 
 [workspace.lints.clippy]
 all = "warn"
