@@ -1,5 +1,8 @@
 name: Docker
 
+permissions:
+  contents: read
+
 # Prerequisite: the AI-agent-assembly org must have
 # Actions → Settings → Actions → Workflow permissions → "Read and write permissions" enabled.
 # Without this, the GHCR publish step (on tag push) will fail with HTTP 403.
