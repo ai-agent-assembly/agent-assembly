@@ -1110,7 +1110,7 @@ jobs:
   sonar:
     name: SonarCloud analysis
     needs: [changes, coverage, dashboard-test]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
