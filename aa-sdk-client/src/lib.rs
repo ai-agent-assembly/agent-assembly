@@ -29,5 +29,9 @@ pub mod codec;
 pub mod config;
 pub mod error;
 pub mod ipc;
+#[cfg(feature = "preflight")]
+pub mod preflight;
 
 pub use error::SdkClientError;
+#[cfg(feature = "preflight")]
+pub use preflight::Preflight;
