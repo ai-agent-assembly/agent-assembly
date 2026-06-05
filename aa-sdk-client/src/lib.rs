@@ -27,4 +27,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod error;
 pub mod ipc;
+
+pub use error::SdkClientError;
