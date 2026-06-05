@@ -1177,4 +1177,35 @@ mod runtime_bypass {
             "an empty payload with every field set is clean — nothing gates the scan"
         );
     }
+
+    #[test]
+    fn nested_payload_in_tool_args_is_redacted_at_runtime() {
+        // Case 3: a secret nested under an arbitrary key inside the `args_json`
+        // bytes — exactly what the gateway's banned-key strip (which targets
+        // known key names) would miss. The runtime normalizes the bytes to
+        // UTF-8 and content-scans them, catching it.
+        let scanner = RuntimeScanner::new();
+        let nested = serde_json::json!({
+            "outer": { "inner": { "totally_made_up": FAKE_AWS_ACCESS_KEY } }
+        })
+        .to_string();
+        let mut event = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: nested.into_bytes(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(!outcome.is_clean(), "nested secret must be detected");
+        let scanned = tool_args_text(&event);
+        // Raw-secret-absence at the boundary, not label equality (the known
+        // scanner-overlap quirk means a single secret can trip several detectors).
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "nested secret must be redacted at the runtime boundary"
+        );
+    }
 }
