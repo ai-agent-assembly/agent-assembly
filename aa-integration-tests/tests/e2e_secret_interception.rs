@@ -1032,3 +1032,84 @@ mod proxy_path {
         assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
     }
 }
+
+/// SDK-bypass resistance at the trusted runtime boundary (Story AAASM-2569).
+///
+/// `aa-runtime` is the mandatory chokepoint on the SDK fast-path
+/// (`SDK → UDS → runtime → gateway`). These tests drive the merged enforcement
+/// gate [`aa_runtime::pipeline::enforcement::RuntimeScanner`] (AAASM-2568)
+/// directly with crafted [`EnrichedEvent`]s to prove a **bypassed, malicious, or
+/// absent SDK cannot bypass runtime enforcement**. Each case asserts
+/// **raw-secret-absence at the trusted boundary** — what the audit/forward path
+/// actually carries — never an SDK-reported status, of which there is none on
+/// the wire.
+///
+/// Synthetic secrets are reused from the file-level fixtures above.
+mod runtime_bypass {
+    use aa_proto::assembly::audit::v1::audit_event::Detail;
+    use aa_proto::assembly::audit::v1::{AuditEvent, ToolCallDetail};
+    use aa_runtime::pipeline::enforcement::RuntimeScanner;
+    use aa_runtime::pipeline::{EnrichedEvent, EventSource};
+
+    use super::FAKE_AWS_ACCESS_KEY;
+
+    /// Wrap `detail` in an [`EnrichedEvent`] tagged with `source`, with
+    /// otherwise-throwaway metadata — mirrors what the runtime sees off the wire.
+    fn enriched(detail: Detail, source: EventSource) -> EnrichedEvent {
+        EnrichedEvent {
+            inner: AuditEvent {
+                detail: Some(detail),
+                ..Default::default()
+            },
+            received_at_ms: 0,
+            source,
+            agent_id: "bypass-test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        }
+    }
+
+    /// Read back the (possibly redacted) `args_json` text from a ToolCall event —
+    /// i.e. exactly what the runtime would forward/audit.
+    fn tool_args_text(event: &EnrichedEvent) -> String {
+        let Some(Detail::ToolCall(tc)) = event.inner.detail.as_ref() else {
+            panic!("event detail was not a ToolCall");
+        };
+        String::from_utf8(tc.args_json.clone()).expect("args_json is utf-8")
+    }
+
+    #[test]
+    fn missing_sdk_scanner_secret_is_redacted_at_runtime() {
+        // Case 1: an SDK built with preflight disabled ships a raw secret. The
+        // runtime is the authoritative chokepoint and redacts it before any
+        // forward or audit — so the audit store never receives the raw secret.
+        let scanner = RuntimeScanner::new();
+        let mut event = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !outcome.is_clean(),
+            "runtime must detect the secret the SDK never scanned"
+        );
+        assert!(
+            !outcome.findings.is_empty(),
+            "a deny-on-credential policy keys off these runtime findings"
+        );
+        let scanned = tool_args_text(&event);
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "the audit/forward path must never carry the raw secret"
+        );
+        assert!(
+            scanned.contains("[REDACTED:"),
+            "the secret is replaced with a redaction marker"
+        );
+    }
+}
