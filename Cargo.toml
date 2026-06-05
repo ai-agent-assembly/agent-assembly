@@ -163,8 +163,14 @@ codegen-units = 1
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
-# Dependencies are compiled once then cached; they rarely rebuild, so paying
-# opt-level=2 (and dropping their debuginfo) speeds runtime and shrinks the
-# link without slowing the incremental rebuild of workspace crates.
-opt-level = 2
+# Dependencies are compiled once then cached; they rarely rebuild, so optimizing
+# them speeds runtime and dropping their debuginfo shrinks the link, without
+# slowing the incremental rebuild of workspace crates.
+#
+# opt-level = 1 (not 2): level 1 captures most of the runtime win at a fraction
+# of the compile cost. Level 2 roughly doubles the *cold* build of heavy deps
+# (notably wasmtime via aa-sandbox), which pushes the dev/test `integration-tests`
+# job past its 20-minute `timeout-minutes` ceiling. The warm-rebuild win is
+# unaffected by this choice — it comes from the debuginfo settings, not dep opt.
+opt-level = 1
 debug = false
