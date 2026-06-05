@@ -487,7 +487,7 @@ jobs:
   # major; pg17 is the latest published tag as of 2026-05.
   timescaledb-tests:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.storage == 'true'
     name: TimescaleDB Tests
     runs-on: ubuntu-latest
     services:
@@ -524,7 +524,7 @@ jobs:
 
   migration-drift-check:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.storage == 'true'
     name: Migration drift check
     runs-on: ubuntu-latest
     steps:
@@ -581,7 +581,7 @@ jobs:
 
   buf-lint:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.proto == 'true'
     name: Proto lint & breaking check (buf)
     runs-on: ubuntu-latest
     steps:
@@ -607,7 +607,7 @@ jobs:
 
   schema-lint:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.schema == 'true'
     name: Schema lint & validation (ajv)
     runs-on: ubuntu-latest
     steps:
@@ -633,7 +633,7 @@ jobs:
 
   openapi-drift:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.openapi == 'true'
     name: OpenAPI spec drift check
     runs-on: ubuntu-latest
     steps:
@@ -649,7 +649,7 @@ jobs:
 
   openapi-lint:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.openapi == 'true'
     name: OpenAPI spec lint (Spectral)
     runs-on: ubuntu-latest
     steps:
