@@ -18,7 +18,7 @@ docker-integration = []
 
 [dev-dependencies]
 axum = { workspace = true }
-insta = { version = "1", features = ["json"] }
+insta = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
