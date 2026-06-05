@@ -1149,4 +1149,32 @@ mod runtime_bypass {
             "the runtime re-scans and redacts regardless of any SDK claim"
         );
     }
+
+    #[test]
+    fn tool_call_detail_carries_no_trust_marker_field() {
+        // Loud-failure guard for the "no honored trust marker on the wire"
+        // invariant. This struct literal names EVERY field of `ToolCallDetail`
+        // (no `..Default::default()`). If a future change reintroduces an
+        // SDK-honored trust marker — e.g. `already_scanned` / `clean` — this test
+        // stops compiling and forces triage, rather than silently letting the
+        // runtime skip work. There must be no field here that gates the scan.
+        let detail = ToolCallDetail {
+            tool_name: "web_search".to_string(),
+            tool_source: "mcp".to_string(),
+            latency_ms: 0,
+            succeeded: true,
+            error_message: String::new(),
+            args_json: Vec::new(),
+        };
+
+        // Sanity: with the full field set spelled out and no secret present, the
+        // scan is genuinely clean — the scan runs on content, gated by no field.
+        let scanner = RuntimeScanner::new();
+        let mut event = enriched(Detail::ToolCall(detail), EventSource::Sdk);
+        let outcome = scanner.enforce(&mut event);
+        assert!(
+            outcome.is_clean(),
+            "an empty payload with every field set is clean — nothing gates the scan"
+        );
+    }
 }
