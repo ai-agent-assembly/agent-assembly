@@ -41,7 +41,7 @@ sqlx        = { workspace = true, default-features = false, features = ["runtime
 testcontainers-modules = { workspace = true, features = ["postgres", "nats"] }
 
 anyhow      = { workspace = true }
-assert_cmd  = "2"
+assert_cmd  = { workspace = true }
 async-trait = { workspace = true }
 axum        = { workspace = true, features = ["ws"] }
 chrono      = { workspace = true, default-features = false, features = ["clock"] }
@@ -80,7 +80,7 @@ wat               = { workspace = true }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 aa-ebpf        = { path = "../aa-ebpf" }
 aa-ebpf-common = { path = "../aa-ebpf-common", features = ["std"] }
-aya            = { version = "0.13", features = ["async_tokio"] }
+aya            = { workspace = true }
 # `bytes` is the buffer type aya's AsyncPerfEventArray::read_events fills.
 # Only needed by the file-IO perf-array reader in e2e_file_monitoring.rs.
 bytes          = { workspace = true }
