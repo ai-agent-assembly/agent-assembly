@@ -25,6 +25,16 @@
 //! - UDS transport / background IPC thread — AAASM-2625
 //! - `AssemblyClient` lifecycle, event shipping, advisory preflight — AAASM-2626
 
+pub mod client;
 pub mod codec;
 pub mod config;
+pub mod error;
 pub mod ipc;
+#[cfg(feature = "preflight")]
+pub mod preflight;
+
+pub use client::AssemblyClient;
+pub use config::AssemblyConfig;
+pub use error::SdkClientError;
+#[cfg(feature = "preflight")]
+pub use preflight::Preflight;
