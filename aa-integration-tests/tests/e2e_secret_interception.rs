@@ -1246,4 +1246,48 @@ mod runtime_bypass {
         );
         assert_eq!(sdk_text, ebpf_text, "eBPF path must redact identically to the SDK path");
     }
+
+    #[test]
+    fn preflight_equivalence_yields_identical_authoritative_outcome() {
+        // Case 5: the runtime's authoritative outcome does not depend on whether
+        // the SDK ran its advisory preflight. The same payload — once "as if the
+        // SDK skipped preflight", once "as if it preflighted and forged a clean
+        // label" — yields an identical authoritative result at the boundary,
+        // because the runtime ignores the preflight and does the full work itself.
+        let scanner = RuntimeScanner::new();
+        let args = || format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes();
+
+        let mut without_preflight = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: args(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+        let mut with_preflight = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: args(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+        with_preflight
+            .inner
+            .labels
+            .insert("x-aa-preflight".to_string(), "clean".to_string());
+
+        let outcome_without = scanner.enforce(&mut without_preflight);
+        let outcome_with = scanner.enforce(&mut with_preflight);
+
+        assert_eq!(
+            outcome_without, outcome_with,
+            "the authoritative outcome must be identical with and without preflight"
+        );
+        assert_eq!(
+            tool_args_text(&without_preflight),
+            tool_args_text(&with_preflight),
+            "the redacted bytes must be identical either way"
+        );
+        assert!(!outcome_without.is_clean(), "the secret is caught in both cases");
+    }
 }
