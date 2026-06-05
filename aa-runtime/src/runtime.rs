@@ -1109,6 +1109,39 @@ mod tests {
             }
         }
     }
+
+    /// A minimal config for exercising the audit-publisher builder.
+    fn audit_test_config(nats_config_path: Option<std::path::PathBuf>) -> crate::config::RuntimeConfig {
+        crate::config::RuntimeConfig {
+            agent_id: "audit-test".to_string(),
+            worker_threads: 0,
+            shutdown_timeout_secs: 30,
+            ipc_max_connections: 64,
+            pipeline_input_buffer: 10_000,
+            pipeline_batch_size: 100,
+            pipeline_flush_interval_ms: 100,
+            pipeline_broadcast_capacity: 1_024,
+            metrics_addr: "0.0.0.0:8080".to_string(),
+            policy_path: None,
+            gateway_endpoint: None,
+            correlation_window_ms: 5_000,
+            correlation_interval_ms: 1_000,
+            nats_config_path,
+            audit_buffer_path: std::env::temp_dir().join("aa-audit-buffer-audit-test.db"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_audit_publisher_disabled_when_unconfigured_or_unreadable() {
+        // Unconfigured (no AA_NATS_CONFIG_PATH) ⇒ disabled, agent unaffected.
+        assert!(super::build_audit_publisher(&audit_test_config(None)).await.is_none());
+
+        // Configured but the path does not exist ⇒ disabled, no startup failure.
+        let missing = std::env::temp_dir().join("aa-nonexistent-nats-config-xyz.toml");
+        assert!(super::build_audit_publisher(&audit_test_config(Some(missing)))
+            .await
+            .is_none());
+    }
 }
 
 // ── Layer integration tests ─────────────────────────────────────────────
