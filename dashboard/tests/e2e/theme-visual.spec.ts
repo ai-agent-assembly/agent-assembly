@@ -282,7 +282,9 @@ test.describe('AAASM-2597 — theme behaviour', () => {
     expect(await getTheme(page)).toBe('light')
   })
 
-  test('nav rail stays dark in both themes (design intent)', async ({ page }) => {
+  test('nav rail + code/terminal palette stay dark in both themes (design intent)', async ({
+    page,
+  }) => {
     await seed(page, 'light')
     await mockBackend(page)
     await navTo(page, '/agents', 'fleet-page')
@@ -310,5 +312,28 @@ test.describe('AAASM-2597 — theme behaviour', () => {
     const [r, g, b] = m!.slice(1).map(Number)
     const luminance = (0.299 * r! + 0.587 * g! + 0.114 * b!) / 255
     expect(luminance).toBeLessThan(0.35)
+
+    // The code/terminal palette (--term-*) is likewise NOT overridden in the
+    // dark block — the terminal surface is dark in both modes. Assert at the
+    // token level so this holds without a terminal panel being on screen.
+    const termBg = () =>
+      page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim(),
+      )
+    const termInDark = await termBg() // currently in dark theme
+    await page.getByTestId('theme-toggle').click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    const termInLight = await termBg()
+
+    expect(termInDark).not.toBe('')
+    // Identical across themes…
+    expect(termInLight).toBe(termInDark)
+    // …and dark: #0d0e10-class hex parses to low luminance.
+    const hex = termInDark.replace('#', '')
+    const tr = parseInt(hex.slice(0, 2), 16)
+    const tg = parseInt(hex.slice(2, 4), 16)
+    const tb = parseInt(hex.slice(4, 6), 16)
+    const termLum = (0.299 * tr + 0.587 * tg + 0.114 * tb) / 255
+    expect(termLum).toBeLessThan(0.35)
   })
 })

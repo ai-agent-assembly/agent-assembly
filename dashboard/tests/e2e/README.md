@@ -58,7 +58,7 @@ AAASM-2597 (follow-up to the AAASM-2595 light/dark theme). Guards the `data-them
 Two halves:
 
 - **Visual** — `toHaveScreenshot()` baselines for six representative pages (Fleet, Policies, Identity, Settings, Violations heatmap, Live Ops) in **both** themes, so a regression (light-on-light text, broken surface re-theme, unreadable contrast) shows up as a pixel diff. 12 snapshots in `theme-visual.spec.ts-snapshots/`, same `-chromium-<platform>` naming + masking + `maxDiffPixelRatio: 0.01` rules as above.
-- **Behavioural** — the topbar toggle flips `data-theme` on `<html>` and re-themes the surface; the choice persists across reload (localStorage `aa-dashboard-theme`); the OS `prefers-color-scheme` drives the theme on first load (no stored choice); and the nav rail stays dark in **both** modes (the AAASM-2595 design intent).
+- **Behavioural** — the topbar toggle flips `data-theme` on `<html>` and re-themes the surface; the choice persists across reload (localStorage `aa-dashboard-theme`); the OS `prefers-color-scheme` drives the theme on first load (no stored choice); and the nav rail + code/terminal palette (`--term-*`) stay dark in **both** modes (the AAASM-2595 design intent).
 
 Regenerate the baselines after a deliberate theme change:
 
