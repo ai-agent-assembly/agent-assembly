@@ -26,6 +26,27 @@ cargo build --workspace
 cargo nextest run --workspace
 ```
 
+## Faster builds (optional)
+
+Two optimizations cut local build / rebuild time. The profile tuning is always
+on; the faster linker is opt-in.
+
+- **Optimized dev profile** (already enabled in [`Cargo.toml`](Cargo.toml)):
+  dependencies build at `opt-level = 1` and workspace crates use
+  `line-tables-only` debuginfo, so warm rebuilds link faster while test-failure
+  backtraces stay readable. No setup required.
+- **Faster linker** (opt-in): a faster linker dominates incremental link time.
+  Install it once, then uncomment the block for your platform in
+  [`.cargo/config.toml`](.cargo/config.toml):
+
+  | Platform | Install | Linker |
+  |---|---|---|
+  | Linux | `sudo apt-get install -y mold clang` | mold |
+  | macOS | `brew install llvm` | lld |
+
+  The linker is left disabled by default so the workspace builds even without
+  it installed.
+
 ## Branch Naming
 
 ```

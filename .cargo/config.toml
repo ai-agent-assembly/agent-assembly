@@ -1,0 +1,34 @@
+# Cargo configuration for the agent-assembly workspace.
+#
+# Faster-linker selection (OPT-IN, intentionally left commented out).
+#
+# A faster linker — mold on Linux, lld on macOS — significantly cuts
+# incremental link time, which dominates the warm rebuild after a one-line
+# change. It is NOT enabled by default because an active linker override would
+# break every build (local or CI) on a machine that does not have the linker
+# installed. Keeping it opt-in satisfies the "contributors without mold/lld
+# still build" requirement.
+#
+# To enable locally, install the linker for your platform (see CONTRIBUTING.md →
+# "Faster builds") and uncomment the matching block below:
+#
+# Linux  (install: `sudo apt-get install -y mold clang`)
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# Linux ARM  (install: `sudo apt-get install -y mold clang`)
+# [target.aarch64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# macOS Apple Silicon  (install: `brew install llvm`)
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+#
+# macOS Intel  (install: `brew install llvm`)
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+#
+# Activating mold on the Linux CI runners (install + uncomment) is tracked
+# separately under the build-pipeline Story of Epic AAASM-2551.
