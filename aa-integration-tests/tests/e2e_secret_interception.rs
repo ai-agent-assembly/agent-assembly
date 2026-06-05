@@ -1051,7 +1051,7 @@ mod runtime_bypass {
     use aa_runtime::pipeline::enforcement::RuntimeScanner;
     use aa_runtime::pipeline::{EnrichedEvent, EventSource};
 
-    use super::FAKE_AWS_ACCESS_KEY;
+    use super::{FAKE_AWS_ACCESS_KEY, FAKE_GITHUB_PAT};
 
     /// Wrap `detail` in an [`EnrichedEvent`] tagged with `source`, with
     /// otherwise-throwaway metadata — mirrors what the runtime sees off the wire.
@@ -1207,5 +1207,43 @@ mod runtime_bypass {
             !scanned.contains(FAKE_AWS_ACCESS_KEY),
             "nested secret must be redacted at the runtime boundary"
         );
+    }
+
+    #[test]
+    fn cross_layer_parity_redacts_identically_regardless_of_source() {
+        // Case 4: the SDK is absent entirely. An identical secret arriving via
+        // the proxy or eBPF path is redacted identically to the SDK path —
+        // removing the SDK never reduces enforcement, because the runtime stage
+        // is source-agnostic.
+        let scanner = RuntimeScanner::new();
+        let make = |source| {
+            enriched(
+                Detail::ToolCall(ToolCallDetail {
+                    args_json: format!(r#"{{"token":"{FAKE_GITHUB_PAT}"}}"#).into_bytes(),
+                    ..Default::default()
+                }),
+                source,
+            )
+        };
+        let mut sdk_ev = make(EventSource::Sdk);
+        let mut proxy_ev = make(EventSource::Proxy);
+        let mut ebpf_ev = make(EventSource::EBpf);
+
+        let _ = scanner.enforce(&mut sdk_ev);
+        let _ = scanner.enforce(&mut proxy_ev);
+        let _ = scanner.enforce(&mut ebpf_ev);
+
+        let sdk_text = tool_args_text(&sdk_ev);
+        let proxy_text = tool_args_text(&proxy_ev);
+        let ebpf_text = tool_args_text(&ebpf_ev);
+        assert!(
+            !sdk_text.contains(FAKE_GITHUB_PAT),
+            "the secret must be redacted on every layer"
+        );
+        assert_eq!(
+            sdk_text, proxy_text,
+            "proxy path must redact identically to the SDK path"
+        );
+        assert_eq!(sdk_text, ebpf_text, "eBPF path must redact identically to the SDK path");
     }
 }
