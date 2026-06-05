@@ -1,5 +1,7 @@
 //! [`PgAuditSink`] — append-only, metadata-only audit emission against Postgres.
 
+use std::collections::HashSet;
+
 use aa_core::audit::AuditEventType;
 use aa_storage::{AuditEntry, AuditSink, Result};
 use async_trait::async_trait;
@@ -72,6 +74,41 @@ impl PgAuditSink {
         .await
         .map_err(backend_err)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Batch-INSERT audit rows in a single multi-row statement, deduplicating by
+    /// `event_id` both **within** the batch (keep first occurrence) and against
+    /// existing rows (`ON CONFLICT (event_id) DO NOTHING`).
+    ///
+    /// Returns the number of **new** rows written. Callers derive the duplicate
+    /// count as `records.len() - returned` — covering both repeated `event_id`s
+    /// inside the batch and ones already in the table. This is the hot path for
+    /// the async consumer (AAASM-2563): one round-trip per batch instead of one
+    /// per event.
+    pub async fn insert_audit_logs(&self, records: &[AuditLogRecord]) -> Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        // Drop intra-batch duplicate keys so a single statement never conflicts
+        // on the same row twice (which `ON CONFLICT DO NOTHING` would reject).
+        let mut seen = HashSet::with_capacity(records.len());
+        let unique: Vec<&AuditLogRecord> = records.iter().filter(|r| seen.insert(r.event_id)).collect();
+
+        let mut builder = sqlx::QueryBuilder::new(
+            "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts) ",
+        );
+        builder.push_values(unique.iter(), |mut row, record| {
+            row.push_bind(record.event_id)
+                .push_bind(&record.agent_id)
+                .push_bind(&record.tool_name)
+                .push_bind(&record.decision)
+                .push_bind(record.latency_ms)
+                .push_bind(record.ts);
+        });
+        builder.push(" ON CONFLICT (event_id) DO NOTHING");
+
+        let result = builder.build().execute(self.pool.pool()).await.map_err(backend_err)?;
+        Ok(result.rows_affected())
     }
 }
 

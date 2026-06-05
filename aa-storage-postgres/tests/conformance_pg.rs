@@ -244,3 +244,53 @@ async fn audit_sink_dedups_repeated_emit_on_event_id() {
         .expect("count audit rows");
     assert_eq!(count, 1, "duplicate event_id must not double-insert");
 }
+
+#[tokio::test]
+async fn insert_audit_logs_batches_and_counts_duplicates() {
+    use aa_storage_postgres::AuditLogRecord;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    let (_pg, pool) = setup_pg().await;
+    let sink = PgAuditSink::new(pool.clone());
+
+    let rec = |id: Uuid| AuditLogRecord {
+        event_id: id,
+        agent_id: "acme/bot".to_owned(),
+        tool_name: "fs.read".to_owned(),
+        decision: "allow".to_owned(),
+        latency_ms: None,
+        ts: Utc::now(),
+    };
+    let (a, b, c, d) = (
+        Uuid::from_u128(0xA),
+        Uuid::from_u128(0xB),
+        Uuid::from_u128(0xC),
+        Uuid::from_u128(0xD),
+    );
+
+    // Batch of 5 with 2 intra-batch duplicates (A, B repeated) → 3 new rows.
+    let batch = vec![rec(a), rec(b), rec(c), rec(a), rec(b)];
+    let inserted = sink.insert_audit_logs(&batch).await.expect("batch insert");
+    assert_eq!(inserted, 3, "intra-batch duplicate event_ids must not double-insert");
+    assert_eq!(batch.len() as u64 - inserted, 2, "caller derives duplicate count");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs")
+        .fetch_one(pool.pool())
+        .await
+        .expect("count after first batch");
+    assert_eq!(count, 3);
+
+    // Second batch: A already exists (cross-batch dup), D is new → 1 new row.
+    let inserted2 = sink.insert_audit_logs(&[rec(a), rec(d)]).await.expect("second batch");
+    assert_eq!(inserted2, 1, "only the previously-unseen event_id is inserted");
+
+    let count2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs")
+        .fetch_one(pool.pool())
+        .await
+        .expect("count after second batch");
+    assert_eq!(count2, 4);
+
+    // An empty batch is a no-op.
+    assert_eq!(sink.insert_audit_logs(&[]).await.expect("empty batch"), 0);
+}

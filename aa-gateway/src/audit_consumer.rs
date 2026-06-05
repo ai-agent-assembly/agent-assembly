@@ -2,27 +2,33 @@
 //!
 //! Phase 1 keeps the audit consumer *inside* the gateway as a pair of Tokio
 //! tasks rather than a separate deployable (spec line 7460). A **producer**
-//! task drains the `assembly.audit.>` JetStream subject and hands each message
-//! to a bounded [`mpsc`] channel; a **DB-writer** task pulls from that channel,
-//! runs the write-boundary [`sanitize`] pass, and persists the result through
+//! task drains the `assembly.audit.>` JetStream subject into a bounded
+//! [`mpsc`] channel; a **DB-writer** task coalesces messages into batches, runs
+//! the write-boundary [`sanitize`] pass, and persists them through
 //! `aa-storage-postgres`.
 //!
 //! The design decisions:
 //!
-//! * **Idempotency.** A normal event becomes an [`AuditLogRecord`] whose `id`
-//!   is the event's own `event_id`, so the table's `ON CONFLICT (id) DO NOTHING`
-//!   primary key deduplicates retries. A conflict bumps
+//! * **Throughput via batching (AAASM-2563).** The writer drains the channel
+//!   into batches of up to `batch_size`, writes each batch with a single
+//!   multi-row `INSERT … ON CONFLICT (event_id) DO NOTHING`, and acks the whole
+//!   batch with one JetStream ack — one DB round-trip and one ack per batch
+//!   instead of per event.
+//! * **Idempotency.** A normal event becomes an [`AuditLogRecord`] keyed by the
+//!   event's own `event_id`; `ON CONFLICT (event_id) DO NOTHING` deduplicates
+//!   retries and intra-batch repeats. Each conflict bumps
 //!   `aa_audit_duplicates_total`.
-//! * **At-least-once.** The JetStream pull-consumer uses explicit ack; a message
-//!   is acked only after its DB write succeeds. A failed write is left un-acked
-//!   so NATS redelivers it after `ack_wait`.
-//! * **Backpressure.** The channel is bounded. When it is full the producer uses
-//!   `try_send` and, on `Full`, drops the message *un-acked* — NATS redelivers
-//!   later once the writer has caught up — and bumps a backpressure counter. The
-//!   in-flight depth is exposed as `aa_audit_consumer_channel_depth`.
+//! * **At-least-once.** The pull-consumer uses `AckPolicy::All`; the batch's
+//!   last message is acked only after the whole batch persists, which — in
+//!   stream order — acknowledges every message up to it. A failed batch is left
+//!   un-acked so NATS redelivers after `ack_wait`.
+//! * **Backpressure.** The channel is bounded; when it is full the producer
+//!   *awaits* room (`send().await`) rather than dropping, so large bursts queue
+//!   durably in JetStream instead of entering redelivery cycles. The in-flight
+//!   depth is exposed as `aa_audit_consumer_channel_depth`.
 //! * **Graceful shutdown.** Cancelling the [`CancellationToken`] stops the
 //!   producer, which drops its channel sender; the writer then drains the
-//!   remaining messages and exits.
+//!   remaining batches and exits.
 //!
 //! This module is compiled only under the `audit-consumer` feature, which pulls
 //! the held-back `async-nats` + `aa-storage-postgres` dependencies.
@@ -51,6 +57,8 @@ const STREAM_NAME: &str = "AUDIT";
 const DURABLE_NAME: &str = "aa-gateway-audit-consumer";
 /// Default bound on the producer→writer channel (spec/AC: 8192).
 const DEFAULT_CHANNEL_CAPACITY: usize = 8192;
+/// Default max events coalesced into one multi-row INSERT + one batch ack.
+const DEFAULT_BATCH_SIZE: usize = 1024;
 /// How long an un-acked message waits before JetStream redelivers it.
 const ACK_WAIT: Duration = Duration::from_secs(30);
 
@@ -60,12 +68,16 @@ const METRIC_INSERTED: &str = "aa_audit_consumer_inserted_total";
 const METRIC_DUPLICATES: &str = "aa_audit_duplicates_total";
 /// Counter: heartbeat events collapsed into a last-seen update.
 const METRIC_HEARTBEATS: &str = "aa_audit_consumer_heartbeats_total";
-/// Counter: messages dropped un-acked because the channel was full.
+/// Counter: times the producer had to await channel room (backpressure).
 const METRIC_BACKPRESSURE: &str = "aa_audit_consumer_backpressure_total";
-/// Counter: messages left un-acked because the DB write failed.
+/// Counter: batches left un-acked because a DB write failed.
 const METRIC_WRITE_ERRORS: &str = "aa_audit_consumer_write_errors_total";
+/// Counter: messages dropped because their payload was not valid JSON.
+const METRIC_DECODE_ERRORS: &str = "aa_audit_consumer_decode_errors_total";
 /// Gauge: current in-flight depth of the producer→writer channel.
 const METRIC_CHANNEL_DEPTH: &str = "aa_audit_consumer_channel_depth";
+/// Histogram: number of events coalesced into each batch.
+const METRIC_BATCH_SIZE: &str = "aa_audit_consumer_batch_size";
 
 /// Stable namespace for deriving an id when an event omits a parseable
 /// `event_id`, so identical bodies still collide on the primary key.
@@ -83,6 +95,8 @@ pub struct AuditConsumerConfig {
     pub postgres: PostgresPoolConfig,
     /// Bound on the producer→writer channel.
     pub channel_capacity: usize,
+    /// Max events coalesced into one multi-row INSERT + one batch ack.
+    pub batch_size: usize,
     /// JetStream stream name.
     pub stream_name: String,
     /// Durable consumer name.
@@ -99,6 +113,7 @@ impl AuditConsumerConfig {
             nats_url: nats_url.into(),
             postgres,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            batch_size: DEFAULT_BATCH_SIZE,
             stream_name: STREAM_NAME.to_string(),
             durable_name: DURABLE_NAME.to_string(),
             subject: SUBJECT.to_string(),
@@ -203,8 +218,15 @@ pub async fn spawn(
             &config.durable_name,
             consumer::pull::Config {
                 durable_name: Some(config.durable_name.clone()),
-                ack_policy: consumer::AckPolicy::Explicit,
+                // AckPolicy::All lets one ack cover a whole contiguous batch.
+                ack_policy: consumer::AckPolicy::All,
                 ack_wait: ACK_WAIT,
+                // Batched acking keeps up to channel_capacity + batch_size
+                // messages delivered-but-un-acked in flight. The server's
+                // default max_ack_pending (1000) would throttle below that and
+                // stall delivery; raise it to match — our real backpressure is
+                // the bounded channel (`send().await`), not this cap.
+                max_ack_pending: (config.channel_capacity + config.batch_size) as i64,
                 ..Default::default()
             },
         )
@@ -215,7 +237,7 @@ pub async fn spawn(
     let depth = Arc::new(AtomicI64::new(0));
 
     let producer = tokio::spawn(run_producer(consumer, tx, Arc::clone(&depth), shutdown.clone()));
-    let writer = tokio::spawn(run_writer(rx, sink, lifecycle, depth));
+    let writer = tokio::spawn(run_writer(rx, sink, lifecycle, depth, config.batch_size));
 
     tracing::info!(
         subject = %config.subject,
@@ -229,12 +251,18 @@ pub async fn spawn(
     })
 }
 
-/// Producer task: pull from JetStream and `try_send` into the bounded channel.
+/// Record a successful enqueue: bump the in-flight depth gauge.
+fn record_enqueued(depth: &Arc<AtomicI64>) {
+    let depth_now = depth.fetch_add(1, Ordering::Relaxed) + 1;
+    metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now as f64);
+}
+
+/// Producer task: pull from JetStream into the bounded channel.
 ///
-/// A full channel drops the message un-acked (NATS redelivers after `ack_wait`),
-/// applying backpressure without blocking the pull loop. Cancellation or a
-/// closed channel stops the loop; dropping `tx` then signals the writer to
-/// drain and exit.
+/// Enqueues with `try_send`; when the channel is full it *awaits* room
+/// (cancellable) rather than dropping, so bursts queue durably in JetStream
+/// instead of entering redelivery cycles. Cancellation or a closed channel stops
+/// the loop; dropping `tx` then signals the writer to drain and exit.
 async fn run_producer(
     consumer: PullConsumer,
     tx: mpsc::Sender<jetstream::Message>,
@@ -258,18 +286,29 @@ async fn run_producer(
             }
             next = messages.next() => match next {
                 Some(Ok(message)) => match tx.try_send(message) {
-                    Ok(()) => {
-                        let depth_now = depth.fetch_add(1, Ordering::Relaxed) + 1;
-                        metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now as f64);
-                    }
-                    Err(mpsc::error::TrySendError::Full(_message)) => {
-                        // Leave un-acked: JetStream redelivers after ack_wait
-                        // once the writer drains the channel.
-                        metrics::counter!(METRIC_BACKPRESSURE).increment(1);
-                    }
+                    Ok(()) => record_enqueued(&depth),
                     Err(mpsc::error::TrySendError::Closed(_message)) => {
                         tracing::warn!("audit consumer: writer channel closed, stopping producer");
                         break;
+                    }
+                    Err(mpsc::error::TrySendError::Full(message)) => {
+                        // Channel full: await room rather than dropping. Bursts
+                        // stay buffered in JetStream; a cancel ends the wait.
+                        metrics::counter!(METRIC_BACKPRESSURE).increment(1);
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => {
+                                tracing::info!("audit consumer: shutdown while awaiting channel room");
+                                break;
+                            }
+                            result = tx.send(message) => match result {
+                                Ok(()) => record_enqueued(&depth),
+                                Err(_) => {
+                                    tracing::warn!("audit consumer: writer channel closed, stopping producer");
+                                    break;
+                                }
+                            }
+                        }
                     }
                 },
                 Some(Err(err)) => {
@@ -284,7 +323,8 @@ async fn run_producer(
     }
 }
 
-/// DB-writer task: sanitize each message, persist it, and ack on success.
+/// DB-writer task: coalesce messages into batches, persist each batch with one
+/// multi-row INSERT, and ack the whole batch with one JetStream ack.
 ///
 /// Exits when the channel is closed (producer gone) after draining every
 /// buffered message.
@@ -293,68 +333,104 @@ async fn run_writer(
     sink: PgAuditSink,
     lifecycle: PgLifecycleStore,
     depth: Arc<AtomicI64>,
+    batch_size: usize,
 ) {
-    while let Some(message) = rx.recv().await {
-        let depth_now = depth.fetch_sub(1, Ordering::Relaxed) - 1;
-        metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now.max(0) as f64);
-
-        match process_message(&message, &sink, &lifecycle).await {
-            Ok(()) => {
-                if let Err(err) = message.ack().await {
-                    tracing::warn!(%err, "audit consumer: ack failed after successful write");
-                }
-            }
-            Err(err) => {
-                // Do not ack — JetStream redelivers after ack_wait.
-                metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
-                tracing::warn!(%err, "audit consumer: write failed, leaving message un-acked");
+    let mut batch: Vec<jetstream::Message> = Vec::with_capacity(batch_size);
+    while let Some(first) = rx.recv().await {
+        batch.clear();
+        batch.push(first);
+        // Greedily coalesce whatever else is already buffered, up to batch_size.
+        while batch.len() < batch_size {
+            match rx.try_recv() {
+                Ok(message) => batch.push(message),
+                Err(_) => break,
             }
         }
+
+        let drained = batch.len() as i64;
+        let depth_now = depth.fetch_sub(drained, Ordering::Relaxed) - drained;
+        metrics::gauge!(METRIC_CHANNEL_DEPTH).set(depth_now.max(0) as f64);
+        metrics::histogram!(METRIC_BATCH_SIZE).record(drained as f64);
+
+        process_batch(&batch, &sink, &lifecycle).await;
     }
     tracing::info!("audit consumer: channel drained, writer exiting");
 }
 
-/// Errors raised while processing a single message (before ack).
-#[derive(Debug, thiserror::Error)]
-enum ProcessError {
-    /// The message payload was not valid JSON.
-    #[error("decode failed: {0}")]
-    Decode(#[source] serde_json::Error),
-    /// The storage write failed.
-    #[error("storage write failed: {0}")]
-    Storage(String),
+/// A message classified into the storage operation it maps to.
+enum Classified {
+    /// A normal audit row to INSERT.
+    Audit(AuditLogRecord),
+    /// A heartbeat collapsed into an agent last-seen touch.
+    Heartbeat {
+        /// Agent the heartbeat belongs to.
+        agent_id: String,
+        /// Heartbeat timestamp, if the event carried one.
+        ts: Option<DateTime<Utc>>,
+    },
 }
 
-/// Decode → sanitize → persist one message. Audit events INSERT a row;
-/// heartbeats collapse into a last-seen touch.
-async fn process_message(
-    message: &jetstream::Message,
-    sink: &PgAuditSink,
-    lifecycle: &PgLifecycleStore,
-) -> Result<(), ProcessError> {
-    let value: Value = serde_json::from_slice(&message.payload).map_err(ProcessError::Decode)?;
-    match sanitize(RawAuditEvent::new(value)) {
-        SanitizeOutcome::Audit(event) => {
-            let record = audit_log_record(&event);
-            let inserted = sink
-                .insert_audit_log(&record)
-                .await
-                .map_err(|e| ProcessError::Storage(e.to_string()))?;
-            if inserted {
-                metrics::counter!(METRIC_INSERTED).increment(1);
-            } else {
-                metrics::counter!(METRIC_DUPLICATES).increment(1);
+/// Decode + sanitize one message payload into its storage operation.
+fn classify(payload: &[u8]) -> Result<Classified, serde_json::Error> {
+    let value: Value = serde_json::from_slice(payload)?;
+    Ok(match sanitize(RawAuditEvent::new(value)) {
+        SanitizeOutcome::Audit(event) => Classified::Audit(audit_log_record(&event)),
+        SanitizeOutcome::Heartbeat(heartbeat) => Classified::Heartbeat {
+            agent_id: heartbeat.agent_id,
+            ts: parse_ts(&heartbeat.last_heartbeat_at),
+        },
+    })
+}
+
+/// Persist one batch, then ack it. On any DB error the batch is left un-acked so
+/// JetStream redelivers it — idempotent because the `event_id` PK collapses
+/// retries.
+async fn process_batch(batch: &[jetstream::Message], sink: &PgAuditSink, lifecycle: &PgLifecycleStore) {
+    let mut records = Vec::with_capacity(batch.len());
+    let mut heartbeats = Vec::new();
+    for message in batch {
+        match classify(&message.payload) {
+            Ok(Classified::Audit(record)) => records.push(record),
+            Ok(Classified::Heartbeat { agent_id, ts }) => heartbeats.push((agent_id, ts)),
+            Err(err) => {
+                // Malformed payloads can't be retried into validity; drop them
+                // (the batch ack covers them) and surface the count.
+                metrics::counter!(METRIC_DECODE_ERRORS).increment(1);
+                tracing::warn!(%err, "audit consumer: dropping undecodable message");
             }
-            Ok(())
         }
-        SanitizeOutcome::Heartbeat(heartbeat) => {
-            let ts = parse_ts(&heartbeat.last_heartbeat_at);
-            lifecycle
-                .touch_last_heartbeat(&heartbeat.agent_id, ts)
-                .await
-                .map_err(|e| ProcessError::Storage(e.to_string()))?;
-            metrics::counter!(METRIC_HEARTBEATS).increment(1);
-            Ok(())
+    }
+
+    let submitted = records.len() as u64;
+    if submitted > 0 {
+        match sink.insert_audit_logs(&records).await {
+            Ok(inserted) => {
+                metrics::counter!(METRIC_INSERTED).increment(inserted);
+                metrics::counter!(METRIC_DUPLICATES).increment(submitted - inserted);
+            }
+            Err(err) => {
+                metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
+                tracing::warn!(%err, "audit consumer: batch insert failed, leaving batch un-acked");
+                return;
+            }
+        }
+    }
+
+    for (agent_id, ts) in &heartbeats {
+        if let Err(err) = lifecycle.touch_last_heartbeat(agent_id, *ts).await {
+            metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
+            tracing::warn!(%err, "audit consumer: heartbeat touch failed, leaving batch un-acked");
+            return;
+        }
+    }
+    if !heartbeats.is_empty() {
+        metrics::counter!(METRIC_HEARTBEATS).increment(heartbeats.len() as u64);
+    }
+
+    // AckPolicy::All: acking the last message acks the whole contiguous batch.
+    if let Some(last) = batch.last() {
+        if let Err(err) = last.ack().await {
+            tracing::warn!(%err, "audit consumer: ack failed after successful batch write");
         }
     }
 }
