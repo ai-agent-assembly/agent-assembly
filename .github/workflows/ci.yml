@@ -60,6 +60,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
+      ebpf: ${{ steps.filter.outputs.ebpf }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v4.0.1
@@ -81,6 +82,12 @@ jobs:
               - 'dashboard/**'
               - 'openapi/v1.yaml'
               - 'sonar-project.properties'
+              - '.github/workflows/ci.yml'
+            # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
+            # bpf-linker compile) so they only run when eBPF code — or this
+            # workflow — actually changes. Non-eBPF PRs skip them.
+            ebpf:
+              - 'aa-ebpf*/**'
               - '.github/workflows/ci.yml'
   build:
     needs: [changes]
@@ -594,7 +601,8 @@ jobs:
 
   ebpf-build:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
+    if: needs.changes.outputs.ebpf == 'true'
     name: eBPF probes build (Linux nightly)
     runs-on: ubuntu-latest
     defaults:
@@ -674,7 +682,8 @@ jobs:
 
   e2e-ebpf-linux:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
+    if: needs.changes.outputs.ebpf == 'true'
     # AAASM-1520 / F116 ST-H — Layer 3 (eBPF) end-to-end interception suite.
     # Linux-only, runs as root for CAP_BPF + CAP_PERFMON; the test source is
     # `#[cfg(all(target_os = "linux", feature = "integration-test"))]` so it
