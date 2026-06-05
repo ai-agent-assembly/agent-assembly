@@ -50,3 +50,22 @@ Without the tag, the snapshot will flake on every run.
 ### Diff tolerance
 
 The spec uses `maxDiffPixelRatio: 0.01` to absorb 1–2 px sub-pixel AA differences between local and CI hardware. Any real layout regression will dwarf this budget and fail the assertion.
+
+## Theme regression — `theme-visual.spec.ts`
+
+AAASM-2597 (follow-up to the AAASM-2595 light/dark theme). Guards the `data-theme` token system end-to-end against the real rendered app — only the network is stubbed.
+
+Two halves:
+
+- **Visual** — `toHaveScreenshot()` baselines for six representative pages (Fleet, Policies, Identity, Settings, Violations heatmap, Live Ops) in **both** themes, so a regression (light-on-light text, broken surface re-theme, unreadable contrast) shows up as a pixel diff. 12 snapshots in `theme-visual.spec.ts-snapshots/`, same `-chromium-<platform>` naming + masking + `maxDiffPixelRatio: 0.01` rules as above.
+- **Behavioural** — the topbar toggle flips `data-theme` on `<html>` and re-themes the surface; the choice persists across reload (localStorage `aa-dashboard-theme`); the OS `prefers-color-scheme` drives the theme on first load (no stored choice); and the nav rail stays dark in **both** modes (the AAASM-2595 design intent).
+
+Regenerate the baselines after a deliberate theme change:
+
+```sh
+pnpm exec playwright test theme-visual --update-snapshots
+```
+
+### CI lane
+
+The dashboard has **no Playwright CI job** — every visual/e2e spec here (this one, `responsive-viewport-visual`, and all the `*-design-fidelity` specs) runs locally only. CI covers the dashboard via `dashboard-typecheck`, `dashboard-build`, and `dashboard-test` (vitest). This spec is therefore a **local visual gate**; run it before landing theme changes. That keeps the platform-specific (`-darwin`) baselines stable instead of churning against Linux runners.
