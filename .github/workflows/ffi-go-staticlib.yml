@@ -1,5 +1,8 @@
 name: FFI Go Staticlib
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
