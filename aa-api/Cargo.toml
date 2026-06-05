@@ -14,6 +14,7 @@ connector-opsgenie = []
 
 [dependencies]
 aa-core = { path = "../aa-core" }
+aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool       = { path = "../aa-devtool" }
 aa-devtool-saas  = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }

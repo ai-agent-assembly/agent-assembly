@@ -401,7 +401,7 @@ mod tests {
                 reason: "credential detected".into(),
             },
             redacted_payload: None,
-            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -418,7 +418,7 @@ mod tests {
         let eval = EvaluationResult {
             decision: PolicyResult::Allow,
             redacted_payload: None,
-            credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 4)],
+            credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
         };
         let resp = eval_result_to_response(&eval, 0, "");

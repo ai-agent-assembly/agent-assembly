@@ -16,7 +16,7 @@ use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::pipeline::event::{EnrichedEvent, EventSource};
 use aa_runtime::pipeline::PipelineEvent;
 
-use aa_core::{CredentialFinding, CredentialScanner};
+use aa_security::{CredentialFinding, CredentialScanner};
 use bytes::Bytes;
 
 use crate::config::CredentialAction;
