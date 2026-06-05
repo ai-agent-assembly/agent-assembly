@@ -64,6 +64,10 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
       ebpf: ${{ steps.filter.outputs.ebpf }}
+      proto: ${{ steps.filter.outputs.proto }}
+      schema: ${{ steps.filter.outputs.schema }}
+      openapi: ${{ steps.filter.outputs.openapi }}
+      storage: ${{ steps.filter.outputs.storage }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v4.0.1
@@ -85,6 +89,26 @@ jobs:
               - 'dashboard/**'
               - 'openapi/v1.yaml'
               - 'sonar-project.properties'
+              - '.github/workflows/ci.yml'
+            # AAASM-2599: fine-grained filters so single-purpose validators run
+            # only when their own inputs change (each is a strict subset of the
+            # broad `rust` set above, so this can never lose coverage). Always
+            # include this workflow so editing CI re-runs everything.
+            proto:
+              - 'proto/**'
+              - 'aa-proto/**'
+              - '.github/workflows/ci.yml'
+            schema:
+              - 'schemas/**'
+              - '.github/workflows/ci.yml'
+            openapi:
+              - 'aa-api/**'
+              - 'openapi/**'
+              - '.spectral.yaml'
+              - '.github/workflows/ci.yml'
+            storage:
+              - 'aa-gateway/**'
+              - 'aa-storage*/**'
               - '.github/workflows/ci.yml'
             # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
             # bpf-linker compile) so they only run when eBPF code — or this
