@@ -81,3 +81,7 @@ jobs:
         with:
           name: aa-ffi-go-${{ matrix.target }}
           path: dist/${{ matrix.target }}/libaa_ffi_go.a
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
