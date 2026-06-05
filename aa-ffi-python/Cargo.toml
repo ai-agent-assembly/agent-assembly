@@ -13,15 +13,15 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 aa-core = { path = "../aa-core" }
 aa-proto = { path = "../aa-proto" }
-prost = "0.14"
+prost = { workspace = true }
 pyo3 = "0.28"
-tokio = { version = "1", features = ["net", "rt", "sync", "time", "io-util", "macros"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { workspace = true, features = ["html_reports"] }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
-tokio = { version = "1", features = ["test-util", "rt", "sync"] }
+tokio = { workspace = true, features = ["test-util", "rt", "sync"] }
 
 [[bench]]
 name    = "sdk_bench"

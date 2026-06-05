@@ -17,32 +17,32 @@ path = "src/main.rs"
 aa-core    = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["serde"] }
 aa-proto   = { path = "../aa-proto", version = "0.0.1-alpha.5" }
 aa-runtime = { path = "../aa-runtime", version = "0.0.1-alpha.5" }
-tokio      = { version = "1", features = ["full"] }
-hyper      = { version = "1", features = ["server", "http1"] }
+tokio      = { workspace = true, features = ["full"] }
+hyper      = { workspace = true, features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server"] }
-rustls       = { version = "0.23", features = ["ring"] }
-tokio-rustls       = "0.26"
+rustls       = { workspace = true, features = ["ring"] }
+tokio-rustls       = { workspace = true }
 rustls-native-certs = "0.8"
-rcgen        = { version = "0.14", features = ["x509-parser"] }
-time         = "0.3"
+rcgen        = { workspace = true, features = ["x509-parser"] }
+time         = { workspace = true }
 lru          = "0.18"
-serde        = { version = "1", features = ["derive"] }
-serde_json   = "1"
-anyhow       = "1"
-thiserror    = "2"
-dirs                = "6"
-bytes               = "1"
-tracing             = "0.1"
-tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+dirs                = { workspace = true }
+bytes               = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-bytes = "1"
-criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }
-tempfile = "3"
-tokio = { version = "1", features = ["rt", "sync", "macros"] }
+bytes = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 
 [[bench]]
 name    = "intercept_bench"

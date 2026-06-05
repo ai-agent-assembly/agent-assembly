@@ -8,13 +8,13 @@ description = "Security primitives for Agent Assembly — credential scanning, r
 
 [dependencies]
 aho-corasick = "1"
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
 
 [features]
 serde = ["dep:serde"]
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { workspace = true, features = ["html_reports"] }
 
 [[bench]]
 name = "scanner_bench"

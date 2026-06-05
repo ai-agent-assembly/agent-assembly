@@ -18,8 +18,8 @@ include = [
 ]
 
 [dependencies]
-prost       = "0.14"
-tonic       = { version = "0.14", features = ["transport"] }
+prost       = { workspace = true }
+tonic       = { workspace = true }
 tonic-prost = "0.14"
 
 [build-dependencies]
