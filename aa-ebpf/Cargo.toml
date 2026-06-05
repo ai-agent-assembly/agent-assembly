@@ -43,7 +43,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # The build-dep (aya-build) is unconditional so build.rs always compiles; the actual
 # BPF compilation call inside build.rs is gated with #[cfg(target_os = "linux")].
 [target.'cfg(target_os = "linux")'.dependencies]
-aya     = { version = "0.13", features = ["async_tokio"] }
+aya     = { workspace = true }
 aya-log = "0.2"
 
 [lints]
