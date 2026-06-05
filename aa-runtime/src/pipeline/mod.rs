@@ -648,6 +648,8 @@ mod tests {
             gateway_endpoint: None,
             correlation_window_ms: 5_000,
             correlation_interval_ms: 1_000,
+            nats_config_path: None,
+            audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
         };
 
         let pipeline_config = PipelineConfig::from_runtime_config(&runtime_config);
