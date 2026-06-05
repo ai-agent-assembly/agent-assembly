@@ -32,7 +32,7 @@ Two optimizations cut local build / rebuild time. The profile tuning is always
 on; the faster linker is opt-in.
 
 - **Optimized dev profile** (already enabled in [`Cargo.toml`](Cargo.toml)):
-  dependencies build at `opt-level = 2` and workspace crates use
+  dependencies build at `opt-level = 1` and workspace crates use
   `line-tables-only` debuginfo, so warm rebuilds link faster while test-failure
   backtraces stay readable. No setup required.
 - **Faster linker** (opt-in): a faster linker dominates incremental link time.
