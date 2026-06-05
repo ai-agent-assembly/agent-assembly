@@ -23,6 +23,12 @@ integration-test = []
 # Usage: cargo nextest run -p aa-integration-tests --features audit-consumer --test audit_consumer_verify
 audit-consumer = ["aa-gateway/audit-consumer"]
 
+# AAASM-2594: e2e verification of the aa-runtime audit-publisher startup wiring.
+# Gates `tests/audit_publisher_startup_verify.rs` (Docker-backed: NATS JetStream).
+#
+# Usage: cargo nextest run -p aa-integration-tests --features audit-publisher --test audit_publisher_startup_verify
+audit-publisher = []
+
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
 aa-core     = { path = "../aa-core" }
@@ -30,6 +36,7 @@ aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool  = { path = "../aa-devtool" }
 aa-gateway  = { path = "../aa-gateway" }
 aa-storage-postgres = { path = "../aa-storage-postgres" }
+aa-storage-sqlite-buffer = { path = "../aa-storage-sqlite-buffer" }
 aa-proto    = { path = "../aa-proto" }
 aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }

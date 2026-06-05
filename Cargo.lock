@@ -359,6 +359,7 @@ dependencies = [
  "aa-sandbox",
  "aa-security",
  "aa-storage-postgres",
+ "aa-storage-sqlite-buffer",
  "anyhow",
  "assert_cmd",
  "async-nats",
