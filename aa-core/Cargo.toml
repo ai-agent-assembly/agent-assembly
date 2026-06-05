@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Pure domain logic for Agent Assembly — no_std compatible"
 
 [dependencies]
-aho-corasick = { version = "1", optional = true }
+aa-security  = { path = "../aa-security", version = "0.0.1-alpha.5", optional = true }
 async-trait  = { workspace = true, optional = true }
 cfg-if       = "1"
 chrono       = { workspace = true, default-features = false, features = ["clock"], optional = true }
@@ -21,14 +21,13 @@ thiserror    = { workspace = true, optional = true }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aho-corasick", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
+std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
 alloc      = ["dep:sha2"]
-serde      = ["dep:serde"]
+serde      = ["dep:serde", "aa-security?/serde"]
 schemars   = ["dep:schemars"]
 test-utils = []
 
 [dev-dependencies]
-criterion  = { workspace = true, features = ["html_reports"] }
 proptest   = { workspace = true }
 serde_json = { workspace = true }
 # Self dev-dependency: turns on `serde` + `schemars` for aa-core's own test
@@ -36,10 +35,6 @@ serde_json = { workspace = true }
 # under `cargo nextest run -p aa-core` without making those features default
 # for downstream consumers.
 aa-core    = { path = ".", features = ["serde", "schemars"] }
-
-[[bench]]
-name    = "scanner_bench"
-harness = false
 
 [lints]
 workspace = true

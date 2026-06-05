@@ -35,6 +35,12 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      workspace version and introduces no version change to aa-runtime or any
      SDK; this comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2590: added the `aa-security` crate to root Cargo.toml workspace
+     members (leaf crate owning the credential scanner, redaction, and
+     audit-normalization primitives moved out of aa-core). It inherits the
+     workspace version and introduces no version change to aa-runtime or any
+     SDK; this comment satisfies the compatibility-matrix CI gate. -->
+
 
 ---
 

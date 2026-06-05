@@ -812,7 +812,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Run criterion benchmarks
         run: |
-          cargo bench -p aa-core --bench scanner_bench
+          cargo bench -p aa-security --bench scanner_bench
           cargo bench -p aa-gateway --bench policy_check
           cargo bench -p aa-ffi-python --bench sdk_bench
           cargo bench -p aa-proxy --bench intercept_bench
