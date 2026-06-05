@@ -141,3 +141,24 @@ fn unknown_key_secret_is_redacted() {
         "value under an unknown key must still be redacted"
     );
 }
+
+/// A GitHub PAT — detected via the `ghp_` literal pattern.
+const GH_PAT: &str = "ghp_0123456789abcdefABCDEF0123456789abcd";
+
+#[test]
+fn embedded_in_surrounding_text_is_redacted() {
+    let sc = scanner();
+    // Concatenated mid-string into a URL query, not a tidy "token" field.
+    let input = format!("https://api.example.com/v1/do?session=abc123&pat={GH_PAT}&retries=3");
+
+    let result = sc.scan(&input);
+    assert!(
+        !result.is_clean(),
+        "a secret embedded in surrounding text must be detected"
+    );
+    let redacted = result.redact(&input);
+    assert!(
+        !redacted.contains(GH_PAT),
+        "secret embedded mid-string must be redacted whole"
+    );
+}
