@@ -128,7 +128,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
               width: 24,
               height: 14,
               background: violationColor(r * maxViolations, maxViolations),
-              border: "1px solid #ccc",
+              border: "1px solid var(--line-2)",
             }}
           />
         ))}
@@ -138,7 +138,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
       <svg
         width={WIDTH}
         height={HEIGHT}
-        style={{ border: "1px solid #e5e7eb", borderRadius: 6, background: "#fafafa" }}
+        style={{ border: "1px solid var(--surface-card-border)", borderRadius: 6, background: "var(--surface-subtle-bg)" }}
       >
         {/* Links */}
         <g transform="translate(40,40)">
@@ -151,7 +151,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
                 y1={link.source.y}
                 x2={link.target.x}
                 y2={link.target.y}
-                stroke="#d1d5db"
+                style={{ stroke: "var(--line-2)" }}
                 strokeWidth={1.5}
               />
             );
@@ -175,13 +175,12 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
                 onMouseLeave={() => setTooltip(null)}
                 data-testid={`heatmap-node-${d.data.agent_id}`}
               >
-                <circle r={NODE_R} fill={color} stroke="#6b7280" strokeWidth={1} />
+                <circle r={NODE_R} fill={color} style={{ stroke: "var(--ink-4)" }} strokeWidth={1} />
                 <text
                   textAnchor="middle"
                   dy="0.35em"
                   fontSize={9}
-                  fill="#1f2937"
-                  style={{ pointerEvents: "none" }}
+                  style={{ fill: "var(--ink)", pointerEvents: "none" }}
                 >
                   {d.data.violation_count}
                 </text>
@@ -199,7 +198,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
             left: tooltip.x + 60,
             top: tooltip.y + 10,
             background: "white",
-            border: "1px solid #d1d5db",
+            border: "1px solid var(--line-2)",
             borderRadius: 6,
             padding: "8px 12px",
             boxShadow: "0 2px 8px rgba(0,0,0,.15)",
@@ -229,10 +228,10 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
       )}
 
       {truncated && (
-        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           Showing {maxNodes} of {nodes.length} agents.{" "}
           <button
-            style={{ color: "#2563eb", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+            style={{ color: "var(--shell-accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
             onClick={() => setShowAll(true)}
           >
             Show all
