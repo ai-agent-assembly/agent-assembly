@@ -442,6 +442,7 @@ dependencies = [
  "aa-core",
  "aa-ebpf",
  "aa-proto",
+ "aa-security",
  "aa-storage-sqlite-buffer",
  "async-nats",
  "async-trait",
