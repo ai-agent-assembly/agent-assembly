@@ -162,3 +162,23 @@ fn embedded_in_surrounding_text_is_redacted() {
         "secret embedded mid-string must be redacted whole"
     );
 }
+
+#[test]
+fn multiple_nested_secrets_all_redacted() {
+    let sc = scanner();
+    // Two distinct secrets in an array of differently-shaped objects: every raw
+    // value must be gone, regardless of how many detectors each one trips.
+    let input = serde_json::json!({
+        "outer": [
+            { "k": AWS_KEY },
+            { "nested": { "deep": GH_PAT } }
+        ]
+    })
+    .to_string();
+
+    let result = sc.scan(&input);
+    assert!(!result.is_clean(), "multiple nested secrets must be detected");
+    let redacted = result.redact(&input);
+    assert!(!redacted.contains(AWS_KEY), "first nested secret must be redacted");
+    assert!(!redacted.contains(GH_PAT), "second nested secret must be redacted");
+}
