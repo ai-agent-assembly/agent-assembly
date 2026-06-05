@@ -1,5 +1,6 @@
 //! Event aggregation pipeline — receives IpcFrames, enriches, batches, and fans out.
 
+pub mod enforcement;
 pub mod event;
 pub mod metrics;
 
