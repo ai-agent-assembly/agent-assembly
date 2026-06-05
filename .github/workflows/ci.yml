@@ -1209,6 +1209,60 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  # AAASM-2599: single aggregate gate that succeeds only when every functional
+  # CI job passed or was intentionally skipped (path-routed). This is the one
+  # status to make a required check in branch protection — it stays green for
+  # PRs that legitimately skip whole areas, yet fails if any job failed or was
+  # cancelled. Quality/acceptance jobs (coverage, sonar) are deliberately NOT
+  # gated here: their failures are advisory and must not block merge.
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - changes
+      - dashboard-assets
+      - build
+      - fmt
+      - clippy
+      - docs
+      - test
+      - timescaledb-tests
+      - migration-drift-check
+      - deny
+      - no-std
+      - buf-lint
+      - schema-lint
+      - openapi-drift
+      - openapi-lint
+      - compat-matrix-check
+      - ebpf-build
+      - e2e-ebpf-linux
+      - benchmark
+      - conformance
+      - conformance-python
+      - conformance-node
+      - conformance-go
+      - dashboard-typecheck
+      - dashboard-build
+      - dashboard-test
+      - dashboard-codegen-drift
+      - aa-cli-compat
+    steps:
+      - name: Verify no required job failed or was cancelled
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "Job results: $results"
+          for r in $results; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required CI job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required CI jobs passed or were intentionally skipped."
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
