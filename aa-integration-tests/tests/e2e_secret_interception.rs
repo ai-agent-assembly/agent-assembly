@@ -1112,4 +1112,41 @@ mod runtime_bypass {
             "the secret is replaced with a redaction marker"
         );
     }
+
+    #[test]
+    fn forged_clean_label_is_ignored_and_rescanned() {
+        // Case 2: a malicious SDK stuffs a "clean" / "already scanned" claim into
+        // the one place it could on the wire — the event `labels` map. The
+        // enforcement stage never reads labels; it re-scans unconditionally.
+        let scanner = RuntimeScanner::new();
+        let mut inner = AuditEvent {
+            detail: Some(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        inner.labels.insert("x-aa-prescanned".to_string(), "true".to_string());
+        inner.labels.insert("clean".to_string(), "true".to_string());
+        let mut event = EnrichedEvent {
+            inner,
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "lying-sdk".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        };
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !outcome.is_clean(),
+            "forged clean labels must not suppress runtime scanning"
+        );
+        let scanned = tool_args_text(&event);
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "the runtime re-scans and redacts regardless of any SDK claim"
+        );
+    }
 }
