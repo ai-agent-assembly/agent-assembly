@@ -38,3 +38,12 @@ translate the structure into the TypeScript components under `dashboard/src/`.
 | `identity.jsx` | `src/pages/IdentityPage.tsx` |
 | `teams.jsx` | `src/pages/TeamsPage.tsx` |
 | `alerts.jsx` | `src/pages/AlertsPage.tsx` |
+
+## v2 — current (light / dark theme)
+
+`design/v2/hi-fi/` is the latest hi-fi spec (Claude Design handoff). It introduces the
+**light/dark theme** shipped in the dashboard under AAASM-2595: `styles.css` carries the
+`:root` + `:root[data-theme="dark"]` token system, and `design/v2/screenshots/` holds the
+light/dark reference captures (`theme-light.png`, `theme-dark.png`, `0X-dark-pages.png`).
+
+`design/v1/` remains as the pre-theme reference. Use **v2** as the current visual spec.

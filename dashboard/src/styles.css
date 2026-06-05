@@ -2,7 +2,7 @@
    Agent Assembly Dashboard · Design Tokens
    ============================================================
 
-   The :root block below mirrors design/v1/hi-fi/styles.css so the
+   The :root block below mirrors design/v2/hi-fi/styles.css (light + dark) so the
    hi-fi palette is the single source of truth. Component styles
    must reference these custom properties rather than embedding
    hex literals, spacing values, or type sizes directly.
