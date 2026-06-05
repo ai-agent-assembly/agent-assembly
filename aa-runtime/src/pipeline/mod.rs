@@ -76,6 +76,10 @@ pub async fn run(
     let mut ticker = tokio::time::interval(config.flush_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // GATE (AAASM-2568): one precompiled scanner, constructed once and reused
+    // for every event. The runtime is the authoritative scan/redact point.
+    let scanner = enforcement::RuntimeScanner::new();
+
     loop {
         tokio::select! {
             biased;
@@ -91,7 +95,11 @@ pub async fn run(
             Some((connection_id, frame)) = rx.recv() => {
                 match frame {
                     IpcFrame::EventReport(event) => {
-                        let enriched = enrich(event, &config.agent_id, connection_id, &seq);
+                        let mut enriched = enrich(event, &config.agent_id, connection_id, &seq);
+                        // GATE: scan + redact + normalize before any forward or
+                        // audit, on every path. Unconditional — no SDK signal can
+                        // skip this.
+                        scanner.enforce(&mut enriched);
                         tracing::debug!(sequence_number = enriched.sequence_number, connection_id, "event enriched");
                         metrics.record_processed(1);
                         ::metrics::counter!("aa_events_received_total").increment(1);
@@ -1436,6 +1444,118 @@ mod tests {
             panic!("expected IpcResponse::ApprovalDecision, got {decision_resp:?}");
         }
 
+        token.cancel();
+    }
+
+    // -----------------------------------------------------------------------
+    // GATE: runtime enforcement runs before forward/audit on every path
+    // (AAASM-2568)
+    // -----------------------------------------------------------------------
+
+    /// An AWS access-key id the credential scanner detects via the `AKIA` literal.
+    const GATE_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    /// A ToolCall `AuditEvent` whose `args_json` embeds [`GATE_SECRET`].
+    fn tool_call_with_secret() -> AuditEvent {
+        use aa_proto::assembly::audit::v1::ToolCallDetail;
+        AuditEvent {
+            action_type: ActionType::ToolCall as i32,
+            detail: Some(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key": "{GATE_SECRET}"}}"#).into_bytes(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// Assert an audited pipeline event's `args_json` was redacted, not raw.
+    fn assert_args_redacted(event: PipelineEvent) {
+        let enriched = unwrap_audit(event);
+        let Some(Detail::ToolCall(tc)) = enriched.inner.detail else {
+            panic!("expected ToolCall detail");
+        };
+        let body = String::from_utf8(tc.args_json).expect("redacted text is utf-8");
+        assert!(!body.contains(GATE_SECRET), "raw secret must not leave the runtime");
+        assert!(body.contains("[REDACTED:"), "redaction marker present");
+    }
+
+    #[tokio::test]
+    async fn secret_is_redacted_on_batch_path() {
+        let config = test_config(1, 10_000); // flush at size 1; interval won't fire
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics.clone(),
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            crate::ipc::new_response_router(),
+            crate::approval::ApprovalQueue::new(),
+            None,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv())
+            .await
+            .expect("timed out waiting for batched event")
+            .expect("broadcast error");
+        assert_args_redacted(event);
+        token.cancel();
+    }
+
+    #[tokio::test]
+    async fn secret_is_redacted_on_violation_path() {
+        use crate::policy::{PolicyRule, PolicyRules};
+
+        // batch_size=100, long interval — only the violation should arrive,
+        // exercising the immediate-broadcast path.
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+
+        // A rule blocking TOOL_CALL actions routes the secret-bearing event
+        // onto the violation broadcast path instead of the batch.
+        let policy = PolicyRules {
+            rules: vec![PolicyRule {
+                name: "block-tools".to_string(),
+                blocked_actions: vec!["TOOL_CALL".to_string()],
+                ..Default::default()
+            }],
+        };
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics.clone(),
+            token.clone(),
+            Arc::new(policy),
+            crate::ipc::new_response_router(),
+            crate::approval::ApprovalQueue::new(),
+            None,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv())
+            .await
+            .expect("timed out waiting for violation event")
+            .expect("broadcast error");
+        assert_args_redacted(event);
         token.cancel();
     }
 }
