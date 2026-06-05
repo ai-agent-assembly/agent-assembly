@@ -417,8 +417,8 @@
   display: inline-block;
   padding: 1px 7px;
   border-radius: 999px;
-  background-color: #fef3c7;
-  color: #d97706;
+  background-color: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.3px;

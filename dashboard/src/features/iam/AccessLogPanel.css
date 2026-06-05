@@ -71,12 +71,12 @@
 
 .iam-access-log-table__result--success {
   background: var(--status-success-bg, rgba(46, 160, 67, 0.15));
-  color: var(--status-success, #2ea043);
+  color: var(--status-success);
 }
 
 .iam-access-log-table__result--failure {
   background: var(--status-danger-bg, rgba(218, 54, 51, 0.15));
-  color: var(--status-danger, #da3633);
+  color: var(--status-danger);
 }
 
 .iam-access-log-table__link {
