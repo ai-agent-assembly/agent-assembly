@@ -9,13 +9,13 @@
 //! This module is the standalone enforcement primitive. Wiring it into the
 //! pipeline `run()` loop lands in AAASM-2586.
 //!
-//! The scanner / redaction primitives are sourced from [`aa_core`] today; they
-//! move to `aa-security` under AAASM-2567, which is an import-only change here.
+//! The scanner / redaction primitives are sourced from the dedicated
+//! [`aa_security`] leaf crate (extracted out of `aa-core` under AAASM-2567).
 
 use std::time::{Duration, Instant};
 
-use aa_core::{CredentialFinding, CredentialScanner};
 use aa_proto::assembly::audit::v1::audit_event::Detail;
+use aa_security::{CredentialFinding, CredentialScanner};
 
 use super::event::EnrichedEvent;
 
@@ -227,7 +227,7 @@ impl RuntimeScanner {
 /// Emit scan observability metrics for one [`RuntimeScanner::enforce`] call.
 ///
 /// Latency is measured around the scan + redact work only. The finding
-/// counter is labelled by [`aa_core::CredentialKind`] and never carries the
+/// counter is labelled by [`aa_security::CredentialKind`] and never carries the
 /// raw secret. Emitted on every call, including clean and no-detail events.
 fn emit_metrics(outcome: &EnforcementOutcome, elapsed: Duration) {
     ::metrics::histogram!("aa_runtime_scan_latency_seconds").record(elapsed.as_secs_f64());
