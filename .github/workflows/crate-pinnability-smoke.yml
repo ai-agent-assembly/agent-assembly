@@ -1,0 +1,63 @@
+name: Crate Pinnability Smoke
+
+# AAASM-2559 (Epic AAASM-2552 — SDK security boundary + FFI consolidation).
+#
+# Proves the four crates the thin SDK shims consume from OUTSIDE the monorepo —
+# aa-core, aa-proto, aa-security, aa-sdk-client — stay buildable as git-SHA-pinned
+# dependencies from a clean checkout outside the workspace. Guards against
+# path-coupling regressions before an external SDK repo hits them. The actual
+# build logic lives in scripts/standalone-build-smoke.sh; distribution mechanism
+# (git SHA pin) is recorded in docs/src/adr/0002-sdk-security-boundary.md.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "aa-core/**"
+      - "aa-proto/**"
+      - "aa-security/**"
+      - "aa-sdk-client/**"
+      - "proto/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/standalone-build-smoke.sh"
+      - ".github/workflows/crate-pinnability-smoke.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "aa-core/**"
+      - "aa-proto/**"
+      - "aa-security/**"
+      - "aa-sdk-client/**"
+      - "proto/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/standalone-build-smoke.sh"
+      - ".github/workflows/crate-pinnability-smoke.yml"
+
+# One in-flight run per ref is enough; newer pushes supersede older ones.
+concurrency:
+  group: crate-pinnability-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Match the rest of CI: incremental artifacts only bloat the cache here.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  standalone-build-smoke:
+    name: Standalone build (git-SHA pin)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Build shared crates as git-SHA-pinned external consumers
+        run: bash scripts/standalone-build-smoke.sh
