@@ -122,3 +122,22 @@ fn nested_json_secret_is_redacted() {
         "raw secret must not survive redaction even when deeply nested"
     );
 }
+
+#[test]
+fn unknown_key_secret_is_redacted() {
+    let sc = scanner();
+    // A field name no banned-key list would ever target. Content scanning still
+    // catches the value — position under an arbitrary key confers no immunity.
+    let input = serde_json::json!({
+        "totally_made_up_field_xyz": AWS_KEY
+    })
+    .to_string();
+
+    let result = sc.scan(&input);
+    assert!(!result.is_clean(), "a secret under an unknown key must be detected");
+    let redacted = result.redact(&input);
+    assert!(
+        !redacted.contains(AWS_KEY),
+        "value under an unknown key must still be redacted"
+    );
+}
