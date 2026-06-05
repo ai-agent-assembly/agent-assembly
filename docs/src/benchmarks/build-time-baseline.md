@@ -110,7 +110,48 @@ shift run-to-run with build parallelism, but this set is stable.
 | 3 | `rand`, `rand_core`, `getrandom` |
 | 2 | `winnow`, `webpki-roots`, `wast`, `wasm-encoder`, `untrusted`, `toml`, `toml_datetime`, `thiserror-impl`, … |
 
-The full report is archived at `target/build-baseline/cargo-tree-dups.txt`.
+The complete set of multi-version packages — the committed dedup baseline for
+AAASM-2555 to diff against — follows. The full `cargo tree -d` report (with the
+inverted dependent trees) is also archived at
+`target/build-baseline/cargo-tree-dups.txt` for the dependency paths.
+
+```text
+block-buffer        v0.10.4  v0.12.0
+const-oid           v0.9.6   v0.10.2
+convert_case        v0.10.0  v0.11.0
+cpufeatures         v0.2.17  v0.3.0
+crypto-common       v0.1.7   v0.2.1
+deadpool            v0.12.3  v0.13.0
+deadpool-runtime    v0.1.4   v0.3.1
+digest              v0.10.7  v0.11.3
+fixedbitset         v0.4.2   v0.5.7
+foldhash            v0.1.5   v0.2.0
+getrandom           v0.2.17  v0.3.4   v0.4.2
+hashbrown           v0.14.5  v0.15.5  v0.16.1  v0.17.1
+hashlink            v0.9.1   v0.10.0
+hmac                v0.12.1  v0.13.0
+itertools           v0.13.0  v0.14.0
+lru                 v0.16.4  v0.18.0
+petgraph            v0.6.5   v0.8.3
+phf                 v0.11.3  v0.12.1
+phf_shared          v0.11.3  v0.12.1
+rand                v0.8.6   v0.9.4   v0.10.1
+rand_chacha         v0.3.1   v0.9.0
+rand_core           v0.6.4   v0.9.5   v0.10.1
+reqwest             v0.12.28 v0.13.3
+sha2                v0.10.9  v0.11.0
+similar             v2.7.0   v3.1.1
+thiserror           v1.0.69  v2.0.18
+thiserror-impl      v1.0.69  v2.0.18
+toml                v0.9.12  v1.1.2
+toml_datetime       v0.7.5   v1.1.1
+untrusted           v0.7.1   v0.9.0
+wasm-encoder        v0.248.0 v0.251.0
+wast                v35.0.2  v251.0.0
+webpki-roots        v0.26.11 v1.0.7
+winnow              v0.7.15  v1.0.2
+```
+
 AAASM-2555 should re-run `cargo tree -d` after centralizing
 `[workspace.dependencies]` and confirm this count drops.
 
