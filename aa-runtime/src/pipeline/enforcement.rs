@@ -12,6 +12,8 @@
 //! The scanner / redaction primitives are sourced from [`aa_core`] today; they
 //! move to `aa-security` under AAASM-2567, which is an import-only change here.
 
+use std::time::{Duration, Instant};
+
 use aa_core::{CredentialFinding, CredentialScanner};
 use aa_proto::assembly::audit::v1::audit_event::Detail;
 
@@ -129,22 +131,29 @@ impl RuntimeScanner {
     /// the allowlisted secret-bearing fields are scanned; opaque numeric and
     /// enumeration fields are left untouched.
     pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
+        let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
-        let Some(detail) = event.inner.detail.as_mut() else {
-            return outcome;
-        };
+        if let Some(detail) = event.inner.detail.as_mut() {
+            self.scan_detail(detail, &mut outcome);
+        }
+        emit_metrics(&outcome, started.elapsed());
+        outcome
+    }
+
+    /// Scan and redact the allowlisted secret-bearing fields of `detail`.
+    fn scan_detail(&self, detail: &mut Detail, outcome: &mut EnforcementOutcome) {
         match detail {
             Detail::ToolCall(tc) => {
-                self.scan_bytes(&mut tc.args_json, &mut outcome);
-                self.scan_string(&mut tc.error_message, &mut outcome);
+                self.scan_bytes(&mut tc.args_json, outcome);
+                self.scan_string(&mut tc.error_message, outcome);
             }
             Detail::FileOp(f) => {
-                self.scan_string(&mut f.path, &mut outcome);
+                self.scan_string(&mut f.path, outcome);
             }
             Detail::Process(p) => {
-                self.scan_string(&mut p.command, &mut outcome);
+                self.scan_string(&mut p.command, outcome);
                 for arg in p.args.iter_mut() {
-                    self.scan_string(arg, &mut outcome);
+                    self.scan_string(arg, outcome);
                 }
             }
             // No free-text secret-bearing fields: LlmCall / Network / Violation
@@ -153,7 +162,6 @@ impl RuntimeScanner {
             // until its secret-bearing fields are triaged here.
             Detail::LlmCall(_) | Detail::Network(_) | Detail::Violation(_) | Detail::Approval(_) => {}
         }
-        outcome
     }
 
     /// Scan and redact a UTF-8 string field in place.
@@ -216,6 +224,22 @@ impl RuntimeScanner {
     }
 }
 
+/// Emit scan observability metrics for one [`RuntimeScanner::enforce`] call.
+///
+/// Latency is measured around the scan + redact work only. The finding
+/// counter is labelled by [`aa_core::CredentialKind`] and never carries the
+/// raw secret. Emitted on every call, including clean and no-detail events.
+fn emit_metrics(outcome: &EnforcementOutcome, elapsed: Duration) {
+    ::metrics::histogram!("aa_runtime_scan_latency_seconds").record(elapsed.as_secs_f64());
+    ::metrics::histogram!("aa_runtime_scan_payload_bytes").record(outcome.scanned_bytes as f64);
+    if outcome.oversized_fields > 0 {
+        ::metrics::counter!("aa_runtime_scan_oversized_total").increment(outcome.oversized_fields as u64);
+    }
+    for finding in &outcome.findings {
+        ::metrics::counter!("aa_runtime_scan_findings_total", "kind" => finding.kind.as_str()).increment(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +247,7 @@ mod tests {
     use aa_proto::assembly::audit::v1::{
         AuditEvent, FileOpDetail, NetworkCallDetail, ProcessExecDetail, ToolCallDetail,
     };
+    use metrics_exporter_prometheus::PrometheusBuilder;
 
     /// An AWS access-key id — detected via the `AKIA` literal pattern.
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
@@ -429,5 +454,26 @@ mod tests {
             assert!(!contains_secret, "raw secret must not survive any iteration");
             assert!(!outcome.is_clean());
         }
+    }
+
+    #[test]
+    fn enforce_emits_scan_metrics() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            let scanner = RuntimeScanner::new();
+            let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"key": "{AWS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            }));
+            scanner.enforce(&mut event);
+        });
+
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_scan_latency_seconds"));
+        assert!(rendered.contains("aa_runtime_scan_payload_bytes"));
+        assert!(rendered.contains("aa_runtime_scan_findings_total"));
+        // The finding metric is labelled by kind; the raw secret never appears.
+        assert!(!rendered.contains(AWS_KEY));
     }
 }
