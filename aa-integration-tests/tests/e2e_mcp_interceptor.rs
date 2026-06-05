@@ -386,7 +386,7 @@ async fn st_q_2_mcp_read_file_home_user_is_allowed() {
 /// the proxy forwards). The mock MCP upstream is configured to reply
 /// with a result body that **embeds a synthetic OpenAI key**
 /// (`sk-test-...`). The proxy's `Interceptor::redact_response_body` runs
-/// `aa_core::CredentialScanner` against the captured response body —
+/// `aa_security::CredentialScanner` against the captured response body —
 /// the same scanner shape `aa-gateway` uses for ToolResult evaluation
 /// (AAASM-1941) — and rewrites the response with `[REDACTED:OpenAiKey]`
 /// markers in place of the raw key before forwarding to the client.
@@ -408,7 +408,7 @@ async fn st_q_3_mcp_tool_result_secret_is_redacted_before_agent_sees_it() {
     let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.expect("ca");
     let client_config = std::sync::Arc::new(client_trust_proxy_ca(dir.path()).await);
 
-    // Synthetic OpenAI key — built into the default `aa_core::CredentialScanner`'s
+    // Synthetic OpenAI key — built into the default `aa_security::CredentialScanner`'s
     // OpenAiKey AC pattern. The proxy's scanner catches it without any policy
     // YAML configuration; `mcp_redact_secrets.yaml` would carry the same
     // pattern explicitly if the gateway-side ToolResult flow were used.
