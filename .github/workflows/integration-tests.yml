@@ -1,5 +1,8 @@
 name: Integration tests
 
+permissions:
+  contents: read
+
 # End-to-end integration test suite. Runs the `aa-integration-tests` crate
 # on Linux + macOS so the topology HTTP roundtrip (AAASM-1066) and the CLI
 # subcommand coverage (AAASM-1258, AAASM-1441 follow-up) are exercised on
