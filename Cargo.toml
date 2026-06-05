@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aa-core",
+    "aa-security",
     "aa-storage",
     "aa-storage-memory",
     "aa-storage-redis",
