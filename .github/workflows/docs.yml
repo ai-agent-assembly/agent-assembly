@@ -77,3 +77,7 @@ jobs:
 
       - name: Verify api-reference.md rustdoc command
         run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}

@@ -168,3 +168,7 @@ jobs:
         run: |
           docker run --rm "$IMAGE" aasm --version
           docker run --rm "$IMAGE" sh -c "$SMOKE_RUN"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
