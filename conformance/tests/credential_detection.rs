@@ -88,3 +88,37 @@ fn all_vectors_redact_correctly() {
         );
     }
 }
+
+// ── SDK-bypass resistance: encoded / nested payloads (AAASM-2634 / Story AAASM-2569 case 3) ──
+//
+// The gateway's banned-key sanitizer strips *known key names*; it never inspects
+// values hidden under unknown keys, deep nesting, or arbitrary surrounding text.
+// The `CredentialScanner` that `aa-runtime` runs authoritatively is content-based,
+// so position / nesting / key-name confers no immunity. These tests assert
+// **raw-secret-absence** after `redact()` — the secret substring never survives —
+// rather than finding-count or label equality, per the known scanner-overlap quirk
+// where a single secret can match several detectors.
+
+/// An AWS access-key id — detected via the `AKIA` literal pattern.
+const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+#[test]
+fn nested_json_secret_is_redacted() {
+    let sc = scanner();
+    // A secret buried four objects deep: a key-based strip never reaches it.
+    let input = serde_json::json!({
+        "a": { "b": { "c": { "credential": AWS_KEY } } }
+    })
+    .to_string();
+
+    let result = sc.scan(&input);
+    assert!(
+        !result.is_clean(),
+        "a secret nested deep in JSON must still be detected"
+    );
+    let redacted = result.redact(&input);
+    assert!(
+        !redacted.contains(AWS_KEY),
+        "raw secret must not survive redaction even when deeply nested"
+    );
+}
