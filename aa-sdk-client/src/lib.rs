@@ -25,4 +25,5 @@
 //! - UDS transport / background IPC thread — AAASM-2625
 //! - `AssemblyClient` lifecycle, event shipping, advisory preflight — AAASM-2626
 
+pub mod codec;
 pub mod config;
