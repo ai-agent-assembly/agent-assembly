@@ -6,7 +6,7 @@
 [![Docs](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml/badge.svg)](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/AI-agent-assembly/agent-assembly/branch/master/graph/badge.svg)](https://codecov.io/gh/AI-agent-assembly/agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![crates.io](https://img.shields.io/badge/crates.io-unpublished-lightgrey)](https://crates.io/)
+[![Release](https://img.shields.io/github/v/release/AI-agent-assembly/agent-assembly?include_prereleases&sort=semver)](https://github.com/AI-agent-assembly/agent-assembly/releases)
 
 
 ## Install the CLI
