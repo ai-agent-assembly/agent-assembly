@@ -54,6 +54,7 @@
 
 # Development
 
+- [Local Development](development/local-development.md)
 - [Consuming the Shared Crates](development/consuming-shared-crates.md)
 
 # Architecture Decision Records
