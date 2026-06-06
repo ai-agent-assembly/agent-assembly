@@ -125,16 +125,12 @@ jobs:
 
   smoke-curl-installer:
     name: Smoke — curl installer
-    # AAASM-2339: get.agent-assembly.io is not provisioned yet (no DNS,
-    # no Cloudflare Worker). The job is preserved here under an unconditional
-    # `if: false` so the wiring is ready when the curl|sh install path ships;
-    # until then the job is skipped on every release and emits no signal.
-    # Deliberately kept out of `notify-on-failure`'s `needs:` list so a
-    # skipped run does not propagate to that downstream job. To re-enable:
-    # provision the endpoint, flip `if: false` to `if: true` (or drop the
-    # line), and re-add `- smoke-curl-installer` to notify-on-failure's
-    # `needs:`.
-    if: false
+    # AAASM-2339: the install endpoint (tool.agent-assembly.dev) is served by the
+    # Cloudflare Worker in infra/install-endpoint/. This job is gated on the
+    # `INSTALL_ENDPOINT_LIVE` repo variable so it runs once the Worker is deployed
+    # and the variable is set to `true` — skipped otherwise, so there is no
+    # false-red on releases cut before the endpoint goes live.
+    if: ${{ vars.INSTALL_ENDPOINT_LIVE == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -163,7 +159,7 @@ jobs:
           # the current shell. Re-export common install locations so the
           # subsequent step can find the binary regardless of which one the
           # installer chose.
-          curl -fsSL https://get.agent-assembly.io | sh
+          curl -fsSL https://tool.agent-assembly.dev | sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.agent-assembly/bin"
@@ -285,6 +281,7 @@ jobs:
       - smoke-homebrew-linux
       - smoke-cargo-install
       - smoke-docker
+      - smoke-curl-installer
     # Fire only when the workflow is genuinely broken — `failure()` covers
     # any failed `needs:` job; the `release` event guard avoids dispatching
     # notifications during manual `workflow_dispatch` reruns.
