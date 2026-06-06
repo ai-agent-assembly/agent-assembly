@@ -6,7 +6,7 @@
 [![Docs](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml/badge.svg)](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/AI-agent-assembly/agent-assembly/branch/master/graph/badge.svg)](https://codecov.io/gh/AI-agent-assembly/agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![crates.io](https://img.shields.io/badge/crates.io-unpublished-lightgrey)](https://crates.io/)
+[![Release](https://img.shields.io/github/v/release/AI-agent-assembly/agent-assembly?include_prereleases&sort=semver)](https://github.com/AI-agent-assembly/agent-assembly/releases)
 
 
 ## Install the CLI
@@ -27,11 +27,43 @@ AASM_VERSION=v0.1.0 curl -sSf https://install.ai-agent-assembly.dev | sh
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev | sh
 ```
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+```
+
+Installs the latest tagged `aasm` release from the
+[Homebrew tap](https://github.com/AI-agent-assembly/homebrew-agent-assembly).
+During the `v0.0.1` alpha series the published releases are pre-releases — see
+[Project Status](#project-status).
+
 ## Overview
 
 `agent-assembly` is the core runtime that brings governance to AI agents at
 scale. It provides a three-layer interception model — eBPF kernel hooks, a
 sidecar proxy, and an SDK shim — backed by a policy engine and audit trail.
+
+## Ecosystem
+
+`agent-assembly` is the open-source core of a larger governance platform. The
+table below maps each production repository to its role and entry point, so you
+can move from this repo to the SDKs, the install tap, or the canonical docs.
+
+| Repository | Role | Status |
+|---|---|---|
+| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | Public · Alpha |
+| [python-sdk](https://github.com/AI-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
+| [node-sdk](https://github.com/AI-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
+| [go-sdk](https://github.com/AI-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
+| [homebrew-agent-assembly](https://github.com/AI-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
+| [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | Public |
+| agent-assembly-cloud | Hosted SaaS control plane | Private · in development |
+| agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | Private · in development |
+
+> The protocol specification is maintained **inside this monorepo** under
+> [`proto/`](proto/) and [`docs/src/protocol/`](docs/src/protocol/CHANGELOG.md) —
+> there is no separate spec package.
 
 ## Crate Map
 
@@ -66,7 +98,24 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Alpha — v0.0.1** — API is not stable. Do not use in production.
+🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-06-06)_. The
+public API and wire protocol are **not** stable; do not use in production.
+
+Releases are published as GitHub pre-releases — latest
+[`v0.0.1-alpha.5`](https://github.com/AI-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.5)
+(2026-06-03). The coordinated release tag also publishes the CLI, crates, SDK
+packages, and container image:
+
+| Channel | Status |
+|---|---|
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.5`) |
+| crates.io | ✅ Workspace crates published at the pre-release version |
+| Homebrew tap | ✅ `aasm` formula published for tagged releases |
+| PyPI / npm | ✅ SDK pre-releases published from the release tag |
+| GHCR image | ✅ Published from the release tag |
+
+See [`docs/release/`](docs/release/) for the per-tag release notes and the
+[release runbook](docs/release/RUNBOOK.md).
 
 ## Requirements
 
@@ -76,6 +125,22 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 - [cargo-deny](https://embarkstudios.github.io/cargo-deny/) for dependency checks
 - [Lefthook](https://github.com/evilmartians/lefthook) for git hooks
 - **Linux only**: `pkg-config` and `libssl-dev` (or `openssl-devel` on RHEL-family) for native TLS in `aa-proxy`; eBPF crates additionally require a recent kernel with BTF and a nightly Rust toolchain (see `aa-ebpf/README.md`)
+
+## Supported platforms
+
+The interception layers have different platform reach. The SDK shim and sidecar
+proxy run anywhere the runtime builds; kernel-level eBPF interception is
+Linux-only.
+
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+|---|---|---|---|
+| Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
+| macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
+| Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
+
+On macOS, governance is enforced through the SDK and proxy layers; the eBPF
+layer is unavailable. See [`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel
+requirements.
 
 ## Quickstart
 
@@ -139,7 +204,7 @@ dev-verify passed (22s total)
 
 ### Next steps
 
-- [SDK documentation](docs/sdk/README.md) — Python, Node.js, and Go SDK guides
+- [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
 - [Architecture Overview](docs/src/architecture.md) — three-layer interception model
 - [Policy examples](policy-examples/) — reference governance policies
 
@@ -206,7 +271,9 @@ agent-assembly/
 
 ## Documentation
 
-The contributor-facing documentation is published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
+📖 **Canonical docs site:** <https://ai-agent-assembly.github.io/agent-assembly-docs/>
+
+The contributor-facing documentation is also published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
 
 ```bash
 cargo install --locked --version 0.5.2 mdbook
@@ -225,6 +292,20 @@ mdbook serve docs --open
 | [Migration Template](docs/src/migration/template.md) | Guidance for moving between protocol versions |
 | [Benchmarks — Baseline](docs/src/benchmarks/BASELINE.md) | Performance baseline numbers |
 | [Benchmarks — Policy Check p99](docs/src/benchmarks/policy-check-p99.md) | Latency SLA evidence |
+
+## Security & Support
+
+- **Security:** Report vulnerabilities **privately** via
+  [GitHub Security Advisories](https://github.com/AI-agent-assembly/agent-assembly/security)
+  or email `security@agent-assembly.dev`. Please do not open public issues for
+  security reports. See [`SECURITY.md`](SECURITY.md) for the disclosure policy
+  and response SLA.
+- **Bugs & features:** Open an issue using the
+  [bug report](.github/ISSUE_TEMPLATE/bug_report.md) or
+  [feature request](.github/ISSUE_TEMPLATE/feature_request.md) template.
+- **Contributing:** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development
+  setup, commit conventions, and PR process.
+- **Changelog:** [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
