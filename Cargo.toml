@@ -14,8 +14,6 @@ members = [
     "aa-ebpf-common",
     "aa-proxy",
     "aa-ffi-go",
-    "aa-ffi-python",
-    "aa-ffi-node",
     "aa-sdk-client",
     "aa-wasm",
     "aa-sandbox",

@@ -436,7 +436,6 @@ jobs:
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
-        # aa-ffi-python requires Python dev headers for linking — excluded.
         # aa-devtool-claude-code is run separately (step 2) without docker-integration:
         # the docker-integration feature builds aa-proxy from scratch inside Docker
         # and doesn't add instrumented coverage. Running it under --all-features would
@@ -456,7 +455,7 @@ jobs:
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
           cargo llvm-cov nextest --no-report --all-features --workspace \
-            --exclude aa-ebpf --exclude aa-ffi-python --exclude aa-devtool-claude-code \
+            --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
           cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
@@ -900,7 +899,6 @@ jobs:
         run: |
           cargo bench -p aa-security --bench scanner_bench
           cargo bench -p aa-gateway --bench policy_check
-          cargo bench -p aa-ffi-python --bench sdk_bench
           cargo bench -p aa-proxy --bench intercept_bench
       - name: Run latency SLA test (5s burst)
         # AAASM-1452: shared GitHub-hosted runners exhibit noisy-neighbour
@@ -1157,7 +1155,7 @@ jobs:
         if: needs.coverage.result == 'success'
       - name: Generate Clippy report
         if: needs.coverage.result == 'success'
-        run: cargo clippy --all-targets --all-features --exclude aa-ebpf --exclude aa-ffi-python --message-format=json 2>&1 | tee clippy-report.json || true
+        run: cargo clippy --all-targets --all-features --exclude aa-ebpf --message-format=json 2>&1 | tee clippy-report.json || true
       - name: Download Rust coverage (LCOV) from the Coverage job
         if: needs.coverage.result == 'success'
         uses: actions/download-artifact@v8

@@ -47,9 +47,8 @@ The Cargo workspace declares **14 members** in the top-level `Cargo.toml`. Two a
 | `aa-ebpf` | eBPF orchestrator (loads probes/programs via `aya-build`) |
 | `aa-ebpf-common` | Shared types between user-space and eBPF programs |
 | `aa-proxy` | Sidecar HTTPS interception proxy (MitM with per-host CA) |
-| `aa-ffi-python` | Python FFI bindings via PyO3 |
-| `aa-ffi-node` | Node.js FFI bindings via napi-rs |
-| `aa-ffi-go` | Go FFI bindings via cgo |
+| `aa-ffi-go` | Go FFI bindings via cgo (C-ABI staticlib artifact for the Go SDK) |
+| `aa-sdk-client` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the language shims wrap |
 | `aa-wasm` | WebAssembly target via wasm-bindgen |
 | `aa-gateway` | Control plane — policy enforcement, agent registry, budget tracking |
 | `aa-api` | HTTP presentation layer with OpenAPI spec generation (utoipa) |
@@ -190,9 +189,8 @@ agent-assembly/
 ├── aa-ebpf-probes/      # Userspace probe loaders (out-of-workspace, BPF target)
 ├── aa-ebpf-programs/    # eBPF programs (out-of-workspace, BPF target)
 ├── aa-proxy/            # Sidecar HTTPS proxy
-├── aa-ffi-python/       # Python bindings (PyO3)
-├── aa-ffi-node/         # Node bindings (napi-rs)
-├── aa-ffi-go/           # Go bindings (cgo)
+├── aa-ffi-go/           # Go bindings (cgo C-ABI staticlib)
+├── aa-sdk-client/       # Shared SDK runtime-client (Python/Node shims live in their own repos)
 ├── aa-wasm/             # WASM target
 ├── aa-gateway/          # Control plane (policy, registry, budget)
 ├── aa-api/              # HTTP API + OpenAPI
