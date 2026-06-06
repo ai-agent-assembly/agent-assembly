@@ -79,6 +79,7 @@ mod tests {
             correlation_interval_ms: 2_000,
             nats_config_path: None,
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
+            enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
         };
 
         let config = CorrelationConfig::from_runtime_config(&rc);

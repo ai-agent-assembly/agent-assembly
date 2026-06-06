@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES;
+
 /// Configuration for the `aa-runtime` sidecar process.
 ///
 /// All fields are populated by [`RuntimeConfig::from_env`].
@@ -104,6 +106,14 @@ pub struct RuntimeConfig {
     /// `<temp-dir>/aa-audit-buffer-<agent_id>.db`. Only used when the audit
     /// publisher is enabled.
     pub audit_buffer_path: PathBuf,
+
+    /// Upper bound, in bytes, on any single secret-bearing field handed to the
+    /// runtime credential scanner. Fields larger than this are redacted whole
+    /// (fail-closed) rather than partially scanned.
+    ///
+    /// Read from `AA_ENFORCEMENT_MAX_FIELD_BYTES`. Defaults to
+    /// [`DEFAULT_MAX_FIELD_BYTES`] (64 KiB). Zero falls back to the default.
+    pub enforcement_max_field_bytes: usize,
 }
 
 impl RuntimeConfig {
@@ -132,6 +142,7 @@ impl RuntimeConfig {
     /// | `AA_CORRELATION_INTERVAL_MS` | `u64` | `1_000` |
     /// | `AA_NATS_CONFIG_PATH` | `Option<PathBuf>` | `None` (publisher disabled) |
     /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
+    /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -216,6 +227,12 @@ impl RuntimeConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join(format!("aa-audit-buffer-{agent_id}.db")));
 
+        let enforcement_max_field_bytes = std::env::var("AA_ENFORCEMENT_MAX_FIELD_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_FIELD_BYTES);
+
         Ok(Self {
             agent_id,
             worker_threads,
@@ -232,6 +249,7 @@ impl RuntimeConfig {
             correlation_interval_ms,
             nats_config_path,
             audit_buffer_path,
+            enforcement_max_field_bytes,
         })
     }
 }
