@@ -109,6 +109,22 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 - [Lefthook](https://github.com/evilmartians/lefthook) for git hooks
 - **Linux only**: `pkg-config` and `libssl-dev` (or `openssl-devel` on RHEL-family) for native TLS in `aa-proxy`; eBPF crates additionally require a recent kernel with BTF and a nightly Rust toolchain (see `aa-ebpf/README.md`)
 
+## Supported platforms
+
+The interception layers have different platform reach. The SDK shim and sidecar
+proxy run anywhere the runtime builds; kernel-level eBPF interception is
+Linux-only.
+
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+|---|---|---|---|
+| Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
+| macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
+| Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
+
+On macOS, governance is enforced through the SDK and proxy layers; the eBPF
+layer is unavailable. See [`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel
+requirements.
+
 ## Quickstart
 
 <!-- docs-site: <asciinema-player src="quickstart.cast" cols="220" rows="50" preload="true"></asciinema-player> -->
