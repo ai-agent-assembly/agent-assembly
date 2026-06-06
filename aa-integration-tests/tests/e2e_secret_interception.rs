@@ -115,6 +115,14 @@ fn make_engine() -> PolicyEngine {
     PolicyEngine::load_from_file(&path, tx).expect("secret_detection_patterns.yaml must load cleanly")
 }
 
+/// Construct a `PolicyEngine` from the `credential_action: block` fixture, where
+/// any credential finding hard-blocks the action (`PolicyResult::Deny`).
+fn make_block_engine() -> PolicyEngine {
+    let path = fixture_path("policies/secret_block.yaml");
+    let (tx, _rx) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+    PolicyEngine::load_from_file(&path, tx).expect("secret_block.yaml must load cleanly")
+}
+
 /// Build a `ToolCall` action against the policy-allowed `test_tool` whose
 /// `args` payload is the supplied string. Stage 6 of `evaluate()` scans the
 /// `args` field; see `aa-gateway/src/engine/mod.rs:478`.
@@ -165,6 +173,34 @@ fn assert_detected(result: &EvaluationResult, expected: CredentialKind) {
     assert!(
         result.redacted_payload.is_some(),
         "detection must populate redacted_payload",
+    );
+}
+
+// ── AAASM-2645 — deny-on-credential policy denies a bypassed-SDK secret ───────
+// Completes Story AAASM-2569 case 1's third assertion: even when the SDK fails
+// to scan, an operator policy with `credential_action: block` still denies the
+// action outright at the authoritative gateway.
+
+#[test]
+fn deny_on_credential_policy_denies_bypassed_sdk_secret() {
+    // The secret rides in the tool args exactly as a preflight-disabled SDK would
+    // forward it. Under `credential_action: block` the finding hard-blocks.
+    let payload = format!(r#"{{"data":"key {FAKE_AWS_ACCESS_KEY}"}}"#);
+    let action = tool_call_with_args(&payload);
+    let result = make_block_engine().evaluate(&make_ctx([0xB1; 16]), &action);
+
+    assert!(
+        matches!(result.decision, PolicyResult::Deny { .. }),
+        "a deny-on-credential policy must deny the bypassed secret, got {:?}",
+        result.decision,
+    );
+    assert!(
+        !result.credential_findings.is_empty(),
+        "the deny must be driven by a credential finding",
+    );
+    assert!(
+        result.redacted_payload.is_none(),
+        "a blocked payload is rejected outright, never redacted-and-forwarded",
     );
 }
 
