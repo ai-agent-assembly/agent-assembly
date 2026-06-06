@@ -30,7 +30,6 @@ graph TD
     aa_cli[aa-cli]:::control
 
     aa_sdk_client[aa-sdk-client]:::ffi
-    aa_ffi_go[aa-ffi-go]:::ffi
     aa_wasm[aa-wasm]:::ffi
 
     conformance[conformance]:::edge
@@ -64,7 +63,7 @@ graph TD
     conformance --> aa_proto
 ```
 
-Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`. `aa-ffi-go` has no Cargo dependencies on other workspace crates: it talks to the gateway over gRPC at runtime, with bindings generated from the same `proto/` source as `aa-proto`. `aa-sdk-client` is the shared, FFI-agnostic SDK runtime-client (UDS transport, wire codec, lifecycle, and an optional `aa-security` advisory preflight) that the per-language FFI shims wrap; the Python and Node shims now live in the sibling `python-sdk` / `node-sdk` repos and consume it via a pinned git SHA (AAASM-2560/2561), so they are no longer workspace members.
+Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`. `aa-sdk-client` is the shared, FFI-agnostic SDK runtime-client (UDS transport, wire codec, lifecycle, and an optional `aa-security` advisory preflight) that the per-language FFI shims wrap; the Python, Node, and Go shims all live in the sibling `python-sdk` / `node-sdk` / `go-sdk` repos and consume it via a pinned git SHA (AAASM-2560/2561/2704), so none are workspace members. The monorepo no longer hosts any FFI shim.
 
 ## Three-layer interception model
 
@@ -72,7 +71,7 @@ Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`.
 
 | Layer | Crate(s) | Where it runs | Bypass risk | Tradeoff |
 |---|---|---|---|---|
-| **1 — In-process SDK** | `aa-ffi-go`, `aa-wasm` (in-workspace) + the `aa-sdk-client`-based Python/Node shims in the sibling `python-sdk` / `node-sdk` repos | Inside the agent process | Highest (agent could skip the SDK) | Fastest path; requires SDK adoption |
+| **1 — In-process SDK** | `aa-wasm` (in-workspace) + the `aa-sdk-client`-based Python/Node/Go shims in the sibling `python-sdk` / `node-sdk` / `go-sdk` repos | Inside the agent process | Highest (agent could skip the SDK) | Fastest path; requires SDK adoption |
 | **2 — Sidecar proxy** | `aa-proxy` | Adjacent process / sidecar container | Medium (network egress only) | Catches everything routed through the proxy without code changes |
 | **3 — eBPF** | `aa-ebpf`, `aa-ebpf-common`, `aa-ebpf-probes`, `aa-ebpf-programs` | Linux kernel | Lowest (catches bypass attempts) | Linux-only; requires elevated privileges |
 

@@ -49,6 +49,14 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      are unchanged). aa-ffi-go (staticlib artifact) and aa-sdk-client stay in
      the workspace. This comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2703: relocated `aa-ffi-go` OUT of the workspace into the go-sdk repo
+     (native/aa-ffi-go — a thin C-ABI shim over the SHA-pinned aa-sdk-client,
+     AAASM-2704), and deleted its ffi-go-staticlib.yml build workflow. Supersedes
+     the AAASM-2646 note above: the monorepo now hosts NO FFI shim. Member removal
+     only; the Go SDK + aa-runtime keep their versions and protocol/v1 compatibility
+     (the matrix rows below are unchanged, and the SDK labels stay as-is per the
+     AAASM-2646 convention). This comment satisfies the compatibility-matrix CI gate. -->
+
 
 ---
 
@@ -155,3 +163,4 @@ See [versioning.md](versioning.md) for the full versioning and deprecation polic
 | AAASM-2588 | Added `[profile.dev]` (`debug="line-tables-only"`) and `[profile.dev.package."*"]` (`opt-level=1`, `debug=false`) to tune dev/test build time, plus an opt-in (commented) `.cargo/config.toml` faster-linker template and a `CONTRIBUTING.md` section. Raised the `integration-tests` job `timeout-minutes` 20→30 to absorb the slightly heavier optimized-deps build. Build-config change only, no version bump. | None — affects local/CI build speed and dev-build debuginfo verbosity only; no API, protocol, or ABI change. |
 | AAASM-2623 | Added `aa-sdk-client` workspace crate (Story AAASM-2570 — the shared, FFI-agnostic SDK runtime-client: UDS transport, IPC wire codec, `AssemblyClient` lifecycle, and advisory non-authoritative credential preflight, extracted from `aa-ffi-python`). Scaffold only in this PR (`publish = false` until AAASM-2559 makes the shared crates pinnable); modules land in AAASM-2624/2625/2626. `aa-ffi-python` is untouched — its migration onto this crate is AAASM-2561. | None — new internal crate, no existing public API, protocol, or ABI change |
 | AAASM-2646 | Removed the fat `aa-ffi-python` + `aa-ffi-node` members from root `Cargo.toml` and deleted the crates (Epic AAASM-2552 final story). The thin Node/Python shims now live in the sibling `node-sdk` / `python-sdk` repos on the pinned `aa-sdk-client` (AAASM-2560 / AAASM-2561); `aa-ffi-go` (C-ABI staticlib artifact consumed by go-sdk) and `aa-sdk-client` are retained, as is `workspace.exclude = ["node-sdk"]` (the `e2e_sdk_node` tests still build the sibling thin shim). Shrinks `cargo build --workspace` by dropping the pyo3 / napi / napi-derive / napi-build dep subtrees. | None — workspace member removal only; the Python/Node/Go SDKs ship from their own repos and keep their versions + protocol/v1 compatibility. No aa-runtime version, protocol, or ABI change |
+| AAASM-2703 | Removed the `aa-ffi-go` member from root `Cargo.toml`, deleted the crate, and deleted its `ffi-go-staticlib.yml` build workflow (Epic AAASM-2552). The thin Go cgo shim now lives in the sibling `go-sdk` repo (`native/aa-ffi-go`) on the pinned `aa-sdk-client` (AAASM-2704), matching the Node/Python model — the monorepo no longer hosts any FFI shim. Amends ADR 0002 (which had kept `aa-ffi-go` in the workspace). | None — workspace member removal only; the Go SDK ships from its own repo and keeps its version + protocol/v1 compatibility. No aa-runtime version, protocol, or ABI change |
