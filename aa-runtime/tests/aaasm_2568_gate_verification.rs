@@ -15,6 +15,7 @@ use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, ToolCallDet
 use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::approval::ApprovalQueue;
 use aa_runtime::ipc::{new_response_router, IpcFrame};
+use aa_runtime::pipeline::enforcement::{EnforcementConfig, OVERSIZED_MARKER};
 use aa_runtime::pipeline::{run, PipelineConfig, PipelineEvent, PipelineMetrics};
 use aa_runtime::policy::{PolicyRule, PolicyRules};
 use tokio::sync::{broadcast, mpsc};
@@ -113,4 +114,57 @@ async fn gate_redacts_on_violation_path() {
     };
     let event = drive_one(policy).await;
     assert_redacted(event);
+}
+
+/// AAASM-2619: a configured per-field size cap takes effect through `run()`.
+/// With a 16-byte cap, the secret-bearing `args_json` (well past the cap) is
+/// redacted whole (fail-closed) rather than scanned and forwarded raw —
+/// proving `AA_ENFORCEMENT_MAX_FIELD_BYTES` is wired end-to-end, not a
+/// compile-time default.
+#[tokio::test]
+async fn configured_size_cap_redacts_oversized_field_through_run() {
+    let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+    let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(64);
+    let metrics = Arc::new(PipelineMetrics::default());
+    let token = CancellationToken::new();
+
+    // Override the 64 KiB default with a 16-byte cap.
+    let mut config = verify_config(1);
+    config.enforcement = EnforcementConfig {
+        max_field_bytes: 16,
+        ..Default::default()
+    };
+
+    tokio::spawn(run(
+        rx,
+        broadcast_tx,
+        config,
+        metrics,
+        token.clone(),
+        Arc::new(PolicyRules::default()),
+        new_response_router(),
+        ApprovalQueue::new(),
+        None,
+        Arc::new(AtomicU64::new(0)),
+    ));
+
+    // tool_call_with_secret()'s args_json is ~37 bytes, exceeding the 16-byte cap.
+    tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
+        .await
+        .expect("send event");
+    let event = tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv())
+        .await
+        .expect("timed out waiting for forwarded event")
+        .expect("broadcast error");
+    token.cancel();
+
+    let PipelineEvent::Audit(enriched) = event else {
+        panic!("expected a PipelineEvent::Audit");
+    };
+    let Some(Detail::ToolCall(tc)) = enriched.inner.detail else {
+        panic!("expected ToolCall detail");
+    };
+    let body = String::from_utf8(tc.args_json).expect("marker is utf-8");
+    assert_eq!(body, OVERSIZED_MARKER, "oversized field is redacted whole");
+    assert!(!body.contains(SECRET), "raw secret must never leave the runtime");
 }
