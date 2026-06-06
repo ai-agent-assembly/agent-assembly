@@ -81,7 +81,9 @@ pub async fn run(
 
     // GATE (AAASM-2568): one precompiled scanner, constructed once and reused
     // for every event. The runtime is the authoritative scan/redact point.
-    let scanner = enforcement::RuntimeScanner::new();
+    // The size-cap / oversized policy are operator-tunable via RuntimeConfig
+    // (AAASM-2619); the fail-closed default is preserved when unset.
+    let scanner = enforcement::RuntimeScanner::with_config(config.enforcement.clone());
 
     loop {
         tokio::select! {
