@@ -79,6 +79,45 @@ jobs:
           file "$BIN"
           "$BIN" --version
 
+      - name: Codesign + notarize aasm (macOS — gated on Apple Developer creds)
+        # Dormant until the operator sets the MACOS_SIGNING_ENABLED repo variable
+        # AND provisions the APPLE_* secrets; without them this step is skipped and
+        # the unsigned binary ships unchanged (no behaviour change). When enabled,
+        # the dist binary is Developer-ID-signed with a hardened runtime and
+        # notarized so macOS Gatekeeper accepts it. (Bare CLI Mach-O binaries can't
+        # be stapled; Gatekeeper verifies the notarization online on first run.)
+        if: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' }}
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/dist/aasm"
+          KEYCHAIN="$RUNNER_TEMP/notary.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          printf '%s' "$APPLE_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_ID" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          ditto -c -k "$BIN" "$RUNNER_TEMP/aasm.zip"
+          printf '%s' "$APPLE_NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary_key.p8"
+          xcrun notarytool submit "$RUNNER_TEMP/aasm.zip" \
+            --key "$RUNNER_TEMP/notary_key.p8" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER" \
+            --wait
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary_key.p8" "$RUNNER_TEMP/aasm.zip"
+          security delete-keychain "$KEYCHAIN"
+
       - name: Archive binary
         shell: bash
         run: |
@@ -98,6 +137,7 @@ jobs:
     needs: build
     permissions:
       contents: write
+      id-token: write  # keyless cosign signing via GitHub OIDC
 
     steps:
       - name: Download all build artifacts
@@ -132,6 +172,26 @@ jobs:
           sha256sum aasm-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Install cosign
+        if: github.event_name == 'push'
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign SHA256SUMS with cosign (keyless)
+        if: github.event_name == 'push'
+        working-directory: artifacts
+        env:
+          COSIGN_YES: "true"
+        run: |
+          # Keyless signing via the workflow's GitHub OIDC token (Fulcio cert +
+          # Rekor transparency log). The self-contained bundle is what
+          # install-cli.sh verifies; the detached .sig/.pem are uploaded for
+          # manual / tooling convenience.
+          cosign sign-blob \
+            --bundle SHA256SUMS.cosign.bundle \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+
       - name: Upload assets to GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
@@ -139,6 +199,9 @@ jobs:
           files: |
             artifacts/aasm-*.tar.gz
             artifacts/SHA256SUMS
+            artifacts/SHA256SUMS.cosign.bundle
+            artifacts/SHA256SUMS.sig
+            artifacts/SHA256SUMS.pem
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 
