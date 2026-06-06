@@ -15,6 +15,11 @@ Target: < 2 ms P99 per LLM call (AAASM-34 AC #6).
 
 **Verdict: PASS** — 3 orders of magnitude below the 2 ms target.
 
+> **Note (AAASM-2562):** the `aa-ffi-python` SDK-hook benchmark (`sdk_bench`) moved
+> to the `python-sdk` repo when the fat binding left this workspace — run it there
+> with `cargo bench --bench sdk_bench`. The numbers above are retained as the
+> historical 2026-04-29 baseline.
+
 ## Proxy Intercept Latency (`aa-proxy`)
 
 Target: < 5 ms P99 per intercepted request (AAASM-36 AC #5).
