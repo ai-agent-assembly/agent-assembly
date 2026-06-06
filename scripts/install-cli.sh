@@ -92,6 +92,45 @@ sha256_verify() {
   say "SHA256 verified."
 }
 
+# ── cosign signature verification ─────────────────────────────────────────────
+
+# Expected signer: the agent-assembly release workflow, signed keyless via GitHub
+# OIDC (Fulcio cert + Rekor log). `(?i)` keeps the org/repo match case-insensitive.
+COSIGN_IDENTITY_RE='(?i)^https://github\.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$'
+COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
+
+verify_signature() {
+  # Verify <sums_file> against the cosign <bundle>. Honors AASM_REQUIRE_SIGNATURE:
+  # when 1, a missing cosign or missing bundle is fatal; otherwise it warns and
+  # falls back to checksum-only (the SHA-256 check below is always enforced).
+  sums_file="$1" bundle="$2"
+  require="${AASM_REQUIRE_SIGNATURE:-0}"
+
+  if [ ! -f "$bundle" ]; then
+    [ "$require" = "1" ] && err "AASM_REQUIRE_SIGNATURE=1 but this release has no cosign bundle."
+    warn "no cosign bundle for this release — skipping signature check (checksum still enforced)."
+    return 0
+  fi
+
+  if ! command -v cosign >/dev/null 2>&1; then
+    [ "$require" = "1" ] && err "AASM_REQUIRE_SIGNATURE=1 but cosign is not installed.
+  Install it: https://docs.sigstore.dev/cosign/system_config/installation/"
+    warn "cosign not installed — skipping signature verification (checksum still enforced)."
+    warn "For full supply-chain verification install cosign, or set AASM_REQUIRE_SIGNATURE=1."
+    return 0
+  fi
+
+  if cosign verify-blob \
+      --bundle "$bundle" \
+      --certificate-identity-regexp "$COSIGN_IDENTITY_RE" \
+      --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+      "$sums_file" >/dev/null 2>&1; then
+    say "Cosign signature verified."
+  else
+    err "cosign signature verification FAILED for SHA256SUMS — refusing to install."
+  fi
+}
+
 # ── fetch latest release tag ──────────────────────────────────────────────────
 
 latest_release() {
@@ -121,6 +160,7 @@ main() {
   TARBALL="${BINARY}-${ARCH}-${OS}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
   SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
+  SIG_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.cosign.bundle"
 
   say "Installing ${BINARY} ${VERSION} (${ARCH}-${OS}) ..."
 
@@ -134,6 +174,11 @@ main() {
   curl -sSfL "$SUMS_URL" -o "${TMP}/SHA256SUMS" \
     || err "SHA256SUMS download failed: ${SUMS_URL}\n  Refusing to install without checksum verification."
 
+  # Best-effort fetch of the cosign bundle (releases before AAASM-2700 lack one).
+  curl -sSfL "$SIG_URL" -o "${TMP}/SHA256SUMS.cosign.bundle" 2>/dev/null || true
+
+  # Verify the signature on SHA256SUMS first, then the tarball checksum against it.
+  verify_signature "${TMP}/SHA256SUMS" "${TMP}/SHA256SUMS.cosign.bundle"
   sha256_verify "${TMP}/${TARBALL}" "${TMP}/SHA256SUMS"
 
   tar -C "$TMP" -xzf "${TMP}/${TARBALL}" "${BINARY}" \
