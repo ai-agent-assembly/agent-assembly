@@ -33,6 +33,27 @@ AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev 
 scale. It provides a three-layer interception model — eBPF kernel hooks, a
 sidecar proxy, and an SDK shim — backed by a policy engine and audit trail.
 
+## Ecosystem
+
+`agent-assembly` is the open-source core of a larger governance platform. The
+table below maps each production repository to its role and entry point, so you
+can move from this repo to the SDKs, the install tap, or the canonical docs.
+
+| Repository | Role | Status |
+|---|---|---|
+| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | Public · Alpha |
+| [python-sdk](https://github.com/AI-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
+| [node-sdk](https://github.com/AI-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
+| [go-sdk](https://github.com/AI-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
+| [homebrew-agent-assembly](https://github.com/AI-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
+| [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | Public |
+| agent-assembly-cloud | Hosted SaaS control plane | Private · in development |
+| agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | Private · in development |
+
+> The protocol specification is maintained **inside this monorepo** under
+> [`proto/`](proto/) and [`docs/src/protocol/`](docs/src/protocol/CHANGELOG.md) —
+> there is no separate spec package.
+
 ## Crate Map
 
 The Cargo workspace declares **14 members** in the top-level `Cargo.toml`. Two additional eBPF-target crates live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` target.
