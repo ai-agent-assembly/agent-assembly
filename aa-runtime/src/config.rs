@@ -746,4 +746,31 @@ mod tests {
         std::env::remove_var("AA_AGENT_ID");
         std::env::remove_var("AA_AUDIT_BUFFER_PATH");
     }
+
+    #[test]
+    fn enforcement_max_field_bytes_reads_defaults_and_rejects_zero() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-enf");
+
+        // Explicit non-default value is honoured.
+        std::env::set_var("AA_ENFORCEMENT_MAX_FIELD_BYTES", "4096");
+        assert_eq!(RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes, 4096);
+
+        // Zero falls back to the default (a 0-byte cap would redact everything).
+        std::env::set_var("AA_ENFORCEMENT_MAX_FIELD_BYTES", "0");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes,
+            DEFAULT_MAX_FIELD_BYTES,
+            "0 should fall back to default"
+        );
+
+        // Unset falls back to the default.
+        std::env::remove_var("AA_ENFORCEMENT_MAX_FIELD_BYTES");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes,
+            DEFAULT_MAX_FIELD_BYTES
+        );
+
+        std::env::remove_var("AA_AGENT_ID");
+    }
 }
