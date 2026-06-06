@@ -123,5 +123,5 @@ Expected: all vectors pass with no failures referencing `[FILL IN: old field nam
 - [`docs/versioning.md`](../versioning.md) — change classification rules and deprecation
   lifecycle
 - [`docs/protocol/CHANGELOG.md`](../protocol/CHANGELOG.md) — full protocol changelog
-- [`conformance/vectors/`](../../conformance/vectors/) — test vectors for the affected
+- [`conformance/vectors/`](../../../conformance/vectors/) — test vectors for the affected
   message category
