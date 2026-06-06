@@ -22,6 +22,7 @@
 # Governance
 
 - [L0–L3 Capability Matrix](governance/capability-matrix.md)
+- [Policy RBAC Role Matrix](policy-rbac.md)
 
 # Protocol
 
