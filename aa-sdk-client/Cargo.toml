@@ -1,8 +1,9 @@
 [package]
 name = "aa-sdk-client"
 version.workspace = true
-# AAASM-2559 will make the shared crates (aa-core/aa-proto/aa-security/aa-sdk-client)
-# pinnable/publishable for the external SDK repos. Held back until then.
+# Distributed to the external SDK shims as a git-SHA pin (ADR 0002 / AAASM-2559),
+# not via crates.io — so it stays `publish = false`. Git-pinnability is guarded
+# in CI by scripts/standalone-build-smoke.sh (Crate Pinnability Smoke workflow).
 publish = false
 edition.workspace = true
 license.workspace = true
