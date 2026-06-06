@@ -38,6 +38,8 @@ pub struct PipelineConfig {
     pub broadcast_capacity: usize,
     /// Agent identity — copied from `RuntimeConfig::agent_id`.
     pub agent_id: String,
+    /// Runtime scan/redact enforcement config — derived from `RuntimeConfig`.
+    pub enforcement: enforcement::EnforcementConfig,
 }
 
 impl PipelineConfig {
@@ -49,6 +51,7 @@ impl PipelineConfig {
             flush_interval: Duration::from_millis(c.pipeline_flush_interval_ms),
             broadcast_capacity: c.pipeline_broadcast_capacity,
             agent_id: c.agent_id.clone(),
+            enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
         }
     }
 }
@@ -78,7 +81,9 @@ pub async fn run(
 
     // GATE (AAASM-2568): one precompiled scanner, constructed once and reused
     // for every event. The runtime is the authoritative scan/redact point.
-    let scanner = enforcement::RuntimeScanner::new();
+    // The size-cap / oversized policy are operator-tunable via RuntimeConfig
+    // (AAASM-2619); the fail-closed default is preserved when unset.
+    let scanner = enforcement::RuntimeScanner::with_config(config.enforcement.clone());
 
     loop {
         tokio::select! {
@@ -658,6 +663,7 @@ mod tests {
             correlation_interval_ms: 1_000,
             nats_config_path: None,
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
+            enforcement_max_field_bytes: enforcement::DEFAULT_MAX_FIELD_BYTES,
         };
 
         let pipeline_config = PipelineConfig::from_runtime_config(&runtime_config);
@@ -683,6 +689,7 @@ mod tests {
             flush_interval: Duration::from_millis(200),
             broadcast_capacity: 512,
             agent_id: "test-agent".to_string(),
+            enforcement: enforcement::EnforcementConfig::default(),
         };
 
         let cloned = pipeline_config.clone();
@@ -701,6 +708,7 @@ mod tests {
             flush_interval: Duration::from_millis(flush_interval_ms),
             broadcast_capacity: 1_024,
             agent_id: "test-agent".to_string(),
+            enforcement: enforcement::EnforcementConfig::default(),
         }
     }
 

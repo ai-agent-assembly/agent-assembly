@@ -18,6 +18,7 @@ use aa_proto::assembly::audit::v1::audit_event::Detail;
 use aa_security::{CredentialFinding, CredentialScanner};
 
 use super::event::EnrichedEvent;
+use crate::config::RuntimeConfig;
 
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
@@ -56,6 +57,21 @@ impl Default for EnforcementConfig {
     fn default() -> Self {
         Self {
             max_field_bytes: DEFAULT_MAX_FIELD_BYTES,
+            oversized_policy: OversizedPolicy::default(),
+        }
+    }
+}
+
+impl EnforcementConfig {
+    /// Build an [`EnforcementConfig`] from a [`RuntimeConfig`].
+    ///
+    /// Maps the operator-tunable per-field size cap
+    /// ([`RuntimeConfig::enforcement_max_field_bytes`]). `oversized_policy`
+    /// keeps its fail-closed [`OversizedPolicy::RedactWhole`] default — the
+    /// sole variant today — so an oversized field is never forwarded raw.
+    pub fn from_runtime_config(c: &RuntimeConfig) -> Self {
+        Self {
+            max_field_bytes: c.enforcement_max_field_bytes,
             oversized_policy: OversizedPolicy::default(),
         }
     }
@@ -475,5 +491,36 @@ mod tests {
         assert!(rendered.contains("aa_runtime_scan_findings_total"));
         // The finding metric is labelled by kind; the raw secret never appears.
         assert!(!rendered.contains(AWS_KEY));
+    }
+
+    #[test]
+    fn from_runtime_config_maps_size_cap_and_keeps_fail_closed_policy() {
+        let rc = RuntimeConfig {
+            agent_id: "test".to_string(),
+            worker_threads: 0,
+            shutdown_timeout_secs: 30,
+            ipc_max_connections: 64,
+            pipeline_input_buffer: 10_000,
+            pipeline_batch_size: 100,
+            pipeline_flush_interval_ms: 100,
+            pipeline_broadcast_capacity: 1_024,
+            metrics_addr: "0.0.0.0:8080".to_string(),
+            policy_path: None,
+            gateway_endpoint: None,
+            correlation_window_ms: 5_000,
+            correlation_interval_ms: 1_000,
+            nats_config_path: None,
+            audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
+            enforcement_max_field_bytes: 4096,
+        };
+
+        let config = EnforcementConfig::from_runtime_config(&rc);
+
+        assert_eq!(config.max_field_bytes, 4096, "size cap is threaded from RuntimeConfig");
+        assert_eq!(
+            config.oversized_policy,
+            OversizedPolicy::RedactWhole,
+            "oversized policy stays fail-closed"
+        );
     }
 }
