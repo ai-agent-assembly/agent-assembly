@@ -1,0 +1,19 @@
+name = "aasm-install-endpoint"
+main = "src/worker.js"
+compatibility_date = "2026-05-01"
+
+# Bind the Worker to the install one-liner host. Requires the `agent-assembly.dev`
+# zone to exist in this Cloudflare account. `custom_domain = true` provisions and
+# manages the DNS + cert for tool.agent-assembly.dev automatically on first deploy.
+routes = [
+  { pattern = "tool.agent-assembly.dev", custom_domain = true },
+]
+
+[vars]
+# Source repo + ref the install script is served from.
+#   SCRIPT_REF = "master"   → always serves the latest reviewed installer.
+#   SCRIPT_REF = "v0.0.1"   → freeze the installer to a release tag (recommended
+#                             once releases are cut, so the served script is
+#                             immutable and auditable).
+SCRIPT_REPO = "ai-agent-assembly/agent-assembly"
+SCRIPT_REF = "master"
