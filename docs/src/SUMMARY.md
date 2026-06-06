@@ -17,6 +17,7 @@
 # Usage
 
 - [Command-Line Interface](cli.md)
+- [Dashboard](dashboard.md)
 
 # Governance
 
