@@ -4,7 +4,7 @@ This chapter describes how `agent-assembly` is composed and how its parts intera
 
 ## Crate dependency graph
 
-The Cargo workspace declares **14 member crates** in the top-level `Cargo.toml`. Two additional eBPF crates (`aa-ebpf-probes`, `aa-ebpf-programs`) live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` BPF target — they are built by `aa-ebpf/build.rs` via `aya-build`. Edges in the diagram below are derived from `path` dependencies declared in each crate's `Cargo.toml`.
+The Cargo workspace declares **29 member crates** in the top-level `Cargo.toml`; the diagram below highlights the core architectural crates (storage drivers, dev-tool adapters, and test harnesses are omitted for clarity). Two additional eBPF crates (`aa-ebpf-probes`, `aa-ebpf-programs`) live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` BPF target — they are built by `aa-ebpf/build.rs` via `aya-build`. Edges in the diagram below are derived from `path` dependencies declared in each crate's `Cargo.toml`.
 
 ```mermaid
 graph TD
@@ -29,8 +29,7 @@ graph TD
     aa_api[aa-api]:::control
     aa_cli[aa-cli]:::control
 
-    aa_ffi_python[aa-ffi-python]:::ffi
-    aa_ffi_node[aa-ffi-node]:::ffi
+    aa_sdk_client[aa-sdk-client]:::ffi
     aa_ffi_go[aa-ffi-go]:::ffi
     aa_wasm[aa-wasm]:::ffi
 
@@ -49,9 +48,7 @@ graph TD
     aa_proxy --> aa_proto
     aa_proxy --> aa_runtime
 
-    aa_ffi_python --> aa_core
-    aa_ffi_python --> aa_proto
-    aa_ffi_node --> aa_core
+    aa_sdk_client --> aa_proto
     aa_wasm --> aa_core
 
     aa_gateway --> aa_core
@@ -67,7 +64,7 @@ graph TD
     conformance --> aa_proto
 ```
 
-Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`. `aa-ffi-go` has no Cargo dependencies on other workspace crates: it talks to the gateway over gRPC at runtime, with bindings generated from the same `proto/` source as `aa-proto`.
+Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`. `aa-ffi-go` has no Cargo dependencies on other workspace crates: it talks to the gateway over gRPC at runtime, with bindings generated from the same `proto/` source as `aa-proto`. `aa-sdk-client` is the shared, FFI-agnostic SDK runtime-client (UDS transport, wire codec, lifecycle, and an optional `aa-security` advisory preflight) that the per-language FFI shims wrap; the Python and Node shims now live in the sibling `python-sdk` / `node-sdk` repos and consume it via a pinned git SHA (AAASM-2560/2561), so they are no longer workspace members.
 
 ## Three-layer interception model
 
@@ -75,7 +72,7 @@ Dashed nodes are *out-of-workspace* — they cannot be selected with `cargo -p`.
 
 | Layer | Crate(s) | Where it runs | Bypass risk | Tradeoff |
 |---|---|---|---|---|
-| **1 — In-process SDK** | `aa-ffi-python`, `aa-ffi-node`, `aa-ffi-go`, `aa-wasm` | Inside the agent process | Highest (agent could skip the SDK) | Fastest path; requires SDK adoption |
+| **1 — In-process SDK** | `aa-ffi-go`, `aa-wasm` (in-workspace) + the `aa-sdk-client`-based Python/Node shims in the sibling `python-sdk` / `node-sdk` repos | Inside the agent process | Highest (agent could skip the SDK) | Fastest path; requires SDK adoption |
 | **2 — Sidecar proxy** | `aa-proxy` | Adjacent process / sidecar container | Medium (network egress only) | Catches everything routed through the proxy without code changes |
 | **3 — eBPF** | `aa-ebpf`, `aa-ebpf-common`, `aa-ebpf-probes`, `aa-ebpf-programs` | Linux kernel | Lowest (catches bypass attempts) | Linux-only; requires elevated privileges |
 
