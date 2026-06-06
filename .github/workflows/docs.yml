@@ -1,7 +1,11 @@
 name: Docs
 
+permissions:
+  contents: read
+
 on:
   pull_request:
+    branches: [master]
     paths:
       - 'docs/**'
       - 'README.md'
@@ -77,3 +81,7 @@ jobs:
 
       - name: Verify api-reference.md rustdoc command
         run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}

@@ -88,6 +88,22 @@ pub struct RuntimeConfig {
     /// Read from `AA_CORRELATION_INTERVAL_MS`. Defaults to `1_000`.
     /// Zero falls back to the default.
     pub correlation_interval_ms: u64,
+
+    /// Path to the `agent-assembly.toml` whose `[gateway.nats]` table configures
+    /// the audit publisher.
+    ///
+    /// Read from `AA_NATS_CONFIG_PATH`.
+    /// - Not set or empty → `None` (audit publisher disabled; agent still runs)
+    /// - Non-empty string → `Some(<value>)`
+    pub nats_config_path: Option<PathBuf>,
+
+    /// Path to the local SQLite fallback buffer that holds audit events which
+    /// cannot be published while NATS is unreachable.
+    ///
+    /// Read from `AA_AUDIT_BUFFER_PATH`; defaults to
+    /// `<temp-dir>/aa-audit-buffer-<agent_id>.db`. Only used when the audit
+    /// publisher is enabled.
+    pub audit_buffer_path: PathBuf,
 }
 
 impl RuntimeConfig {
@@ -114,6 +130,8 @@ impl RuntimeConfig {
     /// | `AA_GATEWAY_ENDPOINT` | `Option<String>` | `None` |
     /// | `AA_CORRELATION_WINDOW_MS` | `u64` | `5_000` |
     /// | `AA_CORRELATION_INTERVAL_MS` | `u64` | `1_000` |
+    /// | `AA_NATS_CONFIG_PATH` | `Option<PathBuf>` | `None` (publisher disabled) |
+    /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -187,6 +205,17 @@ impl RuntimeConfig {
             .filter(|&n| n > 0)
             .unwrap_or(1_000);
 
+        let nats_config_path = std::env::var("AA_NATS_CONFIG_PATH")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+
+        let audit_buffer_path = std::env::var("AA_AUDIT_BUFFER_PATH")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("aa-audit-buffer-{agent_id}.db")));
+
         Ok(Self {
             agent_id,
             worker_threads,
@@ -201,6 +230,8 @@ impl RuntimeConfig {
             gateway_endpoint,
             correlation_window_ms,
             correlation_interval_ms,
+            nats_config_path,
+            audit_buffer_path,
         })
     }
 }
@@ -652,5 +683,49 @@ mod tests {
         std::env::remove_var("AA_AGENT_ID");
         std::env::remove_var("AA_CORRELATION_WINDOW_MS");
         std::env::remove_var("AA_CORRELATION_INTERVAL_MS");
+    }
+
+    #[test]
+    fn nats_config_path_set_yields_some_unset_yields_none() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-nats");
+
+        std::env::set_var("AA_NATS_CONFIG_PATH", "/etc/aa/agent-assembly.toml");
+        let configured = RuntimeConfig::from_env().unwrap();
+        assert_eq!(
+            configured.nats_config_path,
+            Some(PathBuf::from("/etc/aa/agent-assembly.toml"))
+        );
+
+        // Empty value ⇒ publisher disabled.
+        std::env::set_var("AA_NATS_CONFIG_PATH", "");
+        assert!(RuntimeConfig::from_env().unwrap().nats_config_path.is_none());
+
+        std::env::remove_var("AA_NATS_CONFIG_PATH");
+        assert!(RuntimeConfig::from_env().unwrap().nats_config_path.is_none());
+
+        std::env::remove_var("AA_AGENT_ID");
+    }
+
+    #[test]
+    fn audit_buffer_path_defaults_per_agent_and_honors_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-buf");
+        std::env::remove_var("AA_AUDIT_BUFFER_PATH");
+
+        let default_cfg = RuntimeConfig::from_env().unwrap();
+        assert_eq!(
+            default_cfg.audit_buffer_path,
+            std::env::temp_dir().join("aa-audit-buffer-agent-buf.db")
+        );
+
+        std::env::set_var("AA_AUDIT_BUFFER_PATH", "/var/lib/aa/buf.db");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().audit_buffer_path,
+            PathBuf::from("/var/lib/aa/buf.db")
+        );
+
+        std::env::remove_var("AA_AGENT_ID");
+        std::env::remove_var("AA_AUDIT_BUFFER_PATH");
     }
 }

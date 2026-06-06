@@ -15,44 +15,45 @@ integration-test = []
 
 [dependencies]
 aa-core                     = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["serde"] }
+aa-security                 = { path = "../aa-security", version = "0.0.1-alpha.5", features = ["serde"] }
 aa-proto                    = { path = "../aa-proto", version = "0.0.1-alpha.5" }
 aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-alpha.5" }
-async-nats                  = "0.49"
-async-trait                 = "0.1"
-axum                        = "0.8"
+async-nats                  = { workspace = true }
+async-trait                 = { workspace = true }
+axum                        = { workspace = true }
 bitflags                    = "2"
-bytes                       = "1"
-dashmap                     = "6"
-uuid                        = { version = "1", features = ["v4"] }
-metrics                     = "0.24"
-metrics-exporter-prometheus = "0.18"
-prost                       = "0.14"
-serde                       = { version = "1", features = ["derive"] }
-sha2                        = "0.11"
-serde_json                  = "1"
-toml                        = "1.1"
-tokio                       = { version = "1", features = ["full"] }
-tokio-stream                = "0.1"
-tokio-util                  = { version = "0.7", features = ["rt"] }
-tonic                       = { version = "0.14", features = ["transport"] }
-tracing                     = "0.1"
-tracing-subscriber          = { version = "0.3", features = ["json", "env-filter"] }
-which                       = "8"
+bytes                       = { workspace = true }
+dashmap                     = { workspace = true }
+uuid                        = { workspace = true, features = ["v4"] }
+metrics                     = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+prost                       = { workspace = true }
+serde                       = { workspace = true }
+sha2                        = { workspace = true }
+serde_json                  = { workspace = true }
+toml                        = { workspace = true }
+tokio                       = { workspace = true, features = ["full"] }
+tokio-stream                = { workspace = true }
+tokio-util                  = { workspace = true, features = ["rt"] }
+tonic                       = { workspace = true }
+tracing                     = { workspace = true }
+tracing-subscriber          = { workspace = true, features = ["json", "env-filter"] }
+which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-alpha.5" }
-libc    = "0.2"
+libc    = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["test-util"] }
-tower = { version = "0.5", features = ["util"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true }
 # Captures emitted metric values so the audit-publisher metric tests can assert
 # the exact counter values recorded by `metrics::counter!`.
-metrics-util = { version = "0.20", features = ["debugging"] }
+metrics-util = { workspace = true, features = ["debugging"] }
 # Real NATS server for the audit-publisher reconnect integration test. Requires
 # Docker; re-exports the `testcontainers` core runner.
-testcontainers-modules = { version = "0.15", features = ["nats"] }
+testcontainers-modules = { workspace = true, features = ["nats"] }
 
 [lints]
 workspace = true

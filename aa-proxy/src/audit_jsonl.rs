@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use aa_core::CredentialFinding;
+use aa_security::CredentialFinding;
 
 /// Decision recorded for a single intercepted request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ mod tests {
     /// matches".
     #[tokio::test]
     async fn audit_writer_never_writes_raw_secret() {
-        use aa_core::CredentialScanner;
+        use aa_security::CredentialScanner;
 
         let body = format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#);
         let scan = CredentialScanner::new().scan(&body);

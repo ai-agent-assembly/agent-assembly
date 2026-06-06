@@ -2,7 +2,7 @@
    Agent Assembly Dashboard · Design Tokens
    ============================================================
 
-   The :root block below mirrors design/v1/hi-fi/styles.css so the
+   The :root block below mirrors design/v2/hi-fi/styles.css (light + dark) so the
    hi-fi palette is the single source of truth. Component styles
    must reference these custom properties rather than embedding
    hex literals, spacing values, or type sizes directly.
@@ -12,6 +12,8 @@
    ============================================================ */
 
 :root {
+  color-scheme: light;
+
   /* ── Hi-fi base palette (paper / ink / line) ─────────────── */
   --paper: #f5f4f0;
   --paper-2: #ffffff;
@@ -212,3 +214,144 @@
   --severity-medium: #eab308;
   --severity-low: #60a5fa;
 }
+
+/* ============================================================
+   Dark theme — warm-charcoal mirror of the cream/ink light theme.
+   Activated by data-theme="dark" on <html> (see src/theme/useTheme.ts);
+   mirrors design/v1/hi-fi/styles.css. The left nav rail (--shell-nav-*),
+   terminal/code panels (--term-*), and the data-viz chart palettes are
+   intentionally NOT overridden — they stay dark/identical in both modes
+   for Linear/Stripe-style visual continuity.
+   ============================================================ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* base palette */
+  --paper: #14130f;
+  --paper-2: #1c1a16;
+  --paper-3: #26231d;
+  --ink: #f0ede4;
+  --ink-2: #d8d4c7;
+  --ink-3: #aaa599;
+  --ink-4: #7a766c;
+  --ink-5: #514d44;
+  --line: #2c2924;
+  --line-2: #3a3630;
+  --line-3: #f0ede4;
+
+  /* semantic — brighter foreground, deeper tinted background */
+  --danger: #f08a82;
+  --danger-bg: #3a1a16;
+  --warn: #e6b86b;
+  --warn-bg: #382810;
+  --ok: #8ec898;
+  --ok-bg: #1b2e1e;
+  --info: #9fbef5;
+  --info-bg: #16233f;
+  --scrub: #cfa3eb;
+  --scrub-bg: #2a1838;
+
+  /* app shell — nav rail stays dark in both modes; topbar mirrors paper */
+  --shell-topbar-bg: #1c1a16;
+  --shell-topbar-border: #2c2924;
+  --shell-text-muted: #aaa599;
+  --shell-text-dim: #7a766c;
+  --shell-button-border: #3a3630;
+  --shell-button-hover-bg: #26231d;
+  --shell-error-text: #f08a82;
+
+  /* analytics / admin surfaces */
+  --surface-card: #1c1a16;
+  --surface-card-border: #2c2924;
+  --surface-subtle-bg: #14130f;
+  --surface-skeleton-base: #26231d;
+  --surface-skeleton-shimmer: #3a3630;
+  --surface-hover-bg: #26231d;
+  --form-input-border: #3a3630;
+
+  /* text scale */
+  --text-primary: #f0ede4;
+  --text-secondary: #d8d4c7;
+  --text-muted: #aaa599;
+  --text-disabled: #7a766c;
+
+  /* accent (indigo brightened for dark contrast) */
+  --accent: #818cf8;
+  --accent-hover: #6366f1;
+
+  /* tooltip */
+  --tooltip-bg: #26231d;
+  --tooltip-outline: #3a3630;
+
+  /* badge variants */
+  --badge-blue-bg: #16233f;
+  --badge-blue-text: #9fbef5;
+  --badge-blue-text-strong: #9fbef5;
+  --badge-amber-bg: #382810;
+  --badge-amber-text: #e6b86b;
+  --badge-neutral-bg: #26231d;
+  --badge-neutral-text: #aaa599;
+
+  /* shell accent/text/border + primary button inverts to a light pill */
+  --shell-accent: #9fbef5;
+  --shell-text: #f0ede4;
+  --shell-border: #2c2924;
+  --button-primary-bg: #f0ede4;
+  --button-primary-text: #14130f;
+
+  /* alert banner text on amber bg */
+  --alert-banner-text: #e6b86b;
+
+  /* IAM shell surfaces */
+  --shell-surface: #1c1a16;
+  --shell-surface-muted: #26231d;
+  --shell-surface-subtle: #14130f;
+  --shell-border-subtle: #2c2924;
+  --shell-text-strong: #d8d4c7;
+
+  /* status bg / strong-text variants */
+  --status-success-bg: #1b2e1e;
+  --status-success-text-strong: #8ec898;
+  --status-danger-bg: #3a1a16;
+  --status-danger-text-strong: #f08a82;
+  --status-danger-hover-text: #f08a82;
+
+  /* LiveOps pipeline lane fills (tinted dark) */
+  --lane-bg-default: #1c1a16;
+  --lane-bg-warn: #322a14;
+  --lane-bg-scrub: #241830;
+}
+
+/* Page surface follows the paper token so dark mode has no white gutter. */
+html, body { background: var(--paper); }
+body { color: var(--text-primary); }
+
+/* Smooth theme transition on the big surfaces only (not charts/icons). */
+body,
+.appshell__topbar,
+.appshell__content,
+.appshell__main {
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+/* ── Theme toggle (sun/moon) in the topbar ───────────────────── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--shell-button-border);
+  background: var(--shell-topbar-bg);
+  color: var(--shell-text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.18s;
+}
+.theme-toggle:hover {
+  background: var(--shell-button-hover-bg);
+  color: var(--text-primary);
+}
+.theme-toggle:active { transform: scale(0.94); }
+.theme-toggle svg { width: 15px; height: 15px; display: block; }

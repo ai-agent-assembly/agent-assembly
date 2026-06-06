@@ -23,52 +23,60 @@ integration-test = []
 # Usage: cargo nextest run -p aa-integration-tests --features audit-consumer --test audit_consumer_verify
 audit-consumer = ["aa-gateway/audit-consumer"]
 
+# AAASM-2594: e2e verification of the aa-runtime audit-publisher startup wiring.
+# Gates `tests/audit_publisher_startup_verify.rs` (Docker-backed: NATS JetStream).
+#
+# Usage: cargo nextest run -p aa-integration-tests --features audit-publisher --test audit_publisher_startup_verify
+audit-publisher = []
+
 [dev-dependencies]
 aa-api      = { path = "../aa-api" }
 aa-core     = { path = "../aa-core" }
+aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool  = { path = "../aa-devtool" }
 aa-gateway  = { path = "../aa-gateway" }
 aa-storage-postgres = { path = "../aa-storage-postgres" }
+aa-storage-sqlite-buffer = { path = "../aa-storage-sqlite-buffer" }
 aa-proto    = { path = "../aa-proto" }
 aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }
 aa-sandbox  = { path = "../aa-sandbox" }
 
 # AAASM-2394 audit-consumer verification (Docker-backed) test deps.
-async-nats  = "0.49"
-metrics-exporter-prometheus = "0.18"
-sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
-testcontainers-modules = { version = "0.15", features = ["postgres", "nats"] }
+async-nats  = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+sqlx        = { workspace = true, default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros"] }
+testcontainers-modules = { workspace = true, features = ["postgres", "nats"] }
 
-anyhow      = "1"
-assert_cmd  = "2"
-async-trait = "0.1"
-axum        = { version = "0.8", features = ["ws"] }
-chrono      = { version = "0.4", default-features = false, features = ["clock"] }
-chrono-tz   = "0.10"
+anyhow      = { workspace = true }
+assert_cmd  = { workspace = true }
+async-trait = { workspace = true }
+axum        = { workspace = true, features = ["ws"] }
+chrono      = { workspace = true, default-features = false, features = ["clock"] }
+chrono-tz   = { workspace = true }
 jsonschema  = "0.46"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { workspace = true }
 base64       = "0.22"
-bytes        = "1"
-libc        = "0.2"
-moka        = { version = "0.12", features = ["future"] }
+bytes        = { workspace = true }
+libc        = { workspace = true }
+moka        = { workspace = true, features = ["future"] }
 portpicker  = "0.1"
-reqwest     = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-rustls      = { version = "0.23", features = ["ring"] }
-tokio-rustls = "0.26"
-rstest      = "0.26"
-rust_decimal = "1"
-serde_json  = "1"
-serde_yaml  = "0.9"
-tempfile    = "3"
-tokio             = { version = "1", features = ["full"] }
-tokio-stream      = "0.1"
-tokio-tungstenite = "0.29"
-tokio-util        = "0.7"
-tonic             = { version = "0.14", features = ["transport"] }
-uuid              = { version = "1", features = ["v4"] }
-futures           = "0.3"
-wat               = "1"
+reqwest     = { workspace = true, features = ["json", "rustls-tls"] }
+rustls      = { workspace = true, features = ["ring"] }
+tokio-rustls = { workspace = true }
+rstest      = { workspace = true }
+rust_decimal = { workspace = true }
+serde_json  = { workspace = true }
+serde_yaml  = { workspace = true }
+tempfile    = { workspace = true }
+tokio             = { workspace = true, features = ["full"] }
+tokio-stream      = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-util        = { workspace = true }
+tonic             = { workspace = true }
+uuid              = { workspace = true, features = ["v4"] }
+futures           = { workspace = true }
+wat               = { workspace = true }
 
 # Linux-only dev-deps for the AAASM-1520 / F116 ST-H eBPF E2E suite (also
 # used by AAASM-1522 / F116 ST-J file-monitoring E2E suite). Gated on
@@ -80,7 +88,7 @@ wat               = "1"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 aa-ebpf        = { path = "../aa-ebpf" }
 aa-ebpf-common = { path = "../aa-ebpf-common", features = ["std"] }
-aya            = { version = "0.13", features = ["async_tokio"] }
+aya            = { workspace = true }
 # `bytes` is the buffer type aya's AsyncPerfEventArray::read_events fills.
 # Only needed by the file-IO perf-array reader in e2e_file_monitoring.rs.
-bytes          = "1"
+bytes          = { workspace = true }

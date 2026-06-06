@@ -12,13 +12,13 @@ description = "Storage trait abstraction (pure interface) for the Agent Assembly
 # crate stays a pure interface (no `sqlx`/`redis`/`tonic` backend dependency).
 # `async-trait` is a dev-dep used by the conformance test's example implementation.
 aa-core   = { path = "../aa-core" }
-serde     = { version = "1", features = ["derive"] }
-thiserror = "2"
-toml      = "1.1"
+serde     = { workspace = true }
+thiserror = { workspace = true }
+toml      = { workspace = true }
 
 [dev-dependencies]
-async-trait = "0.1"
-tokio = { version = "1", features = ["macros", "rt"] }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

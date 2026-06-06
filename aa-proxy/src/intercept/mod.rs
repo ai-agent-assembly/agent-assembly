@@ -16,7 +16,7 @@ use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::pipeline::event::{EnrichedEvent, EventSource};
 use aa_runtime::pipeline::PipelineEvent;
 
-use aa_core::{CredentialFinding, CredentialScanner};
+use aa_security::{CredentialFinding, CredentialScanner};
 use bytes::Bytes;
 
 use crate::config::CredentialAction;
@@ -206,7 +206,7 @@ impl Interceptor {
     ///
     /// Used by the AAASM-1930 MCP data path to redact upstream response
     /// bodies before they reach the client (ST-Q-3). The proxy's default
-    /// scanner carries the same `aa_core::CredentialScanner` patterns the
+    /// scanner carries the same `aa_security::CredentialScanner` patterns the
     /// gateway uses for ToolResult evaluation, so the redaction shape
     /// matches what `mcp_redact_secrets.yaml` would produce gateway-side.
     pub fn redact_response_body(&self, body: &[u8]) -> Option<Vec<u8>> {

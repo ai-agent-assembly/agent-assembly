@@ -377,7 +377,7 @@ impl ProxyServer {
             // MCP response path (AAASM-1930 ST-Q-3): read the upstream
             // response body-aware, run the proxy's credential scanner on
             // the body, and forward a redacted version when findings are
-            // present. The scanner is the same `aa_core::CredentialScanner`
+            // present. The scanner is the same `aa_security::CredentialScanner`
             // the gateway uses internally for ToolResult evaluation, so
             // the redaction shape matches what `mcp_redact_secrets.yaml`
             // would produce gateway-side. A future iteration could swap

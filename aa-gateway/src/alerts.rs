@@ -8,7 +8,8 @@
 //! and finding counts. The raw matched bytes never appear here and must
 //! not be added to any field.
 
-use aa_core::{AgentId, CredentialKind};
+use aa_core::AgentId;
+use aa_security::CredentialKind;
 
 /// Broadcast event raised when one or more credential / sensitive-value
 /// patterns are detected in an evaluated payload.

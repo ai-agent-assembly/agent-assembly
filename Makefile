@@ -3,8 +3,8 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 .PHONY: help dev-setup install-tools clone-sdks install-hooks build-workspace \
-        test dev-verify smoke-python smoke-node smoke-go gateway-health \
-        demo-record
+        build-baseline test dev-verify smoke-python smoke-node smoke-go \
+        standalone-smoke gateway-health demo-record
 
 ## dev-setup: Bootstrap the full local development environment (install tools, clone SDKs, install hooks, build)
 dev-setup: install-tools clone-sdks install-hooks build-workspace
@@ -105,6 +105,14 @@ gateway-health:
 ## build-workspace: Build the Cargo workspace (excludes eBPF crates requiring nightly)
 build-workspace:
 	@cargo build --workspace --exclude aa-ebpf
+
+## build-baseline: Record a build-time baseline (cold/warm/test + cargo tree -d) into target/build-baseline/
+build-baseline:
+	@bash scripts/build-baseline.sh
+
+## standalone-smoke: Build the shared SDK crates as git-SHA-pinned external consumers (AAASM-2559)
+standalone-smoke:
+	@bash scripts/standalone-build-smoke.sh
 
 ## install-hooks: Install git pre-commit hooks via pre-commit
 install-hooks:

@@ -6,7 +6,7 @@
  */
 
 .sandbox-summary-card {
-  --sandbox-amber: #d97706;
+  --sandbox-amber: var(--status-warning-solid);
   --sandbox-amber-bg: rgba(217, 119, 6, 0.08);
   --sandbox-amber-border: rgba(217, 119, 6, 0.32);
 
@@ -38,7 +38,7 @@
 .sandbox-summary-card__subtitle {
   margin: 0;
   font-size: 13px;
-  color: var(--ink-3, #4b5563);
+  color: var(--ink-3);
 }
 
 .sandbox-summary-card__policy {
@@ -46,7 +46,7 @@
 }
 
 .sandbox-summary-card__window {
-  color: var(--ink-4, #6b7280);
+  color: var(--ink-4);
 }
 
 .sandbox-summary-card__counts {
@@ -73,13 +73,13 @@
 .sandbox-summary-card__label {
   margin: 0;
   font-size: 12px;
-  color: var(--ink-3, #4b5563);
+  color: var(--ink-3);
 }
 
 .sandbox-summary-card__top-rule {
   margin: 0;
   font-size: 12px;
-  color: var(--ink-3, #4b5563);
+  color: var(--ink-3);
 }
 
 .sandbox-summary-card__top-rule code {
@@ -101,7 +101,7 @@
   border: 1px solid var(--sandbox-amber-border);
   border-radius: 4px;
   background: white;
-  color: var(--ink-2, #1f2937);
+  color: var(--ink-2);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -123,6 +123,6 @@
 }
 
 .sandbox-summary-card__btn--enforce:hover:not(:disabled) {
-  background: #b45309;
-  border-color: #b45309;
+  background: color-mix(in oklab, var(--status-warning-solid) 88%, black);
+  border-color: color-mix(in oklab, var(--status-warning-solid) 88%, black);
 }

@@ -1,5 +1,8 @@
 name: Integration — bypass-permissions
 
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [master]
@@ -90,3 +93,7 @@ jobs:
             -f ci/integration/bypass-permissions/docker-compose.yml \
             -p aaasm-bypass-test \
             down --volumes --remove-orphans || true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}

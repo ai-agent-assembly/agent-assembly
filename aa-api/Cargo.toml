@@ -14,6 +14,7 @@ connector-opsgenie = []
 
 [dependencies]
 aa-core = { path = "../aa-core" }
+aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool       = { path = "../aa-devtool" }
 aa-devtool-saas  = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }
@@ -21,49 +22,49 @@ aa-proto = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 aa-sandbox = { path = "../aa-sandbox" }
 argon2 = "0.5"
-async-trait = "0.1"
-axum = { version = "0.8", features = ["ws"] }
-dashmap = "6"
-http = "1"
-hyper = { version = "1", features = ["full"] }
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+async-trait = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
+dashmap = { workspace = true }
+http = { workspace = true }
+hyper = { workspace = true, features = ["full"] }
+jsonwebtoken = { workspace = true }
 rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-utoipa = { version = "5", features = ["axum_extras"] }
+reqwest = { workspace = true, features = ["rustls-tls", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+utoipa = { workspace = true }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
-chrono = { version = "0.4", features = ["serde"] }
-futures = "0.3"
-hex = "0.4"
-moka = { version = "0.12", features = ["future"] }
-rust_decimal = { version = "1", features = ["serde-str"] }
-tokio-stream = "0.1"
+chrono = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
+hex = { workspace = true }
+moka = { workspace = true, features = ["future"] }
+rust_decimal = { workspace = true, features = ["serde-str"] }
+tokio-stream = { workspace = true }
 ulid = "1"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 axum-test = "20"
-chrono-tz = "0.10"
-futures = "0.3"
-hmac = "0.13"
+chrono-tz = { workspace = true }
+futures = { workspace = true }
+hmac = { workspace = true }
 httpmock = "0.8"
-rstest = "0.26"
-serde_json = "1"
-sha2 = "0.11"
-tempfile = "3"
-tokio-tungstenite = "0.29"
-tonic = { version = "0.14", features = ["transport"] }
-tower = { version = "0.5", features = ["util"] }
+rstest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
 
 [lints]
 workspace = true

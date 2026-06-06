@@ -36,8 +36,12 @@ pub mod evaluators;
 pub mod identity;
 pub mod policy;
 pub mod risk_tier;
+/// Temporary migration re-export: the credential scanner now lives in the
+/// leaf crate `aa-security` (AAASM-2567). Consumers should depend on
+/// `aa-security` directly; this keeps `aa_core::scanner::…` paths resolving
+/// during the migration.
 #[cfg(feature = "std")]
-pub mod scanner;
+pub use aa_security::scanner;
 #[cfg(feature = "std")]
 pub mod storage;
 pub mod time;

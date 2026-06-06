@@ -19,18 +19,18 @@ aa-core = { path = "../aa-core", features = ["serde"] }
 # a newer one (0.33+ -> libsqlite3-sys 0.31+) breaks the `links = "sqlite3"`
 # uniqueness rule against sqlx.
 rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-metrics = "0.24"
-dirs = "6"
+serde = { workspace = true }
+serde_json = { workspace = true }
+metrics = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
-async-trait = "0.1"
-tokio = { version = "1", features = ["macros", "rt"] }
-tempfile = "3"
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = { workspace = true }
 # Captures emitted metric values so the cap-eviction test can assert the exact
 # `aa_events_dropped_total` count.
-metrics-util = { version = "0.20", features = ["debugging"] }
+metrics-util = { workspace = true, features = ["debugging"] }
 
 [lints]
 workspace = true

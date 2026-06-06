@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Agent Assembly · Capability + Policy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="data-extra.jsx"></script>
+<script type="text/babel" src="data-audit.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="tweaks.jsx"></script>
+<script type="text/babel" src="states.jsx"></script>
+<script type="text/babel" src="onboarding.jsx"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="capability.jsx"></script>
+<script type="text/babel" src="policy-editor.jsx"></script>
+<script type="text/babel" src="policy.jsx"></script>
+<script type="text/babel" src="trace.jsx"></script>
+<script type="text/babel" src="live-ops.jsx"></script>
+<script type="text/babel" src="overview.jsx"></script>
+<script type="text/babel" src="fleet.jsx"></script>
+<script type="text/babel" src="topology.jsx"></script>
+<script type="text/babel" src="agent-detail.jsx"></script>
+<script type="text/babel" src="scrub.jsx"></script>
+<script type="text/babel" src="alerts.jsx"></script>
+<script type="text/babel" src="audit-log.jsx"></script>
+<script type="text/babel" src="costs.jsx"></script>
+<script type="text/babel" src="identity.jsx"></script>
+<script type="text/babel" src="teams.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+  const { useState } = React;
+
+  function App() {
+    const [route, setRoute] = useState('overview');
+    const [agentId, setAgentId] = useState(null);
+    const [cell, setCell] = useState(null);
+    const [simOpen, setSimOpen] = useState(false);
+    const [policyId, setPolicyId] = useState('P-066');
+    const [toastMsg, setToastMsg] = useState(null);
+    const [bellOpen, setBellOpen] = useState(false);
+    const [, forceTick] = useState(0);
+
+    // Onboarding wizard: open by default on first run; close on finish/skip.
+    // Tweaks panel can also force-open and jump to a specific step.
+    const [onbOpen, setOnbOpen] = useState(true);
+    const [onbStep, setOnbStep] = useState(0);
+
+    // Apply initial data tweaks (posture preset, approvals count) before
+    // the first render of any data-driven page.
+    if (!window.__TWEAKS_BOOTED) {
+      window.applyDataTweaks(window.TWEAK_DEFAULTS);
+      window.TWEAKS = window.TWEAK_DEFAULTS;
+      window.__TWEAKS_BOOTED = true;
+    }
+    const [approvals, setApprovals] = useState(window.APPROVALS);
+
+    // When the user changes anything in the Tweaks panel, re-pull the
+    // (now-mutated) AGENTS / APPROVALS arrays and force a re-render.
+    React.useEffect(() => {
+      const onTick = (e) => {
+        setApprovals(window.APPROVALS);
+        forceTick((n) => n + 1);
+        // Wizard remote control via tweaks
+        if (e?.detail) {
+          if (typeof e.detail.onboardingOpen === 'boolean') setOnbOpen(e.detail.onboardingOpen);
+          if (typeof e.detail.onboardingStep === 'number') setOnbStep(e.detail.onboardingStep);
+        }
+      };
+      window.addEventListener('tweaksTick', onTick);
+      return () => window.removeEventListener('tweaksTick', onTick);
+    }, []);
+
+    const toast = (m) => setToastMsg(m);
+
+    const goPolicy = (id) => {
+      if (id) setPolicyId(id);
+      setRoute('policy');
+      setCell(null);
+    };
+
+    const onApprove = (a) => setApprovals((prev) => prev.filter((x) => x.id !== a.id));
+    const onReject = (a) => setApprovals((prev) => prev.filter((x) => x.id !== a.id));
+    const onTrace = (a) => toast(`open trace ${a.trace} (mock)`);
+
+    return (
+      <div className="app">
+        <window.LeftRail route={route} setRoute={setRoute} />
+        <div className="main">
+          <window.TopBar
+            route={route}
+            crumbExtra={route === 'policy' ? policyId : null}
+            pendingCount={approvals.length}
+            onBell={() => setBellOpen(true)}
+            rightExtra={
+              <>
+                <span>env: <b style={{ color: 'var(--ink)' }}>prod</b></span>
+                <span>·</span>
+              </>
+            }
+          />
+          <div className="page" style={(route === 'topology' || route === 'teams') ? { display: 'flex', flexDirection: 'column', overflow: 'hidden' } : undefined}>
+            {route === 'overview' && (
+              <window.OverviewPage
+                goRoute={setRoute}
+                openCell={(agentId, resourceId, verb) => {
+                  const a = window.AGENTS.find((x) => x.id === agentId);
+                  const r = window.RESOURCES.find((x) => x.id === resourceId);
+                  setRoute('capability');
+                  setTimeout(() => setCell({ agent: a, resource: r, verb }), 50);
+                }}
+                openApprovals={() => setBellOpen(true)}
+              />
+            )}
+            {route === 'fleet' && (
+              <window.FleetPage
+                goCapability={(id) => { setRoute('capability'); }}
+                goAgent={(id) => { setAgentId(id); setRoute('agent'); }}
+                toast={toast}
+              />
+            )}
+            {route === 'topology' && (
+              <window.TopologyPage
+                goPolicy={goPolicy}
+                toast={toast}
+              />
+            )}
+            {route === 'agent' && (
+              <window.AgentDetailPage
+                agentId={agentId}
+                goRoute={setRoute}
+                openCell={setCell}
+                goPolicy={goPolicy}
+                toast={toast}
+              />
+            )}
+            {route === 'capability' && (
+              <window.CapabilityPage
+                agents={window.AGENTS}
+                goPolicy={() => goPolicy('P-066')}
+                openAgent={() => {}}
+                openCell={setCell}
+                toast={toast}
+              />
+            )}
+            {route === 'policy' && (
+              <window.PolicyPage
+                initialId={policyId}
+                openSimulate={() => setSimOpen(true)}
+                toast={toast}
+              />
+            )}
+            {route === 'live' && (
+              <window.LiveOpsPage
+                approvals={approvals}
+                onApprove={onApprove}
+                onReject={onReject}
+                onTrace={onTrace}
+                toast={toast}
+              />
+            )}
+            {route === 'scrub' && (
+              <window.ScrubPage toast={toast} />
+            )}
+            {route === 'alerts' && (
+              <window.AlertsPage
+                goAgent={(id) => { setAgentId(id); setRoute('agent'); }}
+                goPolicy={goPolicy}
+                toast={toast}
+              />
+            )}
+            {route === 'audit' && (
+              <window.AuditLogPage
+                goAgent={(id) => { setAgentId(id); setRoute('agent'); }}
+                toast={toast}
+              />
+            )}
+            {route === 'costs' && (
+              <window.CostsPage toast={toast} />
+            )}
+            {route === 'identity' && (
+              <window.IdentityPage toast={toast} />
+            )}
+            {route === 'teams' && (
+              <window.TeamsPage
+                goAgent={(id) => { setAgentId(id); setRoute('agent'); }}
+                goPolicy={goPolicy}
+                toast={toast}
+              />
+            )}
+          </div>
+        </div>
+
+        {cell && <window.CellInspectDrawer cell={cell} onClose={() => setCell(null)} goPolicy={goPolicy} />}
+        {simOpen && <window.SimulateModal onClose={() => setSimOpen(false)} onRollout={() => {}} toast={toast} />}
+        {bellOpen && (
+          <window.BellDrawer
+            approvals={approvals}
+            onClose={() => setBellOpen(false)}
+            onApprove={(a) => { onApprove(a); toast(`Approved ${a.id}`); }}
+            onReject={(a) => { onReject(a); toast(`Rejected ${a.id}`); }}
+            goLive={() => setRoute('live')}
+          />
+        )}
+        {toastMsg && <window.Toast msg={toastMsg} onDone={() => setToastMsg(null)} />}
+        <window.AssemblyTweaksPanel />
+        <window.OnboardingWizard
+          open={onbOpen}
+          initialStep={onbStep}
+          onFinish={() => {
+            setOnbOpen(false);
+            setRoute('overview');
+            toast('✓ Setup complete — welcome to Agent Assembly');
+            window.parent.postMessage({type:'__edit_mode_set_keys', edits:{onboardingOpen:false}}, '*');
+          }}
+          onSkipAll={() => {
+            setOnbOpen(false);
+            toast('Onboarding skipped — you can re-open from the Tweaks panel');
+            window.parent.postMessage({type:'__edit_mode_set_keys', edits:{onboardingOpen:false}}, '*');
+          }}
+        />
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

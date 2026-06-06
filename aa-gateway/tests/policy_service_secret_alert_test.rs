@@ -13,13 +13,13 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aa_core::CredentialKind;
 use aa_gateway::alerts::SecretAlert;
 use aa_gateway::service::PolicyServiceImpl;
 use aa_gateway::PolicyEngine;
 use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{action_context::Action, ActionContext, CheckActionRequest, ToolCallContext};
+use aa_security::CredentialKind;
 use tonic::Request;
 
 const ALLOW_TEST_TOOL_POLICY: &str = r#"

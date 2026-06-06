@@ -1,0 +1,33 @@
+[package]
+name = "aa-sdk-client"
+version.workspace = true
+# Distributed to the external SDK shims as a git-SHA pin (ADR 0002 / AAASM-2559),
+# not via crates.io — so it stays `publish = false`. Git-pinnability is guarded
+# in CI by scripts/standalone-build-smoke.sh (Crate Pinnability Smoke workflow).
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared SDK runtime-client for Agent Assembly — UDS transport, IPC wire codec, AssemblyClient lifecycle, and advisory (non-authoritative) credential preflight. The thin per-language FFI shims wrap this crate."
+
+[dependencies]
+aa-proto = { path = "../aa-proto" }
+# Advisory preflight only — pulled in by the `preflight` feature (default on).
+aa-security = { path = "../aa-security", optional = true }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
+tracing = { workspace = true }
+
+[features]
+default = ["preflight"]
+# Advisory, best-effort local credential preflight (non-authoritative). The
+# runtime (AAASM-2568) re-scans every event unconditionally, so this only lets
+# the SDK fail fast locally; it never emits a `clean`/`already_scanned` marker.
+# Disabling the feature drops the `aa-security` dependency entirely.
+preflight = ["dep:aa-security"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "rt", "sync", "macros", "net", "io-util"] }
+
+[lints]
+workspace = true

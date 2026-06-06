@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 aa-core              = { path = "../aa-core", version = "0.0.1-alpha.5" }
+aa-security          = { path = "../aa-security", version = "0.0.1-alpha.5", features = ["serde"] }
 # strip-for-publish:begin devtool
 # AAASM-2340: these three deps wire `aasm run` + `aasm tools` to the
 # `aa-devtool*` adapter crates. The dev-tool subsystem isn't ready to
@@ -29,40 +30,40 @@ aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.5" }
 aa-storage           = { path = "../aa-storage", version = "0.0.1-alpha.5" }
 aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-alpha.5" }
 aa-storage-redis     = { path = "../aa-storage-redis", version = "0.0.1-alpha.5" }
-anyhow         = "1"
-async-trait    = "0.1"
-axum           = "0.8"
-chrono         = { version = "0.4", features = ["serde"] }
-clap           = { version = "4", features = ["derive", "env"] }
+anyhow         = { workspace = true }
+async-trait    = { workspace = true }
+axum           = { workspace = true }
+chrono         = { workspace = true, features = ["serde"] }
+clap           = { workspace = true, features = ["derive", "env"] }
 clap_complete  = "4"
 colored        = "3"
 csv            = "1"
 comfy-table    = "7"
 console        = "0.16"
 crossterm      = "0.29"
-dirs           = "6"
+dirs           = { workspace = true }
 futures-util   = "0.3"
-hex            = "0.4"
+hex            = { workspace = true }
 include_dir    = "0.7"
-libc           = "0.2"
+libc           = { workspace = true }
 mime_guess     = "2"
 open           = "5"
 owo-colors     = "4"
 ratatui        = { version = "0.30", features = ["crossterm"] }
-reqwest        = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
-serde          = { version = "1", features = ["derive"] }
-serde_json     = "1"
-serde_yaml     = "0.9"
-thiserror      = "2"
-tokio          = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
-toml           = "1.1"
-url            = "2"
-uuid           = { version = "1", features = ["serde", "v4"] }
+reqwest        = { workspace = true, features = ["rustls-tls", "json", "blocking"] }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+serde_yaml     = { workspace = true }
+thiserror      = { workspace = true }
+tokio          = { workspace = true, features = ["full"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+toml           = { workspace = true }
+url            = { workspace = true }
+uuid           = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
-assert_cmd     = "2"
-tempfile       = "3"
+assert_cmd     = { workspace = true }
+tempfile       = { workspace = true }
 wiremock       = "0.6"
 
 [lints]

@@ -1,5 +1,8 @@
 name: dev-verify
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
@@ -78,3 +81,7 @@ jobs:
 
       - name: Run dev-verify
         run: make dev-verify
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}

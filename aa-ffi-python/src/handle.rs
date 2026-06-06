@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use pyo3::prelude::*;
 
-use aa_core::CredentialScanner;
+use aa_security::CredentialScanner;
 
 use crate::ipc::{IpcCommand, IpcHandle};
 

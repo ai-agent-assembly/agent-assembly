@@ -1,0 +1,24 @@
+[package]
+name = "aa-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Security primitives for Agent Assembly — credential scanning, redaction, and audit-normalization. Leaf crate with no aa-core dependency."
+
+[dependencies]
+aho-corasick = "1"
+serde = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "scanner_bench"
+harness = false
+
+[lints]
+workspace = true

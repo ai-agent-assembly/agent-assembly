@@ -1,6 +1,6 @@
 //! Data models for the `aasm audit` command.
 
-use aa_core::scanner::CredentialFinding;
+use aa_security::CredentialFinding;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 

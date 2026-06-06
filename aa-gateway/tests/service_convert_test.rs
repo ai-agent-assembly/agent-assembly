@@ -288,7 +288,7 @@ fn eval_result_with_credential_findings_returns_redact() {
     let eval = EvaluationResult {
         decision: PolicyResult::Allow,
         redacted_payload: Some("redacted text".into()),
-        credential_findings: vec![aa_core::CredentialFinding::from_regex_match(0, 10)],
+        credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 10)],
         deny_action: None,
     };
     let resp = eval_result_to_response(&eval, 77, "");

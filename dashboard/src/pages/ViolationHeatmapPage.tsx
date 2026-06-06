@@ -85,16 +85,16 @@ export function ViolationHeatmapPage() {
         </label>
       </div>
 
-      {status === "loading" && <p style={{ color: "#6b7280" }}>Loading…</p>}
-      {status === "error"   && <p style={{ color: "#ef4444" }}>Error: {error}</p>}
+      {status === "loading" && <p style={{ color: "var(--text-muted)" }}>Loading…</p>}
+      {status === "error"   && <p style={{ color: "var(--status-danger)" }}>Error: {error}</p>}
       {status === "success" && (
         <>
-          <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
             {data.nodes.length} agent{data.nodes.length !== 1 ? "s" : ""} with violations ·
             window {data.window_secs}s · generated {data.generated_at}
           </p>
           {data.nodes.length === 0 ? (
-            <p style={{ color: "#6b7280" }}>No violations recorded in this window.</p>
+            <p style={{ color: "var(--text-muted)" }}>No violations recorded in this window.</p>
           ) : (
             <ViolationHeatmap nodes={data.nodes} />
           )}

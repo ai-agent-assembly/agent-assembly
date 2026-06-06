@@ -338,6 +338,88 @@ fn emit_proxy_degradation(
     let _ = broadcast_tx.send(crate::pipeline::PipelineEvent::LayerDegradation(info));
 }
 
+/// Capacity of the channel carrying governance audit entries from the approval
+/// queue to the publisher-drain task.
+const AUDIT_CHANNEL_CAPACITY: usize = 8_192;
+/// Capacity of the on-disk fallback buffer for audit events that cannot be
+/// published while NATS is unreachable.
+const AUDIT_BUFFER_CAPACITY: usize = 100_000;
+/// How often the reconnect-flush loop replays buffered audit events.
+const AUDIT_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Build the audit publisher when `AA_NATS_CONFIG_PATH` points at a readable
+/// config carrying a `[gateway.nats]` table.
+///
+/// Returns `None` — leaving the agent fully functional without audit publishing
+/// — when NATS is unconfigured, the config is unreadable/invalid, the buffer
+/// cannot be opened, or the initial NATS connection fails. None of these abort
+/// startup (AAASM-2547).
+async fn build_audit_publisher(
+    config: &RuntimeConfig,
+) -> Option<std::sync::Arc<crate::audit_publisher::AuditPublisher>> {
+    let path = config.nats_config_path.as_ref()?;
+    let toml = match std::fs::read_to_string(path) {
+        Ok(toml) => toml,
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "audit publisher disabled — cannot read NATS config");
+            return None;
+        }
+    };
+    let nats_config = match crate::audit_publisher::NatsConfig::from_toml_str(&toml) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::warn!(error = %err, "audit publisher disabled — invalid [gateway.nats]");
+            return None;
+        }
+    };
+    let buffer = match aa_storage_sqlite_buffer::EventBuffer::new(&config.audit_buffer_path, AUDIT_BUFFER_CAPACITY) {
+        Ok(buffer) => std::sync::Arc::new(buffer),
+        Err(err) => {
+            tracing::warn!(error = %err, path = %config.audit_buffer_path.display(), "audit publisher disabled — cannot open buffer");
+            return None;
+        }
+    };
+    let sink = match crate::audit_publisher::NatsAuditSink::connect(&nats_config).await {
+        Ok(sink) => std::sync::Arc::new(sink) as std::sync::Arc<dyn aa_core::storage::AuditSink>,
+        Err(err) => {
+            tracing::warn!(error = %err, url = %nats_config.url, "audit publisher disabled — initial NATS connect failed");
+            return None;
+        }
+    };
+    tracing::info!(url = %nats_config.url, "audit publisher enabled");
+    Some(std::sync::Arc::new(crate::audit_publisher::AuditPublisher::new(
+        sink, buffer,
+    )))
+}
+
+/// Spawn (into `tracker`) the task that drains the approval audit stream into the
+/// publisher, fire-and-forget. On cancellation it drains any already-queued
+/// entries before exiting so a graceful shutdown loses nothing.
+fn spawn_audit_drain(
+    tracker: &TaskTracker,
+    mut rx: tokio::sync::mpsc::Receiver<aa_core::storage::AuditEntry>,
+    publisher: std::sync::Arc<crate::audit_publisher::AuditPublisher>,
+    token: CancellationToken,
+) {
+    tracker.spawn(async move {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    while let Ok(entry) = rx.try_recv() {
+                        publisher.publish(entry).await;
+                    }
+                    break;
+                }
+                maybe = rx.recv() => match maybe {
+                    Some(entry) => publisher.publish(entry).await,
+                    None => break,
+                },
+            }
+        }
+        tracing::info!("audit drain task exiting");
+    });
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -413,8 +495,23 @@ pub async fn run(config: RuntimeConfig) {
     // Shared response router — maps connection_id → per-connection IpcResponse sender.
     let response_router = crate::ipc::new_response_router();
 
+    // Audit publisher (AAASM-2547): when [gateway.nats] is configured, the
+    // approval queue's governance AuditEntry stream is drained to NATS; when
+    // unconfigured the queue runs without audit and the agent is unaffected.
+    let audit_publisher = build_audit_publisher(&config).await;
+    let audit_flush_loop = audit_publisher
+        .as_ref()
+        .map(|publisher| std::sync::Arc::clone(publisher).spawn_reconnect_flush_loop(AUDIT_FLUSH_INTERVAL));
+
     // Shared approval queue — holds pending human-approval requests.
-    let approval_queue = crate::approval::ApprovalQueue::new();
+    let approval_queue = match &audit_publisher {
+        Some(publisher) => {
+            let (audit_tx, audit_rx) = tokio::sync::mpsc::channel(AUDIT_CHANNEL_CAPACITY);
+            spawn_audit_drain(&tracker, audit_rx, std::sync::Arc::clone(publisher), token.clone());
+            crate::approval::ApprovalQueue::with_audit(audit_tx, [0u8; 32])
+        }
+        None => crate::approval::ApprovalQueue::new(),
+    };
 
     // Clone inbound_tx for the health/metrics handler before IpcServer consumes it.
     let inbound_tx_health = inbound_tx.clone();
@@ -605,6 +702,19 @@ pub async fn run(config: RuntimeConfig) {
         );
     } else {
         tracing::info!("all tasks completed cleanly");
+    }
+
+    // AAASM-2547: stop the reconnect loop and flush any audit events that
+    // buffered while NATS was unreachable, now that the drain task has finished.
+    if let Some(handle) = audit_flush_loop {
+        handle.abort();
+    }
+    if let Some(publisher) = &audit_publisher {
+        match publisher.flush_pending().await {
+            Ok(n) if n > 0 => tracing::info!(flushed = n, "flushed buffered audit events on shutdown"),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(error = %err, "failed to flush audit buffer on shutdown"),
+        }
     }
 
     tracing::info!("aa-runtime stopped");
@@ -998,6 +1108,39 @@ mod tests {
                 _ => panic!("expected LayerDegradation event"),
             }
         }
+    }
+
+    /// A minimal config for exercising the audit-publisher builder.
+    fn audit_test_config(nats_config_path: Option<std::path::PathBuf>) -> crate::config::RuntimeConfig {
+        crate::config::RuntimeConfig {
+            agent_id: "audit-test".to_string(),
+            worker_threads: 0,
+            shutdown_timeout_secs: 30,
+            ipc_max_connections: 64,
+            pipeline_input_buffer: 10_000,
+            pipeline_batch_size: 100,
+            pipeline_flush_interval_ms: 100,
+            pipeline_broadcast_capacity: 1_024,
+            metrics_addr: "0.0.0.0:8080".to_string(),
+            policy_path: None,
+            gateway_endpoint: None,
+            correlation_window_ms: 5_000,
+            correlation_interval_ms: 1_000,
+            nats_config_path,
+            audit_buffer_path: std::env::temp_dir().join("aa-audit-buffer-audit-test.db"),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_audit_publisher_disabled_when_unconfigured_or_unreadable() {
+        // Unconfigured (no AA_NATS_CONFIG_PATH) ⇒ disabled, agent unaffected.
+        assert!(super::build_audit_publisher(&audit_test_config(None)).await.is_none());
+
+        // Configured but the path does not exist ⇒ disabled, no startup failure.
+        let missing = std::env::temp_dir().join("aa-nonexistent-nats-config-xyz.toml");
+        assert!(super::build_audit_publisher(&audit_test_config(Some(missing)))
+            .await
+            .is_none());
     }
 }
 
