@@ -27,6 +27,17 @@ AASM_VERSION=v0.1.0 curl -sSf https://install.ai-agent-assembly.dev | sh
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev | sh
 ```
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+```
+
+Installs the latest tagged `aasm` release from the
+[Homebrew tap](https://github.com/AI-agent-assembly/homebrew-agent-assembly).
+During the `v0.0.1` alpha series the published releases are pre-releases — see
+[Project Status](#project-status).
+
 ## Overview
 
 `agent-assembly` is the core runtime that brings governance to AI agents at
