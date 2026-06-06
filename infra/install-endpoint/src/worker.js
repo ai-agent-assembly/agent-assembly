@@ -10,7 +10,7 @@
 // (SCRIPT_REF) and served verbatim; the installer itself then downloads the
 // release binary and verifies its checksum + cosign signature (AAASM-2700).
 
-const DEFAULT_REPO = "AI-agent-assembly/agent-assembly";
+const DEFAULT_REPO = "ai-agent-assembly/agent-assembly";
 const DEFAULT_REF = "master";
 const SCRIPT_PATH = "scripts/install-cli.sh";
 

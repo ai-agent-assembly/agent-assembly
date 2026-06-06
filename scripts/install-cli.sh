@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://tool.agent-assembly.dev | sh
 #
 # Detects the host OS and CPU architecture, downloads the matching
-# pre-built tarball plus its SHA256SUMS file from the AI-agent-assembly
+# pre-built tarball plus its SHA256SUMS file from the ai-agent-assembly
 # GitHub Release, verifies the tarball's SHA-256 against SHA256SUMS, and
 # extracts the binary into ${AASM_INSTALL_DIR}. The install aborts if
 # the checksum cannot be downloaded or does not match.
@@ -14,7 +14,7 @@
 #   AASM_NO_MODIFY_PATH  Set to 1 to skip PATH modification hint
 set -eu
 
-REPO="AI-agent-assembly/agent-assembly"
+REPO="ai-agent-assembly/agent-assembly"
 BINARY="aasm"
 VERSION="${AASM_VERSION:-}"
 # INSTALL_DIR is resolved in main() after pick_install_dir is in scope.

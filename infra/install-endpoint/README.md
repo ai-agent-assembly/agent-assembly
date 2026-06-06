@@ -37,7 +37,7 @@ The `smoke-curl-installer` job in `.github/workflows/smoke-test.yml` is gated on
 repo variable so it only runs once the endpoint is live:
 
 ```sh
-gh variable set INSTALL_ENDPOINT_LIVE --body true --repo AI-agent-assembly/agent-assembly
+gh variable set INSTALL_ENDPOINT_LIVE --body true --repo ai-agent-assembly/agent-assembly
 ```
 
 Until that variable is `true`, the job is skipped (no false-red on releases).

@@ -15,5 +15,5 @@ routes = [
 #   SCRIPT_REF = "v0.0.1"   → freeze the installer to a release tag (recommended
 #                             once releases are cut, so the served script is
 #                             immutable and auditable).
-SCRIPT_REPO = "AI-agent-assembly/agent-assembly"
+SCRIPT_REPO = "ai-agent-assembly/agent-assembly"
 SCRIPT_REF = "master"
