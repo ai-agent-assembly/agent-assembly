@@ -30,6 +30,7 @@ fn verify_config(batch_size: usize) -> PipelineConfig {
         flush_interval: Duration::from_millis(10_000),
         broadcast_capacity: 1_024,
         agent_id: "verify-agent".to_string(),
+        enforcement: aa_runtime::pipeline::enforcement::EnforcementConfig::default(),
     }
 }
 

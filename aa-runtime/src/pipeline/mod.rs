@@ -38,6 +38,8 @@ pub struct PipelineConfig {
     pub broadcast_capacity: usize,
     /// Agent identity — copied from `RuntimeConfig::agent_id`.
     pub agent_id: String,
+    /// Runtime scan/redact enforcement config — derived from `RuntimeConfig`.
+    pub enforcement: enforcement::EnforcementConfig,
 }
 
 impl PipelineConfig {
@@ -49,6 +51,7 @@ impl PipelineConfig {
             flush_interval: Duration::from_millis(c.pipeline_flush_interval_ms),
             broadcast_capacity: c.pipeline_broadcast_capacity,
             agent_id: c.agent_id.clone(),
+            enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
         }
     }
 }
@@ -684,6 +687,7 @@ mod tests {
             flush_interval: Duration::from_millis(200),
             broadcast_capacity: 512,
             agent_id: "test-agent".to_string(),
+            enforcement: enforcement::EnforcementConfig::default(),
         };
 
         let cloned = pipeline_config.clone();
@@ -702,6 +706,7 @@ mod tests {
             flush_interval: Duration::from_millis(flush_interval_ms),
             broadcast_capacity: 1_024,
             agent_id: "test-agent".to_string(),
+            enforcement: enforcement::EnforcementConfig::default(),
         }
     }
 
