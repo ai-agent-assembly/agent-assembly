@@ -4,7 +4,7 @@ SHELL := /bin/bash
 
 .PHONY: help dev-setup install-tools clone-sdks install-hooks build-workspace \
         build-baseline test dev-verify smoke-python smoke-node smoke-go \
-        gateway-health demo-record
+        standalone-smoke gateway-health demo-record
 
 ## dev-setup: Bootstrap the full local development environment (install tools, clone SDKs, install hooks, build)
 dev-setup: install-tools clone-sdks install-hooks build-workspace
@@ -109,6 +109,10 @@ build-workspace:
 ## build-baseline: Record a build-time baseline (cold/warm/test + cargo tree -d) into target/build-baseline/
 build-baseline:
 	@bash scripts/build-baseline.sh
+
+## standalone-smoke: Build the shared SDK crates as git-SHA-pinned external consumers (AAASM-2559)
+standalone-smoke:
+	@bash scripts/standalone-build-smoke.sh
 
 ## install-hooks: Install git pre-commit hooks via pre-commit
 install-hooks:
