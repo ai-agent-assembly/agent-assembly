@@ -492,4 +492,35 @@ mod tests {
         // The finding metric is labelled by kind; the raw secret never appears.
         assert!(!rendered.contains(AWS_KEY));
     }
+
+    #[test]
+    fn from_runtime_config_maps_size_cap_and_keeps_fail_closed_policy() {
+        let rc = RuntimeConfig {
+            agent_id: "test".to_string(),
+            worker_threads: 0,
+            shutdown_timeout_secs: 30,
+            ipc_max_connections: 64,
+            pipeline_input_buffer: 10_000,
+            pipeline_batch_size: 100,
+            pipeline_flush_interval_ms: 100,
+            pipeline_broadcast_capacity: 1_024,
+            metrics_addr: "0.0.0.0:8080".to_string(),
+            policy_path: None,
+            gateway_endpoint: None,
+            correlation_window_ms: 5_000,
+            correlation_interval_ms: 1_000,
+            nats_config_path: None,
+            audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
+            enforcement_max_field_bytes: 4096,
+        };
+
+        let config = EnforcementConfig::from_runtime_config(&rc);
+
+        assert_eq!(config.max_field_bytes, 4096, "size cap is threaded from RuntimeConfig");
+        assert_eq!(
+            config.oversized_policy,
+            OversizedPolicy::RedactWhole,
+            "oversized policy stays fail-closed"
+        );
+    }
 }
