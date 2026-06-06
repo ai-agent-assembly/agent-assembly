@@ -1,5 +1,8 @@
 name: FFI Go Staticlib
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [master]
@@ -29,21 +32,34 @@ on:
       - "!**/*.ico"
 
 jobs:
+  prep:
+    name: Resolve target matrix (linux-x86_64 on PR, full on tag/master)
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          full='[
+            {"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu"},
+            {"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu"},
+            {"os":"macos-latest","target":"x86_64-apple-darwin"},
+            {"os":"macos-latest","target":"aarch64-apple-darwin"}
+          ]'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sel=$(printf '%s' "$full" | jq -c '[.[] | select(.target == "x86_64-unknown-linux-gnu")]')
+          else
+            sel=$(printf '%s' "$full" | jq -c '.')
+          fi
+          printf 'matrix={"include":%s}\n' "$sel" >> "$GITHUB_OUTPUT"
+
   build-aa-ffi-go:
     name: Build aa-ffi-go (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    needs: prep
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
+      matrix: ${{ fromJSON(needs.prep.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v6

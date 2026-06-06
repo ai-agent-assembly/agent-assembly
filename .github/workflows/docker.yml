@@ -1,5 +1,8 @@
 name: Docker
 
+permissions:
+  contents: read
+
 # Prerequisite: the AI-agent-assembly org must have
 # Actions → Settings → Actions → Workflow permissions → "Read and write permissions" enabled.
 # Without this, the GHCR publish step (on tag push) will fail with HTTP 403.
@@ -34,6 +37,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4
 
       - name: Set up QEMU (ARM emulation for multi-arch)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
 
       - name: Set up Docker Buildx
@@ -60,9 +64,35 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  prep:
+    name: Resolve language matrix (reduced on PR, full on tag)
+    runs-on: ubuntu-latest
+    outputs:
+      lang_matrix: ${{ steps.set.outputs.lang_matrix }}
+    steps:
+      # On pull_request, build only the `is_latest` representative per language
+      # (python 3.14, go 1.26). On tag/push, build the full version matrix.
+      - id: set
+        run: |
+          full='[
+            {"lang":"python","version":"3.14-slim","dockerfile":"docker/Dockerfile.python-3.14-slim","smoke_run":"python -c \"from agent_assembly import init_assembly\"","is_latest":true},
+            {"lang":"python","version":"3.13-slim","dockerfile":"docker/Dockerfile.python-3.13-slim","smoke_run":"python -c \"from agent_assembly import init_assembly\""},
+            {"lang":"python","version":"3.12-slim","dockerfile":"docker/Dockerfile.python-3.12-slim","smoke_run":"python -c \"from agent_assembly import init_assembly\""},
+            {"lang":"go","version":"1.26-alpine","dockerfile":"docker/Dockerfile.go-1.26-alpine","smoke_run":"go list -m github.com/AI-agent-assembly/go-sdk@latest","is_latest":true},
+            {"lang":"go","version":"1.25-alpine","dockerfile":"docker/Dockerfile.go-1.25-alpine","smoke_run":"go list -m github.com/AI-agent-assembly/go-sdk@latest"},
+            {"lang":"go","version":"1.24-alpine","dockerfile":"docker/Dockerfile.go-1.24-alpine","smoke_run":"go list -m github.com/AI-agent-assembly/go-sdk@latest"}
+          ]'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sel=$(printf '%s' "$full" | jq -c '[.[] | select(.is_latest == true)]')
+          else
+            sel=$(printf '%s' "$full" | jq -c '.')
+          fi
+          printf 'lang_matrix={"include":%s}\n' "$sel" >> "$GITHUB_OUTPUT"
+
   build-and-push-language-images:
     name: Build language image — ${{ matrix.lang }} (and publish on tag)
     runs-on: ubuntu-latest
+    needs: prep
     permissions:
       contents: read
       packages: write
@@ -74,52 +104,13 @@ jobs:
     # (type=gha,mode=max) deduplicates the cargo build across the matrix.
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - lang: python
-            version: "3.14-slim"
-            dockerfile: docker/Dockerfile.python-3.14-slim
-            smoke_run: "python -c \"from agent_assembly import init_assembly\""
-            # F114 latest-per-language pin — owns `python:latest` tag.
-            is_latest: true
-          - lang: python
-            version: "3.13-slim"
-            dockerfile: docker/Dockerfile.python-3.13-slim
-            smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          - lang: python
-            version: "3.12-slim"
-            dockerfile: docker/Dockerfile.python-3.12-slim
-            smoke_run: "python -c \"from agent_assembly import init_assembly\""
-          # Python 3.10 / 3.11 are intentionally absent here — they were
-          # dropped from F114b scope per AAASM-1682 (Option B chosen) because
-          # python-sdk's pyproject.toml declares `requires-python = ">=3.12,<4.0"`.
-          # The 2 Dockerfiles were deleted; final Python coverage = 3.12/3.13/3.14.
-          # Node 20 / 22 / 24 are all intentionally absent here. Re-enabled
-          # by AAASM-1660 (node 20) / AAASM-1661 (node 22) / AAASM-1503
-          # (node 24) once AAASM-1203 publishes `@agent-assembly/sdk` to
-          # npm. The transitional git/tarball install paths can't produce
-          # a working image because the SDK's `dist/` and native `.node`
-          # files are gitignored — see AAASM-1501 for the full
-          # investigation. Three follow-up subtasks share one PR.
-          - lang: go
-            version: "1.26-alpine"
-            dockerfile: docker/Dockerfile.go-1.26-alpine
-            smoke_run: "go list -m github.com/AI-agent-assembly/go-sdk@latest"
-            # F114 latest-per-language pin — owns `go:latest` tag.
-            is_latest: true
-          - lang: go
-            version: "1.25-alpine"
-            dockerfile: docker/Dockerfile.go-1.25-alpine
-            smoke_run: "go list -m github.com/AI-agent-assembly/go-sdk@latest"
-          - lang: go
-            version: "1.24-alpine"
-            dockerfile: docker/Dockerfile.go-1.24-alpine
-            smoke_run: "go list -m github.com/AI-agent-assembly/go-sdk@latest"
+      matrix: ${{ fromJSON(needs.prep.outputs.lang_matrix) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4
 
       - name: Set up QEMU (ARM emulation for multi-arch)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
 
       - name: Set up Docker Buildx

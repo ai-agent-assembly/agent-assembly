@@ -16,6 +16,7 @@ members = [
     "aa-ffi-go",
     "aa-ffi-python",
     "aa-ffi-node",
+    "aa-sdk-client",
     "aa-wasm",
     "aa-sandbox",
     "aa-gateway",

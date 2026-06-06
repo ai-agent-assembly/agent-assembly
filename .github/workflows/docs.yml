@@ -1,7 +1,11 @@
 name: Docs
 
+permissions:
+  contents: read
+
 on:
   pull_request:
+    branches: [master]
     paths:
       - 'docs/**'
       - 'README.md'

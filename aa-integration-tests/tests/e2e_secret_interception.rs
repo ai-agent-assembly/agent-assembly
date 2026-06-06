@@ -1032,3 +1032,262 @@ mod proxy_path {
         assert!(matches!(pipeline_event, PipelineEvent::Audit(_)));
     }
 }
+
+/// SDK-bypass resistance at the trusted runtime boundary (Story AAASM-2569).
+///
+/// `aa-runtime` is the mandatory chokepoint on the SDK fast-path
+/// (`SDK → UDS → runtime → gateway`). These tests drive the merged enforcement
+/// gate [`aa_runtime::pipeline::enforcement::RuntimeScanner`] (AAASM-2568)
+/// directly with crafted [`EnrichedEvent`]s to prove a **bypassed, malicious, or
+/// absent SDK cannot bypass runtime enforcement**. Each case asserts
+/// **raw-secret-absence at the trusted boundary** — what the audit/forward path
+/// actually carries — never an SDK-reported status, of which there is none on
+/// the wire.
+///
+/// Synthetic secrets are reused from the file-level fixtures above.
+mod runtime_bypass {
+    use aa_proto::assembly::audit::v1::audit_event::Detail;
+    use aa_proto::assembly::audit::v1::{AuditEvent, ToolCallDetail};
+    use aa_runtime::pipeline::enforcement::RuntimeScanner;
+    use aa_runtime::pipeline::{EnrichedEvent, EventSource};
+
+    use super::{FAKE_AWS_ACCESS_KEY, FAKE_GITHUB_PAT};
+
+    /// Wrap `detail` in an [`EnrichedEvent`] tagged with `source`, with
+    /// otherwise-throwaway metadata — mirrors what the runtime sees off the wire.
+    fn enriched(detail: Detail, source: EventSource) -> EnrichedEvent {
+        EnrichedEvent {
+            inner: AuditEvent {
+                detail: Some(detail),
+                ..Default::default()
+            },
+            received_at_ms: 0,
+            source,
+            agent_id: "bypass-test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        }
+    }
+
+    /// Read back the (possibly redacted) `args_json` text from a ToolCall event —
+    /// i.e. exactly what the runtime would forward/audit.
+    fn tool_args_text(event: &EnrichedEvent) -> String {
+        let Some(Detail::ToolCall(tc)) = event.inner.detail.as_ref() else {
+            panic!("event detail was not a ToolCall");
+        };
+        String::from_utf8(tc.args_json.clone()).expect("args_json is utf-8")
+    }
+
+    #[test]
+    fn missing_sdk_scanner_secret_is_redacted_at_runtime() {
+        // Case 1: an SDK built with preflight disabled ships a raw secret. The
+        // runtime is the authoritative chokepoint and redacts it before any
+        // forward or audit — so the audit store never receives the raw secret.
+        let scanner = RuntimeScanner::new();
+        let mut event = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !outcome.is_clean(),
+            "runtime must detect the secret the SDK never scanned"
+        );
+        assert!(
+            !outcome.findings.is_empty(),
+            "a deny-on-credential policy keys off these runtime findings"
+        );
+        let scanned = tool_args_text(&event);
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "the audit/forward path must never carry the raw secret"
+        );
+        assert!(
+            scanned.contains("[REDACTED:"),
+            "the secret is replaced with a redaction marker"
+        );
+    }
+
+    #[test]
+    fn forged_clean_label_is_ignored_and_rescanned() {
+        // Case 2: a malicious SDK stuffs a "clean" / "already scanned" claim into
+        // the one place it could on the wire — the event `labels` map. The
+        // enforcement stage never reads labels; it re-scans unconditionally.
+        let scanner = RuntimeScanner::new();
+        let mut inner = AuditEvent {
+            detail: Some(Detail::ToolCall(ToolCallDetail {
+                args_json: format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        inner.labels.insert("x-aa-prescanned".to_string(), "true".to_string());
+        inner.labels.insert("clean".to_string(), "true".to_string());
+        let mut event = EnrichedEvent {
+            inner,
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "lying-sdk".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+        };
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !outcome.is_clean(),
+            "forged clean labels must not suppress runtime scanning"
+        );
+        let scanned = tool_args_text(&event);
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "the runtime re-scans and redacts regardless of any SDK claim"
+        );
+    }
+
+    #[test]
+    fn tool_call_detail_carries_no_trust_marker_field() {
+        // Loud-failure guard for the "no honored trust marker on the wire"
+        // invariant. This struct literal names EVERY field of `ToolCallDetail`
+        // (no `..Default::default()`). If a future change reintroduces an
+        // SDK-honored trust marker — e.g. `already_scanned` / `clean` — this test
+        // stops compiling and forces triage, rather than silently letting the
+        // runtime skip work. There must be no field here that gates the scan.
+        let detail = ToolCallDetail {
+            tool_name: "web_search".to_string(),
+            tool_source: "mcp".to_string(),
+            latency_ms: 0,
+            succeeded: true,
+            error_message: String::new(),
+            args_json: Vec::new(),
+        };
+
+        // Sanity: with the full field set spelled out and no secret present, the
+        // scan is genuinely clean — the scan runs on content, gated by no field.
+        let scanner = RuntimeScanner::new();
+        let mut event = enriched(Detail::ToolCall(detail), EventSource::Sdk);
+        let outcome = scanner.enforce(&mut event);
+        assert!(
+            outcome.is_clean(),
+            "an empty payload with every field set is clean — nothing gates the scan"
+        );
+    }
+
+    #[test]
+    fn nested_payload_in_tool_args_is_redacted_at_runtime() {
+        // Case 3: a secret nested under an arbitrary key inside the `args_json`
+        // bytes — exactly what the gateway's banned-key strip (which targets
+        // known key names) would miss. The runtime normalizes the bytes to
+        // UTF-8 and content-scans them, catching it.
+        let scanner = RuntimeScanner::new();
+        let nested = serde_json::json!({
+            "outer": { "inner": { "totally_made_up": FAKE_AWS_ACCESS_KEY } }
+        })
+        .to_string();
+        let mut event = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: nested.into_bytes(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(!outcome.is_clean(), "nested secret must be detected");
+        let scanned = tool_args_text(&event);
+        // Raw-secret-absence at the boundary, not label equality (the known
+        // scanner-overlap quirk means a single secret can trip several detectors).
+        assert!(
+            !scanned.contains(FAKE_AWS_ACCESS_KEY),
+            "nested secret must be redacted at the runtime boundary"
+        );
+    }
+
+    #[test]
+    fn cross_layer_parity_redacts_identically_regardless_of_source() {
+        // Case 4: the SDK is absent entirely. An identical secret arriving via
+        // the proxy or eBPF path is redacted identically to the SDK path —
+        // removing the SDK never reduces enforcement, because the runtime stage
+        // is source-agnostic.
+        let scanner = RuntimeScanner::new();
+        let make = |source| {
+            enriched(
+                Detail::ToolCall(ToolCallDetail {
+                    args_json: format!(r#"{{"token":"{FAKE_GITHUB_PAT}"}}"#).into_bytes(),
+                    ..Default::default()
+                }),
+                source,
+            )
+        };
+        let mut sdk_ev = make(EventSource::Sdk);
+        let mut proxy_ev = make(EventSource::Proxy);
+        let mut ebpf_ev = make(EventSource::EBpf);
+
+        let _ = scanner.enforce(&mut sdk_ev);
+        let _ = scanner.enforce(&mut proxy_ev);
+        let _ = scanner.enforce(&mut ebpf_ev);
+
+        let sdk_text = tool_args_text(&sdk_ev);
+        let proxy_text = tool_args_text(&proxy_ev);
+        let ebpf_text = tool_args_text(&ebpf_ev);
+        assert!(
+            !sdk_text.contains(FAKE_GITHUB_PAT),
+            "the secret must be redacted on every layer"
+        );
+        assert_eq!(
+            sdk_text, proxy_text,
+            "proxy path must redact identically to the SDK path"
+        );
+        assert_eq!(sdk_text, ebpf_text, "eBPF path must redact identically to the SDK path");
+    }
+
+    #[test]
+    fn preflight_equivalence_yields_identical_authoritative_outcome() {
+        // Case 5: the runtime's authoritative outcome does not depend on whether
+        // the SDK ran its advisory preflight. The same payload — once "as if the
+        // SDK skipped preflight", once "as if it preflighted and forged a clean
+        // label" — yields an identical authoritative result at the boundary,
+        // because the runtime ignores the preflight and does the full work itself.
+        let scanner = RuntimeScanner::new();
+        let args = || format!(r#"{{"api_key":"{FAKE_AWS_ACCESS_KEY}"}}"#).into_bytes();
+
+        let mut without_preflight = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: args(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+        let mut with_preflight = enriched(
+            Detail::ToolCall(ToolCallDetail {
+                args_json: args(),
+                ..Default::default()
+            }),
+            EventSource::Sdk,
+        );
+        with_preflight
+            .inner
+            .labels
+            .insert("x-aa-preflight".to_string(), "clean".to_string());
+
+        let outcome_without = scanner.enforce(&mut without_preflight);
+        let outcome_with = scanner.enforce(&mut with_preflight);
+
+        assert_eq!(
+            outcome_without, outcome_with,
+            "the authoritative outcome must be identical with and without preflight"
+        );
+        assert_eq!(
+            tool_args_text(&without_preflight),
+            tool_args_text(&with_preflight),
+            "the redacted bytes must be identical either way"
+        );
+        assert!(!outcome_without.is_clean(), "the secret is caught in both cases");
+    }
+}

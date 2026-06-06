@@ -1,9 +1,18 @@
 name: Integration tests
 
-# End-to-end integration test suite. Runs the `aa-integration-tests` crate
-# on Linux + macOS so the topology HTTP roundtrip (AAASM-1066) and the CLI
-# subcommand coverage (AAASM-1258, AAASM-1441 follow-up) are exercised on
-# both platforms before anything depending on them ships.
+permissions:
+  contents: read
+
+# End-to-end integration test suite (macOS leg). Runs the `aa-integration-tests`
+# crate on macOS so the topology HTTP roundtrip (AAASM-1066) and the CLI
+# subcommand coverage (AAASM-1258, AAASM-1441 follow-up) are exercised on a
+# non-Linux platform before anything depending on them ships.
+#
+# AAASM-2631: the Linux leg was dropped — ci.yml's `test` job already runs the
+# whole workspace (incl. aa-integration-tests) on ubuntu-latest for every rust
+# PR, so running it serially here too was pure duplication. The tests bind
+# ephemeral ports (TcpListener::bind 127.0.0.1:0) and pass concurrently in
+# `test`, so the Linux coverage is fully retained there.
 #
 # Node.js SDK E2E fixtures (AAASM-1514 / F116 ST-B): TypeScript fixture scripts
 # are installed via pnpm and run in AA_SELFTEST=1 mode inside the Rust harness;
@@ -41,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
 
     steps:
       - name: Checkout agent-assembly
@@ -65,12 +74,7 @@ jobs:
           repository: AI-agent-assembly/node-sdk
           path: node-sdk
 
-      - name: Install protobuf compiler (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install protobuf compiler (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Install protobuf compiler
         run: brew install protobuf
 
       - uses: actions/setup-python@v6

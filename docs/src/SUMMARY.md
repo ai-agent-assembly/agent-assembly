@@ -46,6 +46,10 @@
 - [Build-Time Baseline](benchmarks/build-time-baseline.md)
 - [Policy Check p99](benchmarks/policy-check-p99.md)
 
+# Development
+
+- [Consuming the Shared Crates](development/consuming-shared-crates.md)
+
 # Architecture Decision Records
 
 - [Index](adr/README.md)
