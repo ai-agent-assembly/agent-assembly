@@ -41,6 +41,14 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      workspace version and introduces no version change to aa-runtime or any
      SDK; this comment satisfies the compatibility-matrix CI gate. -->
 
+<!-- AAASM-2646: removed the fat `aa-ffi-python` and `aa-ffi-node` members
+     from root Cargo.toml (the thin Node/Python shims now live in the sibling
+     node-sdk / python-sdk repos on the pinned aa-sdk-client — AAASM-2560 /
+     AAASM-2561). Member removal only; the Python/Node/Go SDKs and aa-runtime
+     keep their versions and protocol/v1 compatibility (the table rows below
+     are unchanged). aa-ffi-go (staticlib artifact) and aa-sdk-client stay in
+     the workspace. This comment satisfies the compatibility-matrix CI gate. -->
+
 
 ---
 
@@ -146,3 +154,4 @@ See [versioning.md](versioning.md) for the full versioning and deprecation polic
 | AAASM-2555 | Added a `[workspace.dependencies]` table to the root `Cargo.toml` centralizing third-party crates shared by ≥2 members, and converted those members to `dep = { workspace = true }` (single source of version truth). Pure manifest refactor — `Cargo.lock` byte-for-byte unchanged and `cargo tree -d` identical to the prior revision (108 duplicate nodes); no version bump. Single-member and intentionally-pinned crates (e.g. `rusqlite` per AAASM-2374) stay declared locally. | None — no version, protocol, or ABI change; resolved dependency graph is identical, so runtime behavior is unchanged |
 | AAASM-2588 | Added `[profile.dev]` (`debug="line-tables-only"`) and `[profile.dev.package."*"]` (`opt-level=1`, `debug=false`) to tune dev/test build time, plus an opt-in (commented) `.cargo/config.toml` faster-linker template and a `CONTRIBUTING.md` section. Raised the `integration-tests` job `timeout-minutes` 20→30 to absorb the slightly heavier optimized-deps build. Build-config change only, no version bump. | None — affects local/CI build speed and dev-build debuginfo verbosity only; no API, protocol, or ABI change. |
 | AAASM-2623 | Added `aa-sdk-client` workspace crate (Story AAASM-2570 — the shared, FFI-agnostic SDK runtime-client: UDS transport, IPC wire codec, `AssemblyClient` lifecycle, and advisory non-authoritative credential preflight, extracted from `aa-ffi-python`). Scaffold only in this PR (`publish = false` until AAASM-2559 makes the shared crates pinnable); modules land in AAASM-2624/2625/2626. `aa-ffi-python` is untouched — its migration onto this crate is AAASM-2561. | None — new internal crate, no existing public API, protocol, or ABI change |
+| AAASM-2646 | Removed the fat `aa-ffi-python` + `aa-ffi-node` members from root `Cargo.toml` and deleted the crates (Epic AAASM-2552 final story). The thin Node/Python shims now live in the sibling `node-sdk` / `python-sdk` repos on the pinned `aa-sdk-client` (AAASM-2560 / AAASM-2561); `aa-ffi-go` (C-ABI staticlib artifact consumed by go-sdk) and `aa-sdk-client` are retained, as is `workspace.exclude = ["node-sdk"]` (the `e2e_sdk_node` tests still build the sibling thin shim). Shrinks `cargo build --workspace` by dropping the pyo3 / napi / napi-derive / napi-build dep subtrees. | None — workspace member removal only; the Python/Node/Go SDKs ship from their own repos and keep their versions + protocol/v1 compatibility. No aa-runtime version, protocol, or ABI change |
