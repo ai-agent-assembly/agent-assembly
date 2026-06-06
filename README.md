@@ -271,7 +271,9 @@ agent-assembly/
 
 ## Documentation
 
-The contributor-facing documentation is published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
+📖 **Canonical docs site:** <https://ai-agent-assembly.github.io/agent-assembly-docs/>
+
+The contributor-facing documentation is also published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
 
 ```bash
 cargo install --locked --version 0.5.2 mdbook
