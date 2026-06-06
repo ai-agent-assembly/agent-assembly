@@ -190,13 +190,13 @@ pub struct Lineage {
 // Redaction
 // ---------------------------------------------------------------------------
 
-/// Temporary migration re-export: the redaction primitive now lives in the
-/// leaf crate `aa-security` (AAASM-2567). `AuditEntry` continues to consume it
-/// here; consumers should depend on `aa-security` directly. Gated on `std`
-/// because it holds [`CredentialFinding`](aa_security::CredentialFinding),
-/// which lives in the `std`-only `scanner` module.
+// `AuditEntry` consumes the redaction primitive from the leaf crate
+// `aa-security` (AAASM-2567); it is imported privately here and is no longer
+// re-exported from `aa-core`. Consumers depend on `aa-security` directly.
+// Gated on `std` because `Redaction` holds `aa_security::CredentialFinding`
+// values, which live in the `std`-only `scanner` module.
 #[cfg(feature = "std")]
-pub use aa_security::Redaction;
+use aa_security::Redaction;
 
 // ---------------------------------------------------------------------------
 // AuditEntry
