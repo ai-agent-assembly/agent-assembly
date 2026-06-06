@@ -384,7 +384,7 @@ jobs:
       - name: Checkout homebrew-agent-assembly tap
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/homebrew-agent-assembly
+          repository: ai-agent-assembly/homebrew-agent-assembly
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 

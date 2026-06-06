@@ -45,7 +45,7 @@ To verify manually:
 ```sh
 cosign verify-blob \
   --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github.com/AI-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-identity-regexp '^https://github.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
