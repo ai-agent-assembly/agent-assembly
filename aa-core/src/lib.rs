@@ -80,9 +80,6 @@ pub use capability::{
 };
 
 #[cfg(feature = "std")]
-pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
-
-#[cfg(feature = "std")]
 pub use config::{
     AgentConnectConfig, ConfigError, DeploymentMode, GatewayConfig, LocalModeConfig, RemoteModeConfig, TlsConfig,
 };
