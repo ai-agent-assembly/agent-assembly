@@ -14,6 +14,10 @@
 - [Overview](architecture.md)
 - [API Reference](api-reference.md)
 
+# Usage
+
+- [Command-Line Interface](cli.md)
+
 # Governance
 
 - [L0–L3 Capability Matrix](governance/capability-matrix.md)
