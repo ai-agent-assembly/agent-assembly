@@ -12,9 +12,12 @@
 //! shared CI runners, and `AA_BENCH_ITERS` overrides the per-fixture iteration
 //! count for fuller local validation.
 
-use std::time::Duration;
+use std::hint::black_box;
+use std::time::{Duration, Instant};
 
-use aa_runtime::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES;
+use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, ToolCallDetail};
+use aa_runtime::pipeline::enforcement::{RuntimeScanner, DEFAULT_MAX_FIELD_BYTES};
+use aa_runtime::pipeline::{EnrichedEvent, EventSource};
 
 /// The latency at the given percentile (`pct` in `0.0..=100.0`) of an
 /// already-sorted slice. Mirrors the gateway `policy_latency_test` helper so the
@@ -91,4 +94,109 @@ fn fixtures_cover_representative_sizes() {
         near_cap.len() < DEFAULT_MAX_FIELD_BYTES,
         "near_cap fixture must stay under the {DEFAULT_MAX_FIELD_BYTES}-byte cap"
     );
+}
+
+/// Runtime-specific p99 budget for one `RuntimeScanner::enforce()` call over the
+/// representative fixtures. The scan is a pure in-process aho-corasick pass plus
+/// redaction — a small fraction of the gateway's policy-latency budget.
+///
+/// The budget is profile-aware because `cargo test` defaults to a debug build,
+/// where the scanner runs ~100x slower than the optimized binary the runtime
+/// actually ships:
+///
+/// * **release** — `5ms`, the representative budget. Measured p99 is ~0.4ms, so
+///   this leaves ~12x headroom for shared-runner scheduling jitter.
+/// * **debug** — `50ms`, a loose ceiling that still trips on a catastrophic
+///   regression (e.g. an accidental per-event scanner rebuild or an O(n^2)
+///   scan) without flaking under parallel test execution.
+///
+/// An explicit `AA_BENCH_SLA_P99_MS` always wins — set it to `5` on bare-metal /
+/// nightly runs for a tight check regardless of profile.
+fn sla_p99() -> Duration {
+    if let Some(ms) = std::env::var("AA_BENCH_SLA_P99_MS").ok().and_then(|v| v.parse().ok()) {
+        return Duration::from_millis(ms);
+    }
+    let default_ms = if cfg!(debug_assertions) { 50 } else { 5 };
+    Duration::from_millis(default_ms)
+}
+
+/// Per-fixture iteration count. Defaults small enough for CI; override with
+/// `AA_BENCH_ITERS` for fuller local / nightly validation.
+fn iterations() -> usize {
+    std::env::var("AA_BENCH_ITERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000)
+}
+
+/// Wrap `args_json` in a fresh ToolCall [`EnrichedEvent`] with throwaway metadata.
+fn tool_call_event(args_json: Vec<u8>) -> EnrichedEvent {
+    EnrichedEvent {
+        inner: AuditEvent {
+            detail: Some(Detail::ToolCall(ToolCallDetail {
+                args_json,
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+        received_at_ms: 0,
+        source: EventSource::Sdk,
+        agent_id: "bench-agent".to_string(),
+        connection_id: 0,
+        sequence_number: 0,
+    }
+}
+
+#[test]
+fn enforce_scan_p99_within_budget() {
+    let scanner = RuntimeScanner::new();
+    let iters = iterations();
+    let mut latencies: Vec<Duration> = Vec::with_capacity(iters * FIXTURE_SIZES.len());
+
+    for (_, size) in FIXTURE_SIZES {
+        let payload = args_json_payload(*size);
+
+        // Warm up so first-touch page faults / cache misses don't skew the tail.
+        for _ in 0..64 {
+            let mut event = tool_call_event(payload.clone());
+            black_box(scanner.enforce(&mut event));
+        }
+
+        for _ in 0..iters {
+            // Rebuild from the original (still-secret-bearing) payload each call
+            // so every measured scan does the full find + redact work. Event
+            // construction is deliberately outside the timed region.
+            let mut event = tool_call_event(payload.clone());
+            let started = Instant::now();
+            let outcome = scanner.enforce(&mut event);
+            latencies.push(started.elapsed());
+            // The seeded credential must be found, proving the redaction path
+            // (not a no-op clean scan) is what we are measuring.
+            assert!(!outcome.is_clean(), "seeded credential must be redacted");
+        }
+    }
+
+    latencies.sort();
+    let total = latencies.len();
+    let p50 = percentile(&latencies, 50.0);
+    let p95 = percentile(&latencies, 95.0);
+    let p99 = percentile(&latencies, 99.0);
+    let p999 = percentile(&latencies, 99.9);
+    let max = latencies[total - 1];
+
+    eprintln!();
+    eprintln!("=== RuntimeScanner::enforce() Scan-Latency Test ===");
+    eprintln!("  Fixtures:    {FIXTURE_SIZES:?}");
+    eprintln!("  Iters/size:  {iters}");
+    eprintln!("  Total scans: {total}");
+    eprintln!();
+    eprintln!("  p50:  {p50:>10.3?}");
+    eprintln!("  p95:  {p95:>10.3?}");
+    eprintln!("  p99:  {p99:>10.3?}");
+    eprintln!("  p999: {p999:>10.3?}");
+    eprintln!("  max:  {max:>10.3?}");
+    eprintln!();
+
+    let sla = sla_p99();
+    assert!(p99 < sla, "scan p99 latency {p99:?} exceeds budget (target: {sla:?})");
 }
