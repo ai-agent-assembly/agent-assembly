@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-line installer for the aasm CLI.
-# Usage: curl -fsSL https://get.agent-assembly.io | sh
+# Usage: curl -fsSL https://tool.agent-assembly.dev | sh
 #
 # Detects the host OS and CPU architecture, downloads the matching
 # pre-built tarball plus its SHA256SUMS file from the AI-agent-assembly
