@@ -18,6 +18,7 @@ use aa_proto::assembly::audit::v1::audit_event::Detail;
 use aa_security::{CredentialFinding, CredentialScanner};
 
 use super::event::EnrichedEvent;
+use crate::config::RuntimeConfig;
 
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
@@ -56,6 +57,21 @@ impl Default for EnforcementConfig {
     fn default() -> Self {
         Self {
             max_field_bytes: DEFAULT_MAX_FIELD_BYTES,
+            oversized_policy: OversizedPolicy::default(),
+        }
+    }
+}
+
+impl EnforcementConfig {
+    /// Build an [`EnforcementConfig`] from a [`RuntimeConfig`].
+    ///
+    /// Maps the operator-tunable per-field size cap
+    /// ([`RuntimeConfig::enforcement_max_field_bytes`]). `oversized_policy`
+    /// keeps its fail-closed [`OversizedPolicy::RedactWhole`] default — the
+    /// sole variant today — so an oversized field is never forwarded raw.
+    pub fn from_runtime_config(c: &RuntimeConfig) -> Self {
+        Self {
+            max_field_bytes: c.enforcement_max_field_bytes,
             oversized_policy: OversizedPolicy::default(),
         }
     }
