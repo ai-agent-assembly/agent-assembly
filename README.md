@@ -160,7 +160,7 @@ dev-verify passed (22s total)
 
 ### Next steps
 
-- [SDK documentation](docs/sdk/README.md) — Python, Node.js, and Go SDK guides
+- [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
 - [Architecture Overview](docs/src/architecture.md) — three-layer interception model
 - [Policy examples](policy-examples/) — reference governance policies
 
