@@ -251,13 +251,6 @@ name = "aa-ebpf-common"
 version = "0.0.1-alpha.5"
 
 [[package]]
-name = "aa-ffi-go"
-version = "0.0.1-alpha.5"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "aa-gateway"
 version = "0.0.1-alpha.5"
 dependencies = [

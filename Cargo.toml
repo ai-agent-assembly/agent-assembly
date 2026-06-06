@@ -13,7 +13,6 @@ members = [
     "aa-ebpf",
     "aa-ebpf-common",
     "aa-proxy",
-    "aa-ffi-go",
     "aa-sdk-client",
     "aa-wasm",
     "aa-sandbox",
