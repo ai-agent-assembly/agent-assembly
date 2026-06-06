@@ -34,8 +34,7 @@ Once rustdoc is built (`target/doc/<crate>/index.html`), the most-frequented ent
 | [`aa-gateway`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-gateway) | `target/doc/aa_gateway/index.html` | Policy engine, agent registry, budget tracker |
 | [`aa-api`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-api) | `target/doc/aa_api/index.html` | HTTP layer with `utoipa`-generated OpenAPI spec |
 | [`aa-cli`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-cli) | `target/doc/aa_cli/index.html` | `aasm` operator binary surface (clap commands) |
-| [`aa-ffi-go`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-ffi-go) | `target/doc/aa_ffi_go/index.html` | cgo C-ABI shims for the Go SDK |
-| [`aa-sdk-client`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-sdk-client) | `target/doc/aa_sdk_client/index.html` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the Python/Node shims wrap |
+| [`aa-sdk-client`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-sdk-client) | `target/doc/aa_sdk_client/index.html` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the Python/Node/Go shims wrap |
 | [`aa-wasm`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-wasm) | `target/doc/aa_wasm/index.html` | wasm-bindgen surface for in-browser embedding |
 | [`conformance`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/conformance) | `target/doc/conformance/index.html` | Cross-SDK protocol vector harness |
 

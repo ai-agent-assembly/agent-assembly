@@ -6,6 +6,15 @@
 
 ---
 
+> **Amendment (AAASM-2703 / AAASM-2704, 2026-06)** — the original decision below
+> kept `aa-ffi-go` in the monorepo as a staticlib artifact. That has been
+> **reversed for consistency**: the thin Go shim now lives in the `go-sdk` repo
+> (`native/aa-ffi-go/`) as a thin C-ABI over the git-SHA-pinned `aa-sdk-client`,
+> exactly like the Node/Python shims. The monorepo no longer hosts any FFI shim
+> (AAASM-2703 removed `aa-ffi-go`; AAASM-2704 vendored it into go-sdk).
+
+---
+
 ## Context
 
 Two problems in the SDK / FFI layer were audited on 2026-06-05 and must be resolved together, because the fix for one constrains the other.
@@ -34,7 +43,7 @@ The bindings are reimplemented per language rather than sharing one implementati
 | `node-sdk/native/aa-ffi-node` | 178 lines, imports **no** `aa_*` crate | none — reimplemented |
 | `go-sdk/internal/ffi` | Go cgo consumer of the `aa-ffi-go` staticlib | consumes a built artifact |
 
-The Node binding diverged precisely because it shares no code with the Python one — nothing forces it to track the same logic. Go already follows the correct model (one Rust artifact in the monorepo, consumed by the language).
+The Node binding diverged precisely because it shares no code with the Python one — nothing forces it to track the same logic. Go originally kept one Rust artifact in the monorepo, consumed by the language (later revised — see the amendment at the top: the Go shim now lives in `go-sdk` alongside the others).
 
 ---
 
@@ -81,7 +90,7 @@ Python/Node/Go SDK   ──UDS──▶ aa-runtime (mandatory chokepoint) ──
 
 - **Python**: `python-sdk/rust/aa-ffi-python` (the git-pinned SDK consumer) is canonical; the monorepo `agent-assembly/aa-ffi-python` is the duplicate to retire. The two differ in size (719 vs 1,357 lines), so the shared logic must be reconciled into `aa-sdk-client` by diffing both — not by lifting either copy wholesale.
 - **Node**: `node-sdk/native/aa-ffi-node` is the only Node binding, but it shares no code with the core (imports no `aa_*` crate). It is re-pointed onto `aa-sdk-client`, which makes the drift structurally impossible.
-- **Go**: already correct; `aa-ffi-go` stays the staticlib artifact that `go-sdk` consumes.
+- **Go**: *(revised by AAASM-2703 / AAASM-2704)* `aa-ffi-go` is relocated into the `go-sdk` repo (`native/aa-ffi-go/`) as a thin C-ABI shim over the git-SHA-pinned `aa-sdk-client`, mirroring Node/Python — the monorepo no longer hosts it.
 
 ### Distribution mechanism: git SHA pin
 

@@ -43,7 +43,6 @@ lefthook.toml @Chisanan232
 # ──────────────────────────────────────────────────────────────────────
 # FFI crates — language-boundary code; correctness issues are hard to catch
 # ──────────────────────────────────────────────────────────────────────
-/aa-ffi-go/     @Chisanan232
 /aa-wasm/       @Chisanan232
 
 # ──────────────────────────────────────────────────────────────────────

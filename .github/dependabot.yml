@@ -26,7 +26,7 @@ updates:
 
   # ── Rust workspace ────────────────────────────────────────────────────────
   # Covers every crate in the Rust workspace (aa-core, aa-runtime, aa-ebpf,
-  # aa-proxy, aa-ffi-go, aa-sdk-client, aa-wasm, aa-gateway, aa-api, aa-cli, …).
+  # aa-proxy, aa-sdk-client, aa-wasm, aa-gateway, aa-api, aa-cli, …).
   # The workspace resolver means a single Cargo.lock at "/" tracks them all.
   - package-ecosystem: "cargo"
     directory: "/"
