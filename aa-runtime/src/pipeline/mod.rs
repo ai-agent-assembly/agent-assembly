@@ -975,7 +975,7 @@ mod tests {
         token.cancel();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn non_matching_action_stays_in_batch() {
         use crate::policy::{PolicyRule, PolicyRules};
         use aa_proto::assembly::common::v1::ActionType;
@@ -1009,9 +1009,10 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
         ));
 
-        // Yield briefly so the pipeline's interval fires its immediate first tick
-        // (tokio::time::interval ticks once immediately on creation).
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // `tokio::time::interval` fires an immediate first tick on creation. With the
+        // clock paused, let the run loop start and absorb that empty flush before we
+        // send the event, so the first tick cannot race ahead and flush our event.
+        tokio::task::yield_now().await;
 
         // Build a TOOL_CALL event — not blocked by the policy
         let event = AuditEvent {
@@ -1020,11 +1021,17 @@ mod tests {
         };
         tx.send((0, IpcFrame::EventReport(event))).await.unwrap();
 
-        // Should NOT arrive before the flush interval (100ms timeout)
-        let result = tokio::time::timeout(Duration::from_millis(100), broadcast_rx.recv()).await;
+        // Wait until the run loop has enqueued the event into the batch.
+        while metrics.processed() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        // Advancing virtual time by less than the flush interval must NOT flush the
+        // batch — the non-matching event has to stay batched.
+        tokio::time::advance(Duration::from_millis(100)).await;
         assert!(
-            result.is_err(),
-            "non-matching event should stay in batch, not arrive immediately"
+            broadcast_rx.try_recv().is_err(),
+            "non-matching event should stay in batch, not arrive before flush interval"
         );
 
         token.cancel();
