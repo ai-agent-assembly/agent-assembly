@@ -291,6 +291,20 @@ mdbook serve docs --open
 | [Benchmarks — Baseline](docs/src/benchmarks/BASELINE.md) | Performance baseline numbers |
 | [Benchmarks — Policy Check p99](docs/src/benchmarks/policy-check-p99.md) | Latency SLA evidence |
 
+## Security & Support
+
+- **Security:** Report vulnerabilities **privately** via
+  [GitHub Security Advisories](https://github.com/AI-agent-assembly/agent-assembly/security)
+  or email `security@agent-assembly.dev`. Please do not open public issues for
+  security reports. See [`SECURITY.md`](SECURITY.md) for the disclosure policy
+  and response SLA.
+- **Bugs & features:** Open an issue using the
+  [bug report](.github/ISSUE_TEMPLATE/bug_report.md) or
+  [feature request](.github/ISSUE_TEMPLATE/feature_request.md) template.
+- **Contributing:** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development
+  setup, commit conventions, and PR process.
+- **Changelog:** [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
