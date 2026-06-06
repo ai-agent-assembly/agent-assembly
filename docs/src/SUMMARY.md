@@ -16,6 +16,7 @@
 
 # Usage
 
+- [Installation](installation.md)
 - [Command-Line Interface](cli.md)
 - [Dashboard](dashboard.md)
 
