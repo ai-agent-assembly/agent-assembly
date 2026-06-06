@@ -65,3 +65,36 @@ fn credential_findings_getter_returns_aa_security_type() {
         "findings attached to AuditEntry must survive the aa_security repoint",
     );
 }
+
+/// AC: the re-export removal is behaviour-preserving. A `Redaction` built
+/// straight off `aa_security::CredentialScanner` round-trips through
+/// `AuditEntry` exactly as before — the raw secret never serializes, the
+/// `[REDACTED:…]` label is retained, and the tamper-evidence hash verifies.
+#[test]
+fn aa_security_redaction_round_trips_through_audit_entry_unchanged() {
+    let entry = AuditEntry::new_with_lineage_and_redaction(
+        0,
+        1_700_000_000_000_000_000,
+        AuditEventType::CredentialLeakBlocked,
+        AGENT,
+        SESSION,
+        String::from(r#"{"action_type":"tool_call","decision":"redact"}"#),
+        [0u8; 32],
+        Lineage::default(),
+        redaction_for_fake_secret(),
+    );
+
+    let serialized = serde_json::to_string(&entry).expect("AuditEntry must serialize");
+    assert!(
+        !serialized.contains(FAKE_AWS_ACCESS_KEY),
+        "SECURITY INVARIANT: raw secret must never appear in the serialized AuditEntry: {serialized}",
+    );
+    assert!(
+        serialized.contains("[REDACTED:AwsAccessKey]"),
+        "redaction label must be retained after the aa_security repoint: {serialized}",
+    );
+    assert!(
+        entry.verify_integrity(),
+        "verify_integrity must still pass on a freshly redacted entry",
+    );
+}
