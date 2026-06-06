@@ -190,13 +190,13 @@ pub struct Lineage {
 // Redaction
 // ---------------------------------------------------------------------------
 
-/// Temporary migration re-export: the redaction primitive now lives in the
-/// leaf crate `aa-security` (AAASM-2567). `AuditEntry` continues to consume it
-/// here; consumers should depend on `aa-security` directly. Gated on `std`
-/// because it holds [`CredentialFinding`](crate::scanner::CredentialFinding),
-/// which lives in the `std`-only `scanner` module.
+// `AuditEntry` consumes the redaction primitive from the leaf crate
+// `aa-security` (AAASM-2567); it is imported privately here and is no longer
+// re-exported from `aa-core`. Consumers depend on `aa-security` directly.
+// Gated on `std` because `Redaction` holds `aa_security::CredentialFinding`
+// values, which live in the `std`-only `scanner` module.
 #[cfg(feature = "std")]
-pub use aa_security::Redaction;
+use aa_security::Redaction;
 
 // ---------------------------------------------------------------------------
 // AuditEntry
@@ -249,7 +249,7 @@ pub struct AuditEntry {
     depth: Option<u32>,
     #[cfg(feature = "std")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty", default))]
-    credential_findings: alloc::vec::Vec<crate::scanner::CredentialFinding>,
+    credential_findings: alloc::vec::Vec<aa_security::CredentialFinding>,
     #[cfg(feature = "std")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     redacted_payload: Option<String>,
@@ -392,7 +392,7 @@ impl AuditEntry {
     /// continue using the legacy constructors without any chain divergence.
     ///
     /// Gated on `std` because [`Redaction`] holds
-    /// [`CredentialFinding`](crate::scanner::CredentialFinding) values, which
+    /// [`CredentialFinding`](aa_security::CredentialFinding) values, which
     /// live in the `std`-only `scanner` module.
     #[cfg(feature = "std")]
     #[allow(clippy::too_many_arguments)]
@@ -537,12 +537,12 @@ impl AuditEntry {
     /// Credential / PII findings detected by the policy engine's scanner pass.
     ///
     /// Empty when the scan was clean (or when the entry was constructed via a
-    /// pre-redaction-aware code path). Each [`CredentialFinding`](crate::scanner::CredentialFinding)
+    /// pre-redaction-aware code path). Each [`CredentialFinding`](aa_security::CredentialFinding)
     /// stores only the kind, byte offset, and `[REDACTED:<kind>]` label —
     /// never the raw secret bytes.
     #[cfg(feature = "std")]
     #[inline]
-    pub fn credential_findings(&self) -> &[crate::scanner::CredentialFinding] {
+    pub fn credential_findings(&self) -> &[aa_security::CredentialFinding] {
         &self.credential_findings
     }
 
@@ -1782,7 +1782,7 @@ mod lineage_tests {
 #[cfg(all(test, feature = "std", feature = "serde"))]
 mod redaction_tests {
     use super::*;
-    use crate::scanner::CredentialScanner;
+    use aa_security::CredentialScanner;
 
     const AGENT: AgentId = AgentId::from_bytes([3u8; 16]);
     const SESSION: SessionId = SessionId::from_bytes([4u8; 16]);
