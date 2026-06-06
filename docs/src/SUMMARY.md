@@ -45,6 +45,10 @@
 - [Org-Tier Isolation](operations/org-isolation.md)
 - [Multi-Document Policy Cascade](operations/policy-cascade-loader.md)
 
+# Releases
+
+- [Releases](releases.md)
+
 # Benchmarks
 
 - [Baseline](benchmarks/BASELINE.md)
