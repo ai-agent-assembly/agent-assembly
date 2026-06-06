@@ -204,4 +204,6 @@ main() {
   "${INSTALL_DIR}/${BINARY}" --version
 }
 
-main "$@"
+# Run the installer unless sourced for tests (bats sets AASM_LIB=1 to load the
+# functions without executing main).
+[ "${AASM_LIB:-0}" = "1" ] || main "$@"
