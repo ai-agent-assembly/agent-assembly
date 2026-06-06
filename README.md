@@ -286,6 +286,10 @@ mdbook serve docs --open
 | [Introduction](docs/src/README.md) | Book overview and audience |
 | [Architecture Overview](docs/src/architecture.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
+| [Command-Line Interface](docs/src/cli.md) | `aasm` global flags, command groups, and examples |
+| [Dashboard](docs/src/dashboard.md) | Web console and terminal (TUI) governance dashboards |
+| [Local Development](docs/src/development/local-development.md) | From-clone setup, everyday build/test loop, git hooks |
+| [Releases](docs/src/releases.md) | Release state, distribution channels, and process |
 | [Compatibility Matrix](docs/src/compatibility.md) | Which `aa-runtime` versions work with which SDK versions |
 | [Versioning Policy](docs/src/versioning.md) | Protocol semver rules, breaking-change classification, deprecation lifecycle |
 | [Protocol Changelog](docs/src/protocol/CHANGELOG.md) | Wire-protocol change log |

@@ -14,9 +14,15 @@
 - [Overview](architecture.md)
 - [API Reference](api-reference.md)
 
+# Usage
+
+- [Command-Line Interface](cli.md)
+- [Dashboard](dashboard.md)
+
 # Governance
 
 - [L0–L3 Capability Matrix](governance/capability-matrix.md)
+- [Policy RBAC Role Matrix](policy-rbac.md)
 
 # Protocol
 
@@ -40,6 +46,10 @@
 - [Org-Tier Isolation](operations/org-isolation.md)
 - [Multi-Document Policy Cascade](operations/policy-cascade-loader.md)
 
+# Releases
+
+- [Releases](releases.md)
+
 # Benchmarks
 
 - [Baseline](benchmarks/BASELINE.md)
@@ -49,6 +59,7 @@
 
 # Development
 
+- [Local Development](development/local-development.md)
 - [Consuming the Shared Crates](development/consuming-shared-crates.md)
 
 # Architecture Decision Records
