@@ -144,7 +144,7 @@ Example (`ci.yml` and `sonar.yml`):
 
 ```yaml
 cargo llvm-cov --no-report --all-features --workspace \
-  --exclude aa-ebpf --exclude aa-ffi-python \
+  --exclude aa-ebpf \
   -- --skip sustained_load_p99_under_5ms
 ```
 
