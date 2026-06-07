@@ -14,10 +14,10 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1076 | Scaffold crate + testcontainers harness | Done | [#447](https://github.com/AI-agent-assembly/agent-assembly/pull/447) |
-| AAASM-1078 | Python SDK driver + LangGraph fixture | Done | [#459](https://github.com/AI-agent-assembly/agent-assembly/pull/459) |
-| AAASM-1079 | REST + CLI assertions module | Done | [#462](https://github.com/AI-agent-assembly/agent-assembly/pull/462) |
-| AAASM-1081 | CI workflow (Linux + macOS) + Drop cleanup | Done | [#466](https://github.com/AI-agent-assembly/agent-assembly/pull/466) |
+| AAASM-1076 | Scaffold crate + testcontainers harness | Done | [#447](https://github.com/ai-agent-assembly/agent-assembly/pull/447) |
+| AAASM-1078 | Python SDK driver + LangGraph fixture | Done | [#459](https://github.com/ai-agent-assembly/agent-assembly/pull/459) |
+| AAASM-1079 | REST + CLI assertions module | Done | [#462](https://github.com/ai-agent-assembly/agent-assembly/pull/462) |
+| AAASM-1081 | CI workflow (Linux + macOS) + Drop cleanup | Done | [#466](https://github.com/ai-agent-assembly/agent-assembly/pull/466) |
 | AAASM-1159 | Verify F103 acceptance criteria | in this report | — |
 
 ## Walkthrough vs AAASM-1066 acceptance criteria
@@ -98,8 +98,8 @@ final CI run.
 
 CI runs (PR #466 head SHA `0629bbf3`):
 
-* [Topology integration tests (ubuntu-latest)](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25964046400/job/76324257585) — 3m25s pass
-* [Topology integration tests (macos-latest)](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25964046400/job/76324257551) — 3m22s pass
+* [Topology integration tests (ubuntu-latest)](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25964046400/job/76324257585) — 3m25s pass
+* [Topology integration tests (macos-latest)](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25964046400/job/76324257551) — 3m22s pass
 
 ### ⚠️ Cleanup tears down all spawned agents + sessions
 

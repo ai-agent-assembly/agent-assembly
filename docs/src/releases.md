@@ -5,12 +5,12 @@ and wire protocol are not yet stable.
 
 ## Where releases live
 
-- **GitHub Releases:** <https://github.com/AI-agent-assembly/agent-assembly/releases>
+- **GitHub Releases:** <https://github.com/ai-agent-assembly/agent-assembly/releases>
   — the source of truth for published tags and changelogs. The latest tag is a
   pre-release (`v0.0.1-alpha.5`, 2026-06-03).
 - **Per-tag notes:** the source-controlled release notes live under
   `docs/release/` (one file per tag, e.g. `docs/release/v0.0.1-alpha.5.md`).
-- **Top-level changelog:** [`CHANGELOG.md`](https://github.com/AI-agent-assembly/agent-assembly/blob/master/CHANGELOG.md).
+- **Top-level changelog:** [`CHANGELOG.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CHANGELOG.md).
 
 ## Distribution channels
 
@@ -20,7 +20,7 @@ A single coordinated tag push fans out to every channel:
 |---|---|
 | GitHub Releases | `aasm-*.tar.gz` binaries + `SHA256SUMS` |
 | crates.io | Workspace crates at the tag version |
-| Homebrew tap | `aasm` formula ([`homebrew-agent-assembly`](https://github.com/AI-agent-assembly/homebrew-agent-assembly)) |
+| Homebrew tap | `aasm` formula ([`homebrew-agent-assembly`](https://github.com/ai-agent-assembly/homebrew-agent-assembly)) |
 | PyPI / npm | SDK packages |
 | GHCR | Container image |
 

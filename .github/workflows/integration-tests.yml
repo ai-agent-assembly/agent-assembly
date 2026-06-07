@@ -59,19 +59,19 @@ jobs:
       - name: Checkout sibling python-sdk
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/python-sdk
+          repository: ai-agent-assembly/python-sdk
           path: python-sdk
 
       - name: Checkout sibling go-sdk
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/go-sdk
+          repository: ai-agent-assembly/go-sdk
           path: go-sdk
 
       - name: Checkout sibling node-sdk
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/node-sdk
+          repository: ai-agent-assembly/node-sdk
           path: node-sdk
 
       - name: Install protobuf compiler

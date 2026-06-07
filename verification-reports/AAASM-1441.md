@@ -52,9 +52,9 @@
 | [AAASM-1443] | Author Python 3.10/3.11/3.12/3.13 Dockerfiles | Done | (merged) |
 | [AAASM-1444] | Author Node v20/v22 Dockerfiles | Done | (merged) |
 | [AAASM-1445] | Author Go 1.24/1.25 Dockerfiles | Done | (merged) |
-| [AAASM-1446] | Extend docker.yml matrix (2 → 6 active + 5 deferred) | Done | [#616](https://github.com/AI-agent-assembly/agent-assembly/pull/616) |
-| [AAASM-1671] | [BUG] Python pip-before-COPY regression of AAASM-1500 | Done | [#617](https://github.com/AI-agent-assembly/agent-assembly/pull/617) |
-| [AAASM-1672] | [BUG] Go GOTOOLCHAIN=auto + AAASM-1508 smoke backport | Done | [#618](https://github.com/AI-agent-assembly/agent-assembly/pull/618) |
+| [AAASM-1446] | Extend docker.yml matrix (2 → 6 active + 5 deferred) | Done | [#616](https://github.com/ai-agent-assembly/agent-assembly/pull/616) |
+| [AAASM-1671] | [BUG] Python pip-before-COPY regression of AAASM-1500 | Done | [#617](https://github.com/ai-agent-assembly/agent-assembly/pull/617) |
+| [AAASM-1672] | [BUG] Go GOTOOLCHAIN=auto + AAASM-1508 smoke backport | Done | [#618](https://github.com/ai-agent-assembly/agent-assembly/pull/618) |
 | [AAASM-1447] | Verify F114b | in this report | this PR |
 | [AAASM-1660] | Re-enable node:20 after AAASM-1203 | To Do (blocked) | — |
 | [AAASM-1661] | Re-enable node:22 after AAASM-1203 | To Do (blocked) | — |
@@ -134,12 +134,12 @@ docker/Dockerfile.go-1.24-alpine      AAASM-1445 (GOTOOLCHAIN+smoke fixed by AAA
 #15 [aasm-builder 5/5] RUN cargo build --release -p aa-cli --bin aasm    CACHED
 #16 [stage-1 1/5] FROM docker.io/library/golang:1.25-alpine              DONE 0.2s
 #17 [stage-1 2/5] COPY --from=aasm-builder /usr/local/bin/aasm ...       DONE 0.0s
-#18 [stage-1 3/5] RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
+#18 [stage-1 3/5] RUN go install github.com/ai-agent-assembly/go-sdk/...@latest
 #18 (GOTOOLCHAIN=auto pulls Go 1.26 on demand — see AAASM-1672)          DONE ~13s
 #19 [stage-1 4/5] RUN aasm --version
 #19 0.281 aasm 0.0.1                                                     DONE 0.4s
-#20 [stage-1 5/5] RUN go list -m github.com/AI-agent-assembly/go-sdk@latest
-#20 0.892 github.com/AI-agent-assembly/go-sdk v0.0.0-...                 DONE 0.9s
+#20 [stage-1 5/5] RUN go list -m github.com/ai-agent-assembly/go-sdk@latest
+#20 0.892 github.com/ai-agent-assembly/go-sdk v0.0.0-...                 DONE 0.9s
 === BUILD END go:1.25-alpine (2026-05-21T01:30:04Z) EXIT=0 ===
 ```
 
@@ -156,7 +156,7 @@ docker/Dockerfile.go-1.24-alpine      AAASM-1445 (GOTOOLCHAIN+smoke fixed by AAA
 #15 [aasm-builder 5/5] RUN cargo build --release -p aa-cli --bin aasm    CACHED
 #19 [stage-1 3/7] RUN pip install agent-assembly @ git+...
 #19 7.941 ERROR: Package 'agent-assembly' requires a different Python: 3.10.20 not in '<4.0,>=3.12'
-#19 ERROR: process "/bin/sh -c pip install --no-cache-dir 'agent-assembly @ git+https://github.com/AI-agent-assembly/python-sdk.git'" did not complete successfully: exit code: 1
+#19 ERROR: process "/bin/sh -c pip install --no-cache-dir 'agent-assembly @ git+https://github.com/ai-agent-assembly/python-sdk.git'" did not complete successfully: exit code: 1
 === BUILD END python:3.10-slim (2026-05-21T01:31:56Z) EXIT=1 ===
 ```
 
@@ -170,10 +170,10 @@ cause, same fix path).
 ```
 === BUILD START node:20-slim (2026-05-21T01:31:56Z) ===
 #15 [aasm-builder 5/5] RUN cargo build --release -p aa-cli --bin aasm    CACHED
-#16 [stage-1 4/7] RUN npm install -g 'github:AI-agent-assembly/node-sdk'
+#16 [stage-1 4/7] RUN npm install -g 'github:ai-agent-assembly/node-sdk'
 #16 0.989 npm error fatal: Could not read from remote repository.
 #16 0.990 npm error A complete log of this run can be found in: /root/.npm/_logs/2026-05-21T01_32_00_832Z-debug-0.log
-#16 ERROR: process "/bin/sh -c npm install -g 'github:AI-agent-assembly/node-sdk'" did not complete successfully: exit code: 128
+#16 ERROR: process "/bin/sh -c npm install -g 'github:ai-agent-assembly/node-sdk'" did not complete successfully: exit code: 128
 === BUILD END node:20-slim (2026-05-21T01:32:01Z) EXIT=1 ===
 ```
 
@@ -221,11 +221,11 @@ python:3.12-slim
 
 go:1.25-alpine
   $ aasm --version                                       → aasm 0.0.1
-  $ go list -m github.com/AI-agent-assembly/go-sdk@latest → github.com/AI-agent-assembly/go-sdk v0.0.0-20260520161412-60249bbb18a1
+  $ go list -m github.com/ai-agent-assembly/go-sdk@latest → github.com/ai-agent-assembly/go-sdk v0.0.0-20260520161412-60249bbb18a1
 
 go:1.24-alpine
   $ aasm --version                                       → aasm 0.0.1
-  $ go list -m github.com/AI-agent-assembly/go-sdk@latest → github.com/AI-agent-assembly/go-sdk v0.0.0-20260520161412-60249bbb18a1
+  $ go list -m github.com/ai-agent-assembly/go-sdk@latest → github.com/ai-agent-assembly/go-sdk v0.0.0-20260520161412-60249bbb18a1
 ```
 
 Host-platform mismatch warnings (`linux/amd64 vs linux/arm64/v8`) are
@@ -264,8 +264,8 @@ becomes the follow-up fix path.
 
 ### ✅ CI workflow build job passes for active variants on integration PR
 
-[PR #616](https://github.com/AI-agent-assembly/agent-assembly/pull/616)
-final CI run [26197695698](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26197695698):
+[PR #616](https://github.com/ai-agent-assembly/agent-assembly/pull/616)
+final CI run [26197695698](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26197695698):
 **7/7 checks SUCCESS** (1 aa-runtime + 3 python + 3 go matrix legs). PR
 merged 2026-05-21.
 

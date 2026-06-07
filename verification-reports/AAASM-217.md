@@ -9,10 +9,10 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1047 | Fleet table primitives + view-model | Done | [#343](https://github.com/AI-agent-assembly/agent-assembly/pull/343) |
-| AAASM-1048 | Fleet page chrome | Done | [#359](https://github.com/AI-agent-assembly/agent-assembly/pull/359) |
-| AAASM-1050 | Fleet table interactions | Done | [#361](https://github.com/AI-agent-assembly/agent-assembly/pull/361) |
-| AAASM-1052 | Agent Detail drawer | Done | [#365](https://github.com/AI-agent-assembly/agent-assembly/pull/365) |
+| AAASM-1047 | Fleet table primitives + view-model | Done | [#343](https://github.com/ai-agent-assembly/agent-assembly/pull/343) |
+| AAASM-1048 | Fleet page chrome | Done | [#359](https://github.com/ai-agent-assembly/agent-assembly/pull/359) |
+| AAASM-1050 | Fleet table interactions | Done | [#361](https://github.com/ai-agent-assembly/agent-assembly/pull/361) |
+| AAASM-1052 | Agent Detail drawer | Done | [#365](https://github.com/ai-agent-assembly/agent-assembly/pull/365) |
 | AAASM-1151 | Suspend/resume + verification | in this PR | — |
 
 ## Walkthrough vs AAASM-217 acceptance criteria

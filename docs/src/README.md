@@ -16,8 +16,8 @@ This book targets contributors and operators of `agent-assembly`. SDK users (Pyt
 
 ## See also
 
-- [README](https://github.com/AI-agent-assembly/agent-assembly/blob/master/README.md) — top-level project overview, prerequisites, quickstart
-- [CONTRIBUTING](https://github.com/AI-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md) — development workflow, branch naming, PR rules
+- [README](https://github.com/ai-agent-assembly/agent-assembly/blob/master/README.md) — top-level project overview, prerequisites, quickstart
+- [CONTRIBUTING](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md) — development workflow, branch naming, PR rules
 - API reference — generate locally with `cargo doc --workspace --no-deps --open`
 
 ## Diagram rendering

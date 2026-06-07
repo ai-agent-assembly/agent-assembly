@@ -11,12 +11,12 @@ All six implementation sub-tasks landed on `master` in stack order. Each PR was 
 
 | # | Sub-task | PR | Merge commit | Status |
 | --- | --- | --- | --- | --- |
-| 1 | [AAASM-1624](https://lightning-dust-mite.atlassian.net/browse/AAASM-1624) Add alert-detail data types (RuleSnapshot / RoutingLogEntry / Silence / RuleContext) | [#588](https://github.com/AI-agent-assembly/agent-assembly/pull/588) | `c7946977` | Done |
-| 2 | [AAASM-1625](https://lightning-dust-mite.atlassian.net/browse/AAASM-1625) Extend StoredAlert with optional rule_context + first_fired_at/resolved_at | [#589](https://github.com/AI-agent-assembly/agent-assembly/pull/589) | `10a992c2` | Done |
-| 3 | [AAASM-1626](https://lightning-dust-mite.atlassian.net/browse/AAASM-1626) Rename AlertStore::get → get_by_id + add record_rule_alert | [#590](https://github.com/AI-agent-assembly/agent-assembly/pull/590) | `3b8a21e0` | Done |
-| 4 | [AAASM-1627](https://lightning-dust-mite.atlassian.net/browse/AAASM-1627) Implement dedup state machine in AlertStore | [#594](https://github.com/AI-agent-assembly/agent-assembly/pull/594) | `3ce71006` | Done |
-| 5 | [AAASM-1628](https://lightning-dust-mite.atlassian.net/browse/AAASM-1628) Add AlertDetailResponse + update GET /alerts/{id} handler | [#596](https://github.com/AI-agent-assembly/agent-assembly/pull/596) | `5a828f1a` | Done |
-| 6 | [AAASM-1629](https://lightning-dust-mite.atlassian.net/browse/AAASM-1629) Integration tests for rich detail + dedup behavior | [#598](https://github.com/AI-agent-assembly/agent-assembly/pull/598) | `84d74a51` | Done |
+| 1 | [AAASM-1624](https://lightning-dust-mite.atlassian.net/browse/AAASM-1624) Add alert-detail data types (RuleSnapshot / RoutingLogEntry / Silence / RuleContext) | [#588](https://github.com/ai-agent-assembly/agent-assembly/pull/588) | `c7946977` | Done |
+| 2 | [AAASM-1625](https://lightning-dust-mite.atlassian.net/browse/AAASM-1625) Extend StoredAlert with optional rule_context + first_fired_at/resolved_at | [#589](https://github.com/ai-agent-assembly/agent-assembly/pull/589) | `10a992c2` | Done |
+| 3 | [AAASM-1626](https://lightning-dust-mite.atlassian.net/browse/AAASM-1626) Rename AlertStore::get → get_by_id + add record_rule_alert | [#590](https://github.com/ai-agent-assembly/agent-assembly/pull/590) | `3b8a21e0` | Done |
+| 4 | [AAASM-1627](https://lightning-dust-mite.atlassian.net/browse/AAASM-1627) Implement dedup state machine in AlertStore | [#594](https://github.com/ai-agent-assembly/agent-assembly/pull/594) | `3ce71006` | Done |
+| 5 | [AAASM-1628](https://lightning-dust-mite.atlassian.net/browse/AAASM-1628) Add AlertDetailResponse + update GET /alerts/{id} handler | [#596](https://github.com/ai-agent-assembly/agent-assembly/pull/596) | `5a828f1a` | Done |
+| 6 | [AAASM-1629](https://lightning-dust-mite.atlassian.net/browse/AAASM-1629) Integration tests for rich detail + dedup behavior | [#598](https://github.com/ai-agent-assembly/agent-assembly/pull/598) | `84d74a51` | Done |
 | 7 | [AAASM-1630](https://lightning-dust-mite.atlassian.net/browse/AAASM-1630) Verify AAASM-1385 AC (this PR) | (this PR) | — | Open |
 
 ## Parent Story acceptance criteria

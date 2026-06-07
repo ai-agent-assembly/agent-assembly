@@ -2,9 +2,9 @@
 
 **Story:** AAASM-1200 — F110: Cross-platform CI release pipeline
 **Epic:** AAASM-1199 — Release & Distribution Pipeline
-**PR:** [AI-agent-assembly/agent-assembly#628](https://github.com/AI-agent-assembly/agent-assembly/pull/628)
+**PR:** [ai-agent-assembly/agent-assembly#628](https://github.com/ai-agent-assembly/agent-assembly/pull/628)
 **Verified by:** workflow_dispatch dry-run, no real release tag pushed
-**Run:** [release.yml #26197408878](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26197408878)
+**Run:** [release.yml #26197408878](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26197408878)
 **Date:** 2026-05-21 (UTC)
 
 ## Why dry-run instead of a real tag
@@ -15,7 +15,7 @@ This PR replaces the test-tag path with a `workflow_dispatch` dry-run path that 
 
 ## Runner matrix change
 
-The original matrix targeted `x86_64-apple-darwin` to **macos-13**. The first dry-run attempt ([run #26176204851](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26176204851)) sat queued for **7h32m** on macos-13 — GitHub-hosted Intel macOS capacity is severely constrained as that image winds down. The fix (commit `🐛 (ci): Cross-compile x86_64-apple-darwin on macos-14`) moves the runner to macos-14 (Apple Silicon), cross-compiles via the rustup-installed x86_64 target, and installs Rosetta 2 inline so the `aasm --version` smoke step still exercises the produced Intel binary.
+The original matrix targeted `x86_64-apple-darwin` to **macos-13**. The first dry-run attempt ([run #26176204851](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26176204851)) sat queued for **7h32m** on macos-13 — GitHub-hosted Intel macOS capacity is severely constrained as that image winds down. The fix (commit `🐛 (ci): Cross-compile x86_64-apple-darwin on macos-14`) moves the runner to macos-14 (Apple Silicon), cross-compiles via the rustup-installed x86_64 target, and installs Rosetta 2 inline so the `aasm --version` smoke step still exercises the produced Intel binary.
 
 ## AC verification results
 

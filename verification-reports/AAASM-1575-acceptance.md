@@ -14,10 +14,10 @@
 
 | PR | Sub-ticket | Scope |
 |---|---|---|
-| [#643](https://github.com/AI-agent-assembly/agent-assembly/pull/643) | AAASM-1689 | `DeploymentMode` enum + config module scaffold |
-| [#645](https://github.com/AI-agent-assembly/agent-assembly/pull/645) | AAASM-1690 | Sub-structs (`LocalModeConfig` / `RemoteModeConfig` / `TlsConfig` / `AgentConnectConfig`) |
-| [#648](https://github.com/AI-agent-assembly/agent-assembly/pull/648) | AAASM-1691 | `GatewayConfig` + YAML loader + `~` expansion |
-| [#649](https://github.com/AI-agent-assembly/agent-assembly/pull/649) | AAASM-1692 | Env-var override layer + invalid-value errors |
+| [#643](https://github.com/ai-agent-assembly/agent-assembly/pull/643) | AAASM-1689 | `DeploymentMode` enum + config module scaffold |
+| [#645](https://github.com/ai-agent-assembly/agent-assembly/pull/645) | AAASM-1690 | Sub-structs (`LocalModeConfig` / `RemoteModeConfig` / `TlsConfig` / `AgentConnectConfig`) |
+| [#648](https://github.com/ai-agent-assembly/agent-assembly/pull/648) | AAASM-1691 | `GatewayConfig` + YAML loader + `~` expansion |
+| [#649](https://github.com/ai-agent-assembly/agent-assembly/pull/649) | AAASM-1692 | Env-var override layer + invalid-value errors |
 
 ---
 

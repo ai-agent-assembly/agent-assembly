@@ -26,13 +26,13 @@ end-to-end restart test under `aa-gateway/tests/sqlite_restart_persistence_test.
 
 | Sub-task | Scope | PR |
 |---|---|---|
-| AAASM-1697 (S-B.1) | sqlx chrono feature, `SqliteConfig`, `SqliteBackend::open` (WAL + parent-dir creation) | [#656](https://github.com/AI-agent-assembly/agent-assembly/pull/656) |
-| AAASM-1700 (S-B.2) | Schema DDL + idempotent `migrate()` | [#665](https://github.com/AI-agent-assembly/agent-assembly/pull/665) |
-| AAASM-1704 (S-B.3) | Audit-event slice (`append` / `query` / `count`) + `impl StorageBackend` skeleton | [#673](https://github.com/AI-agent-assembly/agent-assembly/pull/673) |
-| AAASM-1708 (S-B.4) | Agent-registry slice (`upsert` / `get` / `list` / `delete`) | [#675](https://github.com/AI-agent-assembly/agent-assembly/pull/675) |
-| AAASM-1712 (S-B.5) | Policy-version slice (`save` / `get_active` / `list_versions` / `rollback`) | [#678](https://github.com/AI-agent-assembly/agent-assembly/pull/678) |
-| AAASM-1714 (S-B.6) | Metric slice (`record` / `query`) | [#679](https://github.com/AI-agent-assembly/agent-assembly/pull/679) |
-| AAASM-1721 (S-B.7) | Retention DELETE + `healthcheck` with row counts | [#680](https://github.com/AI-agent-assembly/agent-assembly/pull/680) |
+| AAASM-1697 (S-B.1) | sqlx chrono feature, `SqliteConfig`, `SqliteBackend::open` (WAL + parent-dir creation) | [#656](https://github.com/ai-agent-assembly/agent-assembly/pull/656) |
+| AAASM-1700 (S-B.2) | Schema DDL + idempotent `migrate()` | [#665](https://github.com/ai-agent-assembly/agent-assembly/pull/665) |
+| AAASM-1704 (S-B.3) | Audit-event slice (`append` / `query` / `count`) + `impl StorageBackend` skeleton | [#673](https://github.com/ai-agent-assembly/agent-assembly/pull/673) |
+| AAASM-1708 (S-B.4) | Agent-registry slice (`upsert` / `get` / `list` / `delete`) | [#675](https://github.com/ai-agent-assembly/agent-assembly/pull/675) |
+| AAASM-1712 (S-B.5) | Policy-version slice (`save` / `get_active` / `list_versions` / `rollback`) | [#678](https://github.com/ai-agent-assembly/agent-assembly/pull/678) |
+| AAASM-1714 (S-B.6) | Metric slice (`record` / `query`) | [#679](https://github.com/ai-agent-assembly/agent-assembly/pull/679) |
+| AAASM-1721 (S-B.7) | Retention DELETE + `healthcheck` with row counts | [#680](https://github.com/ai-agent-assembly/agent-assembly/pull/680) |
 | AAASM-1723 (S-B.8) | Cross-restart integration test + this report | _this PR_ |
 
 ---

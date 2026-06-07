@@ -5,8 +5,8 @@ the gateway — policy decisions are always made server-side.
 
 | Console | Lives in | Talks to | Use when |
 |---|---|---|---|
-| **Web dashboard** | [`dashboard/`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/dashboard) | `aa-api` (HTTP, port 8080) | You want a browser UI for fleet health, policies, and audit. |
-| **Terminal dashboard (TUI)** | `aasm dashboard` ([`aa-cli`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-cli)) | Gateway API | You want real-time monitoring from the terminal / over SSH. |
+| **Web dashboard** | [`dashboard/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/dashboard) | `aa-api` (HTTP, port 8080) | You want a browser UI for fleet health, policies, and audit. |
+| **Terminal dashboard (TUI)** | `aasm dashboard` ([`aa-cli`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-cli)) | Gateway API | You want real-time monitoring from the terminal / over SSH. |
 
 ## Web dashboard
 

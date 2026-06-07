@@ -28,7 +28,7 @@ default-groups = []
 
 [tool.uv.sources]
 # Mode 1: Local sibling checkout (PRIMARY — default for CI + local dev side-by-side)
-# Local dev:  6 levels up from fixtures/agents/python/ = AI-agent-assembly/python-sdk/
+# Local dev:  6 levels up from fixtures/agents/python/ = ai-agent-assembly/python-sdk/
 # CI:  sibling-repo checkout via actions/checkout@v4 (path: python-sdk)
 agent-assembly = { path = "../../../../../../python-sdk", editable = true }
 
@@ -36,10 +36,10 @@ agent-assembly = { path = "../../../../../../python-sdk", editable = true }
 # Uncomment one of these and comment out Mode 1:
 #
 # Latest master:
-# agent-assembly = { git = "https://github.com/AI-agent-assembly/python-sdk.git", branch = "master" }
+# agent-assembly = { git = "https://github.com/ai-agent-assembly/python-sdk.git", branch = "master" }
 #
 # Pinned commit (preferred for reproducibility):
-# agent-assembly = { git = "https://github.com/AI-agent-assembly/python-sdk.git", rev = "COMMIT_SHA" }
+# agent-assembly = { git = "https://github.com/ai-agent-assembly/python-sdk.git", rev = "COMMIT_SHA" }
 
 # Mode 3: PyPI version pin (future — once SDK is published to PyPI)
 # agent-assembly = ">=0.0.1,<1.0"

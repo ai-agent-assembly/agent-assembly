@@ -264,7 +264,7 @@ jobs:
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/node-sdk
+          repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
@@ -378,7 +378,7 @@ jobs:
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
         uses: actions/checkout@v6
         with:
-          repository: AI-agent-assembly/node-sdk
+          repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
@@ -466,7 +466,7 @@ jobs:
         with:
           files: ./codecov.xml
           name: Rust unit tests
-          slug: AI-agent-assembly/agent-assembly
+          slug: ai-agent-assembly/agent-assembly
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: unit
           verbose: true

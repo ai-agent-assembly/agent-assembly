@@ -225,5 +225,5 @@ $ cargo nextest run -p aa-gateway local_mode::
 
 | Sub-task | PR | Merge commit |
 |---|---|---|
-| AAASM-1843 — `dashboard_server` module + `tower-http` dep + unit tests | [#715](https://github.com/AI-agent-assembly/agent-assembly/pull/715) | `e4e5159daac7` |
-| AAASM-1844 — wire `dashboard_router` into `local_mode::router()` + integration tests | [#723](https://github.com/AI-agent-assembly/agent-assembly/pull/723) | `02767959` |
+| AAASM-1843 — `dashboard_server` module + `tower-http` dep + unit tests | [#715](https://github.com/ai-agent-assembly/agent-assembly/pull/715) | `e4e5159daac7` |
+| AAASM-1844 — wire `dashboard_router` into `local_mode::router()` + integration tests | [#723](https://github.com/ai-agent-assembly/agent-assembly/pull/723) | `02767959` |

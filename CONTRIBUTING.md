@@ -12,7 +12,7 @@ Thank you for your interest in contributing! This guide explains how to set up y
 ## Setup
 
 ```bash
-git clone https://github.com/AI-agent-assembly/agent-assembly.git
+git clone https://github.com/ai-agent-assembly/agent-assembly.git
 cd agent-assembly
 
 # Install git hooks (runs fmt, clippy, deny on commit; doc on push)

@@ -2,7 +2,7 @@
 
 **Story:** 🗑️ (agent-assembly) Remove fat `aa-ffi-*` bindings from the workspace
 **Epic:** AAASM-2552 — SDK security boundary + FFI consolidation (final story)
-**Implementation:** AAASM-2646 — PR [#973](https://github.com/AI-agent-assembly/agent-assembly/pull/973)
+**Implementation:** AAASM-2646 — PR [#973](https://github.com/ai-agent-assembly/agent-assembly/pull/973)
 **Verification:** AAASM-2647 (this report)
 **Date:** 2026-06-06
 

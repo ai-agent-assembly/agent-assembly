@@ -97,8 +97,8 @@ Python/Node/Go SDK   ──UDS──▶ aa-runtime (mandatory chokepoint) ──
 The shared crates (`aa-core`, `aa-proto`, and the new `aa-security`, `aa-sdk-client`) are consumed by the SDK repos via **git dependency pinned to an exact commit SHA**. This is already the established, in-production pattern — `python-sdk/rust/aa-ffi-python/Cargo.toml` already declares:
 
 ```toml
-aa-core  = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "ed4aa11a…", package = "aa-core", features = ["serde"] }
-aa-proto = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "ed4aa11a…", package = "aa-proto" }
+aa-core  = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "ed4aa11a…", package = "aa-core", features = ["serde"] }
+aa-proto = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "ed4aa11a…", package = "aa-proto" }
 ```
 
 The decision is to **extend this same mechanism** to `aa-security` and `aa-sdk-client`, not to introduce a new one.

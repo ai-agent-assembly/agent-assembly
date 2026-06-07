@@ -178,7 +178,7 @@ fn probe_go_dir() -> PathBuf {
 /// overwrites any existing directive for the same module.
 fn refresh_go_replace_directive() -> bool {
     let arg = format!(
-        "-replace=github.com/AI-agent-assembly/go-sdk={}",
+        "-replace=github.com/ai-agent-assembly/go-sdk={}",
         go_sdk_path().display()
     );
     Command::new("go")

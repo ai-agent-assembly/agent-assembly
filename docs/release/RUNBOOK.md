@@ -5,8 +5,8 @@
 > `scripts/check-release.sh` (post-tag). Tracked under AAASM-2456.
 
 This runbook assumes the operator has push rights to
-`AI-agent-assembly/agent-assembly` and merge rights on the
-`AI-agent-assembly/homebrew-agent-assembly` tap.
+`ai-agent-assembly/agent-assembly` and merge rights on the
+`ai-agent-assembly/homebrew-agent-assembly` tap.
 
 ---
 
@@ -53,7 +53,7 @@ git tag -a v<version> -m "Release v<version>"
 git push remote v<version>
 ```
 
-Note: branches and tags push to `remote` (`AI-agent-assembly/agent-assembly`),
+Note: branches and tags push to `remote` (`ai-agent-assembly/agent-assembly`),
 **not** `origin` (the operator's personal fork).
 
 ## 3. What runs automatically after tag push
@@ -73,7 +73,7 @@ agent-assembly itself controls.
 ## 4. Manual gate — merge the Homebrew tap PR (within ~5 minutes)
 
 `release.yml`'s `update-homebrew-tap` job opens a PR against
-`AI-agent-assembly/homebrew-agent-assembly` with branch `bot/aasm-<version>`
+`ai-agent-assembly/homebrew-agent-assembly` with branch `bot/aasm-<version>`
 and title `🤖 (formula): aasm <version>`.
 
 **Until that PR is merged, `brew install aasm` will still resolve to the
@@ -81,8 +81,8 @@ previous version.** The formula file on the tap's master branch is what
 Homebrew reads; the bot-created branch is invisible to `brew install`.
 
 ```bash
-gh pr list --repo AI-agent-assembly/homebrew-agent-assembly --state open
-gh pr merge <pr-number> --repo AI-agent-assembly/homebrew-agent-assembly --squash
+gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open
+gh pr merge <pr-number> --repo ai-agent-assembly/homebrew-agent-assembly --squash
 ```
 
 ## 5. Verification
@@ -152,7 +152,7 @@ the credential rotates. Not part of the per-release loop.
 
 After rotation:
 ```bash
-gh secret set CRATES_IO_TOKEN --repo AI-agent-assembly/agent-assembly
-gh secret set CROSS_REPO_DISPATCH_PAT --repo AI-agent-assembly/agent-assembly
-gh secret set HOMEBREW_TAP_TOKEN --repo AI-agent-assembly/agent-assembly
+gh secret set CRATES_IO_TOKEN --repo ai-agent-assembly/agent-assembly
+gh secret set CROSS_REPO_DISPATCH_PAT --repo ai-agent-assembly/agent-assembly
+gh secret set HOMEBREW_TAP_TOKEN --repo ai-agent-assembly/agent-assembly
 ```

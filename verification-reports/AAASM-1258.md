@@ -14,11 +14,11 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1448 | ST-0a: Rename `aa-topology-integration-tests` → `aa-integration-tests` | Done | [#484](https://github.com/AI-agent-assembly/agent-assembly/pull/484) |
-| AAASM-1449 | ST-0: Extend harness with `CliFixture` + format helpers + fixtures | Done | [#485](https://github.com/AI-agent-assembly/agent-assembly/pull/485) |
-| AAASM-1260 | ST-1: `cli_topology.rs` — 18 tests covering 5 leaves | Done | [#488](https://github.com/AI-agent-assembly/agent-assembly/pull/488) |
-| AAASM-1262 | ST-2: `cli_agent.rs` — 19 tests covering 5 leaves incl. `--watch` | Done | [#490](https://github.com/AI-agent-assembly/agent-assembly/pull/490) |
-| AAASM-1261 | ST-3: `cli_policy.rs` — 14 tests covering 5 leaves + `seed_policy` | Done | [#491](https://github.com/AI-agent-assembly/agent-assembly/pull/491) |
+| AAASM-1448 | ST-0a: Rename `aa-topology-integration-tests` → `aa-integration-tests` | Done | [#484](https://github.com/ai-agent-assembly/agent-assembly/pull/484) |
+| AAASM-1449 | ST-0: Extend harness with `CliFixture` + format helpers + fixtures | Done | [#485](https://github.com/ai-agent-assembly/agent-assembly/pull/485) |
+| AAASM-1260 | ST-1: `cli_topology.rs` — 18 tests covering 5 leaves | Done | [#488](https://github.com/ai-agent-assembly/agent-assembly/pull/488) |
+| AAASM-1262 | ST-2: `cli_agent.rs` — 19 tests covering 5 leaves incl. `--watch` | Done | [#490](https://github.com/ai-agent-assembly/agent-assembly/pull/490) |
+| AAASM-1261 | ST-3: `cli_policy.rs` — 14 tests covering 5 leaves + `seed_policy` | Done | [#491](https://github.com/ai-agent-assembly/agent-assembly/pull/491) |
 | AAASM-1263 | ST-9: Verify Phase A on Linux + macOS CI | in this report | — |
 
 ## Per-leaf test breakdown
@@ -85,17 +85,17 @@ consecutive successful runs:
 
 | Run | Branch / SHA | Result |
 |---|---|---|
-| [25985983847](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25985983847) | ST-3 final (`c857475`) | ✅ both OSes |
-| [25986906654](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25986906654) | AAASM-1467 (cli_version) | ✅ both OSes |
-| [25986997419](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25986997419) | AAASM-1463 (cli_context) | ✅ both OSes |
-| [25987034667](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25987034667) | AAASM-1464 (cli_completion) | ✅ both OSes |
-| [25987177929](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25987177929) | AAASM-1468 (cli_trace) | ✅ both OSes |
-| [25987320240](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25987320240) | AAASM-1466 (cli_status) | ✅ both OSes |
-| [25988962625](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25988962625) | AAASM-1462 (cli_logs) | ✅ both OSes |
-| [25989484659](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25989484659) | AAASM-1470 (cli_cost) | ✅ both OSes |
-| [25989539389](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25989539389) | AAASM-1461 (cli_audit) | ✅ both OSes |
-| [25990165694](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25990165694) | AAASM-1476 (audit-reader bugfix) | ✅ both OSes |
-| [25991254254](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25991254254) | AAASM-1481 (cli_dashboard ST-15b lifecycle) | ✅ both OSes |
+| [25985983847](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25985983847) | ST-3 final (`c857475`) | ✅ both OSes |
+| [25986906654](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25986906654) | AAASM-1467 (cli_version) | ✅ both OSes |
+| [25986997419](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25986997419) | AAASM-1463 (cli_context) | ✅ both OSes |
+| [25987034667](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25987034667) | AAASM-1464 (cli_completion) | ✅ both OSes |
+| [25987177929](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25987177929) | AAASM-1468 (cli_trace) | ✅ both OSes |
+| [25987320240](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25987320240) | AAASM-1466 (cli_status) | ✅ both OSes |
+| [25988962625](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25988962625) | AAASM-1462 (cli_logs) | ✅ both OSes |
+| [25989484659](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25989484659) | AAASM-1470 (cli_cost) | ✅ both OSes |
+| [25989539389](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25989539389) | AAASM-1461 (cli_audit) | ✅ both OSes |
+| [25990165694](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25990165694) | AAASM-1476 (audit-reader bugfix) | ✅ both OSes |
+| [25991254254](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25991254254) | AAASM-1481 (cli_dashboard ST-15b lifecycle) | ✅ both OSes |
 
 The `agent list --watch` streaming test in particular — the AC's named
 flake-risk case — has passed in every one of these runs.
@@ -187,11 +187,11 @@ to the matrix view showing both `ubuntu-latest` and `macos-latest` jobs.
 
 | ST | PR | Head SHA | Integration tests run |
 |---|---|---|---|
-| ST-1 (`cli_topology`) | [#488](https://github.com/AI-agent-assembly/agent-assembly/pull/488) | `facd7ee6` | [25984760358](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25984760358) — both OSes ✅ |
-| ST-2 (`cli_agent`) | [#490](https://github.com/AI-agent-assembly/agent-assembly/pull/490) | `606ee454` | [25985565523](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25985565523) — both OSes ✅ |
-| ST-3 (`cli_policy`) | [#491](https://github.com/AI-agent-assembly/agent-assembly/pull/491) | `c857475a` | [25985983847](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/25985983847) — both OSes ✅ |
-| ST-0 (`CliFixture` + format helpers) | [#485](https://github.com/AI-agent-assembly/agent-assembly/pull/485) | (merged earlier; no Phase-A files yet — smoke-only) | — |
-| ST-0a (crate rename) | [#484](https://github.com/AI-agent-assembly/agent-assembly/pull/484) | (workflow rename; no Phase-A files yet) | — |
+| ST-1 (`cli_topology`) | [#488](https://github.com/ai-agent-assembly/agent-assembly/pull/488) | `facd7ee6` | [25984760358](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25984760358) — both OSes ✅ |
+| ST-2 (`cli_agent`) | [#490](https://github.com/ai-agent-assembly/agent-assembly/pull/490) | `606ee454` | [25985565523](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25985565523) — both OSes ✅ |
+| ST-3 (`cli_policy`) | [#491](https://github.com/ai-agent-assembly/agent-assembly/pull/491) | `c857475a` | [25985983847](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/25985983847) — both OSes ✅ |
+| ST-0 (`CliFixture` + format helpers) | [#485](https://github.com/ai-agent-assembly/agent-assembly/pull/485) | (merged earlier; no Phase-A files yet — smoke-only) | — |
+| ST-0a (crate rename) | [#484](https://github.com/ai-agent-assembly/agent-assembly/pull/484) | (workflow rename; no Phase-A files yet) | — |
 
 ## Local test transcript (cross-check against CI)
 

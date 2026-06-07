@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 2021 edition, `tokio 1` (full features), `tokio-util 0.7` (TaskTracker + CancellationToken), `tracing 0.1`, `tracing-subscriber 0.3` (json + env-filter)
 
-**Worktree:** `/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-AAASM-29-tokio_runtime_init`
+**Worktree:** `/Users/bryant/Bryant-Developments/ai-agent-assembly/agent-assembly-v0.0.1-AAASM-29-tokio_runtime_init`
 **Branch:** `v0.0.1/AAASM-29/tokio_runtime_init`
 **All commands run from the worktree root unless stated otherwise.**
 

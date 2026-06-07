@@ -8,10 +8,10 @@
 
 | Sub-task | Type | PR | Status |
 | --- | --- | --- | --- |
-| AAASM-1698 (ST-1) | Implementation — `/healthz` HTTP route module | [#654](https://github.com/AI-agent-assembly/agent-assembly/pull/654) | Done |
-| AAASM-1702 (ST-2) | Implementation — `remote_mode::tls` validator | [#674](https://github.com/AI-agent-assembly/agent-assembly/pull/674) | Done |
-| AAASM-1709 (ST-3) | Implementation — `remote_mode::server::start_remote` | [#690](https://github.com/AI-agent-assembly/agent-assembly/pull/690) | Done |
-| AAASM-1713 (ST-4) | Implementation — `main.rs` deployment-mode dispatch | [#692](https://github.com/AI-agent-assembly/agent-assembly/pull/692) | Done |
+| AAASM-1698 (ST-1) | Implementation — `/healthz` HTTP route module | [#654](https://github.com/ai-agent-assembly/agent-assembly/pull/654) | Done |
+| AAASM-1702 (ST-2) | Implementation — `remote_mode::tls` validator | [#674](https://github.com/ai-agent-assembly/agent-assembly/pull/674) | Done |
+| AAASM-1709 (ST-3) | Implementation — `remote_mode::server::start_remote` | [#690](https://github.com/ai-agent-assembly/agent-assembly/pull/690) | Done |
+| AAASM-1713 (ST-4) | Implementation — `main.rs` deployment-mode dispatch | [#692](https://github.com/ai-agent-assembly/agent-assembly/pull/692) | Done |
 | AAASM-1718 (ST-5) | Verification — this PR | _this PR_ | In progress |
 
 ## Acceptance Criteria

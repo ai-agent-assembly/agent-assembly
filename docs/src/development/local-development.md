@@ -2,7 +2,7 @@
 
 This page covers the from-clone development loop for the `agent-assembly`
 monorepo. For contribution conventions (commit style, PR process) see
-[`CONTRIBUTING.md`](https://github.com/AI-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md).
 
 ## Prerequisites
 
@@ -13,12 +13,12 @@ monorepo. For contribution conventions (commit style, PR process) see
 - [`cargo-nextest`](https://nexte.st/), [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/),
   and [Lefthook](https://github.com/evilmartians/lefthook)
 - **Linux only** for the proxy / eBPF layers — see
-  [Supported platforms](https://github.com/AI-agent-assembly/agent-assembly#supported-platforms).
+  [Supported platforms](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms).
 
 ## Bootstrap
 
 ```bash
-git clone https://github.com/AI-agent-assembly/agent-assembly.git
+git clone https://github.com/ai-agent-assembly/agent-assembly.git
 cd agent-assembly
 
 # Installs toolchains, clones the SDK polyrepos as siblings, installs git

@@ -53,7 +53,7 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
 # Install the AAASM Node SDK. Transitional git source; switches to
 # `npm install @agent-assembly/sdk` once AAASM-1203 lands.
-RUN npm install -g 'github:AI-agent-assembly/node-sdk'
+RUN npm install -g 'github:ai-agent-assembly/node-sdk'
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
@@ -65,6 +65,6 @@ RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
-LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Node.js 20 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"
