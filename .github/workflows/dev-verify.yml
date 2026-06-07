@@ -44,9 +44,9 @@ jobs:
         # sdk-repos.txt lists SSH URLs; CI uses HTTPS equivalents.
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
-          git clone https://github.com/AI-agent-assembly/python-sdk.git "$parent/python-sdk"
-          git clone https://github.com/AI-agent-assembly/node-sdk.git "$parent/node-sdk"
-          git clone https://github.com/AI-agent-assembly/go-sdk.git "$parent/go-sdk"
+          git clone https://github.com/ai-agent-assembly/python-sdk.git "$parent/python-sdk"
+          git clone https://github.com/ai-agent-assembly/node-sdk.git "$parent/node-sdk"
+          git clone https://github.com/ai-agent-assembly/go-sdk.git "$parent/go-sdk"
 
       - uses: actions/setup-python@v6
         with:
