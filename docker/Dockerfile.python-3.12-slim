@@ -65,7 +65,7 @@ RUN apt-get update \
 # needs to invoke). See AAASM-1500. Transitional git source; switches to
 # `pip install agent-assembly` once AAASM-1202 lands.
 RUN pip install --no-cache-dir \
-        'agent-assembly @ git+https://github.com/AI-agent-assembly/python-sdk.git'
+        'agent-assembly @ git+https://github.com/ai-agent-assembly/python-sdk.git'
 
 # Drop the prebuilt Rust `aasm` binary into the image PATH, overlaying the
 # pip-installed Python entrypoint. The Python SDK stays importable from
@@ -83,6 +83,6 @@ RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
-LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Python 3.12 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"

@@ -62,7 +62,7 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
 # Install the AAASM Go SDK. `go install` uses Go's native git-based
 # distribution model — no registry-publish prerequisite (unlike pip/npm).
-RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
+RUN go install github.com/ai-agent-assembly/go-sdk/...@latest
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
@@ -74,8 +74,8 @@ RUN go install github.com/AI-agent-assembly/go-sdk/...@latest
 # (go-sdk's module root has no .go files; sources are under assembly/,
 # internal/ffi/, examples/minimal/). See AAASM-1508.
 RUN aasm --version
-RUN go list -m github.com/AI-agent-assembly/go-sdk@latest
+RUN go list -m github.com/ai-agent-assembly/go-sdk@latest
 
-LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.26 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"

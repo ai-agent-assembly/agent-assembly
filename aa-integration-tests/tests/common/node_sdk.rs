@@ -1,5 +1,5 @@
 //! Sibling-repo lookup helpers for the Node.js SDK
-//! (`AI-agent-assembly/node-sdk`).
+//! (`ai-agent-assembly/node-sdk`).
 //!
 //! The TypeScript fixtures under
 //! `aa-integration-tests/tests/fixtures/agents/typescript/` resolve
@@ -31,7 +31,7 @@ use anyhow::{anyhow, Context, Result};
 /// Order:
 /// 1. `NODE_SDK_PATH` env var (absolute or relative).
 /// 2. `<parent of CARGO_MANIFEST_DIR>/../node-sdk` — the layout used
-///    by the workspace (`AI-agent-assembly/{agent-assembly,node-sdk}/`).
+///    by the workspace (`ai-agent-assembly/{agent-assembly,node-sdk}/`).
 pub fn node_sdk_dir() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("NODE_SDK_PATH") {
         let path = PathBuf::from(p);

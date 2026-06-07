@@ -95,12 +95,12 @@ else
 fi
 
 # 8. Required secrets present in this repo
-SECRETS="$(gh secret list --repo AI-agent-assembly/agent-assembly 2>/dev/null | awk '{print $1}')"
+SECRETS="$(gh secret list --repo ai-agent-assembly/agent-assembly 2>/dev/null | awk '{print $1}')"
 for SECRET in CRATES_IO_TOKEN CROSS_REPO_DISPATCH_PAT HOMEBREW_TAP_TOKEN; do
   if printf '%s\n' "$SECRETS" | grep -qx "$SECRET"; then
     pass "Secret $SECRET present"
   else
-    fail "Secret $SECRET missing" "gh secret set $SECRET --repo AI-agent-assembly/agent-assembly"
+    fail "Secret $SECRET missing" "gh secret set $SECRET --repo ai-agent-assembly/agent-assembly"
   fi
 done
 

@@ -29,7 +29,7 @@ REPORT=()
 FAIL=0
 NEEDS_RETRIGGER=()
 
-ua="agent-assembly-release-check/1.0 (+https://github.com/AI-agent-assembly/agent-assembly)"
+ua="agent-assembly-release-check/1.0 (+https://github.com/ai-agent-assembly/agent-assembly)"
 
 ok()   { REPORT+=("  $1 : ✓ $2"); }
 bad()  {
@@ -42,7 +42,7 @@ bad()  {
 }
 
 # ─── 1. GH Release ────────────────────────────────────────────────────────
-RELEASE_JSON="$(gh release view "$TAG" --repo AI-agent-assembly/agent-assembly \
+RELEASE_JSON="$(gh release view "$TAG" --repo ai-agent-assembly/agent-assembly \
   --json name,assets,isDraft 2>/dev/null || true)"
 if [ -z "$RELEASE_JSON" ]; then
   bad "GH Release    " "tag $TAG not published" \
@@ -52,10 +52,10 @@ else
   ASSET_COUNT="$(printf '%s' "$RELEASE_JSON" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["assets"]))')"
   if [ "$IS_DRAFT" = "True" ] || [ "$IS_DRAFT" = "true" ]; then
     bad "GH Release    " "release is draft" \
-        "gh release edit $TAG --repo AI-agent-assembly/agent-assembly --draft=false"
+        "gh release edit $TAG --repo ai-agent-assembly/agent-assembly --draft=false"
   elif [ "$ASSET_COUNT" != "5" ]; then
     bad "GH Release    " "$ASSET_COUNT assets (expected 5: 4 aasm-*.tar.gz + SHA256SUMS)" \
-        "gh workflow run release.yml --repo AI-agent-assembly/agent-assembly -f release_tag=$TAG"
+        "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
   else
     ok "GH Release    " "published, 5 assets"
   fi
@@ -66,7 +66,7 @@ FORMULA_CONTENT="$(gh api repos/ai-agent-assembly/homebrew-agent-assembly/conten
   --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
 if [ -z "$FORMULA_CONTENT" ]; then
   bad "Homebrew tap  " "Formula/aasm.rb not readable" \
-      "gh workflow run release.yml --repo AI-agent-assembly/agent-assembly -f release_tag=$TAG"
+      "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
 elif printf '%s\n' "$FORMULA_CONTENT" | grep -qE "^[[:space:]]*version \"${VERSION//./\\.}\""; then
   TAP_PR_STATE="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state all \
     --json state,number,headRefName \
@@ -90,7 +90,7 @@ else
         "gh pr merge ${TAP_PR_NUM} --repo ai-agent-assembly/homebrew-agent-assembly --squash"
   else
     bad "Homebrew tap  " "formula on master NOT at $VERSION; no open bot PR" \
-        "gh workflow run release.yml --repo AI-agent-assembly/agent-assembly -f release_tag=$TAG"
+        "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
   fi
 fi
 
@@ -116,7 +116,7 @@ if [ ${#MISSING_CRATES[@]} -eq 0 ]; then
   ok "crates.io     " "all ${#CRATES[@]} crates at $VERSION"
 else
   bad "crates.io     " "${#MISSING_CRATES[@]}/${#CRATES[@]} crates missing $VERSION: ${MISSING_CRATES[*]}" \
-      "gh workflow run release.yml --repo AI-agent-assembly/agent-assembly -f release_tag=$TAG  # crates.io is immutable; fix sources first"
+      "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG  # crates.io is immutable; fix sources first"
 fi
 
 # ─── 4. npm (5 packages) ──────────────────────────────────────────────────
@@ -178,7 +178,7 @@ if [ ${#GHCR_MISSING[@]} -eq 0 ]; then
   ok "ghcr.io       " "python:$VERSION + go:$VERSION present"
 else
   bad "ghcr.io       " "${#GHCR_MISSING[@]}/2 images missing: ${GHCR_MISSING[*]}" \
-      "gh workflow run docker.yml --repo AI-agent-assembly/agent-assembly -f release_tag=$TAG"
+      "gh workflow run docker.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
 fi
 
 # ─── Output ───────────────────────────────────────────────────────────────
