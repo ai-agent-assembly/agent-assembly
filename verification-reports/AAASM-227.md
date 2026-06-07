@@ -6,13 +6,13 @@
 
 | Sub-task | Title | Status | PR | Merge commit |
 |---|---|---|---|---|
-| AAASM-1049 | CLI `policy show --show-permissions` | Done | [#458](https://github.com/AI-agent-assembly/agent-assembly/pull/458) | `b1a8d705` |
-| AAASM-1051 | CLI `policy show --show-budget` | Done | [#463](https://github.com/AI-agent-assembly/agent-assembly/pull/463) | `cd551fdd` |
-| AAASM-1053 | Dashboard `InheritedPermissionsPanel` | Done | [#465](https://github.com/AI-agent-assembly/agent-assembly/pull/465) | `24d56aa3` |
-| AAASM-1055 | Dashboard `SubtreeBurnChart` | Done | [#469](https://github.com/AI-agent-assembly/agent-assembly/pull/469) | `12f0e1ea` |
-| AAASM-1438 | Wire daily-spend history into `/subtree-burn` (follow-up to AAASM-1055) | Done | bundled in [#469](https://github.com/AI-agent-assembly/agent-assembly/pull/469) | commits `1c026cbf` + `3087f76f` |
-| AAASM-1057 | Dashboard `ViolationHeatmap` | Done | [#264](https://github.com/AI-agent-assembly/agent-assembly/pull/264) | `163774eb` |
-| AAASM-1432 | Playwright design-fidelity specs | Done | [#532](https://github.com/AI-agent-assembly/agent-assembly/pull/532) | `d0b9acb5` |
+| AAASM-1049 | CLI `policy show --show-permissions` | Done | [#458](https://github.com/ai-agent-assembly/agent-assembly/pull/458) | `b1a8d705` |
+| AAASM-1051 | CLI `policy show --show-budget` | Done | [#463](https://github.com/ai-agent-assembly/agent-assembly/pull/463) | `cd551fdd` |
+| AAASM-1053 | Dashboard `InheritedPermissionsPanel` | Done | [#465](https://github.com/ai-agent-assembly/agent-assembly/pull/465) | `24d56aa3` |
+| AAASM-1055 | Dashboard `SubtreeBurnChart` | Done | [#469](https://github.com/ai-agent-assembly/agent-assembly/pull/469) | `12f0e1ea` |
+| AAASM-1438 | Wire daily-spend history into `/subtree-burn` (follow-up to AAASM-1055) | Done | bundled in [#469](https://github.com/ai-agent-assembly/agent-assembly/pull/469) | commits `1c026cbf` + `3087f76f` |
+| AAASM-1057 | Dashboard `ViolationHeatmap` | Done | [#264](https://github.com/ai-agent-assembly/agent-assembly/pull/264) | `163774eb` |
+| AAASM-1432 | Playwright design-fidelity specs | Done | [#532](https://github.com/ai-agent-assembly/agent-assembly/pull/532) | `d0b9acb5` |
 | AAASM-1129 | This verification report | in this PR | — | — |
 
 ## Walkthrough vs AAASM-227 acceptance criteria

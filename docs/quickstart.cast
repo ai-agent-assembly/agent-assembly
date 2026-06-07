@@ -1,5 +1,5 @@
 {"version": 2, "width": 220, "height": 50, "timestamp": 1746806400, "title": "agent-assembly quickstart: make dev-setup && make dev-verify", "env": {"SHELL": "/bin/zsh", "TERM": "xterm-256color"}}
-[0.5, "o", "$ git clone https://github.com/AI-agent-assembly/agent-assembly.git\r\n"]
+[0.5, "o", "$ git clone https://github.com/ai-agent-assembly/agent-assembly.git\r\n"]
 [1.2, "o", "Cloning into 'agent-assembly'...\r\n"]
 [1.8, "o", "remote: Enumerating objects: 1842, done.\r\n"]
 [2.1, "o", "remote: Counting objects: 100% (1842/1842), done.\r\n"]

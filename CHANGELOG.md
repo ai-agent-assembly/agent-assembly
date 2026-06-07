@@ -77,7 +77,7 @@ docker pull ghcr.io/ai-agent-assembly/python:3.14-slim
 # Language SDKs
 pip install --pre agent-assembly==0.0.1a5
 npm install @agent-assembly/sdk@0.0.1-alpha.5
-go get github.com/AI-agent-assembly/go-sdk@v0.0.1-alpha.5
+go get github.com/ai-agent-assembly/go-sdk@v0.0.1-alpha.5
 ```
 
 ### Behaviour delta on the crates.io `aasm` binary
@@ -158,7 +158,7 @@ brew install ai-agent-assembly/homebrew-agent-assembly/aasm
 docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.4
 pip install --pre agent-assembly==0.0.1a4
 npm install @agent-assembly/sdk@0.0.1-alpha.4
-go get github.com/AI-agent-assembly/go-sdk@v0.0.1-alpha.4
+go get github.com/ai-agent-assembly/go-sdk@v0.0.1-alpha.4
 ```
 
 ### Behaviour delta on the published `aasm` binary
@@ -305,4 +305,4 @@ version (or skip pre-releases entirely):
 For the GA release scope, see the upcoming [0.0.1] entry, which will be authored
 under AAASM-1247 once the alpha-1 dry-run passes and the GA tag is cut.
 
-[0.0.1-alpha.1]: https://github.com/AI-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.1
+[0.0.1-alpha.1]: https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.1

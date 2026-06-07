@@ -92,7 +92,7 @@ dashboard-assets artifact:
   wall-clock figures as illustrative and the runner-minute / job-count figures as
   the load-bearing evidence.
 - Run numbers are cited so each row can be re-inspected:
-  `gh api repos/AI-agent-assembly/agent-assembly/actions/runs/<id>/jobs`.
+  `gh api repos/ai-agent-assembly/agent-assembly/actions/runs/<id>/jobs`.
 
 ## Takeaway
 

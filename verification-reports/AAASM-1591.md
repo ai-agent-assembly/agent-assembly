@@ -15,8 +15,8 @@
 
 | # | Key | PR | Title |
 | --- | --- | --- | --- |
-| 1 | [AAASM-1908](https://lightning-dust-mite.atlassian.net/browse/AAASM-1908) | [#762](https://github.com/AI-agent-assembly/agent-assembly/pull/762) | Add `GET /api/v1/admin/status` storage-health route (aa-gateway) |
-| 2 | [AAASM-1909](https://lightning-dust-mite.atlassian.net/browse/AAASM-1909) | [#763](https://github.com/AI-agent-assembly/agent-assembly/pull/763) | `aasm status` renders storage block + non-zero exit on DB unhealthy (aa-cli) |
+| 1 | [AAASM-1908](https://lightning-dust-mite.atlassian.net/browse/AAASM-1908) | [#762](https://github.com/ai-agent-assembly/agent-assembly/pull/762) | Add `GET /api/v1/admin/status` storage-health route (aa-gateway) |
+| 2 | [AAASM-1909](https://lightning-dust-mite.atlassian.net/browse/AAASM-1909) | [#763](https://github.com/ai-agent-assembly/agent-assembly/pull/763) | `aasm status` renders storage block + non-zero exit on DB unhealthy (aa-cli) |
 | 3 | [AAASM-1910](https://lightning-dust-mite.atlassian.net/browse/AAASM-1910) | _(this PR)_ | Verify AAASM-1591 acceptance criteria |
 
 ---

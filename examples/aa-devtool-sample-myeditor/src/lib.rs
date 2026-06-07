@@ -9,7 +9,7 @@
 //! tracked separately in AAASM-201..205 and AAASM-918.
 //!
 //! [`DevToolAdapter`]: aa_core::DevToolAdapter
-//! [`docs/devtools/plugins.md`]: https://github.com/AI-agent-assembly/agent-assembly/blob/master/docs/devtools/plugins.md
+//! [`docs/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/master/docs/devtools/plugins.md
 
 #![warn(missing_docs)]
 

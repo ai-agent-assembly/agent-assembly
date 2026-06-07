@@ -12,7 +12,7 @@
 
 To report a security issue, use GitHub's private vulnerability reporting:
 
-1. Go to the [Security tab](https://github.com/AI-agent-assembly/agent-assembly/security) of this repository.
+1. Go to the [Security tab](https://github.com/ai-agent-assembly/agent-assembly/security) of this repository.
 2. Click **"Report a vulnerability"**.
 3. Fill in the details and submit.
 

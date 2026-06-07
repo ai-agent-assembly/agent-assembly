@@ -34,7 +34,7 @@ FROM gcr.io/distroless/static:nonroot AS runtime
 
 COPY --from=builder /app/aa-proxy-bin /aa-proxy
 
-LABEL org.opencontainers.image.source="https://github.com/AI-agent-assembly/agent-assembly" \
+LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="aa-proxy sidecar — AAASM traffic interception proxy" \
       org.opencontainers.image.licenses="Apache-2.0"
 

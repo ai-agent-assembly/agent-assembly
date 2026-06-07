@@ -2,11 +2,11 @@
 
 > Governance-native runtime for AI agents — open-source core.
 
-[![CI](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/ci.yml/badge.svg)](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/ci.yml)
-[![Docs](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml/badge.svg)](https://github.com/AI-agent-assembly/agent-assembly/actions/workflows/docs.yml)
-[![codecov](https://codecov.io/gh/AI-agent-assembly/agent-assembly/branch/master/graph/badge.svg)](https://codecov.io/gh/AI-agent-assembly/agent-assembly)
+[![CI](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
+[![Docs](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml/badge.svg)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
+[![codecov](https://codecov.io/gh/ai-agent-assembly/agent-assembly/branch/master/graph/badge.svg)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/AI-agent-assembly/agent-assembly?include_prereleases&sort=semver)](https://github.com/AI-agent-assembly/agent-assembly/releases)
+[![Release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver)](https://github.com/ai-agent-assembly/agent-assembly/releases)
 
 
 ## Install the CLI
@@ -16,7 +16,7 @@ curl -sSf https://install.ai-agent-assembly.dev | sh
 ```
 
 This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
-[published release](https://github.com/AI-agent-assembly/agent-assembly/releases).
+[published release](https://github.com/ai-agent-assembly/agent-assembly/releases).
 The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
 
 ```sh
@@ -34,7 +34,7 @@ brew install ai-agent-assembly/homebrew-agent-assembly/aasm
 ```
 
 Installs the latest tagged `aasm` release from the
-[Homebrew tap](https://github.com/AI-agent-assembly/homebrew-agent-assembly).
+[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-agent-assembly).
 During the `v0.0.1` alpha series the published releases are pre-releases — see
 [Project Status](#project-status).
 
@@ -53,10 +53,10 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 | Repository | Role | Status |
 |---|---|---|
 | **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | Public · Alpha |
-| [python-sdk](https://github.com/AI-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
-| [node-sdk](https://github.com/AI-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
-| [go-sdk](https://github.com/AI-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
-| [homebrew-agent-assembly](https://github.com/AI-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
+| [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
+| [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
+| [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
+| [homebrew-agent-assembly](https://github.com/ai-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
 | [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | Public |
 | agent-assembly-cloud | Hosted SaaS control plane | Private · in development |
 | agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | Private · in development |
@@ -101,7 +101,7 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-alpha.5`](https://github.com/AI-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.5)
+[`v0.0.1-alpha.5`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.5)
 (2026-06-03). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
@@ -147,7 +147,7 @@ requirements.
 
 > **Demo recording:** `asciinema play docs/quickstart.cast`
 >
-> **Prefer Codespaces?** [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AI-agent-assembly/agent-assembly)
+> **Prefer Codespaces?** [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ai-agent-assembly/agent-assembly)
 > The `.devcontainer/` config installs all dependencies automatically.
 
 Get from a fresh clone to a verified local environment in under 10 minutes.
@@ -155,7 +155,7 @@ Get from a fresh clone to a verified local environment in under 10 minutes.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/AI-agent-assembly/agent-assembly.git
+git clone https://github.com/ai-agent-assembly/agent-assembly.git
 cd agent-assembly
 ```
 
@@ -298,7 +298,7 @@ mdbook serve docs --open
 ## Security & Support
 
 - **Security:** Report vulnerabilities **privately** via
-  [GitHub Security Advisories](https://github.com/AI-agent-assembly/agent-assembly/security)
+  [GitHub Security Advisories](https://github.com/ai-agent-assembly/agent-assembly/security)
   or email `security@agent-assembly.dev`. Please do not open public issues for
   security reports. See [`SECURITY.md`](SECURITY.md) for the disclosure policy
   and response SLA.

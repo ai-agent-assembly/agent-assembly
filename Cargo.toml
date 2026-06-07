@@ -43,8 +43,8 @@ resolver = "2"
 version = "0.0.1-alpha.5"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/AI-agent-assembly/agent-assembly"
-homepage = "https://github.com/AI-agent-assembly/agent-assembly"
+repository = "https://github.com/ai-agent-assembly/agent-assembly"
+homepage = "https://github.com/ai-agent-assembly/agent-assembly"
 authors = ["Agent Assembly Contributors"]
 
 # Single source of version truth for third-party crates shared by two or more

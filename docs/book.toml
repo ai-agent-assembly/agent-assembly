@@ -8,8 +8,8 @@ src = "src"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/AI-agent-assembly/agent-assembly"
-edit-url-template = "https://github.com/AI-agent-assembly/agent-assembly/edit/master/docs/{path}"
+git-repository-url = "https://github.com/ai-agent-assembly/agent-assembly"
+edit-url-template = "https://github.com/ai-agent-assembly/agent-assembly/edit/master/docs/{path}"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor]

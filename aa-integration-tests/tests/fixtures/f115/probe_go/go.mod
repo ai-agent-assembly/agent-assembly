@@ -2,7 +2,7 @@ module probe_go
 
 go 1.26.0
 
-require github.com/AI-agent-assembly/go-sdk v0.0.0
+require github.com/ai-agent-assembly/go-sdk v0.0.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -17,4 +17,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/AI-agent-assembly/go-sdk => /tmp/aa-go-sdk-for-test
+replace github.com/ai-agent-assembly/go-sdk => /tmp/aa-go-sdk-for-test

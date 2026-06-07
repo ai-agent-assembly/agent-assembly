@@ -13,10 +13,10 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| [AAASM-1699](https://lightning-dust-mite.atlassian.net/browse/AAASM-1699) | Add redis optional dep + RedisConfig value type | DEV VERIFY | [#660](https://github.com/AI-agent-assembly/agent-assembly/pull/660) |
-| [AAASM-1703](https://lightning-dust-mite.atlassian.net/browse/AAASM-1703) | Add policy cache key derivation helper | DEV VERIFY | [#669](https://github.com/AI-agent-assembly/agent-assembly/pull/669) |
-| [AAASM-1707](https://lightning-dust-mite.atlassian.net/browse/AAASM-1707) | Add PolicyCache disabled baseline + cache trait | DEV VERIFY | [#682](https://github.com/AI-agent-assembly/agent-assembly/pull/682) |
-| [AAASM-1716](https://lightning-dust-mite.atlassian.net/browse/AAASM-1716) | Add PolicyCache Redis backend (connect/get/set/invalidate/TTL/fallback) | DEV VERIFY | [#689](https://github.com/AI-agent-assembly/agent-assembly/pull/689) |
+| [AAASM-1699](https://lightning-dust-mite.atlassian.net/browse/AAASM-1699) | Add redis optional dep + RedisConfig value type | DEV VERIFY | [#660](https://github.com/ai-agent-assembly/agent-assembly/pull/660) |
+| [AAASM-1703](https://lightning-dust-mite.atlassian.net/browse/AAASM-1703) | Add policy cache key derivation helper | DEV VERIFY | [#669](https://github.com/ai-agent-assembly/agent-assembly/pull/669) |
+| [AAASM-1707](https://lightning-dust-mite.atlassian.net/browse/AAASM-1707) | Add PolicyCache disabled baseline + cache trait | DEV VERIFY | [#682](https://github.com/ai-agent-assembly/agent-assembly/pull/682) |
+| [AAASM-1716](https://lightning-dust-mite.atlassian.net/browse/AAASM-1716) | Add PolicyCache Redis backend (connect/get/set/invalidate/TTL/fallback) | DEV VERIFY | [#689](https://github.com/ai-agent-assembly/agent-assembly/pull/689) |
 | [AAASM-1720](https://lightning-dust-mite.atlassian.net/browse/AAASM-1720) | Verify AAASM-1589 acceptance criteria | in this report | — |
 
 ## Verification environment
