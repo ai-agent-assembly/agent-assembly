@@ -22,10 +22,10 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| [AAASM-1744] | Impl-1 — `RetentionConfig` + `to_policy()` + validation | Done | [#662](https://github.com/AI-agent-assembly/agent-assembly/pull/662) |
-| [AAASM-1745] | Impl-2 — `RetentionEngine::run_once()` with tracing log | Done | [#686](https://github.com/AI-agent-assembly/agent-assembly/pull/686) |
-| [AAASM-1746] | Impl-3 — cron-driven `RetentionEngine::start()` background task | Done | [#694](https://github.com/AI-agent-assembly/agent-assembly/pull/694) |
-| [AAASM-1747] | Impl-4 — `aasm admin run-retention --dry-run` CLI subcommand | Done | [#697](https://github.com/AI-agent-assembly/agent-assembly/pull/697) |
+| [AAASM-1744] | Impl-1 — `RetentionConfig` + `to_policy()` + validation | Done | [#662](https://github.com/ai-agent-assembly/agent-assembly/pull/662) |
+| [AAASM-1745] | Impl-2 — `RetentionEngine::run_once()` with tracing log | Done | [#686](https://github.com/ai-agent-assembly/agent-assembly/pull/686) |
+| [AAASM-1746] | Impl-3 — cron-driven `RetentionEngine::start()` background task | Done | [#694](https://github.com/ai-agent-assembly/agent-assembly/pull/694) |
+| [AAASM-1747] | Impl-4 — `aasm admin run-retention --dry-run` CLI subcommand | Done | [#697](https://github.com/ai-agent-assembly/agent-assembly/pull/697) |
 | [AAASM-1748] | Verify — this report | in this PR | this PR |
 
 ## Scope cut (declared up-front)

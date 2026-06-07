@@ -22,10 +22,10 @@ A consumer pins each crate to an exact commit:
 
 ```toml
 [dependencies]
-aa-core       = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-core", features = ["serde"] }
-aa-proto      = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-proto" }
-aa-security   = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-security" }
-aa-sdk-client = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-sdk-client" }
+aa-core       = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-core", features = ["serde"] }
+aa-proto      = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-proto" }
+aa-security   = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-security" }
+aa-sdk-client = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "<full-40-char-sha>", package = "aa-sdk-client" }
 ```
 
 Notes:

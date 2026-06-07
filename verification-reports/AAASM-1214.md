@@ -11,10 +11,10 @@ Verification of the three implementation sub-tickets under F111:
 
 | Sub-ticket | PR | Repo |
 | --- | --- | --- |
-| [AAASM-1210](https://lightning-dust-mite.atlassian.net/browse/AAASM-1210) | [AI-agent-assembly/homebrew-agent-assembly#1](https://github.com/AI-agent-assembly/homebrew-agent-assembly/pull/1) | `homebrew-agent-assembly` (new) |
-| [AAASM-1211](https://lightning-dust-mite.atlassian.net/browse/AAASM-1211) | [AI-agent-assembly/homebrew-agent-assembly#2](https://github.com/AI-agent-assembly/homebrew-agent-assembly/pull/2) | `homebrew-agent-assembly` |
-| [AAASM-1212](https://lightning-dust-mite.atlassian.net/browse/AAASM-1212) | [AI-agent-assembly/agent-assembly#713](https://github.com/AI-agent-assembly/agent-assembly/pull/713) | `agent-assembly` |
-| [AAASM-1213](https://lightning-dust-mite.atlassian.net/browse/AAASM-1213) | [AI-agent-assembly/agent-assembly#719](https://github.com/AI-agent-assembly/agent-assembly/pull/719) | `agent-assembly` |
+| [AAASM-1210](https://lightning-dust-mite.atlassian.net/browse/AAASM-1210) | [ai-agent-assembly/homebrew-agent-assembly#1](https://github.com/ai-agent-assembly/homebrew-agent-assembly/pull/1) | `homebrew-agent-assembly` (new) |
+| [AAASM-1211](https://lightning-dust-mite.atlassian.net/browse/AAASM-1211) | [ai-agent-assembly/homebrew-agent-assembly#2](https://github.com/ai-agent-assembly/homebrew-agent-assembly/pull/2) | `homebrew-agent-assembly` |
+| [AAASM-1212](https://lightning-dust-mite.atlassian.net/browse/AAASM-1212) | [ai-agent-assembly/agent-assembly#713](https://github.com/ai-agent-assembly/agent-assembly/pull/713) | `agent-assembly` |
+| [AAASM-1213](https://lightning-dust-mite.atlassian.net/browse/AAASM-1213) | [ai-agent-assembly/agent-assembly#719](https://github.com/ai-agent-assembly/agent-assembly/pull/719) | `agent-assembly` |
 
 ## Static checks
 
@@ -52,12 +52,12 @@ Functions extracted verbatim from `scripts/install-cli.sh` for in-isolation exec
 | `brew install agent-assembly/tap/aasm` on macOS x86_64 | ⏸ Gated — first real release | Same as above |
 | `brew install agent-assembly/tap/aasm` on Linux x86_64 + ARM64 | ⏸ Gated — first real release | Same as above |
 | `curl -fsSL https://get.agent-assembly.io \| sh` on Linux x86_64 + macOS ARM64 | ⏸ Gated — DNS + hosting | Script logic verified (T1–T3); requires `get.agent-assembly.io` to be configured to serve `scripts/install-cli.sh`. Tracked separately under the distribution infra backlog. |
-| Installer script verifies SHA256 checksum before placing binary | ✅ PASS | Confirmed by T2 (accept) + T3 (reject on tamper); see [AAASM-1212 PR](https://github.com/AI-agent-assembly/agent-assembly/pull/713) |
+| Installer script verifies SHA256 checksum before placing binary | ✅ PASS | Confirmed by T2 (accept) + T3 (reject on tamper); see [AAASM-1212 PR](https://github.com/ai-agent-assembly/agent-assembly/pull/713) |
 | CI release workflow auto-updates formula SHA256 values on new tag push | ✅ PASS (design) | Verified statically (S3) — the 6-step `update-homebrew-tap` job exists, downloads SHA256SUMS, extracts four per-platform shas, rewrites `Formula/aasm.rb`, opens a PR via `peter-evans/create-pull-request@v7`. End-to-end requires `HOMEBREW_TAP_TOKEN` repo secret to be configured + the next real tag push. |
 
 ## Gating notes — what still needs to happen post-merge
 
-1. Engineer creates a fine-grained PAT for `AI-agent-assembly/homebrew-agent-assembly` (Contents + Pull requests: read/write) and adds it to `AI-agent-assembly/agent-assembly` as `HOMEBREW_TAP_TOKEN` repo secret.
+1. Engineer creates a fine-grained PAT for `ai-agent-assembly/homebrew-agent-assembly` (Contents + Pull requests: read/write) and adds it to `ai-agent-assembly/agent-assembly` as `HOMEBREW_TAP_TOKEN` repo secret.
 2. Engineer sets up `get.agent-assembly.io` to serve `scripts/install-cli.sh` from `master` (Cloudflare Pages, GitHub Pages, or equivalent). Out of scope for F111; tracked separately.
 3. First real release tag (e.g. `v0.1.0`) triggers `release.yml` → publishes binaries + SHA256SUMS → `update-homebrew-tap` opens its first PR on the tap repo with real sha values.
 4. After that tap PR merges, the end-to-end checklist items above can be ticked on the 4 supported platforms.

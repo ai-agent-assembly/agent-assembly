@@ -41,8 +41,8 @@ Delivered as 3 stacked subtasks, one PR each (all base `master`):
   `rust/aa-ffi-python/Cargo.toml` pins both crates at an exact SHA —
 
   ```toml
-  aa-core  = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "ed4aa11a8c1d1ce1e6f96b08cf2179fd772099b2", package = "aa-core", features = ["serde"] }
-  aa-proto = { git = "https://github.com/AI-agent-assembly/agent-assembly.git", rev = "ed4aa11a8c1d1ce1e6f96b08cf2179fd772099b2", package = "aa-proto" }
+  aa-core  = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "ed4aa11a8c1d1ce1e6f96b08cf2179fd772099b2", package = "aa-core", features = ["serde"] }
+  aa-proto = { git = "https://github.com/ai-agent-assembly/agent-assembly.git", rev = "ed4aa11a8c1d1ce1e6f96b08cf2179fd772099b2", package = "aa-proto" }
   ```
 
 - `aa-sdk-client` is `publish = false` (distributed only via the git pin, never

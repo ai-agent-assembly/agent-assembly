@@ -12,10 +12,10 @@ This report verifies the 10 acceptance criteria of AAASM-1550 against the work s
 
 | Sub-task | Repo | PR |
 |---|---|---|
-| AAASM-1677 — Adapter module + unit tests | python-sdk | [python-sdk#46](https://github.com/AI-agent-assembly/python-sdk/pull/46) |
-| AAASM-1678 — Integration test | python-sdk | [python-sdk#47](https://github.com/AI-agent-assembly/python-sdk/pull/47) (stacked on #46) |
-| AAASM-1679 — Fixture scripts + optional dep + run_agents discovery | agent-assembly | [agent-assembly#623](https://github.com/AI-agent-assembly/agent-assembly/pull/623) |
-| AAASM-1680 — Rust selftest tests | agent-assembly | [agent-assembly#625](https://github.com/AI-agent-assembly/agent-assembly/pull/625) (stacked on #623) |
+| AAASM-1677 — Adapter module + unit tests | python-sdk | [python-sdk#46](https://github.com/ai-agent-assembly/python-sdk/pull/46) |
+| AAASM-1678 — Integration test | python-sdk | [python-sdk#47](https://github.com/ai-agent-assembly/python-sdk/pull/47) (stacked on #46) |
+| AAASM-1679 — Fixture scripts + optional dep + run_agents discovery | agent-assembly | [agent-assembly#623](https://github.com/ai-agent-assembly/agent-assembly/pull/623) |
+| AAASM-1680 — Rust selftest tests | agent-assembly | [agent-assembly#625](https://github.com/ai-agent-assembly/agent-assembly/pull/625) (stacked on #623) |
 
 ## Acceptance-criteria checklist
 

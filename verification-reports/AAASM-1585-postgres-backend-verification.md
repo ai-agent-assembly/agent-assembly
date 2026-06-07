@@ -15,14 +15,14 @@ All 8 implementation sub-tasks merged on `master` before this verification:
 
 | # | Sub-task | PR | Merge commit |
 |---|---|---|---|
-| 1 | AAASM-1719 — Scaffold PostgresBackend skeleton + PostgresConfig | [#658](https://github.com/AI-agent-assembly/agent-assembly/pull/658) | `c61a46ce` |
-| 2 | AAASM-1724 — Initial schema migration + `migrate()` | [#688](https://github.com/AI-agent-assembly/agent-assembly/pull/688) | `0fda1064` |
-| 3 | AAASM-1727 — Audit-event ops (`append`/`query`/`count`) | [#695](https://github.com/AI-agent-assembly/agent-assembly/pull/695) | `6d4c48f5` |
-| 4 | AAASM-1729 — Agent-registry ops (`upsert`/`get`/`list`/`delete`) | [#700](https://github.com/AI-agent-assembly/agent-assembly/pull/700) | `49b67201` |
-| 5 | AAASM-1730 — Policy-store ops (`save`/`get_active`/`list`/`rollback`) | [#702](https://github.com/AI-agent-assembly/agent-assembly/pull/702) | `a8329aa2` |
-| 6 | AAASM-1734 — Metrics ops (`record_metric`/`query_metrics` w/ bucket) | [#704](https://github.com/AI-agent-assembly/agent-assembly/pull/704) | `5ab1f9f0` |
-| 7 | AAASM-1738 — `apply_retention` + `healthcheck` | [#706](https://github.com/AI-agent-assembly/agent-assembly/pull/706) | `e24b8463` |
-| 8 | AAASM-1741 — CI `postgres:18-alpine` service for Test + Coverage | [#707](https://github.com/AI-agent-assembly/agent-assembly/pull/707) | `413fe0fe` |
+| 1 | AAASM-1719 — Scaffold PostgresBackend skeleton + PostgresConfig | [#658](https://github.com/ai-agent-assembly/agent-assembly/pull/658) | `c61a46ce` |
+| 2 | AAASM-1724 — Initial schema migration + `migrate()` | [#688](https://github.com/ai-agent-assembly/agent-assembly/pull/688) | `0fda1064` |
+| 3 | AAASM-1727 — Audit-event ops (`append`/`query`/`count`) | [#695](https://github.com/ai-agent-assembly/agent-assembly/pull/695) | `6d4c48f5` |
+| 4 | AAASM-1729 — Agent-registry ops (`upsert`/`get`/`list`/`delete`) | [#700](https://github.com/ai-agent-assembly/agent-assembly/pull/700) | `49b67201` |
+| 5 | AAASM-1730 — Policy-store ops (`save`/`get_active`/`list`/`rollback`) | [#702](https://github.com/ai-agent-assembly/agent-assembly/pull/702) | `a8329aa2` |
+| 6 | AAASM-1734 — Metrics ops (`record_metric`/`query_metrics` w/ bucket) | [#704](https://github.com/ai-agent-assembly/agent-assembly/pull/704) | `5ab1f9f0` |
+| 7 | AAASM-1738 — `apply_retention` + `healthcheck` | [#706](https://github.com/ai-agent-assembly/agent-assembly/pull/706) | `e24b8463` |
+| 8 | AAASM-1741 — CI `postgres:18-alpine` service for Test + Coverage | [#707](https://github.com/ai-agent-assembly/agent-assembly/pull/707) | `413fe0fe` |
 
 ## Story acceptance criteria
 

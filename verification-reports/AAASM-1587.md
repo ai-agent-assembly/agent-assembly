@@ -1,6 +1,6 @@
 # E18 S-E Verification — AAASM-1587 (Migration runner)
 
-> **Status**: parent Story [AAASM-1587] decomposed into two Sub-tasks shipped on Sprint-4 branches. Implementation lands in [AI-agent-assembly/agent-assembly#664], verification lands in this PR. All six Story-level acceptance bullets verified clean below — no follow-up Bug Sub-task opened.
+> **Status**: parent Story [AAASM-1587] decomposed into two Sub-tasks shipped on Sprint-4 branches. Implementation lands in [ai-agent-assembly/agent-assembly#664], verification lands in this PR. All six Story-level acceptance bullets verified clean below — no follow-up Bug Sub-task opened.
 >
 > **Scope clarification (carried over from the Story's starting comment):** dependencies [AAASM-1584] (S-B SQLite) and [AAASM-1585] (S-C PostgreSQL) are still To Do, so the description's "wire `run_migrations` into `local_mode.rs` / `remote_mode.rs`" step is deferred to [AAASM-1590] (S-I). The S-E ACs targeted in this Story are about the runner mechanism, not the wiring — every one of them is verifiable on the runner alone, which is what this report does. PostgreSQL coverage is provided via `testcontainers` to avoid a hard dependency on S-C.
 
@@ -11,13 +11,13 @@
 [AAASM-1590]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1590
 [AAASM-1733]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1733
 [AAASM-1736]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1736
-[AI-agent-assembly/agent-assembly#664]: https://github.com/AI-agent-assembly/agent-assembly/pull/664
+[ai-agent-assembly/agent-assembly#664]: https://github.com/ai-agent-assembly/agent-assembly/pull/664
 
 ## Sub-task roll-up
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| [AAASM-1733] | E18 S-E impl — runner module + SQLite + PG tests | Done (open PR) | [#664](https://github.com/AI-agent-assembly/agent-assembly/pull/664) |
+| [AAASM-1733] | E18 S-E impl — runner module + SQLite + PG tests | Done (open PR) | [#664](https://github.com/ai-agent-assembly/agent-assembly/pull/664) |
 | [AAASM-1736] | E18 S-E verify — confirm AC | in this report | this PR |
 
 ## Walkthrough vs AAASM-1587 acceptance criteria

@@ -139,7 +139,7 @@ A readiness probe is exposed at `http://localhost:8080/ready` throughout the Enf
 
 ## Policy evaluation path
 
-When `aa-gateway` receives a `PolicyDecisionRequest`, it walks four stages before returning a decision. The implementation lives under [`aa-gateway/src/policy/`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-gateway/src/policy):
+When `aa-gateway` receives a `PolicyDecisionRequest`, it walks four stages before returning a decision. The implementation lives under [`aa-gateway/src/policy/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-gateway/src/policy):
 
 ```mermaid
 flowchart LR

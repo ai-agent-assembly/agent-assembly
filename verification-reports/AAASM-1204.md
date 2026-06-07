@@ -21,10 +21,10 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1224 | Author Dockerfile.python-3.14-slim | Done | [#474](https://github.com/AI-agent-assembly/agent-assembly/pull/474) |
-| AAASM-1439 | Author Dockerfile.node-24-slim | Done | [#475](https://github.com/AI-agent-assembly/agent-assembly/pull/475) |
-| AAASM-1440 | Author Dockerfile.go-1.26-alpine | Done | [#476](https://github.com/AI-agent-assembly/agent-assembly/pull/476) |
-| AAASM-1225 | Extend docker.yml — 3-variant publish matrix | Done | [#515](https://github.com/AI-agent-assembly/agent-assembly/pull/515) |
+| AAASM-1224 | Author Dockerfile.python-3.14-slim | Done | [#474](https://github.com/ai-agent-assembly/agent-assembly/pull/474) |
+| AAASM-1439 | Author Dockerfile.node-24-slim | Done | [#475](https://github.com/ai-agent-assembly/agent-assembly/pull/475) |
+| AAASM-1440 | Author Dockerfile.go-1.26-alpine | Done | [#476](https://github.com/ai-agent-assembly/agent-assembly/pull/476) |
+| AAASM-1225 | Extend docker.yml — 3-variant publish matrix | Done | [#515](https://github.com/ai-agent-assembly/agent-assembly/pull/515) |
 | AAASM-1500 | [BUG] Python: pip-installed aasm shadows Rust aasm | Done | (merged) |
 | AAASM-1501 | [BUG] Node: npm `github:` shorthand resolves to ssh:// | Done | (merged) |
 | AAASM-1502 | [BUG] Go: go-sdk module path mismatch | Done | (merged) |
@@ -55,7 +55,7 @@ deferred entirely.
 
 * **`linux/amd64`** — verified locally for the **Python** and **Go** variants
   on `master @ a86f09f3` (transcripts below). The **Node** variant build
-  fails at the `RUN npm install -g 'github:AI-agent-assembly/node-sdk'` step;
+  fails at the `RUN npm install -g 'github:ai-agent-assembly/node-sdk'` step;
   this is the documented [AAASM-1501] root cause and the variant is
   intentionally excluded from the active docker.yml matrix
   ([`.github/workflows/docker.yml:82–86`](../.github/workflows/docker.yml)).
@@ -105,11 +105,11 @@ Local Go build transcript (cargo Stage 1 reused from the python build's
 #14 [aasm-builder 5/5] RUN cargo build --release -p aa-cli --bin aasm    CACHED
 #15 [stage-1 1/5] FROM docker.io/library/golang:1.26-alpine              CACHED
 #16 [stage-1 2/5] COPY --from=aasm-builder /usr/local/bin/aasm ...       DONE 0.0s
-#17 [stage-1 3/5] RUN go install github.com/AI-agent-assembly/go-sdk/...@latest  DONE 74.5s
+#17 [stage-1 3/5] RUN go install github.com/ai-agent-assembly/go-sdk/...@latest  DONE 74.5s
 #18 [stage-1 4/5] RUN aasm --version
 #18 0.287 aasm 0.0.1                                                     DONE 0.4s
-#19 [stage-1 5/5] RUN go list -m github.com/AI-agent-assembly/go-sdk@latest
-#19 0.902 github.com/AI-agent-assembly/go-sdk v0.0.0-20260520010711-912053a56c4c  DONE 0.9s
+#19 [stage-1 5/5] RUN go list -m github.com/ai-agent-assembly/go-sdk@latest
+#19 0.902 github.com/ai-agent-assembly/go-sdk v0.0.0-20260520010711-912053a56c4c  DONE 0.9s
 #20 exporting to image                                                   DONE 0.6s
 === BUILD END: 2026-05-20T01:55:56Z ===
 === EXIT: 0 ===
@@ -123,13 +123,13 @@ Local Node build transcript (failure verbatim — this is the
 #13 [aasm-builder 5/5] RUN cargo build --release -p aa-cli --bin aasm    CACHED
 #14 [stage-1 2/7]   RUN apt-get install git                              DONE ~25s
 #15 [stage-1 3/7]   COPY --from=aasm-builder /usr/local/bin/aasm ...     DONE 0.0s
-#16 [stage-1 4/7]   RUN npm install -g 'github:AI-agent-assembly/node-sdk'
+#16 [stage-1 4/7]   RUN npm install -g 'github:ai-agent-assembly/node-sdk'
 #16 1.735 npm error code 128
 #16 1.735 npm error An unknown git error occurred
-#16 1.735 npm error command git --no-replace-objects ls-remote ssh://git@github.com/AI-agent-assembly/node-sdk.git
+#16 1.735 npm error command git --no-replace-objects ls-remote ssh://git@github.com/ai-agent-assembly/node-sdk.git
 #16 1.736 npm error ssh -oStrictHostKeyChecking=accept-new: 1: ssh: not found
 #16 1.736 npm error fatal: Could not read from remote repository.
-#16 ERROR: process "/bin/sh -c npm install -g 'github:AI-agent-assembly/node-sdk'" did not complete successfully: exit code: 128
+#16 ERROR: process "/bin/sh -c npm install -g 'github:ai-agent-assembly/node-sdk'" did not complete successfully: exit code: 128
 === BUILD END: 2026-05-20T01:57:32Z ===
 === EXIT: 1 ===
 ```
@@ -188,7 +188,7 @@ the Dockerfile's transitional install line collapses to
 **Adapted** per [AAASM-1508]. Two changes vs. the parent-Story AC text:
 
 1. **Module path capitalisation** — the actual module is
-   `github.com/AI-agent-assembly/go-sdk` (capitalised org segment), not
+   `github.com/ai-agent-assembly/go-sdk` (capitalised org segment), not
    `github.com/agent-assembly/go-sdk` (per [AAASM-1502]).
 2. **`go list <import>` → `go list -m <module>@latest`** — the plain `go list
    <import>` form needs both a module context (a `go.mod` cwd) AND a
@@ -201,14 +201,14 @@ the Dockerfile's transitional install line collapses to
 Adapted smoke:
 
 ```
-$ docker run --rm aaasm-verify/go:local go list -m github.com/AI-agent-assembly/go-sdk@latest
+$ docker run --rm aaasm-verify/go:local go list -m github.com/ai-agent-assembly/go-sdk@latest
 WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
-github.com/AI-agent-assembly/go-sdk v0.0.0-20260520010711-912053a56c4c
+github.com/ai-agent-assembly/go-sdk v0.0.0-20260520010711-912053a56c4c
 ```
 
 This adaptation is also encoded in
 [`.github/workflows/docker.yml:90`](../.github/workflows/docker.yml)
-(`smoke_run: "go list -m github.com/AI-agent-assembly/go-sdk@latest"`),
+(`smoke_run: "go list -m github.com/ai-agent-assembly/go-sdk@latest"`),
 so CI and local verification both exercise the adapted form.
 
 ### ✅ Smoke run — `aasm --version` for every produced variant
@@ -254,7 +254,7 @@ which compresses well — hence the 528 MB → 153 MB ratio.
 
 ### ✅ CI workflow (AAASM-1225) build job passes for the active variants on the integration PR
 
-Per the AAASM-1225 PR ([#515](https://github.com/AI-agent-assembly/agent-assembly/pull/515)),
+Per the AAASM-1225 PR ([#515](https://github.com/ai-agent-assembly/agent-assembly/pull/515)),
 the matrix runs the Python and Go variants only. PR #515 merged green, which
 is the AC evidence that the workflow extension itself works. The matrix is
 deliberately 2-of-3 today; Node is restored under [AAASM-1503]. The Node
@@ -277,7 +277,7 @@ This file.
 | Node `require('@agent-assembly/sdk')` smoke | ⚠️ Deferred | [AAASM-1503] | Same |
 | Node compressed-size measurement | ⚠️ Deferred | [AAASM-1503] | Same |
 | Go `go list <import>` smoke text | ⚠️ Adapted to `go list -m <module>@latest` | [AAASM-1508] (already merged) | n/a — adaptation final |
-| Go module path `github.com/agent-assembly/go-sdk` | ⚠️ Adapted to `github.com/AI-agent-assembly/go-sdk` | [AAASM-1502] (already merged) | n/a — adaptation final |
+| Go module path `github.com/agent-assembly/go-sdk` | ⚠️ Adapted to `github.com/ai-agent-assembly/go-sdk` | [AAASM-1502] (already merged) | n/a — adaptation final |
 
 ## Adaptations summary (mirrors the AAASM-1066 pattern)
 
@@ -285,7 +285,7 @@ This file.
 |---|---|---|---|
 | 1 | `linux/amd64` AND `linux/arm64` build | amd64 verified locally for python+go; arm64 deferred to first `v*` tag | Buildkit's `--load` and multi-arch are mutually exclusive; CI design correctly gates multi-arch on tag pushes |
 | 2 | `<node>` smoke run | Node smoke deferred entirely; image not produced | npm `github:` shorthand → `ssh://` rewrite; no ssh client in node:24-slim → [AAASM-1501] / [AAASM-1503] |
-| 3 | `go list github.com/agent-assembly/go-sdk` | `go list -m github.com/AI-agent-assembly/go-sdk@latest` | Module path capitalisation ([AAASM-1502]) + no-go.mod / no-root-package shape ([AAASM-1508]) |
+| 3 | `go list github.com/agent-assembly/go-sdk` | `go list -m github.com/ai-agent-assembly/go-sdk@latest` | Module path capitalisation ([AAASM-1502]) + no-go.mod / no-root-package shape ([AAASM-1508]) |
 | 4 | `ghcr.io/agent-assembly/<lang>:<tag>` pull/run after v0.0.1 tag | Deferred; workflow code present | No `v0.0.1` tag has been cut yet; the release flow owns this |
 
 ## Sign-off

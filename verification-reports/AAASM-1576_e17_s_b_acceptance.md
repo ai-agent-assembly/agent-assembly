@@ -15,13 +15,13 @@
 
 | # | Key | PR | Title |
 | --- | --- | --- | --- |
-| 1 | [AAASM-1701](https://lightning-dust-mite.atlassian.net/browse/AAASM-1701) | [#655](https://github.com/AI-agent-assembly/agent-assembly/pull/655) | local_mode module scaffold — handle, healthz response, error types |
-| 2 | [AAASM-1705](https://lightning-dust-mite.atlassian.net/browse/AAASM-1705) | [#670](https://github.com/AI-agent-assembly/agent-assembly/pull/670) | Mount /healthz in local_mode router via routes::healthz |
-| 3 | [AAASM-1710](https://lightning-dust-mite.atlassian.net/browse/AAASM-1710) | [#687](https://github.com/AI-agent-assembly/agent-assembly/pull/687) | SQLite open + parent-dir mkdir helpers |
-| 4 | [AAASM-1715](https://lightning-dust-mite.atlassian.net/browse/AAASM-1715) | [#693](https://github.com/AI-agent-assembly/agent-assembly/pull/693) | Idempotent healthz pre-flight probe |
-| 5 | [AAASM-1725](https://lightning-dust-mite.atlassian.net/browse/AAASM-1725) | [#696](https://github.com/AI-agent-assembly/agent-assembly/pull/696) | start_local() orchestrator + 127.0.0.1 bind + PID file |
-| 6 | [AAASM-1728](https://lightning-dust-mite.atlassian.net/browse/AAASM-1728) | [#701](https://github.com/AI-agent-assembly/agent-assembly/pull/701) | Graceful shutdown + PID/DB cleanup |
-| 7 | [AAASM-1731](https://lightning-dust-mite.atlassian.net/browse/AAASM-1731) | [#703](https://github.com/AI-agent-assembly/agent-assembly/pull/703) | Wire DeploymentMode dispatch — AA_MODE=local boots local CP |
+| 1 | [AAASM-1701](https://lightning-dust-mite.atlassian.net/browse/AAASM-1701) | [#655](https://github.com/ai-agent-assembly/agent-assembly/pull/655) | local_mode module scaffold — handle, healthz response, error types |
+| 2 | [AAASM-1705](https://lightning-dust-mite.atlassian.net/browse/AAASM-1705) | [#670](https://github.com/ai-agent-assembly/agent-assembly/pull/670) | Mount /healthz in local_mode router via routes::healthz |
+| 3 | [AAASM-1710](https://lightning-dust-mite.atlassian.net/browse/AAASM-1710) | [#687](https://github.com/ai-agent-assembly/agent-assembly/pull/687) | SQLite open + parent-dir mkdir helpers |
+| 4 | [AAASM-1715](https://lightning-dust-mite.atlassian.net/browse/AAASM-1715) | [#693](https://github.com/ai-agent-assembly/agent-assembly/pull/693) | Idempotent healthz pre-flight probe |
+| 5 | [AAASM-1725](https://lightning-dust-mite.atlassian.net/browse/AAASM-1725) | [#696](https://github.com/ai-agent-assembly/agent-assembly/pull/696) | start_local() orchestrator + 127.0.0.1 bind + PID file |
+| 6 | [AAASM-1728](https://lightning-dust-mite.atlassian.net/browse/AAASM-1728) | [#701](https://github.com/ai-agent-assembly/agent-assembly/pull/701) | Graceful shutdown + PID/DB cleanup |
+| 7 | [AAASM-1731](https://lightning-dust-mite.atlassian.net/browse/AAASM-1731) | [#703](https://github.com/ai-agent-assembly/agent-assembly/pull/703) | Wire DeploymentMode dispatch — AA_MODE=local boots local CP |
 
 ---
 

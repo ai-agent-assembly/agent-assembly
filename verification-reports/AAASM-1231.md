@@ -14,10 +14,10 @@
 > two deferred rows already track their unmerged distribution prerequisites
 > ([AAASM-1201] Python wheels, [AAASM-1204] Docker base images).
 >
-> [#48]: https://github.com/AI-agent-assembly/python-sdk/pull/48
-> [#41]: https://github.com/AI-agent-assembly/node-sdk/pull/41
-> [#34]: https://github.com/AI-agent-assembly/go-sdk/pull/34
-> [#634]: https://github.com/AI-agent-assembly/agent-assembly/pull/634
+> [#48]: https://github.com/ai-agent-assembly/python-sdk/pull/48
+> [#41]: https://github.com/ai-agent-assembly/node-sdk/pull/41
+> [#34]: https://github.com/ai-agent-assembly/go-sdk/pull/34
+> [#634]: https://github.com/ai-agent-assembly/agent-assembly/pull/634
 > [AAASM-1199]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1199
 > [AAASM-1201]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1201
 > [AAASM-1204]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1204

@@ -6,9 +6,9 @@
 
 | Sub-task | PR | Summary |
 |---|---|---|
-| AAASM-1673 | [#620](https://github.com/AI-agent-assembly/agent-assembly/pull/620) | Countdown helpers + `ApprovalCountdown` component |
-| AAASM-1674 | [#622](https://github.com/AI-agent-assembly/agent-assembly/pull/622) | `useExpiredApprovals` client state + WS expired handling |
-| AAASM-1675 | [#624](https://github.com/AI-agent-assembly/agent-assembly/pull/624) | `ExpiredApprovalsSection` + `ApprovalsPage` wire-in |
+| AAASM-1673 | [#620](https://github.com/ai-agent-assembly/agent-assembly/pull/620) | Countdown helpers + `ApprovalCountdown` component |
+| AAASM-1674 | [#622](https://github.com/ai-agent-assembly/agent-assembly/pull/622) | `useExpiredApprovals` client state + WS expired handling |
+| AAASM-1675 | [#624](https://github.com/ai-agent-assembly/agent-assembly/pull/624) | `ExpiredApprovalsSection` + `ApprovalsPage` wire-in |
 | AAASM-1676 | _this PR_ | Playwright e2e + screenshots + this report |
 
 ## Definition of Done — AC walk-through

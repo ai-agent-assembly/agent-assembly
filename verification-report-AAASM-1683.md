@@ -2,9 +2,9 @@
 
 **Bug sub-task:** AAASM-1683 — [BUG] aasm release binary exceeds 2–8 MB AC target
 **Parent Story:** AAASM-1200 — F110: Cross-platform CI release pipeline
-**PR:** [AI-agent-assembly/agent-assembly#638](https://github.com/AI-agent-assembly/agent-assembly/pull/638)
+**PR:** [ai-agent-assembly/agent-assembly#638](https://github.com/ai-agent-assembly/agent-assembly/pull/638)
 **Verified by:** workflow_dispatch dry-run on the branch
-**Run:** [release.yml #26201143804](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26201143804)
+**Run:** [release.yml #26201143804](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26201143804)
 **Date:** 2026-05-21 (UTC)
 
 ## Root cause
@@ -33,7 +33,7 @@ Dev experience (`vite` / `pnpm dev`) is unaffected — `build.sourcemap` control
 
 ## Before vs after (CI measurement)
 
-Pre-fix (from AAASM-1209 dry-run [#26197408878](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26197408878)) vs post-fix (this PR's dry-run [#26201143804](https://github.com/AI-agent-assembly/agent-assembly/actions/runs/26201143804)):
+Pre-fix (from AAASM-1209 dry-run [#26197408878](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26197408878)) vs post-fix (this PR's dry-run [#26201143804](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/26201143804)):
 
 | Target | Before | After | Saved | vs original 2–8 MB AC |
 | --- | --- | --- | --- | --- |

@@ -1,12 +1,12 @@
 # Command-Line Interface (`aasm`)
 
 `aasm` is the operator front-end for an Agent Assembly deployment. It ships from
-the [`aa-cli`](https://github.com/AI-agent-assembly/agent-assembly/tree/master/aa-cli)
+the [`aa-cli`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-cli)
 crate and talks to the gateway over its HTTP API.
 
 ## Install
 
-See the [README install section](https://github.com/AI-agent-assembly/agent-assembly#install-the-cli)
+See the [README install section](https://github.com/ai-agent-assembly/agent-assembly#install-the-cli)
 for the install script and Homebrew tap. For a local build:
 
 ```bash
@@ -52,7 +52,7 @@ These flags are available on every subcommand:
 > The `aasm run` and `aasm tools` dev-tool subcommands (launch and manage AI
 > dev tools such as Claude Code, Codex, Copilot, and Windsurf with governance
 > wiring) are present in the full build but stripped from the published crate.
-> See [Dev-tool governance limits](https://github.com/AI-agent-assembly/agent-assembly/blob/master/docs/devtools/governance-limits.md).
+> See [Dev-tool governance limits](https://github.com/ai-agent-assembly/agent-assembly/blob/master/docs/devtools/governance-limits.md).
 
 ## Examples
 

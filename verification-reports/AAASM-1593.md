@@ -1,12 +1,12 @@
 # E18 S-L Verification — AAASM-1593 (ADR 0001 storage architecture)
 
-> **Status**: All acceptance criteria PASS. The implementation sub-task PR ([#641](https://github.com/AI-agent-assembly/agent-assembly/pull/641)) landed on `master` at 2026-05-21T06:32:55Z (merge commit `4caa8d18`). This report verifies the merged deliverable end-to-end and is the second of two sub-tasks under the Story.
+> **Status**: All acceptance criteria PASS. The implementation sub-task PR ([#641](https://github.com/ai-agent-assembly/agent-assembly/pull/641)) landed on `master` at 2026-05-21T06:32:55Z (merge commit `4caa8d18`). This report verifies the merged deliverable end-to-end and is the second of two sub-tasks under the Story.
 
 ## Sub-task roll-up
 
 | Sub-task | Title | Status | PR |
 | --- | --- | --- | --- |
-| [AAASM-1687](https://lightning-dust-mite.atlassian.net/browse/AAASM-1687) | Add ADR 0001 storage architecture doc + index + SUMMARY.md entry | Done | [#641](https://github.com/AI-agent-assembly/agent-assembly/pull/641) |
+| [AAASM-1687](https://lightning-dust-mite.atlassian.net/browse/AAASM-1687) | Add ADR 0001 storage architecture doc + index + SUMMARY.md entry | Done | [#641](https://github.com/ai-agent-assembly/agent-assembly/pull/641) |
 | [AAASM-1688](https://lightning-dust-mite.atlassian.net/browse/AAASM-1688) | Verify ADR 0001 storage architecture acceptance criteria | in this report | — |
 
 ## Walkthrough vs AAASM-1593 acceptance criteria
@@ -29,7 +29,7 @@ docs/src/adr/README.md                    |  11 +++
 3 files changed, 173 insertions(+)
 ```
 
-Evidence: [`docs/src/adr/0001-storage-architecture.md`](../docs/src/adr/0001-storage-architecture.md), [merge commit `4caa8d18`](https://github.com/AI-agent-assembly/agent-assembly/commit/4caa8d183799e3c9da34ff2d93f30f4897481592).
+Evidence: [`docs/src/adr/0001-storage-architecture.md`](../docs/src/adr/0001-storage-architecture.md), [merge commit `4caa8d18`](https://github.com/ai-agent-assembly/agent-assembly/commit/4caa8d183799e3c9da34ff2d93f30f4897481592).
 
 ### ✅ ADR covers context, decision, all alternatives considered, consequences
 
@@ -130,7 +130,7 @@ Additionally, the impl PR's CI jobs covered the same ground:
 | `Build mdBook` | `Docs` | ✅ SUCCESS |
 | `Verify documented commands (Linux)` | `Docs` | ✅ SUCCESS |
 
-Evidence: PR [#641 statusCheckRollup](https://github.com/AI-agent-assembly/agent-assembly/pull/641); local `cargo doc --workspace --no-deps` exit 0 at 2026-05-21T14:38 +0800.
+Evidence: PR [#641 statusCheckRollup](https://github.com/ai-agent-assembly/agent-assembly/pull/641); local `cargo doc --workspace --no-deps` exit 0 at 2026-05-21T14:38 +0800.
 
 ## Adaptations vs ticket text
 

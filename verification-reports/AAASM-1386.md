@@ -11,14 +11,14 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1615 | Add `AlertRule` domain types + validation | Done | [#592](https://github.com/AI-agent-assembly/agent-assembly/pull/592) |
-| AAASM-1616 | Add `AlertRuleStore` trait + `InMemoryAlertRuleStore` | Done | [#601](https://github.com/AI-agent-assembly/agent-assembly/pull/601) |
-| AAASM-1617 | Add in-memory `DestinationRegistry` stub | Done | [#602](https://github.com/AI-agent-assembly/agent-assembly/pull/602) |
-| AAASM-1618 | Extend `ProblemDetail` with optional `error_code` field | Done | [#603](https://github.com/AI-agent-assembly/agent-assembly/pull/603) |
-| AAASM-1619 | Wire `alert_rule_store` + `destination_registry` into `AppState` | Done | [#604](https://github.com/AI-agent-assembly/agent-assembly/pull/604) |
-| AAASM-1620 | Add CRUD handlers + register routes + utoipa annotations | Done | [#607](https://github.com/AI-agent-assembly/agent-assembly/pull/607) |
-| AAASM-1621 | Add minimum-viable rule evaluator + wire into `run_server` | Done | [#608](https://github.com/AI-agent-assembly/agent-assembly/pull/608) |
-| AAASM-1622 | Add integration tests `aa-api/tests/alert_rules.rs` | Done | [#610](https://github.com/AI-agent-assembly/agent-assembly/pull/610) |
+| AAASM-1615 | Add `AlertRule` domain types + validation | Done | [#592](https://github.com/ai-agent-assembly/agent-assembly/pull/592) |
+| AAASM-1616 | Add `AlertRuleStore` trait + `InMemoryAlertRuleStore` | Done | [#601](https://github.com/ai-agent-assembly/agent-assembly/pull/601) |
+| AAASM-1617 | Add in-memory `DestinationRegistry` stub | Done | [#602](https://github.com/ai-agent-assembly/agent-assembly/pull/602) |
+| AAASM-1618 | Extend `ProblemDetail` with optional `error_code` field | Done | [#603](https://github.com/ai-agent-assembly/agent-assembly/pull/603) |
+| AAASM-1619 | Wire `alert_rule_store` + `destination_registry` into `AppState` | Done | [#604](https://github.com/ai-agent-assembly/agent-assembly/pull/604) |
+| AAASM-1620 | Add CRUD handlers + register routes + utoipa annotations | Done | [#607](https://github.com/ai-agent-assembly/agent-assembly/pull/607) |
+| AAASM-1621 | Add minimum-viable rule evaluator + wire into `run_server` | Done | [#608](https://github.com/ai-agent-assembly/agent-assembly/pull/608) |
+| AAASM-1622 | Add integration tests `aa-api/tests/alert_rules.rs` | Done | [#610](https://github.com/ai-agent-assembly/agent-assembly/pull/610) |
 | AAASM-1623 | Verify Add alert-rules CRUD endpoints acceptance criteria | in this report | — |
 
 ## Acceptance-criteria walkthrough

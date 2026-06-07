@@ -1,7 +1,7 @@
 # Verification report — AAASM-2389 (MVP four-table schema consolidation)
 
 - **Story:** AAASM-2389 — consolidate `orgs`/`agents`/`policies`/`audit_logs` into one canonical migration set
-- **Implementation:** AAASM-2395 — PR [#900](https://github.com/AI-agent-assembly/agent-assembly/pull/900)
+- **Implementation:** AAASM-2395 — PR [#900](https://github.com/ai-agent-assembly/agent-assembly/pull/900)
 - **Verification subtask:** AAASM-2396
 - **Date:** 2026-06-04
 - **Environment:** macOS dev box, Docker 28.3.2, Postgres 18-alpine, `cargo nextest`

@@ -57,11 +57,11 @@ All five implementation PRs were merged with green Dashboard CI (type-check + li
 
 | PR | Sub-task | Merge commit | Notes |
 | --- | --- | --- | --- |
-| [#336](https://github.com/AI-agent-assembly/agent-assembly/pull/336) | AAASM-1083 | `f9ea8b2c` | 7 commits — scaffold |
-| [#385](https://github.com/AI-agent-assembly/agent-assembly/pull/385) | AAASM-1084 | `38b8167f` | 11 commits — members |
-| [#391](https://github.com/AI-agent-assembly/agent-assembly/pull/391) | AAASM-1085 | `1e8c4b8c` | 11 commits — API keys reveal-once |
-| [#394](https://github.com/AI-agent-assembly/agent-assembly/pull/394) | AAASM-1086 | `82a410dc` | 10 commits — agent registry + permissions |
-| [#397](https://github.com/AI-agent-assembly/agent-assembly/pull/397) | AAASM-1087 | `a839e700` | 7 commits — custom-roles locked + E2E |
+| [#336](https://github.com/ai-agent-assembly/agent-assembly/pull/336) | AAASM-1083 | `f9ea8b2c` | 7 commits — scaffold |
+| [#385](https://github.com/ai-agent-assembly/agent-assembly/pull/385) | AAASM-1084 | `38b8167f` | 11 commits — members |
+| [#391](https://github.com/ai-agent-assembly/agent-assembly/pull/391) | AAASM-1085 | `1e8c4b8c` | 11 commits — API keys reveal-once |
+| [#394](https://github.com/ai-agent-assembly/agent-assembly/pull/394) | AAASM-1086 | `82a410dc` | 10 commits — agent registry + permissions |
+| [#397](https://github.com/ai-agent-assembly/agent-assembly/pull/397) | AAASM-1087 | `a839e700` | 7 commits — custom-roles locked + E2E |
 
 ## Sign-off
 

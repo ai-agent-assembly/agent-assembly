@@ -7,7 +7,7 @@
 | **Verification sub-task** | [AAASM-1862](https://lightning-dust-mite.atlassian.net/browse/AAASM-1862) |
 | **Verifier** | Cross-reference of 9 env-gated tests across SD-1..SD-5, all run live in CI |
 | **Date** | 2026-05-23 |
-| **Authoritative CI run** | PR [#757](https://github.com/AI-agent-assembly/agent-assembly/pull/757) `TimescaleDB Tests` job — green on the merge commit |
+| **Authoritative CI run** | PR [#757](https://github.com/ai-agent-assembly/agent-assembly/pull/757) `TimescaleDB Tests` job — green on the merge commit |
 
 ---
 
@@ -15,13 +15,13 @@
 
 | PR | Sub-ticket | Scope |
 |---|---|---|
-| [#711](https://github.com/AI-agent-assembly/agent-assembly/pull/711) | [AAASM-1848](https://lightning-dust-mite.atlassian.net/browse/AAASM-1848) (SD-1) | `0002_timescaledb_hypertables.sql` migration |
-| [#741](https://github.com/AI-agent-assembly/agent-assembly/pull/741) | [AAASM-1852](https://lightning-dust-mite.atlassian.net/browse/AAASM-1852) (SD-2) | `TimescaleStats` type + `has_timescaledb_extension` probe helper |
-| [#746](https://github.com/AI-agent-assembly/agent-assembly/pull/746) | [AAASM-1853](https://lightning-dust-mite.atlassian.net/browse/AAASM-1853) (SD-3) | `PostgresBackend::apply_timescaledb_setup` with three-path graceful fallback |
-| [#750](https://github.com/AI-agent-assembly/agent-assembly/pull/750) | [AAASM-1855](https://lightning-dust-mite.atlassian.net/browse/AAASM-1855) (SD-4) | `StorageHealth.timescale` field + `healthcheck()` populates from `query_timescale_stats` |
-| [#758](https://github.com/AI-agent-assembly/agent-assembly/pull/758) | [AAASM-1890](https://lightning-dust-mite.atlassian.net/browse/AAASM-1890) (bug) | `0003_timescaledb_compression_policies.sql` follow-up (idempotent guardrail) |
-| [#757](https://github.com/AI-agent-assembly/agent-assembly/pull/757) | [AAASM-1858](https://lightning-dust-mite.atlassian.net/browse/AAASM-1858) (SD-5) | `timescaledb-tests` CI job with `timescale/timescaledb:latest-pg17` service container |
-| [#760](https://github.com/AI-agent-assembly/agent-assembly/pull/760) | [AAASM-1907](https://lightning-dust-mite.atlassian.net/browse/AAASM-1907) (bug) | In-place fix of `0002` — enable columnstore inline before attaching compression policies |
+| [#711](https://github.com/ai-agent-assembly/agent-assembly/pull/711) | [AAASM-1848](https://lightning-dust-mite.atlassian.net/browse/AAASM-1848) (SD-1) | `0002_timescaledb_hypertables.sql` migration |
+| [#741](https://github.com/ai-agent-assembly/agent-assembly/pull/741) | [AAASM-1852](https://lightning-dust-mite.atlassian.net/browse/AAASM-1852) (SD-2) | `TimescaleStats` type + `has_timescaledb_extension` probe helper |
+| [#746](https://github.com/ai-agent-assembly/agent-assembly/pull/746) | [AAASM-1853](https://lightning-dust-mite.atlassian.net/browse/AAASM-1853) (SD-3) | `PostgresBackend::apply_timescaledb_setup` with three-path graceful fallback |
+| [#750](https://github.com/ai-agent-assembly/agent-assembly/pull/750) | [AAASM-1855](https://lightning-dust-mite.atlassian.net/browse/AAASM-1855) (SD-4) | `StorageHealth.timescale` field + `healthcheck()` populates from `query_timescale_stats` |
+| [#758](https://github.com/ai-agent-assembly/agent-assembly/pull/758) | [AAASM-1890](https://lightning-dust-mite.atlassian.net/browse/AAASM-1890) (bug) | `0003_timescaledb_compression_policies.sql` follow-up (idempotent guardrail) |
+| [#757](https://github.com/ai-agent-assembly/agent-assembly/pull/757) | [AAASM-1858](https://lightning-dust-mite.atlassian.net/browse/AAASM-1858) (SD-5) | `timescaledb-tests` CI job with `timescale/timescaledb:latest-pg17` service container |
+| [#760](https://github.com/ai-agent-assembly/agent-assembly/pull/760) | [AAASM-1907](https://lightning-dust-mite.atlassian.net/browse/AAASM-1907) (bug) | In-place fix of `0002` — enable columnstore inline before attaching compression policies |
 
 ---
 
@@ -73,7 +73,7 @@ cargo nextest run -p aa-gateway timescale
 # `timescaledb-tests` job → timescale/timescaledb:latest-pg17, TIMESCALEDB_AVAILABLE=1 → all 9 env-gated tests run as present-path assertions
 ```
 
-Authoritative CI evidence: `TimescaleDB Tests` job on PR [#757](https://github.com/AI-agent-assembly/agent-assembly/pull/757) — 9/9 PASS on the post-rebase final run.
+Authoritative CI evidence: `TimescaleDB Tests` job on PR [#757](https://github.com/ai-agent-assembly/agent-assembly/pull/757) — 9/9 PASS on the post-rebase final run.
 
 ---
 

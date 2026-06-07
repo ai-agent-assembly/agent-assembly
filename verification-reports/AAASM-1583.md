@@ -1,7 +1,7 @@
 # E18 S-A Verification — AAASM-1583 (`StorageBackend` trait)
 
 > **Status**: parent Story [AAASM-1583] sub-tasks both shipped on Sprint-4
-> branches. Implementation lands in [AI-agent-assembly/agent-assembly#644],
+> branches. Implementation lands in [ai-agent-assembly/agent-assembly#644],
 > verification lands in this PR. All six Story-level acceptance bullets
 > verified clean below — no follow-up Bug Sub-task opened.
 
@@ -9,13 +9,13 @@
 [AAASM-1583]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1583
 [AAASM-1694]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1694
 [AAASM-1695]: https://lightning-dust-mite.atlassian.net/browse/AAASM-1695
-[AI-agent-assembly/agent-assembly#644]: https://github.com/AI-agent-assembly/agent-assembly/pull/644
+[ai-agent-assembly/agent-assembly#644]: https://github.com/ai-agent-assembly/agent-assembly/pull/644
 
 ## Sub-task roll-up
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| [AAASM-1694] | E18 S-A Impl — define trait + value types | Done (open PR) | [#644](https://github.com/AI-agent-assembly/agent-assembly/pull/644) |
+| [AAASM-1694] | E18 S-A Impl — define trait + value types | Done (open PR) | [#644](https://github.com/ai-agent-assembly/agent-assembly/pull/644) |
 | [AAASM-1695] | E18 S-A Verify — confirm AC | in this report | this PR |
 
 ## Walkthrough vs AAASM-1583 acceptance criteria

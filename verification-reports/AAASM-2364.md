@@ -12,8 +12,8 @@ migrations for `orgs`/`agents`/`policies`/`audit_logs`
 
 | Subtask | PR | Scope |
 |---|---|---|
-| AAASM-2369 | [#874](https://github.com/AI-agent-assembly/agent-assembly/pull/874) | Crate scaffold, four MVP migrations, `[storage.postgres]` pool config |
-| AAASM-2370 | [#886](https://github.com/AI-agent-assembly/agent-assembly/pull/886) | `PgPolicyStore` / `PgAuditSink` / `PgCredentialStore` / `PgLifecycleStore`, `0005_credentials` migration, driver registration, testcontainers conformance suite |
+| AAASM-2369 | [#874](https://github.com/ai-agent-assembly/agent-assembly/pull/874) | Crate scaffold, four MVP migrations, `[storage.postgres]` pool config |
+| AAASM-2370 | [#886](https://github.com/ai-agent-assembly/agent-assembly/pull/886) | `PgPolicyStore` / `PgAuditSink` / `PgCredentialStore` / `PgLifecycleStore`, `0005_credentials` migration, driver registration, testcontainers conformance suite |
 
 ## Acceptance criteria
 

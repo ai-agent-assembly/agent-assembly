@@ -11,7 +11,7 @@
 
 | Subtask | Title | Status | PR |
 |---|---|---|---|
-| AAASM-2385 | Wire ApprovalResolved push event + WaitForApproval future | Done | [#903](https://github.com/AI-agent-assembly/agent-assembly/pull/903) |
+| AAASM-2385 | Wire ApprovalResolved push event + WaitForApproval future | Done | [#903](https://github.com/ai-agent-assembly/agent-assembly/pull/903) |
 | AAASM-2386 | Verify ApprovalResolved push event acceptance criteria | in this report | — |
 
 ## Walkthrough vs AAASM-2378 acceptance criteria

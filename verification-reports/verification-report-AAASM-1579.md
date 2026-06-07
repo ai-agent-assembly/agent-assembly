@@ -10,11 +10,11 @@
 
 | Sub-task | Title | Status | PR |
 |---|---|---|---|
-| AAASM-1854 | ST-1 — `HealthzResponse` + `redact_database_url` + `check_healthz` | Done | [#710](https://github.com/AI-agent-assembly/agent-assembly/pull/710) |
-| AAASM-1857 | ST-2 — `DeploymentOverview` display model + composer | Done | [#717](https://github.com/AI-agent-assembly/agent-assembly/pull/717) |
-| AAASM-1860 | ST-3 — Wire `DeploymentOverview` into `StatusSnapshot` + `fetch_all` | Done | [#721](https://github.com/AI-agent-assembly/agent-assembly/pull/721) |
-| AAASM-1863 | ST-4 — Tabular renderer for the deployment overview | Done | [#725](https://github.com/AI-agent-assembly/agent-assembly/pull/725) |
-| AAASM-1865 | ST-5 — `--json` flag + exit-1-with-hint on unreachable | Done | [#726](https://github.com/AI-agent-assembly/agent-assembly/pull/726) |
+| AAASM-1854 | ST-1 — `HealthzResponse` + `redact_database_url` + `check_healthz` | Done | [#710](https://github.com/ai-agent-assembly/agent-assembly/pull/710) |
+| AAASM-1857 | ST-2 — `DeploymentOverview` display model + composer | Done | [#717](https://github.com/ai-agent-assembly/agent-assembly/pull/717) |
+| AAASM-1860 | ST-3 — Wire `DeploymentOverview` into `StatusSnapshot` + `fetch_all` | Done | [#721](https://github.com/ai-agent-assembly/agent-assembly/pull/721) |
+| AAASM-1863 | ST-4 — Tabular renderer for the deployment overview | Done | [#725](https://github.com/ai-agent-assembly/agent-assembly/pull/725) |
+| AAASM-1865 | ST-5 — `--json` flag + exit-1-with-hint on unreachable | Done | [#726](https://github.com/ai-agent-assembly/agent-assembly/pull/726) |
 | AAASM-1868 | ST-6 — Verify E17 S-E acceptance criteria | in this report | — |
 
 ## Walkthrough vs AAASM-1579 acceptance criteria

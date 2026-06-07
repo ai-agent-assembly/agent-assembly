@@ -14,7 +14,7 @@
 
 | PR | Sub-ticket | Scope |
 |---|---|---|
-| [#882](https://github.com/AI-agent-assembly/agent-assembly/pull/882) | AAASM-2367 | `aa-storage-memory` crate (six DashMap/parking_lot impls) + 5 shared conformance harnesses in `aa-core` |
+| [#882](https://github.com/ai-agent-assembly/agent-assembly/pull/882) | AAASM-2367 | `aa-storage-memory` crate (six DashMap/parking_lot impls) + 5 shared conformance harnesses in `aa-core` |
 
 ## Design alignment
 

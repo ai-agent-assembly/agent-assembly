@@ -1,7 +1,7 @@
 # Verification Report — AAASM-2074
 
 **Story:** agent-assembly README and docs are production-ready and link into the org documentation map
-**Epic:** AAASM-2072 — Production documentation coverage across AI-agent-assembly organization repos
+**Epic:** AAASM-2072 — Production documentation coverage across ai-agent-assembly organization repos
 **Component / repo:** `agent-assembly` (OSS core runtime)
 **Date:** 2026-06-06
 

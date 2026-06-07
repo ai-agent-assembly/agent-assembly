@@ -10,9 +10,9 @@ This Story spans three SDK repositories. Each implementation Sub-task delivered 
 
 | Sub-task | Type | Repo | PR | Status |
 | --- | --- | --- | --- | --- |
-| AAASM-1846 (ST-1) | Implementation — Python SDK gateway URL resolver + auto-start | `python-sdk` | [#58](https://github.com/AI-agent-assembly/python-sdk/pull/58) | Open |
-| AAASM-1847 (ST-2) | Implementation — Node SDK gateway URL resolver + auto-start | `node-sdk` | [#47](https://github.com/AI-agent-assembly/node-sdk/pull/47) | Open |
-| AAASM-1849 (ST-3) | Implementation — Go SDK gateway URL resolver + auto-start | `go-sdk` | [#36](https://github.com/AI-agent-assembly/go-sdk/pull/36) | Open |
+| AAASM-1846 (ST-1) | Implementation — Python SDK gateway URL resolver + auto-start | `python-sdk` | [#58](https://github.com/ai-agent-assembly/python-sdk/pull/58) | Open |
+| AAASM-1847 (ST-2) | Implementation — Node SDK gateway URL resolver + auto-start | `node-sdk` | [#47](https://github.com/ai-agent-assembly/node-sdk/pull/47) | Open |
+| AAASM-1849 (ST-3) | Implementation — Go SDK gateway URL resolver + auto-start | `go-sdk` | [#36](https://github.com/ai-agent-assembly/go-sdk/pull/36) | Open |
 | AAASM-1851 (ST-4) | Verification — this PR | `agent-assembly` | _this PR_ | In progress |
 
 ## Acceptance Criteria
@@ -24,7 +24,7 @@ This Story spans three SDK repositories. Each implementation Sub-task delivered 
 | **Go**: `assembly.Init(ctx)` (no options, no env vars) connects to `http://localhost:7391` | ✅ | `assembly/gateway_resolver.go::resolveGatewayURL` returns `defaultGatewayURL` when no explicit / env / config value is supplied. `assembly/runtime.go::boot` calls the resolver before validation. Exercise in `assembly/init_zero_config_test.go::TestInit_ZeroArgResolvesLocalDefault`. |
 | `AAASM_GATEWAY_URL` env var overrides auto-detect (for CI / remote scenarios) | ✅ | All three resolvers check the `AAASM_GATEWAY_URL` env var at step 2 of the precedence chain and return it verbatim before reaching the probe / auto-start path. Tests: `test/unit/core/test_gateway_resolver.py::TestResolveGatewayUrl::test_env_var_takes_precedence_over_config_and_default` (Python); `tests/gateway-resolver.test.ts > resolveGatewayUrl > uses AAASM_GATEWAY_URL over config + default` (Node); `assembly/gateway_resolver_test.go::TestResolveGatewayURL_EnvUsedWhenNoExplicit` (Go). |
 | If gateway not running and `aasm` is on PATH → auto-start triggered, SDK connects after health probe passes | ✅ | All three implementations: when the local probe fails, `_auto_start_gateway` / `autoStartGateway` is invoked; it locates `aasm` on PATH (`shutil.which` / `findAasmOnPath` / `exec.LookPath`), launches `aasm start --mode local --foreground` detached, and waits for `/healthz`. Spawn args pinned by `AASM_AUTO_START_ARGV` / `AASM_AUTO_START_ARGV` / `aasmAutoStartArgs = ["start", "--mode", "local", "--foreground"]`. Tests: `test_spawns_subprocess_and_returns_when_ready` (Python), `spawns aasm and resolves when healthz becomes ready` (Node), `TestAutoStartGateway_SuccessSpawnsAndConfirmsReady` (Go). |
-| If gateway not running and `aasm` not on PATH → `ConfigurationError` raised with install instructions | ✅ | Python `_auto_start_gateway` raises `ConfigurationError("No gateway found at … and 'aasm' is not on PATH. Install it with: pip install agent-assembly[cli]")`. Node `autoStartGateway` throws `ConfigurationError("… Install it with: npm install -g @agent-assembly/cli (or pnpm add -g)")`. Go `autoStartGateway` returns `*ConfigurationError{Message: "… Install it with: go install github.com/AI-agent-assembly/aa-cli/cmd/aasm@latest"}`. Tests: `test_raises_configuration_error_when_aasm_not_on_path` (Python), `throws ConfigurationError when aasm is not on PATH` (Node), `TestAutoStartGateway_ConfigurationErrorWhenAasmMissing` (Go). |
+| If gateway not running and `aasm` not on PATH → `ConfigurationError` raised with install instructions | ✅ | Python `_auto_start_gateway` raises `ConfigurationError("No gateway found at … and 'aasm' is not on PATH. Install it with: pip install agent-assembly[cli]")`. Node `autoStartGateway` throws `ConfigurationError("… Install it with: npm install -g @agent-assembly/cli (or pnpm add -g)")`. Go `autoStartGateway` returns `*ConfigurationError{Message: "… Install it with: go install github.com/ai-agent-assembly/aa-cli/cmd/aasm@latest"}`. Tests: `test_raises_configuration_error_when_aasm_not_on_path` (Python), `throws ConfigurationError when aasm is not on PATH` (Node), `TestAutoStartGateway_ConfigurationErrorWhenAasmMissing` (Go). |
 | Auto-start timeout 5s: if gateway doesn't become ready → `GatewayError` with timeout message | ✅ | All three impls call `_wait_for_healthz` / `waitForHealthz` with `DEFAULT_AUTO_START_TIMEOUT_SECONDS = 5.0` / `DEFAULT_AUTO_START_TIMEOUT_MS = 5000` / `defaultAutoStartTimeout = 5 * time.Second` and raise `GatewayError` on the false return. Tests: `test_raises_gateway_error_on_timeout` (Python), `throws GatewayError when the spawned gateway never becomes ready` (Node), `TestAutoStartGateway_GatewayErrorOnTimeout` (Go). |
 | Tests that call `init_assembly(mode="sidecar")` are not affected (explicit mode skips auto-detect) | ✅ | The resolver is keyed on `gateway_url` / `gatewayUrl` / `gatewayURL`, not on `mode`. The pre-existing `test_init_assembly_with_valid_config` (Python, explicit `gateway_url="http://localhost:8080"`) and the existing `validTestOptions()` callers (Go) continue to pass — proven by the dedicated regression test in each repo: `test/unit/test_assembly.py::test_init_assembly_explicit_args_bypass_resolver` (Python), `tests/init-assembly-zero-config.test.ts > explicit gatewayUrl + apiKey bypass the resolver entirely` (Node), `assembly/init_zero_config_test.go::TestInit_ExplicitOptionsBypassResolver` (Go). Each uses sentinel stubs on the probe / auto-start path that fail the test if invoked. |
 | Unit tests mock the subprocess call — do not actually spawn `aasm` in unit tests | ✅ | Python: `patch("agent_assembly.core.gateway_resolver.subprocess.Popen")` + `patch("agent_assembly.core.gateway_resolver.shutil.which")`. Node: `__testing._seams.spawnAasm` + `__testing._seams.findAasmOnPath` mutated to `vi.fn()` stubs. Go: `withSeams(t, find, spawn)` swaps `gatewayResolverSeams.spawnAasm` for a no-op closure. No test invocation in any repo touches the real `aasm` binary. |
@@ -65,7 +65,7 @@ pnpm lint
 
 # go-sdk (PR #36)
 make test
-# → ok github.com/AI-agent-assembly/go-sdk/assembly 11.414s
+# → ok github.com/ai-agent-assembly/go-sdk/assembly 11.414s
 #   (includes the 5s autoStartGateway-timeout test, by design)
 go vet ./...
 ```
@@ -82,7 +82,7 @@ Ran 2026-05-23 on macOS / darwin-arm64. A real `aa-gateway --mode local` was sta
 | --- | --- | --- |
 | Python | `python -c "from agent_assembly import init_assembly; ctx = init_assembly(mode='sdk-only'); print(ctx.client.gateway_url, ctx.client.api_key)"` | `http://localhost:7391` `''` — resolver returned the local default; `api_key` empty-defaulted. |
 | Node | `node` invokes `initAssembly({ mode: "sdk-only" })` against `dist/esm/index.js` | `ctx.activeAdapters = [ 'langchain-js', 'openai-agents' ]` — resolver returned a context; downstream framework detection ran. |
-| Go | `assembly.Init(context.Background())` via a tiny `main.go` with `replace github.com/AI-agent-assembly/go-sdk => …worktree…` | Resolver completed (no `*ConfigurationError`); downstream `sidecarConnector` returned `"sidecar unavailable"` — expected since the local CP at `:7391` exposes `/healthz` only, not the gRPC sidecar surface. This proves `resolveGatewayURL` populated the URL correctly and validation passed past the (now-relaxed) empty-`apiKey` check. |
+| Go | `assembly.Init(context.Background())` via a tiny `main.go` with `replace github.com/ai-agent-assembly/go-sdk => …worktree…` | Resolver completed (no `*ConfigurationError`); downstream `sidecarConnector` returned `"sidecar unavailable"` — expected since the local CP at `:7391` exposes `/healthz` only, not the gRPC sidecar surface. This proves `resolveGatewayURL` populated the URL correctly and validation passed past the (now-relaxed) empty-`apiKey` check. |
 
 ### Aasm-missing smoke — no gateway, no `aasm` on PATH
 
@@ -92,7 +92,7 @@ Ran 2026-05-23 on macOS / darwin-arm64. A real `aa-gateway --mode local` was sta
 | --- | --- |
 | Python | `ConfigurationError: No gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: pip install agent-assembly[cli]` |
 | Node | `ConfigurationError: No gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: npm install -g @agent-assembly/cli (or pnpm add -g)` |
-| Go | `*ConfigurationError: assembly: no gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: go install github.com/AI-agent-assembly/aa-cli/cmd/aasm@latest` |
+| Go | `*ConfigurationError: assembly: no gateway found at http://localhost:7391 and 'aasm' is not on PATH. Install it with: go install github.com/ai-agent-assembly/aa-cli/cmd/aasm@latest` |
 
 All three error messages match the design — explicit `ConfigurationError` type with an SDK-appropriate install hint.
 
