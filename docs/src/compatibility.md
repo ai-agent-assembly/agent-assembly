@@ -9,11 +9,11 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
      `license = "Apache-2.0"`). License-metadata only — no version change to
      aa-runtime or any SDK; this comment satisfies the compatibility-matrix CI gate. -->
 
-<!-- AAASM-2718: lowercased the GitHub org ID `AI-agent-assembly` → `ai-agent-assembly`
-     in root Cargo.toml `[workspace.package]` `repository`/`homepage` metadata URLs
-     (Epic AAASM-2715, canonical lowercase org ID). URL-casing metadata only — GitHub
-     resolves org names case-insensitively, so no version change to aa-runtime or any
-     SDK; this comment satisfies the compatibility-matrix CI gate. -->
+<!-- AAASM-2718: lowercased the GitHub org ID to the canonical `ai-agent-assembly`
+     (from its former mixed-case spelling) in root Cargo.toml `[workspace.package]`
+     `repository`/`homepage` metadata URLs (Epic AAASM-2715). URL-casing metadata only —
+     GitHub resolves org names case-insensitively, so no version change to aa-runtime or
+     any SDK; this comment satisfies the compatibility-matrix CI gate. -->
 
 <!-- AAASM-1602: workspace.exclude = ["node-sdk"] added to root Cargo.toml so
      the sibling `node-sdk/` checkout used by e2e_sdk_node tests doesn't get
