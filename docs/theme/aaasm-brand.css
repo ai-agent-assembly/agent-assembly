@@ -1,0 +1,55 @@
+/* AI Agent Assembly — shared doc brand layer for mdBook (hub + core).
+   Install: copy to docs/theme/aaasm-brand.css and add to book.toml:
+       [output.html]
+       additional-css = ["theme/aaasm-brand.css"]
+   Set themes:  default-theme = "light"   preferred-dark-theme = "navy"
+   Tokens: design/doc-tokens.md */
+
+/* ---- Typography (all themes) ---- */
+html { font-size: 16px; }
+@media (min-width: 60rem) { html { font-size: 17px; } }
+.content {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.65;
+}
+.content code, pre, code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+.content main { max-width: 72ch; }            /* readability measure */
+.content h1 { font-size: 2rem;    font-weight: 700; }
+.content h2 { font-size: 1.5rem;  font-weight: 700; }
+.content h3 { font-size: 1.25rem; font-weight: 600; }
+
+/* ---- Light themes (light, rust) ---- */
+.light, .rust {
+  --bg: #f5f4f0;
+  --fg: #111827;
+  --sidebar-bg: #ffffff;
+  --sidebar-fg: #111827;
+  --sidebar-active: #6366f1;
+  --links: #4f46e5;
+  --inline-code-color: #b8291e;
+  --theme-popup-bg: #ffffff;
+  --table-border-color: #e5e7eb;
+  --searchbar-border-color: #e5e7eb;
+  --searchbar-bg: #ffffff;
+  --icons: #6b7280;
+  --icons-hover: #6366f1;
+}
+
+/* ---- Dark themes (navy, coal) ---- */
+.navy, .coal {
+  --bg: #0e0e0e;
+  --fg: #ededed;
+  --sidebar-bg: #1a1a1a;
+  --sidebar-fg: #ededed;
+  --sidebar-active: #818cf8;
+  --links: #818cf8;
+  --inline-code-color: #f08a80;
+  --theme-popup-bg: #1a1a1a;
+  --table-border-color: #2e2e2e;
+  --searchbar-border-color: #2e2e2e;
+  --searchbar-bg: #1a1a1a;
+  --icons: #a3a3a3;
+  --icons-hover: #818cf8;
+}
