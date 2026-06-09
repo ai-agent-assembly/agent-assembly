@@ -2,6 +2,8 @@
 
 Welcome to the developer documentation for **agent-assembly** — the open-source core of the AI Agent Assembly governance platform.
 
+> **Other docs:** [Docs Hub](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/)
+
 ## What you'll find here
 
 - **Project Status** — version compatibility matrix and protocol versioning policy
