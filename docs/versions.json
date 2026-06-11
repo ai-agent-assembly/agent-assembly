@@ -1,6 +1,6 @@
 {
-  "latest": "latest",
-  "versions": [
-    { "id": "latest", "title": "latest (master)" }
-  ]
+  "channels": [
+    { "id": "latest", "title": "latest (master)", "target": "latest" }
+  ],
+  "archived": []
 }
