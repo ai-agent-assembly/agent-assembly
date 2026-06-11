@@ -31,12 +31,23 @@ disappears from ``channels[]`` on the next computation.
 from __future__ import annotations
 
 import re
+from typing import Any
+
+# A parsed version tag: (major, minor, patch, pre) where pre is the tuple of
+# dot-separated pre-release identifiers, or None for a stable release.
+ParsedVersion = tuple[int, int, int, tuple[str, ...] | None]
+# A channel entry as it appears in versions.json: {"id", "title", "target"}.
+Channel = dict[str, str]
+# An archived entry in versions.json: {"id", "title"}.
+Archived = dict[str, str]
+# A parsed versions.json manifest (loosely typed; values come from JSON).
+Manifest = dict[str, Any]
 
 # A release version tag: vX.Y.Z optionally followed by -<pre>.
 _VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-(.+))?$")
 
 
-def parse_version(tag):
+def parse_version(tag: object) -> ParsedVersion | None:
     """Parse a ``vX.Y.Z[-pre]`` tag into a structured tuple.
 
     Returns ``(major, minor, patch, pre)`` where ``pre`` is ``None`` for a
@@ -53,7 +64,7 @@ def parse_version(tag):
     return (int(major), int(minor), int(patch), pre_ids)
 
 
-def _pre_identifier_key(identifier):
+def _pre_identifier_key(identifier: str) -> tuple[int, int, str]:
     """SemVer §11 ordering key for a single pre-release identifier.
 
     Numeric identifiers always have lower precedence than alphanumeric ones, so
@@ -65,7 +76,7 @@ def _pre_identifier_key(identifier):
     return (1, 0, identifier)
 
 
-def _compare_pre(a_pre, b_pre):
+def _compare_pre(a_pre: tuple[str, ...] | None, b_pre: tuple[str, ...] | None) -> int:
     """Compare two pre-release field tuples per SemVer §11.
 
     ``None`` means "no pre-release" (a stable release), which has *higher*
@@ -92,7 +103,7 @@ def _compare_pre(a_pre, b_pre):
     return 0
 
 
-def compare_versions(a, b):
+def compare_versions(a: str, b: str) -> int:
     """Compare two ``vX.Y.Z[-pre]`` tags by SemVer precedence.
 
     Returns -1 if ``a < b``, 0 if equal, 1 if ``a > b``. A version that does not
@@ -114,19 +125,19 @@ def compare_versions(a, b):
     return _compare_pre(pa[3], pb[3])
 
 
-def channel_title(cid, target):
-    """Human-readable channel title for a channel id pointing at ``target``."""
+def channel_title(cid: str, target: str) -> str:
+    """Build a human-readable channel title for ``cid`` pointing at ``target``."""
     if cid == "latest":
         return "latest (master)"
     if cid == "stable":
-        return "stable (%s)" % target
+        return f"stable ({target})"
     if cid == "pre-release":
-        return "pre-release (%s)" % target
+        return f"pre-release ({target})"
     return cid
 
 
-def _archived_sortkey(item):
-    """Newest-first archived ordering key (a release sorts after its pres)."""
+def _archived_sortkey(item: Archived) -> tuple[int, int, int, str]:
+    """Build a newest-first archived ordering key (a release sorts after its pres)."""
     parsed = parse_version(item["id"])
     if parsed is None:
         return (0, 0, 0, "")
@@ -135,7 +146,7 @@ def _archived_sortkey(item):
     return (major, minor, patch, ".".join(pre) if pre else "~")
 
 
-def apply_pre_release_gate(channels):
+def apply_pre_release_gate(channels: dict[str, Channel]) -> dict[str, Channel]:
     """Drop the pre-release channel unless it leads the stable channel.
 
     Mutates and returns the ``channels`` dict (id -> {id,title,target}). The
@@ -152,7 +163,12 @@ def apply_pre_release_gate(channels):
     return channels
 
 
-def compute_versions(version, channel, prior=None, source=None):
+def compute_versions(
+    version: str,
+    channel: str,
+    prior: Manifest | None = None,
+    source: Manifest | None = None,
+) -> dict[str, list[dict[str, str]]]:
     """Compute the published ``versions.json`` document for one docs cut.
 
     Parameters
@@ -172,8 +188,8 @@ def compute_versions(version, channel, prior=None, source=None):
     display order (latest, pre-release, stable) and archived newest-first. The
     pre-release semver gate is applied to the fully-assembled channel set.
     """
-    channels = {}  # id -> {id,title,target}
-    archived = {}  # id -> {id,title}
+    channels: dict[str, Channel] = {}  # id -> {id,title,target}
+    archived: dict[str, Archived] = {}  # id -> {id,title}
 
     # Seed from the prior live manifest.
     if isinstance(prior, dict):
@@ -208,7 +224,11 @@ def compute_versions(version, channel, prior=None, source=None):
 
     # Apply this cut.
     if channel == "latest":
-        channels["latest"] = {"id": "latest", "title": "latest (master)", "target": "latest"}
+        channels["latest"] = {
+            "id": "latest",
+            "title": "latest (master)",
+            "target": "latest",
+        }
     else:
         # Repoint the moving channel to this concrete tag and archive it.
         channels[channel] = {

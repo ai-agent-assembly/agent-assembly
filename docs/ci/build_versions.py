@@ -11,31 +11,33 @@ pre-release semver gate), and writes it to ``<OUTPUT>``.
 from __future__ import annotations
 
 import json
-import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from channels import compute_versions
-
-
-def _load(path):
-    if os.path.exists(path):
-        try:
-            with open(path) as fh:
-                return json.load(fh)
-        except Exception:
-            return None
-    return None
+from channels import Manifest, compute_versions
 
 
-def main(argv):
+def _load(path: str) -> Manifest | None:
+    """Load a JSON manifest, returning None if it is missing or unparseable."""
+    file = Path(path)
+    if not file.exists():
+        return None
+    try:
+        loaded = json.loads(file.read_text())
+    except (OSError, ValueError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def main(argv: list[str]) -> None:
+    """Recompute versions.json for one docs cut and write it to ``argv[3]``."""
     version, channel, output = argv[1], argv[2], argv[3]
     prior = _load("prior-versions.json")
     source = _load("docs/versions.json")
     out = compute_versions(version, channel, prior=prior, source=source)
-    with open(output, "w") as fh:
-        json.dump(out, fh, indent=2)
+    Path(output).write_text(json.dumps(out, indent=2))
     print("versions.json:", json.dumps(out))
 
 
