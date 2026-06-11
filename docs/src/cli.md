@@ -1,8 +1,19 @@
-# Command-Line Interface (`aasm`)
+# Command-line interface (`aasm`)
 
 `aasm` is the operator front-end for an Agent Assembly deployment. It ships from
 the [`aa-cli`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-cli)
 crate and talks to the gateway over its HTTP API.
+
+Once it is installed and a gateway is running, the most common first command is a
+fleet health check:
+
+```bash
+# One-shot snapshot of agents, approvals, and budget
+aasm status
+```
+
+Every command accepts `--help`, so `aasm <group> --help` is the quickest way to
+explore the surface (e.g. `aasm policy --help`).
 
 ## Install
 
