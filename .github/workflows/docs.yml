@@ -68,6 +68,12 @@ jobs:
             cargo install --locked --version 0.17.0 mdbook-mermaid
           fi
 
+      # Guard the pre-release semver gate (docs/ci/channels.py): a logic
+      # regression here would silently mis-classify release channels, so run
+      # the channel-gate unit tests on every PR/push before building.
+      - name: Run channel-gate unit tests
+        run: python3 docs/ci/test_channels.py
+
       - name: Build book
         run: mdbook build docs
 
