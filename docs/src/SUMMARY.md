@@ -11,51 +11,53 @@
 
 # Quick Start
 
-- [Quick Start](quickstart/README.md)
-  - [Requirements](quickstart/requirements.md)
-  - [Installation](quickstart/installation.md)
-  - [Configuration](quickstart/configuration.md)
-  - [First run](quickstart/first-run.md)
+- [Requirements](quick-start/requirements.md)
+- [Installation](quick-start/installation.md)
+- [Configuration](quick-start/configuration.md)
+- [First run](quick-start/first-run.md)
 
 # CLI Reference
 
-- [Overview](cli-reference/README.md)
-  - [aasm status](cli-reference/status.md)
-  - [aasm topology](cli-reference/topology.md)
-  - [aasm agent](cli-reference/agent.md)
-  - [aasm policy](cli-reference/policy.md)
-  - [aasm alerts](cli-reference/alerts.md)
-  - [aasm approvals](cli-reference/approvals.md)
-  - [aasm audit](cli-reference/audit.md)
-  - [aasm logs](cli-reference/logs.md)
-  - [aasm trace](cli-reference/trace.md)
-  - [aasm cost](cli-reference/cost.md)
-  - [aasm dashboard](cli-reference/dashboard.md)
-  - [aasm gateway](cli-reference/gateway.md)
-  - [aasm start / stop](cli-reference/start-stop.md)
-  - [aasm sandbox](cli-reference/sandbox.md)
-  - [aasm config](cli-reference/config.md)
-  - [aasm context](cli-reference/context.md)
-  - [aasm admin](cli-reference/admin.md)
-  - [aasm completion](cli-reference/completion.md)
-  - [aasm version](cli-reference/version.md)
+- [Overview](cli/overview.md)
+- [aasm status](cli/status.md)
+- [aasm agent](cli/agent.md)
+- [aasm policy](cli/policy.md)
+- [aasm topology](cli/topology.md)
+- [aasm alerts](cli/alerts.md)
+- [aasm approvals](cli/approvals.md)
+- [aasm audit](cli/audit.md)
+- [aasm logs](cli/logs.md)
+- [aasm trace](cli/trace.md)
+- [aasm cost](cli/cost.md)
+- [aasm dashboard](cli/dashboard.md)
+- [aasm gateway](cli/gateway.md)
+- [aasm proxy](cli/proxy.md)
+- [aasm start / stop](cli/start-stop.md)
+- [aasm sandbox](cli/sandbox.md)
+- [aasm config](cli/config.md)
+- [aasm context](cli/context.md)
+- [aasm admin](cli/admin.md)
+- [aasm version](cli/version.md)
+- [aasm completion](cli/completion.md)
 
 # Usage Guide
 
-- [Usage Guide](usage/README.md)
-  - [Govern an agent end-to-end](usage/govern-an-agent.md)
-  - [Author and apply a policy](usage/author-policy.md)
-  - [Set budgets and monitor cost](usage/budgets-and-cost.md)
-  - [Audit and compliance export](usage/audit-and-compliance.md)
+- [Usage Guide](usage-guide/overview.md)
+  - [Govern an agent end-to-end](usage-guide/govern-an-agent.md)
+  - [Enforce an egress policy](usage-guide/enforce-egress-policy.md)
+  - [Team budgets and cost](usage-guide/team-budgets.md)
+  - [Observe in the dashboard](usage-guide/observe-in-dashboard.md)
+  - [Choosing interception layers](usage-guide/interception-layers.md)
+  - [Troubleshooting](usage-guide/troubleshooting.md)
 
 # Security Model
 
-- [Security Model](security/README.md)
-  - [Threat model](security/threat-model.md)
-  - [Three-layer defense in depth](security/three-layer-defense.md)
-  - [Protection and enforcement](security/protection-enforcement.md)
-  - [Trust boundaries](security/trust-boundaries.md)
-  - [Audit and assurance](security/audit-assurance.md)
+- [Overview](security/overview.md)
+- [Threat model](security/threat-model.md)
+- [Three-layer defense in depth](security/three-layer-defense.md)
+- [Protection and enforcement](security/protection-model.md)
+- [Trust boundaries](security/trust-boundaries.md)
+- [Audit and assurance](security/audit-assurance.md)
 
 # Architecture
 
@@ -64,15 +66,13 @@
   - [Component deep-dives](architecture/components.md)
   - [Key workflows](architecture/workflows.md)
   - [Data flows](architecture/data-flows.md)
+  - [Building & contributing](architecture/building.md)
 
 ---
 
 # Reference
 
-- [Architecture overview](architecture.md)
 - [API Reference](api-reference.md)
-- [Command-Line Interface](cli.md)
-- [Dashboard](dashboard.md)
 
 # Project Status
 
