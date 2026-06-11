@@ -79,3 +79,30 @@ html { font-size: 16px; }
   cursor: pointer;
 }
 .aaasm-version-selector:hover { color: var(--icons-hover); }
+.aaasm-version-selector optgroup { font-style: normal; font-weight: 600; }
+
+/* ---- Version-warning banner (AAASM-2752) ---- */
+.aaasm-version-banner {
+  margin: 0 0 1.25rem 0;
+  padding: 0.7rem 1rem;
+  border: 1px solid #f0c000;
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #fff7e0;
+  color: #5a4500;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.aaasm-version-banner.hidden { display: none; }
+.aaasm-version-banner a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.aaasm-version-banner a:hover { text-decoration: none; }
+.navy .aaasm-version-banner,
+.coal .aaasm-version-banner {
+  border-color: #b8901f;
+  background: #2a2310;
+  color: #f1d98a;
+}
