@@ -1,7 +1,13 @@
 # Releases
 
+This page tells you where to find a published build, which channels it ships to,
+and how the release is cut.
+
 `agent-assembly` is in the **`v0.0.1` alpha pre-release series**. The public API
 and wire protocol are not yet stable.
+
+> **Warning:** every published tag is a pre-release. Do not run `v0.0.1-alpha.*`
+> in production — the wire protocol can change between alphas.
 
 ## Where releases live
 
