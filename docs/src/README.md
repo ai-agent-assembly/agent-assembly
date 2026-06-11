@@ -1,20 +1,37 @@
 # agent-assembly
 
-Welcome to the developer documentation for **agent-assembly** — the open-source core of the AI Agent Assembly governance platform.
+**agent-assembly** is the open-source core of the AI Agent Assembly governance platform. It enforces policy on AI agents — what they may call, spend, and connect to — and records every decision in an immutable audit trail.
+
+This book is the contributor and operator reference for the core. If you build *with* a language SDK instead, read the per-SDK guides below.
 
 > **Other docs:** [Docs Hub](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/)
 
-## What you'll find here
+## Run it locally
 
-- **Project Status** — version compatibility matrix and protocol versioning policy
-- **Architecture** — component overview, IPC flow, sidecar lifecycle, and policy evaluation path
-- **Protocol** — wire-protocol changelog and contract details
-- **Migration** — guidance for moving between protocol versions
-- **Benchmarks** — performance baselines and SLAs
+Point the gateway at a bundled reference policy and you have a governing daemon listening on `127.0.0.1:50051`:
+
+```bash
+git clone https://github.com/ai-agent-assembly/agent-assembly.git
+cd agent-assembly
+cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
+```
+
+From there, attach an SDK shim, the `aa-proxy` sidecar, or the eBPF layer to start intercepting agent actions. The [Architecture overview](architecture.md) explains how those three layers fit together.
+
+## Where to go next
+
+| You want to… | Read |
+|---|---|
+| Understand how the parts fit together | [Architecture overview](architecture.md) |
+| Install the `aasm` CLI | [Installation](installation.md) |
+| Drive a deployment from the terminal | [Command-line interface](cli.md) |
+| Check which SDK versions are compatible | [Compatibility matrix](compatibility.md) |
+| Read the wire-protocol contract | [Protocol changelog](protocol/CHANGELOG.md) |
+| See latency and build-time numbers | [Benchmarks — baseline](benchmarks/BASELINE.md) |
 
 ## Audience
 
-This book targets contributors and operators of `agent-assembly`. SDK users (Python, TypeScript, Go) should refer to the per-SDK READMEs in the sibling repositories.
+This book targets contributors and operators of `agent-assembly`. SDK users (Python, TypeScript, Go) should refer to the per-SDK guides in the sibling repositories.
 
 ## See also
 
