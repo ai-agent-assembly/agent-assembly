@@ -1,7 +1,12 @@
 # Dashboard
 
-Agent Assembly ships two governance consoles. Both are read/observe surfaces over
-the gateway — policy decisions are always made server-side.
+Use a dashboard to watch a running deployment — fleet health, agents, pending
+approvals, and budget. Agent Assembly ships two consoles: a browser web UI and a
+terminal TUI. Pick the web dashboard for a shared team view, or the TUI for
+quick checks over SSH.
+
+Both are read-and-observe surfaces over the gateway. Policy decisions are always
+made server-side, so a dashboard can never grant or deny an action itself.
 
 | Console | Lives in | Talks to | Use when |
 |---|---|---|---|
