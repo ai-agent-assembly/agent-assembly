@@ -1,0 +1,6 @@
+{
+  "channels": [
+    { "id": "latest", "title": "latest (master)", "target": "latest" }
+  ],
+  "archived": []
+}
