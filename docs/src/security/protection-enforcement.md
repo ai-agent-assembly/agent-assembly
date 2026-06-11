@@ -1,3 +1,4 @@
 # Protection and enforcement
 
-> 🚧 This section is being written in a later increment of this PR.
+This page has been split. See
+[Protection and enforcement](protection-model.md).
