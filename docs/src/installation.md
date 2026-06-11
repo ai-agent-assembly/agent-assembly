@@ -1,5 +1,7 @@
 # Installation
 
+This page installs the `aasm` command-line tool — the operator front-end for an Agent Assembly deployment. Pick a channel below; the quick-install script is the recommended path on Linux and macOS.
+
 ## Quick install (Linux / macOS)
 
 ```sh
@@ -9,6 +11,16 @@ curl -fsSL https://tool.agent-assembly.dev | sh
 This downloads the prebuilt `aasm` binary for your OS/architecture from the
 GitHub Release, **verifies its SHA-256 checksum and cosign signature**, and
 installs it to `~/.local/bin` (or `/usr/local/bin` if writable).
+
+Confirm the install:
+
+```sh
+aasm version
+```
+
+> **Tip:** if `aasm` is not found, `~/.local/bin` is probably not on your
+> `PATH`. Add it (`export PATH="$HOME/.local/bin:$PATH"`) or re-run with
+> `AASM_INSTALL_DIR=/usr/local/bin`.
 
 Useful environment overrides:
 
@@ -53,6 +65,20 @@ cosign verify-blob \
 A valid result means `SHA256SUMS` was signed by the agent-assembly release
 workflow at a tagged release — not by an attacker who swapped the file.
 
+> **Warning:** for a supply-chain-sensitive install, set
+> `AASM_REQUIRE_SIGNATURE=1` so the install *fails closed* if the cosign
+> signature cannot be verified, instead of falling back to checksum-only.
+
 On macOS, release binaries are Developer-ID-signed and notarized once the
 project's Apple credentials are provisioned, so Gatekeeper accepts them without
 a manual override.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `aasm: command not found` after install | Install dir not on `PATH` | Add `~/.local/bin` to `PATH`, or set `AASM_INSTALL_DIR` to a directory already on it |
+| Install warns "cosign not found" | `cosign` is not on `PATH` | Install [cosign](https://docs.sigstore.dev/cosign/installation/); the script then verifies the signature instead of falling back to checksum-only |
+| `AASM_REQUIRE_SIGNATURE=1` aborts the install | Signature could not be verified | Confirm `cosign` is installed and the release is a genuine tagged release; do **not** unset the flag to work around a failure |
+| macOS Gatekeeper blocks the binary | Notarized credentials not yet provisioned for that release | Right-click → Open once, or remove the quarantine attribute with `xattr -d com.apple.quarantine $(command -v aasm)` |
+| Need a specific version | — | Set `AASM_VERSION=<tag>` before running the install script |
