@@ -68,7 +68,7 @@ the agent may do." It provides:
 
 Crucially, the agent does not have to cooperate. The whole point is that
 governance is enforced *around* the agent, by infrastructure the agent does not
-control. The [Security Model](../security/README.md) section makes the trust
+control. The [Security Model](../security/overview.md) section makes the trust
 boundaries explicit.
 
 ## Who this book is for

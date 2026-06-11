@@ -19,7 +19,7 @@ Read the pages in order:
 | [Core concepts](concepts.md) | Agents, policies, budgets, audit — the vocabulary used throughout the book. |
 | [The three-layer model](three-layer-model.md) | How the SDK, sidecar proxy, and eBPF layers compose so nothing slips through. |
 
-When you are ready to run something, jump to the [Quick Start](../quickstart/README.md).
+When you are ready to run something, jump to the [Quick Start](../quick-start/requirements.md).
 For the security rationale behind the design, read the [Security
-Model](../security/README.md); for the crate-level implementation, read
+Model](../security/overview.md); for the crate-level implementation, read
 [Architecture](../architecture/README.md).

@@ -8,7 +8,7 @@ each piece.
 
 For the trust-boundary view of the same system — what each layer is trusted to
 do and where the authoritative checks live — see the
-[Security Model](../security/README.md).
+[Security Model](../security/overview.md).
 
 ## The one-sentence model
 
@@ -209,5 +209,5 @@ overridable via `AA_API_ADDR`).
   budget rollup, and the enforcement path as sequence diagrams.
 - **[Data flows](data-flows.md)** — how an intercepted event travels from a layer
   through the gateway to the audit log and storage.
-- **[Security Model](../security/README.md)** — the same system viewed through
+- **[Security Model](../security/overview.md)** — the same system viewed through
   trust boundaries and defense-in-depth.

@@ -58,7 +58,7 @@ Point the gateway at a bundled reference policy and connect a sidecar:
 cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
 ```
 
-See the [CLI](../cli.md) page for `aasm` operator commands and the README
+See the [CLI](../cli/overview.md) page for `aasm` operator commands and the README
 "Running with Docker Compose" section for the sidecar stack.
 
 ## Troubleshooting

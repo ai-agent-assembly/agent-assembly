@@ -194,8 +194,8 @@ aasm gateway stop
 
 ## Where to go next
 
-- [CLI Reference](../cli-reference/README.md) — every `aasm` command and flag.
-- [Usage Guide](../usage/govern-an-agent.md) — govern an agent end-to-end, author
+- [CLI Reference](../cli/overview.md) — every `aasm` command and flag.
+- [Usage Guide](../usage-guide/govern-an-agent.md) — govern an agent end-to-end, author
   policies, and set budgets.
-- [Security Model](../security/README.md) — the threat model and the three-layer
+- [Security Model](../security/overview.md) — the threat model and the three-layer
   defense-in-depth rationale.

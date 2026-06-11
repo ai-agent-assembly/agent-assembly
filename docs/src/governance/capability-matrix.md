@@ -183,5 +183,5 @@ requiring a new adapter.
 - `AAASM-204` — Windsurf Cascade adapter
 - `AAASM-206` — Governance level (L0–L3) classification in policy schema (`governance_level` field in `AgentRecord` and policy conditions)
 - `AAASM-918` — SaaS coding-agent adapter (pending; will finalize SaaS row above)
-- `docs/src/architecture.md` — Three-layer interception model
+- `docs/src/architecture/system-architecture.md` — Three-layer interception model
 - `docs/src/policy-rbac.md` — RBAC role matrix for policy mutations

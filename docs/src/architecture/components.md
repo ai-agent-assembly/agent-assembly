@@ -173,7 +173,7 @@ over HTTP (Axum) with an OpenAPI schema (`utoipa`). It is the dashboard's backen
 `aa-cli` ships the `aasm` binary. It talks gRPC to the gateway and HTTP to the
 API. Common subcommands: `aasm status`, `aasm topology`, `aasm policy`,
 `aasm agent`, `aasm cost`, `aasm audit`, `aasm dashboard` (TUI). The full surface
-is documented in the [CLI Reference](../cli-reference/README.md).
+is documented in the [CLI Reference](../cli/overview.md).
 
 **Depends on:** `aa-core`, `aa-gateway`.
 

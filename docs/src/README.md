@@ -4,7 +4,7 @@
 
 This book is the contributor and operator reference for the core. If you build *with* a language SDK instead, read the per-SDK guides below.
 
-New here? Start with the **[Introduction](introduction/README.md)** — it explains what Agent Assembly is, the problem it solves, the core concepts, and the three-layer interception model. Then move on to the [Quick Start](quickstart/README.md).
+New here? Start with the **[Introduction](introduction/README.md)** — it explains what Agent Assembly is, the problem it solves, the core concepts, and the three-layer interception model. Then move on to the [Quick Start](quick-start/requirements.md).
 
 > **Other docs:** [Docs Hub](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/)
 
@@ -18,17 +18,17 @@ cd agent-assembly
 cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
 ```
 
-From there, attach an SDK shim, the `aa-proxy` sidecar, or the eBPF layer to start intercepting agent actions. The [Architecture overview](architecture.md) explains how those three layers fit together.
+From there, attach an SDK shim, the `aa-proxy` sidecar, or the eBPF layer to start intercepting agent actions. The [Architecture](architecture/README.md) chapter explains how those three layers fit together.
 
 ## Where to go next
 
 | You want to… | Read |
 |---|---|
 | Understand what this is and why | [Introduction](introduction/README.md) |
-| Get a gateway running quickly | [Quick Start](quickstart/README.md) |
-| Look up an `aasm` command | [CLI Reference](cli-reference/README.md) |
-| Follow a task end-to-end | [Usage Guide](usage/README.md) |
-| Understand the threat model and defenses | [Security Model](security/README.md) |
+| Get a gateway running quickly | [Quick Start](quick-start/requirements.md) |
+| Look up an `aasm` command | [CLI Reference](cli/overview.md) |
+| Follow a task end-to-end | [Usage Guide](usage-guide/overview.md) |
+| Understand the threat model and defenses | [Security Model](security/overview.md) |
 | See how the crates fit together | [Architecture](architecture/README.md) |
 | Check which SDK versions are compatible | [Compatibility matrix](compatibility.md) |
 | Read the wire-protocol contract | [Protocol changelog](protocol/CHANGELOG.md) |

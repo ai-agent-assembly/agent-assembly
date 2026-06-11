@@ -5,9 +5,9 @@ that governs AI agents by intercepting their actions at three independent layers
 and routing every action through one central **gateway**.
 
 It is written for contributors and integrators who want to understand *how the
-system is built*, not just how to operate it. For the operator-facing overview,
-see the [Architecture overview](../architecture.md) reference page; for the
-security rationale, see the [Security Model](../security/README.md).
+system is built*, not just how to operate it. For the system-level overview,
+see [System architecture](system-architecture.md); for the
+security rationale, see the [Security Model](../security/overview.md).
 
 ## Pages in this chapter
 

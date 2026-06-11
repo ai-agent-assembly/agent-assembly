@@ -4,7 +4,7 @@ To govern an action, the runtime first has to *see* it. Agent Assembly intercept
 agent actions at **three independent layers**, each catching what the layers
 above it might miss, and routes every observed action to one central
 [gateway](../architecture/README.md) for a decision. This page is a teaser; the
-[Security Model](../security/README.md) covers *why* the layers are arranged this
+[Security Model](../security/overview.md) covers *why* the layers are arranged this
 way and what each defends against, and [Architecture](../architecture/README.md)
 covers *how* each is implemented.
 
@@ -73,7 +73,7 @@ and appends the [audit](concepts.md#audit) record before answering allow or deny
 
 ## Where to go next
 
-- [Security Model](../security/README.md) — the threat model and *why* this layered
+- [Security Model](../security/overview.md) — the threat model and *why* this layered
   defense closes the gaps, including what each layer is and is not trusted to do.
 - [Architecture](../architecture/README.md) — the crate-level *how*: the gateway,
   the policy engine, the transports, and the full interception data flow.
