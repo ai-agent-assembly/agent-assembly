@@ -1,10 +1,18 @@
-# Architecture Overview
+# Architecture overview
 
-This chapter describes how `agent-assembly` is composed and how its parts interact at runtime.
+`agent-assembly` governs AI agents by intercepting their actions at three independent layers and routing every action through one central decision-maker — the **gateway**. The gateway evaluates **policy**, tracks budgets, and writes an audit record before returning allow or deny.
+
+Read this chapter to learn where each layer runs, how it reaches the gateway, and how a single policy decision is made. The fastest way to see the gateway in action is to run it against a bundled policy:
+
+```bash
+cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
+```
+
+It then listens on `127.0.0.1:50051`, ready for any interception layer to connect over gRPC.
 
 ## Crate dependency graph
 
-The Cargo workspace declares **29 member crates** in the top-level `Cargo.toml`; the diagram below highlights the core architectural crates (storage drivers, dev-tool adapters, and test harnesses are omitted for clarity). Two additional eBPF crates (`aa-ebpf-probes`, `aa-ebpf-programs`) live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` BPF target — they are built by `aa-ebpf/build.rs` via `aya-build`. Edges in the diagram below are derived from `path` dependencies declared in each crate's `Cargo.toml`.
+The Cargo workspace declares **28 member crates** in the top-level `Cargo.toml`; the diagram below highlights the core architectural crates (storage drivers, dev-tool adapters, and test harnesses are omitted for clarity). Two additional eBPF crates (`aa-ebpf-probes`, `aa-ebpf-programs`) live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` BPF target — they are built by `aa-ebpf/build.rs` via `aya-build`. Edges in the diagram below are derived from `path` dependencies declared in each crate's `Cargo.toml`.
 
 ```mermaid
 graph TD
@@ -85,7 +93,7 @@ The gateway is the central control plane. Each interception layer reaches it thr
 sequenceDiagram
     autonumber
     participant Agent
-    participant SDK as SDK shim<br/>(aa-ffi-*)
+    participant SDK as SDK shim<br/>(aa-sdk-client)
     participant Proxy as Sidecar<br/>(aa-proxy)
     participant eBPF as eBPF probes<br/>(aa-ebpf-probes)
     participant GW as Gateway<br/>(aa-gateway)
