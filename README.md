@@ -40,9 +40,20 @@ During the `v0.0.1` alpha series the published releases are pre-releases — see
 
 ## Overview
 
-`agent-assembly` is the core runtime that brings governance to AI agents at
-scale. It provides a three-layer interception model — eBPF kernel hooks, a
-sidecar proxy, and an SDK shim — backed by a policy engine and audit trail.
+`agent-assembly` brings governance to AI agents at scale. It intercepts what an
+agent tries to do — call a tool, reach the network, spend budget — at three
+independent layers, sends each action to a central **gateway** for a
+**policy** decision, and records the outcome in an immutable audit trail.
+
+The three interception layers, lowest-latency first:
+
+- **SDK shim** (in-process) — fastest path; requires the agent to adopt an SDK.
+- **Sidecar proxy** (`aa-proxy`) — intercepts outbound HTTPS without code changes.
+- **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
+
+Each layer reports to the same gateway, so you get one unified view no matter
+which layers a deployment runs. See the [Architecture overview](docs/src/architecture.md)
+for the full picture, or jump straight to the [Quickstart](#quickstart).
 
 ## Ecosystem
 
