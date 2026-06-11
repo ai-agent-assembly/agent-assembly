@@ -2,6 +2,8 @@ name: Docs
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 on:
   pull_request:
@@ -18,13 +20,30 @@ on:
       - 'README.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+  # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
+  # raw tag push, the frozen snapshot is cut only after the Release workflow
+  # has *succeeded* for that tag. This guarantees we never publish docs for a
+  # release whose binaries/crates failed to build. The triggering run's
+  # head_branch is the tag name (Release fires on `push: tags`).
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 
 jobs:
   build:
     name: Build mdBook
     runs-on: ubuntu-latest
+    # PR + master-push always build. A workflow_run only proceeds when the
+    # upstream Release succeeded AND it was a release tag (vX.Y.Z[-pre]).
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - uses: actions/checkout@v6
+        with:
+          # For a release cut, build the docs from the tagged commit, not master.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,18 +68,151 @@ jobs:
             cargo install --locked --version 0.17.0 mdbook-mermaid
           fi
 
+      # Guard the pre-release semver gate (docs/ci/channels.py): a logic
+      # regression here would silently mis-classify release channels, so run
+      # the channel-gate unit tests on every PR/push before building.
+      - name: Run channel-gate unit tests
+        run: python3 docs/ci/test_channels.py
+
       - name: Build book
         run: mdbook build docs
 
-      - name: Upload book artifact
-        uses: actions/upload-artifact@v7
+      # --- Doc versioning (AAASM-2752) ---
+      # The Pages site is laid out as per-version subpaths under `_site/`:
+      #   _site/index.html      -> root redirect (stable -> pre-release -> latest)
+      #   _site/versions.json   -> manifest read by the selector + warning banner
+      #   _site/latest/         -> live docs tracking master
+      #   _site/<vX.Y.Z[-pre]>/ -> frozen, immutable release snapshots
+      #
+      # versions.json describes moving CHANNELS that point at a concrete
+      # subpath, plus immutable ARCHIVED concrete versions:
+      #   { "channels": [ {id,title,target}, ... ],
+      #     "archived": [ {id,title}, ... ] }
+      # Channels: latest (master), pre-release (newest vX.Y.Z-pre tag),
+      #           stable (newest vX.Y.Z tag). Channel id classification:
+      #   ^v\d+\.\d+\.\d+$    -> stable
+      #   ^v\d+\.\d+\.\d+-.+  -> pre-release
+      #
+      # On master push we publish into latest/. On a *successful* Release
+      # (workflow_run) we publish into <tag>/, archive it, and repoint the
+      # stable or pre-release channel to it.
+      - name: Resolve target version subpath
+        if: github.event_name != 'pull_request'
+        id: docver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            tag="$RELEASE_TAG"
+            # Classify the channel from the tag shape.
+            if printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              channel="stable"
+            elif printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-.+'; then
+              channel="pre-release"
+            else
+              echo "::error::Tag '$tag' is not a release version; skipping docs cut."
+              exit 1
+            fi
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+            echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+            echo "channel=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore previously published versions
+        if: github.event_name != 'pull_request'
+        id: restore
+        continue-on-error: true
+        run: |
+          # Aggregate existing published versions so we never wipe old
+          # version subpaths. We pull the live Pages site root; if the site
+          # does not exist yet (first deploy) this is a no-op.
+          base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
+          echo "Fetching existing versions.json from ${base_url}/versions.json"
+          if curl -fsSL "${base_url}/versions.json" -o prior-versions.json; then
+            echo "prior_versions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing versions.json (first deploy)."
+            echo "prior_versions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble versioned Pages site
+        if: github.event_name != 'pull_request'
+        env:
+          VERSION: ${{ steps.docver.outputs.version }}
+          CHANNEL: ${{ steps.docver.outputs.channel }}
+        run: |
+          set -euo pipefail
+          base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
+
+          mkdir -p _site
+          # 1. Mirror existing published subpaths so they survive this deploy
+          #    (deploy-pages replaces the whole site with the artifact). We
+          #    union the prior channel targets + archived ids.
+          if [ -f prior-versions.json ]; then
+            python3 - <<'PYIDS' > prior-ids.txt
+          import json
+          d = json.load(open("prior-versions.json"))
+          ids = set()
+          for c in d.get("channels", []):
+              if isinstance(c, dict) and c.get("target"):
+                  ids.add(c["target"])
+          for a in d.get("archived", []):
+              if isinstance(a, dict) and a.get("id"):
+                  ids.add(a["id"])
+          print(" ".join(sorted(ids)))
+          PYIDS
+            for v in $(cat prior-ids.txt); do
+              if [ "$v" = "$VERSION" ]; then continue; fi
+              echo "Restoring existing version subpath: $v"
+              mkdir -p "_site/$v"
+              wget -q -e robots=off -np -r -nH --cut-dirs=1 -P "_site" "${base_url}/${v}/" \
+                || echo "WARN: could not mirror ${v}; it re-publishes from its own tag run."
+            done
+          fi
+
+          # 2. Place the freshly built book at the target version subpath.
+          rm -rf "_site/$VERSION"
+          mkdir -p "_site/$VERSION"
+          cp -R docs/book/. "_site/$VERSION/"
+
+          # 3. Recompute versions.json via the testable channel module
+          #    (docs/ci/channels.py), which applies the pre-release semver
+          #    gate: the pre-release channel is emitted only when the newest
+          #    pre-release strictly leads the newest stable release.
+          python3 docs/ci/build_versions.py "$VERSION" "$CHANNEL" _site/versions.json
+
+          # 4. Root redirect (stable -> pre-release -> latest, resolved client-side).
+          cp docs/site-root-index.html _site/index.html
+
+          echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: agent-assembly-book
-          path: docs/book/
-          retention-days: 7
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   verify-commands:
     name: Verify documented commands (Linux)
+    # Only on PR / master push; a release cut re-verifies nothing new.
+    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

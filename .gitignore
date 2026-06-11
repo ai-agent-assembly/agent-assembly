@@ -41,3 +41,6 @@ dashboard/test-results/
 
 # Claude Design handoff export (canonical artefacts are at design/v1/)
 openapi/agent-assembly-brief/project/
+
+# Doc-versioning channel computation test cache (AAASM-2752)
+docs/ci/__pycache__/
