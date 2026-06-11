@@ -15,6 +15,8 @@ on:
       - '.github/workflows/docs.yml'
   push:
     branches: [master]
+    tags:
+      - 'v*'
     paths:
       - 'docs/**'
       - 'README.md'
@@ -54,11 +56,114 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      # --- Doc versioning (AAASM-2752) ---
+      # The Pages site is laid out as per-version subpaths under `_site/`:
+      #   _site/index.html      -> redirect to latest/
+      #   _site/versions.json   -> manifest read by the in-page version selector
+      #   _site/latest/         -> live docs tracking master
+      #   _site/<vX.Y.Z>/       -> frozen release snapshots
+      # On a master push we publish into latest/. On a release tag (v*) we
+      # publish into <version>/ and append it to versions.json.
+      - name: Resolve target version subpath
+        if: github.event_name == 'push'
+        id: docver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore previously published versions
+        if: github.event_name == 'push'
+        id: restore
+        continue-on-error: true
+        run: |
+          # Aggregate existing published versions so we never wipe old
+          # version subpaths. We pull the live Pages site root tarball; if the
+          # site does not exist yet (first deploy) this is a no-op.
+          base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
+          echo "Fetching existing versions.json from ${base_url}/versions.json"
+          if curl -fsSL "${base_url}/versions.json" -o prior-versions.json; then
+            echo "prior_versions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing versions.json (first deploy)."
+            echo "prior_versions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble versioned Pages site
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          version='${{ steps.docver.outputs.version }}'
+          base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
+
+          mkdir -p _site
+          # 1. Pull existing published version subpaths so they survive this
+          #    deploy (deploy-pages replaces the whole site with the artifact).
+          if [ -f prior-versions.json ]; then
+            for v in $(python3 -c "import json,sys; d=json.load(open('prior-versions.json')); print(' '.join(x['id'] for x in d.get('versions', []) if isinstance(x, dict) and x.get('id')))"); do
+              if [ "$v" = "$version" ]; then continue; fi
+              echo "Restoring existing version subpath: $v"
+              mkdir -p "_site/$v"
+              curl -fsSL "${base_url}/${v}/index.html" >/dev/null 2>&1 || true
+              # Mirror the published subpath into the artifact.
+              wget -q -e robots=off -np -r -nH --cut-dirs=1 -P "_site" "${base_url}/${v}/" ||                 echo "WARN: could not mirror ${v}; it may be re-published from source on its own tag run."
+            done
+          fi
+
+          # 2. Place the freshly built book at the target version subpath.
+          rm -rf "_site/$version"
+          mkdir -p "_site/$version"
+          cp -R docs/book/. "_site/$version/"
+
+          # 3. Recompute versions.json (union of prior + this version), with
+          #    `latest` always first when present.
+          python3 - "$version" <<'PYEOF'
+          import json, os, sys
+          version = sys.argv[1]
+          versions = {}
+          # seed from prior manifest if present
+          if os.path.exists("prior-versions.json"):
+              try:
+                  prior = json.load(open("prior-versions.json"))
+                  for v in prior.get("versions", []):
+                      if isinstance(v, dict) and v.get("id"):
+                          versions[v["id"]] = v
+              except Exception:
+                  pass
+          # seed from the source manifest committed in the repo (ensures latest exists)
+          if os.path.exists("docs/versions.json"):
+              try:
+                  src = json.load(open("docs/versions.json"))
+                  for v in src.get("versions", []):
+                      if isinstance(v, dict) and v.get("id"):
+                          versions.setdefault(v["id"], v)
+              except Exception:
+                  pass
+          # ensure the version we just built is present
+          title = "latest (master)" if version == "latest" else version
+          versions.setdefault(version, {"id": version, "title": title})
+          # order: latest first, then the rest sorted descending
+          ordered = []
+          if "latest" in versions:
+              ordered.append(versions.pop("latest"))
+          ordered.extend(sorted(versions.values(), key=lambda v: v["id"], reverse=True))
+          out = {"latest": "latest", "versions": ordered}
+          json.dump(out, open("_site/versions.json", "w"), indent=2)
+          print("versions.json:", json.dumps(out))
+          PYEOF
+
+          # 4. Root redirect to latest/.
+          cp docs/site-root-index.html _site/index.html
+
+          echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
+
       - name: Upload Pages artifact
         if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book
+          path: _site
 
   deploy:
     name: Deploy to GitHub Pages
