@@ -221,6 +221,11 @@
                 </script>
 
                 <div id="mdbook-content" class="content">
+                    <!-- AAASM version-warning banner (AAASM-2752). Populated by
+                         the version-resolver script below; stays hidden when the
+                         reader is on the stable channel or versions.json is
+                         absent (local preview). -->
+                    <div id="aaasm-version-banner" class="aaasm-version-banner hidden" role="status"></div>
                     <main>
                         {{{ content }}}
                     </main>
@@ -336,13 +341,18 @@
         <script src="{{ resource this}}"></script>
         {{/each}}
 
-        <!-- AAASM doc version selector (AAASM-2752).
+        <!-- AAASM channel-based doc version selector + warning banner (AAASM-2752).
              The book is published under a per-version subpath of the Pages site
-             (e.g. /agent-assembly/latest/ or /agent-assembly/v0.1.0/). This
-             script derives the site root + current version from path_to_root,
-             loads versions.json from the site root, and lets the reader switch
-             versions. It is a no-op when versions.json is absent (e.g. local
-             `mdbook build`), so it never breaks the build or a local preview. -->
+             (e.g. /agent-assembly/latest/, /agent-assembly/v0.0.1-alpha.5/, or
+             /agent-assembly/v0.1.0/). versions.json describes moving *channels*
+             (latest / pre-release / stable) that point at a concrete subpath,
+             plus immutable *archived* concrete versions.
+
+             This script derives the site root + current subpath from
+             path_to_root, loads versions.json, renders channels above archived
+             versions in the selector, and shows a banner when the reader is not
+             on the stable channel. It is a no-op when versions.json is absent
+             (e.g. local `mdbook build`), so it never breaks a local preview. -->
         <script>
         (function () {
             // path_to_root is the relative path from the current page back to
@@ -353,37 +363,127 @@
             var bookRootPath = bookRoot.pathname.replace(/\/+$/, "");
             var lastSlash = bookRootPath.lastIndexOf("/");
             if (lastSlash < 0) { return; }
-            var currentVersion = bookRootPath.slice(lastSlash + 1);
+            var currentSubpath = bookRootPath.slice(lastSlash + 1);
             var siteRoot = bookRoot.origin + bookRootPath.slice(0, lastSlash + 1);
 
             var versionsUrl = siteRoot + "versions.json";
             fetch(versionsUrl, { cache: "no-cache" })
                 .then(function (resp) { return resp.ok ? resp.json() : null; })
                 .then(function (data) {
-                    if (!data || !Array.isArray(data.versions) || data.versions.length === 0) {
-                        return;
-                    }
-                    var select = document.getElementById("aaasm-version-selector");
-                    var label = document.getElementById("aaasm-version-selector-label");
-                    if (!select || !label) { return; }
+                    if (!data) { return; }
+                    var channels = Array.isArray(data.channels) ? data.channels : [];
+                    var archived = Array.isArray(data.archived) ? data.archived : [];
+                    if (channels.length === 0 && archived.length === 0) { return; }
 
-                    data.versions.forEach(function (v) {
+                    // Channel target -> channel descriptor, so a concrete subpath
+                    // (e.g. v0.1.0) can be recognised as "the stable release".
+                    var channelByTarget = {};
+                    channels.forEach(function (c) {
+                        if (c && c.target) { channelByTarget[c.target] = c; }
+                    });
+                    var stable = channels.filter(function (c) { return c.id === "stable"; })[0] || null;
+
+                    // The channel the reader is currently viewing, if the current
+                    // subpath is a channel id or a channel target.
+                    var currentChannel = null;
+                    channels.forEach(function (c) {
+                        if (c.id === currentSubpath || c.target === currentSubpath) {
+                            currentChannel = c;
+                        }
+                    });
+
+                    renderSelector(channels, archived);
+                    renderBanner(currentChannel, stable, channelByTarget);
+                })
+                .catch(function () { /* versions.json absent: leave UI hidden */ });
+
+            function renderSelector(channels, archived) {
+                var select = document.getElementById("aaasm-version-selector");
+                var label = document.getElementById("aaasm-version-selector-label");
+                if (!select || !label) { return; }
+
+                function addOption(group, value, text, selected) {
+                    var opt = document.createElement("option");
+                    opt.value = value;
+                    opt.textContent = text;
+                    if (selected) { opt.selected = true; }
+                    group.appendChild(opt);
+                }
+
+                // Channels first, navigating to the channel's concrete target.
+                if (channels.length) {
+                    var chGroup = document.createElement("optgroup");
+                    chGroup.label = "Channels";
+                    channels.forEach(function (c) {
+                        if (!c || !c.id || !c.target) { return; }
+                        var sel = c.id === currentSubpath || c.target === currentSubpath;
+                        addOption(chGroup, c.target, c.title || c.id, sel);
+                    });
+                    select.appendChild(chGroup);
+                }
+
+                // Archived immutable versions below, newest first.
+                if (archived.length) {
+                    var arGroup = document.createElement("optgroup");
+                    arGroup.label = "Archived";
+                    archived.forEach(function (v) {
                         var id = typeof v === "string" ? v : v.id;
                         var title = typeof v === "string" ? v : (v.title || v.id);
                         if (!id) { return; }
-                        var opt = document.createElement("option");
-                        opt.value = id;
-                        opt.textContent = title;
-                        if (id === currentVersion) { opt.selected = true; }
-                        select.appendChild(opt);
+                        addOption(arGroup, id, title, id === currentSubpath);
                     });
+                    select.appendChild(arGroup);
+                }
 
-                    select.addEventListener("change", function () {
-                        window.location.href = siteRoot + select.value + "/";
-                    });
-                    label.classList.remove("hidden");
-                })
-                .catch(function () { /* versions.json absent: leave selector hidden */ });
+                select.addEventListener("change", function () {
+                    window.location.href = siteRoot + select.value + "/";
+                });
+                label.classList.remove("hidden");
+            }
+
+            function renderBanner(currentChannel, stable, channelByTarget) {
+                var banner = document.getElementById("aaasm-version-banner");
+                if (!banner) { return; }
+
+                // On the stable channel (or its concrete target): no banner.
+                if (stable && (currentSubpath === stable.id || currentSubpath === stable.target)) {
+                    return;
+                }
+
+                var stableHref = siteRoot + (stable ? stable.target : "") + "/";
+                var html = null;
+
+                if (currentChannel && currentChannel.id === "latest") {
+                    if (stable) {
+                        html = '⚠️ You’re viewing the in-development docs (master) — content may change. '
+                             + '<a href="' + stableHref + '">Go to the latest stable release →</a>';
+                    } else {
+                        html = 'ℹ️ You’re viewing the in-development docs (master). '
+                             + 'There is no stable release yet.';
+                    }
+                } else if (stable) {
+                    // pre-release channel or an old archived version, stable exists.
+                    var label = (currentChannel && currentChannel.title)
+                        ? currentChannel.title : currentSubpath;
+                    html = '⚠️ You’re viewing ' + escapeHtml(label)
+                         + ', not the latest stable (' + escapeHtml(stable.target) + '). '
+                         + '<a href="' + stableHref + '">Go to the latest stable release →</a>';
+                } else if (currentChannel && currentChannel.id === "pre-release") {
+                    html = 'ℹ️ You’re viewing a pre-release. There is no stable release yet.';
+                }
+
+                if (html) {
+                    banner.innerHTML = html;
+                    banner.classList.remove("hidden");
+                }
+            }
+
+            function escapeHtml(s) {
+                return String(s).replace(/[&<>"']/g, function (c) {
+                    return { "&": "&amp;", "<": "&lt;", ">": "&gt;",
+                             '"': "&quot;", "'": "&#39;" }[c];
+                });
+            }
         })();
         </script>
 
