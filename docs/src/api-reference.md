@@ -1,6 +1,15 @@
-# API Reference
+# API reference
 
-Authoritative API documentation for the Rust crates lives in rustdoc, generated directly from source. This chapter explains how to produce and browse it.
+Build and browse the Rust API docs locally. The authoritative reference lives in
+rustdoc, generated directly from source — there is no hand-written API doc to
+drift out of date. Generate the whole workspace and open it in one command:
+
+```bash
+cargo doc --workspace --no-deps --open
+```
+
+The rest of this chapter covers the flags that matter and maps each crate to its
+rustdoc entry point.
 
 ## Generating rustdoc locally
 
