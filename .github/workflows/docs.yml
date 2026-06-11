@@ -54,12 +54,11 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
-      - name: Upload book artifact
-        uses: actions/upload-artifact@v7
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: agent-assembly-book
-          path: docs/book/
-          retention-days: 7
+          path: docs/book
 
   verify-commands:
     name: Verify documented commands (Linux)
