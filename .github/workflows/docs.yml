@@ -173,89 +173,11 @@ jobs:
           mkdir -p "_site/$VERSION"
           cp -R docs/book/. "_site/$VERSION/"
 
-          # 3. Recompute versions.json: merge prior manifest with this cut.
-          python3 - "$VERSION" "$CHANNEL" <<'PYEOF'
-          import json, os, sys
-
-          version, channel = sys.argv[1], sys.argv[2]
-
-          channels = {}   # id -> {id,title,target}
-          archived = {}   # id -> {id,title}
-
-          def channel_title(cid, target):
-              if cid == "latest":
-                  return "latest (master)"
-              if cid == "stable":
-                  return "stable (%s)" % target
-              if cid == "pre-release":
-                  return "pre-release (%s)" % target
-              return cid
-
-          # Seed from the prior live manifest.
-          if os.path.exists("prior-versions.json"):
-              try:
-                  prior = json.load(open("prior-versions.json"))
-                  for c in prior.get("channels", []):
-                      if isinstance(c, dict) and c.get("id") and c.get("target"):
-                          channels[c["id"]] = {
-                              "id": c["id"],
-                              "title": c.get("title") or channel_title(c["id"], c["target"]),
-                              "target": c["target"],
-                          }
-                  for a in prior.get("archived", []):
-                      if isinstance(a, dict) and a.get("id"):
-                          archived[a["id"]] = {"id": a["id"], "title": a.get("title") or a["id"]}
-              except Exception:
-                  pass
-
-          # Seed the committed source manifest (ensures `latest` always exists).
-          if os.path.exists("docs/versions.json"):
-              try:
-                  src = json.load(open("docs/versions.json"))
-                  for c in src.get("channels", []):
-                      if isinstance(c, dict) and c.get("id") and c.get("target"):
-                          channels.setdefault(c["id"], {
-                              "id": c["id"],
-                              "title": c.get("title") or channel_title(c["id"], c["target"]),
-                              "target": c["target"],
-                          })
-              except Exception:
-                  pass
-
-          # Always guarantee a latest channel.
-          channels.setdefault("latest", {"id": "latest", "title": "latest (master)", "target": "latest"})
-
-          # Apply this cut.
-          if channel == "latest":
-              channels["latest"] = {"id": "latest", "title": "latest (master)", "target": "latest"}
-          else:
-              # Repoint the moving channel to this concrete tag and archive it.
-              channels[channel] = {
-                  "id": channel,
-                  "title": channel_title(channel, version),
-                  "target": version,
-              }
-              archived[version] = {"id": version, "title": version}
-
-          # Order channels: latest, pre-release, stable (priority/display order).
-          channel_order = ["latest", "pre-release", "stable"]
-          ordered_channels = [channels[c] for c in channel_order if c in channels]
-
-          # Archived newest-first by semantic version (string fallback).
-          def sortkey(item):
-              import re
-              m = re.match(r"^v(\d+)\.(\d+)\.(\d+)(?:-(.+))?$", item["id"])
-              if not m:
-                  return (0, 0, 0, "")
-              maj, mino, pat, pre = m.groups()
-              # release (no pre) sorts after its pre-releases at the same x.y.z
-              return (int(maj), int(mino), int(pat), pre or "~")
-          ordered_archived = sorted(archived.values(), key=sortkey, reverse=True)
-
-          out = {"channels": ordered_channels, "archived": ordered_archived}
-          json.dump(out, open("_site/versions.json", "w"), indent=2)
-          print("versions.json:", json.dumps(out))
-          PYEOF
+          # 3. Recompute versions.json via the testable channel module
+          #    (docs/ci/channels.py), which applies the pre-release semver
+          #    gate: the pre-release channel is emitted only when the newest
+          #    pre-release strictly leads the newest stable release.
+          python3 docs/ci/build_versions.py "$VERSION" "$CHANNEL" _site/versions.json
 
           # 4. Root redirect (stable -> pre-release -> latest, resolved client-side).
           cp docs/site-root-index.html _site/index.html
