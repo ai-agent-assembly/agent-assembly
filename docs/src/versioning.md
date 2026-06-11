@@ -1,10 +1,12 @@
-# Protocol Versioning Policy
+# Protocol versioning policy
 
-This document defines the versioning scheme, change classification rules, and deprecation lifecycle for the AI Agent Assembly protocol. All changes to proto schemas, JSON schemas, IPC framing, and wire formats are governed by this policy.
+Use this page to decide how a protocol change must be versioned before you ship it. It defines the versioning scheme, the rules for classifying a change as breaking or non-breaking, and the deprecation lifecycle. Every change to proto schemas, JSON schemas, IPC framing, and wire formats is governed by this policy.
+
+The short version: **add fields and RPCs freely (MINOR); never remove, rename, or retype an existing field without a MAJOR bump and a migration guide.**
 
 ---
 
-## Versioning Scheme
+## Versioning scheme
 
 The protocol uses **Semantic Versioning (MAJOR.MINOR.PATCH)**:
 
@@ -18,9 +20,9 @@ The current protocol version is **`protocol/v1`** (pre-stable: `v0.0.1`).
 
 ---
 
-## Change Classification
+## Change classification
 
-### Non-Breaking Changes (MINOR or PATCH)
+### Non-breaking changes (MINOR or PATCH)
 
 These changes can be made without requiring SDK updates:
 
@@ -34,7 +36,7 @@ These changes can be made without requiring SDK updates:
 | Fix a typo in a comment or doc string | PATCH | No wire format change |
 | Tighten a JSON Schema description | PATCH | No wire format change |
 
-### Breaking Changes (MAJOR)
+### Breaking changes (MAJOR)
 
 These changes require a MAJOR version bump and a migration guide:
 
@@ -52,7 +54,7 @@ These changes require a MAJOR version bump and a migration guide:
 
 ---
 
-## Deprecation Lifecycle
+## Deprecation lifecycle
 
 Before a breaking change is introduced, the affected field, method, or value must go through a formal deprecation period:
 
@@ -67,13 +69,13 @@ Deprecated in vX.Y  →  Removed no earlier than v(X+2).0
 3. **Support period** — The deprecated item remains fully functional for at least **two MAJOR versions** after the deprecating release.
 4. **Remove** — Remove the item in a future MAJOR release (no earlier than `v(X+2).0`). Add a migration guide. Update `CHANGELOG.md` under `Removed`.
 
-### Runtime Backward Compatibility
+### Runtime backward compatibility
 
 **Runtime N must support SDKs speaking protocol N-1.**
 
 This means an `aa-runtime` at protocol `v2.x` must continue to accept connections from SDKs still using protocol `v1.x`. SDKs have a two-major-version window to migrate before a runtime drops support for the older protocol.
 
-### Example: Deprecating a Field
+### Example: deprecating a field
 
 ```protobuf
 // Before (v1.2 — field is still used)
@@ -100,7 +102,7 @@ CHANGELOG entry at v1.3:
 
 ---
 
-## Example Migration Guide — `AgentId.agent_id` → `AgentId.id`
+## Example migration guide — `AgentId.agent_id` → `AgentId.id`
 
 **Breaking change introduced in:** protocol/v3.0  
 **Deprecated since:** protocol/v1.3  
@@ -152,7 +154,7 @@ agent_id = AgentId(org_id="acme", team_id="platform", id="did:key:z6Mk...")
 
 ---
 
-| Runtime Protocol | Must Support |
+| Runtime protocol | Must support |
 |---|---|
 | protocol/v1 | protocol/v1 only (first version) |
 | protocol/v2 | protocol/v1, protocol/v2 |
