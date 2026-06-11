@@ -2,6 +2,8 @@ name: Docs
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 on:
   pull_request:
@@ -52,12 +54,24 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
-      - name: Upload book artifact
-        uses: actions/upload-artifact@v7
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: agent-assembly-book
-          path: docs/book/
-          retention-days: 7
+          path: docs/book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   verify-commands:
     name: Verify documented commands (Linux)
