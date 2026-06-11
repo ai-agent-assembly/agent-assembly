@@ -53,3 +53,29 @@ html { font-size: 16px; }
   --icons: #a3a3a3;
   --icons-hover: #818cf8;
 }
+
+/* ---- Doc version selector (AAASM-2752) ---- */
+.aaasm-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+#aaasm-version-selector-label {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0.4rem;
+}
+#aaasm-version-selector-label.hidden { display: none; }
+.aaasm-version-selector {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--icons);
+  background: var(--theme-popup-bg, var(--bg));
+  border: 1px solid var(--table-border-color, var(--icons));
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+}
+.aaasm-version-selector:hover { color: var(--icons-hover); }
