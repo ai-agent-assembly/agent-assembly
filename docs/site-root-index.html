@@ -1,19 +1,46 @@
 <!DOCTYPE html>
 <!--
   AAASM doc-versioning site-root redirect (AAASM-2752).
-  Published at the GitHub Pages site root by the Docs workflow; forwards
-  readers to the live `latest/` documentation tracking master.
+  Published at the GitHub Pages site root by the Docs workflow. Reads
+  versions.json and forwards the reader to the highest-priority channel
+  present: stable -> pre-release -> latest. Falls back to latest/ when
+  versions.json is unavailable, so the root is never a dead end.
 -->
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="robots" content="noindex">
     <title>agent-assembly documentation</title>
-    <link rel="canonical" href="latest/">
-    <meta http-equiv="refresh" content="0; url=latest/">
-    <script>window.location.replace("latest/" + window.location.hash);</script>
+    <script>
+      (function () {
+        var fallback = "latest/";
+        function go(target) {
+          window.location.replace(target + window.location.hash);
+        }
+        fetch("versions.json", { cache: "no-cache" })
+          .then(function (resp) { return resp.ok ? resp.json() : null; })
+          .then(function (data) {
+            var channels = (data && Array.isArray(data.channels)) ? data.channels : [];
+            function targetOf(id) {
+              for (var i = 0; i < channels.length; i++) {
+                if (channels[i].id === id && channels[i].target) {
+                  return channels[i].target + "/";
+                }
+              }
+              return null;
+            }
+            // Priority chain: stable -> pre-release -> latest.
+            var target = targetOf("stable") || targetOf("pre-release") || targetOf("latest");
+            go(target || fallback);
+          })
+          .catch(function () { go(fallback); });
+      })();
+    </script>
+    <noscript>
+      <meta http-equiv="refresh" content="0; url=latest/">
+    </noscript>
   </head>
   <body>
-    <p>Redirecting to the <a href="latest/">latest documentation</a>&hellip;</p>
+    <p>Redirecting to the <a href="latest/">documentation</a>&hellip;</p>
   </body>
 </html>
