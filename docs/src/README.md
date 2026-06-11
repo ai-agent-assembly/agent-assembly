@@ -4,6 +4,8 @@
 
 This book is the contributor and operator reference for the core. If you build *with* a language SDK instead, read the per-SDK guides below.
 
+New here? Start with the **[Introduction](introduction/README.md)** — it explains what Agent Assembly is, the problem it solves, the core concepts, and the three-layer interception model. Then move on to the [Quick Start](quickstart/README.md).
+
 > **Other docs:** [Docs Hub](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/)
 
 ## Run it locally
@@ -22,9 +24,12 @@ From there, attach an SDK shim, the `aa-proxy` sidecar, or the eBPF layer to sta
 
 | You want to… | Read |
 |---|---|
-| Understand how the parts fit together | [Architecture overview](architecture.md) |
-| Install the `aasm` CLI | [Installation](installation.md) |
-| Drive a deployment from the terminal | [Command-line interface](cli.md) |
+| Understand what this is and why | [Introduction](introduction/README.md) |
+| Get a gateway running quickly | [Quick Start](quickstart/README.md) |
+| Look up an `aasm` command | [CLI Reference](cli-reference/README.md) |
+| Follow a task end-to-end | [Usage Guide](usage/README.md) |
+| Understand the threat model and defenses | [Security Model](security/README.md) |
+| See how the crates fit together | [Architecture](architecture/README.md) |
 | Check which SDK versions are compatible | [Compatibility matrix](compatibility.md) |
 | Read the wire-protocol contract | [Protocol changelog](protocol/CHANGELOG.md) |
 | See latency and build-time numbers | [Benchmarks — baseline](benchmarks/BASELINE.md) |
