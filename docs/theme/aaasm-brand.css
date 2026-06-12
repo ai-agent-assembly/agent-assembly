@@ -54,6 +54,16 @@ html { font-size: 16px; }
   --icons-hover: #818cf8;
 }
 
+/* ---- Light/dark toggle (AAASM-2745) ----
+   Sun is shown in dark mode (click → go light); moon in light mode
+   (click → go dark). `.is-dark` is toggled by the wiring script. */
+.aaasm-light-dark-toggle .aaasm-icon-sun { display: none; }
+.aaasm-light-dark-toggle .aaasm-icon-moon { display: inline-flex; }
+.aaasm-light-dark-toggle.is-dark .aaasm-icon-sun { display: inline-flex; }
+.aaasm-light-dark-toggle.is-dark .aaasm-icon-moon { display: none; }
+.aaasm-light-dark-toggle { color: var(--icons); }
+.aaasm-light-dark-toggle:hover { color: var(--icons-hover); }
+
 /* ---- Doc version selector (AAASM-2752) ---- */
 .aaasm-sr-only {
   position: absolute;
