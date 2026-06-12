@@ -14,10 +14,10 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core                     = { path = "../aa-core", version = "0.0.1-alpha.5", features = ["serde"] }
-aa-security                 = { path = "../aa-security", version = "0.0.1-alpha.5", features = ["serde"] }
-aa-proto                    = { path = "../aa-proto", version = "0.0.1-alpha.5" }
-aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-alpha.5" }
+aa-core                     = { path = "../aa-core", version = "0.0.1-alpha.6", features = ["serde"] }
+aa-security                 = { path = "../aa-security", version = "0.0.1-alpha.6", features = ["serde"] }
+aa-proto                    = { path = "../aa-proto", version = "0.0.1-alpha.6" }
+aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-alpha.6" }
 async-nats                  = { workspace = true }
 async-trait                 = { workspace = true }
 axum                        = { workspace = true }
@@ -41,7 +41,7 @@ tracing-subscriber          = { workspace = true, features = ["json", "env-filte
 which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-alpha.5" }
+aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-alpha.6" }
 libc    = { workspace = true }
 
 [dev-dependencies]
