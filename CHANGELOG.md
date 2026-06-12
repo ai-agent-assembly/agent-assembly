@@ -5,6 +5,82 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.6] — 2026-06-12 (pre-release)
+
+> **Not for production use.** Sixth pre-release in the v0.0.1 dry-run
+> series. Re-runs the full release pipeline with the two alpha-5
+> recovery fixes (AAASM-2463 / PR #871) baked into master.
+
+### Why a fresh bump rather than recovering alpha-5
+
+alpha-5 published 5 of 6 channels (GH Release, Homebrew, npm, PyPI,
+ghcr.io). crates.io ended up partially published: only `aa-core`,
+`aa-proto`, and `aa-ebpf-common` landed at `0.0.1-alpha.5`. The
+remaining 6 crates (`aa-ebpf`, `aa-runtime`, `aa-proxy`, `aa-sandbox`,
+`aa-gateway`, `aa-cli`) were blocked because `cargo workspaces
+publish` runs `cargo publish --verify` before upload, and
+`aa-ebpf/build.rs` renames a staged `Cargo.toml.embedded` →
+`Cargo.toml` inside the extracted-tarball build directory — cargo's
+source-mutation guard refuses the publish.
+
+`gh run rerun --failed` uses the workflow definition at the time of
+the original tag push (pre-AAASM-2463 fix), so re-running cannot pick
+up the post-merged improvement. Bumping to alpha-6 with a fresh tag
+validates the entire release flow end-to-end with both fixes in place.
+
+### Recovery fixes verified by this tag
+
+* **AAASM-2463 commit 1 (PR #871)** — `release.yml` now passes
+  `--no-verify` to `cargo workspaces publish` so the publish step
+  does not trip on the `cargo publish --verify` source-mutation
+  guard. The actual uploaded tarball is unchanged
+  (`_embedded/aa-ebpf-probes/` keeps its `.embedded`-suffixed
+  manifest); pre-tag CI already validates the workspace builds
+  cleanly, so the per-crate verify step is redundant.
+* **AAASM-2463 commit 2 (PR #871)** — removed the `smoke-test:` job
+  from `release.yml`. The job was declared at the same `needs:`
+  level as `publish-crates`, so it ran in parallel with the publish
+  steps and raced both `cargo install aasm` and the homebrew tap
+  formula merge. Removed for this cycle; re-introducing it correctly
+  ordered (or as a separate `workflow_run`) is a future follow-up.
+
+### Install
+
+```bash
+# Native binaries (Homebrew + GH Release tarballs)
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+curl -L https://github.com/ai-agent-assembly/agent-assembly/releases/download/v0.0.1-alpha.6/aasm-aarch64-apple-darwin.tar.gz | tar xz
+
+# crates.io — first end-to-end validated publish of all 9 crates post AAASM-2463
+cargo install aasm --version 0.0.1-alpha.6
+
+# Container images
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.6
+docker pull ghcr.io/ai-agent-assembly/python:3.14-slim
+
+# Language SDKs
+pip install --pre agent-assembly==0.0.1a6
+npm install @agent-assembly/sdk@0.0.1-alpha.6
+go get github.com/ai-agent-assembly/go-sdk@v0.0.1-alpha.6
+```
+
+### Behaviour delta on the crates.io `aasm` binary
+
+Unchanged from alpha-5. The published `aasm` binary omits the
+`aasm run <tool>` and `aasm tools` subcommands while the dev-tool
+subsystem is being finished. Local source builds
+(`cargo build -p aa-cli`) expose the full surface unchanged. See
+`docs/src/compatibility.md` for the restoration recipe.
+
+### Refs
+
+* This tag's prep: `AAASM-2767`
+* Predecessor: `AAASM-2461` (alpha-5)
+* Recovery fixes: `AAASM-2463` (PR #871)
+* Parent Story: `AAASM-1234` (F118 release-notes authoring)
+
+---
+
 ## [0.0.1-alpha.5] — 2026-06-03 (pre-release)
 
 > **Not for production use.** Fifth pre-release in the v0.0.1 dry-run
