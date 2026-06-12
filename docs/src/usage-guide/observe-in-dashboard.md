@@ -46,8 +46,31 @@ tabs and a **+ new policy** action; opening a row drops into the editor:
 
 ![Dashboard Policies page — visual builder with All / Active / Proposed tabs](images/dashboard-policies.png)
 
+### More implemented routes — Live Ops and Topology
+
+The **Live Operations** route renders the real-time governance layout: the
+L1→L2→L3 traffic pipeline (Identity → Capability → Scrub → External), a
+`tail -f` event stream with agent/team/op-type/status filters and an auto-scroll
+toggle, and the approval queue. Against the local-mode gateway the event stream
+shows "reconnecting…" (no backend feed) and the columns are empty, but the full
+operator layout is real:
+
+![Dashboard Live Operations — traffic pipeline, event stream, and approval queue](images/dashboard-live-ops.png)
+
+The **Topology** route lists agents and teams; here it honestly reports
+`0 agents · 0 teams` because the fleet data API is not part of the local runtime:
+
+![Dashboard Topology — agent/team map, empty in local mode](images/dashboard-topology.png)
+
+### Light and dark themes
+
+The header theme toggle flips the entire token-driven UI between light and dark.
+Here is the Overview route in dark mode:
+
+![Dashboard in dark mode — Overview route with the dark theme applied](images/dashboard-overview-dark.png)
+
 > **Honest caveat — what renders locally vs. what needs the hosted backend.**
-> The three screenshots above are real captures of the `0.0.1-alpha.5` SPA
+> The screenshots above are all real captures of the `0.0.1-alpha.5` SPA
 > served by the local-mode gateway. The data panels are empty (zero policies,
 > zero agents, "not implemented yet" on some routes) because the dashboard's
 > data API — `/api/v1/fleet`, `/api/v1/policies`, `/api/v1/capability/matrix`,

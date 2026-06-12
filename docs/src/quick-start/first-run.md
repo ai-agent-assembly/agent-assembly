@@ -183,6 +183,18 @@ For a live, interactive view there are two consoles:
 - **Terminal (TUI) dashboard** — `aasm dashboard` opens an interactive in-terminal
   dashboard for real-time monitoring, no browser required.
 
+The web dashboard's app shell looks like this after you sign in — the full
+governance navigation (Monitor / Control / Manage) down the left, with the
+approvals indicator, theme toggle, Settings, and Log out across the top:
+
+![Web dashboard app shell — the governance navigation after login](../usage-guide/images/dashboard-shell-overview.png)
+
+> The data panels are empty here because this is the open-source local-mode
+> gateway, which serves the SPA but not the populated data API (that lives in
+> the hosted control plane). See
+> [Observe in the dashboard](../usage-guide/observe-in-dashboard.md) for the
+> full picture, including the live-operations and dark-mode views.
+
 ## 7. Stop the gateway
 
 When you are done, shut the gateway down cleanly (SIGTERM, escalating to SIGKILL
