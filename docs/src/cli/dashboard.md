@@ -47,9 +47,13 @@ aasm dashboard start --port 8088 --open
 Dashboard serving at http://127.0.0.1:8088  (Ctrl-C to stop)
 ```
 
-Once it is up, the browser shows the governance SPA. The Live Operations route
-lays out the L1→L2→L3 traffic pipeline, a `tail -f` event stream with filters,
-and the approval queue:
+Once the server is up, the browser opens to the dashboard **home / overview** —
+your confirmation that the dashboard is set up and running:
+
+![Web dashboard — home/overview view after `aasm dashboard start`](../usage-guide/images/dashboard-shell-overview.png)
+
+Navigating to the **Live Operations** route lays out the L1→L2→L3 traffic
+pipeline, a `tail -f` event stream with filters, and the approval queue:
 
 ![Web dashboard — Live Operations route served by `aasm dashboard start`](../usage-guide/images/dashboard-live-ops.png)
 
