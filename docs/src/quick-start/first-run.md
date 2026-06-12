@@ -13,7 +13,7 @@ flowchart LR
     C --> D{"Connect an<br/>interception layer"}
     D -->|SDK shim| E["Agent registers<br/>via gRPC"]
     D -->|Sidecar proxy| E
-    D -->|eBPF (Linux)| E
+    D -->|eBPF on Linux| E
     E --> F["aasm status / topology<br/>view the fleet"]
     F --> G["aasm gateway stop"]
 ```
