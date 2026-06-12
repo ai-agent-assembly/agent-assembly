@@ -1,5 +1,18 @@
 # What Agent Assembly is & the problem
 
+> **In plain terms.** AI agents act on their own — they run tools, call
+> services, and spend money to get a job done. Agent Assembly is the set of
+> guardrails around them: it checks every action an agent tries to take against
+> rules you define, allows or blocks it *before* it happens, and keeps a
+> permanent record of what was decided. Think of it as a security checkpoint
+> that an AI agent cannot walk around.
+>
+> It is for the people responsible for those agents — **developers** wiring them
+> up, **security and operations** teams keeping them safe, and the **planners**
+> who need to know the controls exist. With it you can decide which tools an
+> agent may use, stop it from leaking data or overspending, and review exactly
+> what every agent did and why.
+
 ## What it is
 
 `agent-assembly` is a **governance-native runtime for AI agents**. An AI agent —
