@@ -21,7 +21,15 @@ integration-test = []
 # `tests/audit_consumer_verify.rs` (Docker-backed: NATS JetStream + Postgres).
 #
 # Usage: cargo nextest run -p aa-integration-tests --features audit-consumer --test audit_consumer_verify
+#
+# AAASM-2775: wrapped in strip-for-publish markers so the published workspace
+# graph does not reference `aa-gateway/audit-consumer` (which is itself stripped
+# from aa-gateway/Cargo.toml at publish time, AAASM-2388). aa-integration-tests
+# is `publish = false`, but cargo-workspaces walks the full workspace dep graph
+# during publish and resolution fails on the dangling feature reference.
+# strip-for-publish:begin audit-consumer
 audit-consumer = ["aa-gateway/audit-consumer"]
+# strip-for-publish:end audit-consumer
 
 # AAASM-2594: e2e verification of the aa-runtime audit-publisher startup wiring.
 # Gates `tests/audit_publisher_startup_verify.rs` (Docker-backed: NATS JetStream).

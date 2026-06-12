@@ -50,6 +50,10 @@ MARKED_FILES=(
     "${REPO_ROOT}/aa-gateway/Cargo.toml"
     "${REPO_ROOT}/aa-gateway/src/lib.rs"
     "${REPO_ROOT}/aa-gateway/src/main.rs"
+    # AAASM-2775: aa-integration-tests forwards a feature to aa-gateway's stripped
+    # audit-consumer feature. Without this strip, cargo-workspaces resolution
+    # fails at publish time on the dangling feature reference (alpha-6 release).
+    "${REPO_ROOT}/aa-integration-tests/Cargo.toml"
 )
 
 # ---- Files to delete outright (they consume held-back deps) ----
