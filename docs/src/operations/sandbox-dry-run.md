@@ -297,4 +297,4 @@ That's the recommended pattern for new policies — run them in observe mode for
 ## See also
 
 - [L0–L3 Capability Matrix](../governance/capability-matrix.md) — sandbox mode applies at all governance tiers
-- [Architecture Overview](../architecture.md) — where the policy evaluator sits in the request pipeline
+- [System architecture](../architecture/system-architecture.md) — where the policy evaluator sits in the request pipeline

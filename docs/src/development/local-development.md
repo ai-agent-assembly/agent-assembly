@@ -58,5 +58,15 @@ Point the gateway at a bundled reference policy and connect a sidecar:
 cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
 ```
 
-See the [CLI](../cli.md) page for `aasm` operator commands and the README
+See the [CLI](../cli/overview.md) page for `aasm` operator commands and the README
 "Running with Docker Compose" section for the sidecar stack.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `protoc` / "Could not find protoc" build error | Protocol Buffers compiler missing | Install it (`brew install protobuf` or `apt-get install protobuf-compiler`) — `aa-proto` and `aa-gateway` need it |
+| `cargo build` fails on `aa-ebpf*` off Linux | eBPF crates target the BPF toolchain | Build with `--exclude aa-ebpf`; use `cargo check -p aa-ebpf` on non-Linux hosts |
+| Pre-commit hook does not run | Lefthook hooks not installed | Run `lefthook install` once in the repo |
+| Pre-push fails on `cargo doc` | A doc comment has a broken intra-doc link | Run `cargo doc --workspace --no-deps` locally and fix the reported link |
+| `make dev-verify` skips the Go smoke test | `go-sdk` checkout is missing or has no `internal/smoke/` | Expected when the Go SDK sibling repo is absent; clone it next to `agent-assembly` to enable it |

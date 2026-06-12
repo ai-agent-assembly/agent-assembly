@@ -1,28 +1,87 @@
 # Summary
 
-[Introduction](README.md)
+[agent-assembly](README.md)
+
+# Introduction
+
+- [Introduction](introduction/README.md)
+  - [What it is & the problem](introduction/overview.md)
+  - [Core concepts](introduction/concepts.md)
+  - [The three-layer model](introduction/three-layer-model.md)
+
+# Quick Start
+
+- [Requirements](quick-start/requirements.md)
+- [Installation](quick-start/installation.md)
+- [Configuration](quick-start/configuration.md)
+- [First run](quick-start/first-run.md)
+
+# CLI Reference
+
+- [Overview](cli/overview.md)
+- [aasm status](cli/status.md)
+- [aasm agent](cli/agent.md)
+- [aasm policy](cli/policy.md)
+- [aasm topology](cli/topology.md)
+- [aasm alerts](cli/alerts.md)
+- [aasm approvals](cli/approvals.md)
+- [aasm audit](cli/audit.md)
+- [aasm logs](cli/logs.md)
+- [aasm trace](cli/trace.md)
+- [aasm cost](cli/cost.md)
+- [aasm dashboard](cli/dashboard.md)
+- [aasm gateway](cli/gateway.md)
+- [aasm proxy](cli/proxy.md)
+- [aasm start / stop](cli/start-stop.md)
+- [aasm sandbox](cli/sandbox.md)
+- [aasm config](cli/config.md)
+- [aasm context](cli/context.md)
+- [aasm admin](cli/admin.md)
+- [aasm version](cli/version.md)
+- [aasm completion](cli/completion.md)
+
+# Usage Guide
+
+- [Usage Guide](usage-guide/overview.md)
+  - [Govern an agent end-to-end](usage-guide/govern-an-agent.md)
+  - [Enforce an egress policy](usage-guide/enforce-egress-policy.md)
+  - [Team budgets and cost](usage-guide/team-budgets.md)
+  - [Observe in the dashboard](usage-guide/observe-in-dashboard.md)
+  - [Choosing interception layers](usage-guide/interception-layers.md)
+  - [Troubleshooting](usage-guide/troubleshooting.md)
+
+# Security Model
+
+- [Overview](security/overview.md)
+- [Threat model](security/threat-model.md)
+- [Three-layer defense in depth](security/three-layer-defense.md)
+- [Protection and enforcement](security/protection-model.md)
+- [Trust boundaries](security/trust-boundaries.md)
+- [Audit and assurance](security/audit-assurance.md)
+
+# Architecture
+
+- [Architecture](architecture/README.md)
+  - [System architecture](architecture/system-architecture.md)
+  - [Component deep-dives](architecture/components.md)
+  - [Key workflows](architecture/workflows.md)
+  - [Data flows](architecture/data-flows.md)
+  - [Building & contributing](architecture/building.md)
 
 ---
+
+# Reference
+
+- [API Reference](api-reference.md)
 
 # Project Status
 
 - [Compatibility Matrix](compatibility.md)
 - [Versioning Policy](versioning.md)
 
-# Architecture
-
-- [Overview](architecture.md)
-- [API Reference](api-reference.md)
-
-# Usage
-
-- [Installation](installation.md)
-- [Command-Line Interface](cli.md)
-- [Dashboard](dashboard.md)
-
 # Governance
 
-- [L0–L3 Capability Matrix](governance/capability-matrix.md)
+- [L0-L3 Capability Matrix](governance/capability-matrix.md)
 - [Policy RBAC Role Matrix](policy-rbac.md)
 
 # Protocol
@@ -66,5 +125,5 @@
 # Architecture Decision Records
 
 - [Index](adr/README.md)
-  - [0001 — Storage Architecture](adr/0001-storage-architecture.md)
-  - [0002 — SDK Security Boundary](adr/0002-sdk-security-boundary.md)
+  - [0001 - Storage Architecture](adr/0001-storage-architecture.md)
+  - [0002 - SDK Security Boundary](adr/0002-sdk-security-boundary.md)

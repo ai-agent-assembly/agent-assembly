@@ -17,3 +17,6 @@ additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
+
+[preprocessor.last-changed]
+command = "python3 theme/last-changed.py"

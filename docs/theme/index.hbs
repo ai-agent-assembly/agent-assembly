@@ -146,6 +146,10 @@
                         <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
                             {{fa "solid" "bars"}}
                         </label>
+                        <button id="aaasm-light-dark-toggle" class="icon-button aaasm-light-dark-toggle" type="button" title="Toggle light / dark" aria-label="Toggle light / dark">
+                            <span class="aaasm-icon-sun">{{fa "solid" "sun"}}</span>
+                            <span class="aaasm-icon-moon">{{fa "solid" "moon"}}</span>
+                        </button>
                         <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
                             {{fa "solid" "paintbrush"}}
                         </button>
@@ -218,6 +222,42 @@
                     Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
                         link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
                     });
+                </script>
+
+                <!-- AAASM obvious light/dark toggle (AAASM-2745). Reuses mdBook's
+                     own theme menu so persistence can't drift: on click we detect
+                     the current theme from <html> classList and programmatically
+                     click the existing #mdbook-theme-light / #mdbook-theme-navy
+                     menu items (already wired to book.js). The button shows a sun
+                     in dark mode and a moon in light mode. -->
+                <script>
+                (function () {
+                    var DARK = ['navy', 'coal', 'ayu'];
+                    var btn = document.getElementById('aaasm-light-dark-toggle');
+                    if (!btn) { return; }
+                    var html = document.documentElement;
+
+                    function isDark() {
+                        return DARK.some(function (t) { return html.classList.contains(t); });
+                    }
+                    function syncIcon() {
+                        btn.classList.toggle('is-dark', isDark());
+                    }
+                    syncIcon();
+
+                    btn.addEventListener('click', function () {
+                        var targetId = isDark() ? 'mdbook-theme-light' : 'mdbook-theme-navy';
+                        var item = document.getElementById(targetId);
+                        if (item) { item.click(); }
+                        syncIcon();
+                    });
+
+                    // Keep the icon correct if the theme changes via the paintbrush
+                    // menu or another tab.
+                    new MutationObserver(syncIcon).observe(html, {
+                        attributes: true, attributeFilter: ['class']
+                    });
+                })();
                 </script>
 
                 <div id="mdbook-content" class="content">
