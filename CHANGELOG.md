@@ -5,6 +5,89 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.7] — 2026-06-13 (pre-release)
+
+> **Not for production use.** Seventh pre-release in the v0.0.1 dry-run
+> series. Re-runs the full release pipeline with the AAASM-2775
+> strip-for-publish fix baked into master.
+
+### Why a fresh bump rather than recovering alpha-6
+
+alpha-6 published 4 of 5 channels (GH Release, Homebrew tap PR, npm,
+PyPI, Go module proxy). crates.io ended up unpublished this cycle:
+the `publish-crates` job failed with a workspace resolver error
+because `aa-integration-tests/Cargo.toml` still referenced
+`aa-gateway/audit-consumer` after the strip script removed that
+feature from `aa-gateway/Cargo.toml`. `aa-integration-tests` is
+`publish = false`, but cargo-workspaces walks the full workspace
+graph during publish and resolution fails on the dangling reference.
+
+`gh run rerun --failed` uses the workflow definition at the time of
+the original tag push (pre-AAASM-2775 fix), so re-running cannot pick
+up the post-merged improvement. Bumping to alpha-7 with a fresh tag
+validates the entire release flow end-to-end with the fix in place.
+
+### Recovery fix verified by this tag
+
+* **AAASM-2775 (PR #1021)** — strip-for-publish now also wraps
+  `aa-integration-tests/Cargo.toml`'s `audit-consumer` feature
+  forward with `strip-for-publish:begin audit-consumer` / `:end`
+  markers, and the file is added to `MARKED_FILES` in
+  `.ci/strip-for-publish.sh`. The published workspace graph no
+  longer references the stripped feature.
+
+### Companion SDK-workflow fixes (settings-only, no code change)
+
+The alpha-6 fan-out also surfaced two SDK-release-workflow
+breakages that have been resolved via repo / org settings:
+
+* **node-sdk `release-node.yml`** — "Open docs-version PR" step
+  failed with `GitHub Actions is not permitted to create or
+  approve pull requests`. Org-level setting was off; flipped to
+  `true` and auto-propagated to all 6 org repos.
+* **go-sdk `Docs Site`** — `deploy` job died in 1s with 0 steps on
+  the `v0.0.1-alpha.5` tag push because the `github-pages`
+  environment's deployment-branch-policy was master-only. Added a
+  `v*` tag policy alongside; the rerun succeeded.
+
+### Install
+
+```bash
+# Native binaries (Homebrew + GH Release tarballs)
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+curl -L https://github.com/ai-agent-assembly/agent-assembly/releases/download/v0.0.1-alpha.7/aasm-aarch64-apple-darwin.tar.gz | tar xz
+
+# crates.io — first end-to-end validated publish of all 9 crates ever
+cargo install aasm --version 0.0.1-alpha.7
+
+# Container images
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.7
+docker pull ghcr.io/ai-agent-assembly/python:3.14-slim
+
+# Language SDKs
+pip install --pre agent-assembly==0.0.1a7
+npm install @agent-assembly/sdk@0.0.1-alpha.7
+go get github.com/ai-agent-assembly/go-sdk@v0.0.1-alpha.5
+```
+
+### Behaviour delta on the crates.io `aasm` binary
+
+Unchanged from alpha-5 / alpha-6. The published `aasm` binary omits
+the `aasm run <tool>` and `aasm tools` subcommands while the
+dev-tool subsystem is being finished. Local source builds
+(`cargo build -p aa-cli`) expose the full surface unchanged. See
+`docs/src/compatibility.md` for the restoration recipe.
+
+### Refs
+
+* This tag's prep: `AAASM-2786`
+* Predecessor: `AAASM-2767` (alpha-6)
+* Recovery fix: `AAASM-2775` (PR #1021)
+* Multi-layer chain: `AAASM-2346` → `AAASM-2463` → `AAASM-2775`
+* Parent Story: `AAASM-1234` (F118 release-notes authoring)
+
+---
+
 ## [0.0.1-alpha.6] — 2026-06-12 (pre-release)
 
 > **Not for production use.** Sixth pre-release in the v0.0.1 dry-run
