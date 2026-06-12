@@ -12,7 +12,7 @@
 ## Install the CLI
 
 ```sh
-curl -sSf https://install.ai-agent-assembly.dev | sh
+curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
 
 This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
@@ -21,11 +21,14 @@ The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh)
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.1.0 curl -sSf https://install.ai-agent-assembly.dev | sh
+AASM_VERSION=v0.0.1-alpha.5 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Custom install directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
+
+> A short hosted alias (`https://install.ai-agent-assembly.dev`) is planned but
+> not yet live — use the `raw.githubusercontent.com` URL above for now.
 
 ### Homebrew (macOS / Linux)
 
