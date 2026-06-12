@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Full history so the last-changed preprocessor can read per-page
+          # git dates; a shallow clone would collapse every page to one commit.
+          fetch-depth: 0
           # For a release cut, build the docs from the tagged commit, not master.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
 
