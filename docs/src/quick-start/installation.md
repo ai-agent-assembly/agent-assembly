@@ -21,13 +21,17 @@ The one-line installer downloads the matching pre-built tarball plus its
 the `aasm` binary:
 
 ```sh
-curl -sSf https://install.ai-agent-assembly.dev | sh
+curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
 
 By default the binary is installed to `/usr/local/bin` if that directory is
 writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
+
+> A short hosted alias (`https://install.ai-agent-assembly.dev` — hosted install
+> script, coming soon) is planned but not yet live — use the
+> `raw.githubusercontent.com` URL above for now.
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
@@ -42,10 +46,10 @@ The installer honors these environment variables:
 
 ```sh
 # Install a specific release tag (default: latest)
-AASM_VERSION=v0.1.0 curl -sSf https://install.ai-agent-assembly.dev | sh
+AASM_VERSION=v0.0.1-alpha.5 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Install to a custom directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://install.ai-agent-assembly.dev | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
 
 | Variable | Default | Purpose |
@@ -65,7 +69,7 @@ installer verifies that signature against the release workflow's identity before
 trusting the checksums. To make a missing/unverifiable signature fatal:
 
 ```sh
-AASM_REQUIRE_SIGNATURE=1 curl -sSf https://install.ai-agent-assembly.dev | sh
+AASM_REQUIRE_SIGNATURE=1 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
 
 > Releases published before signing was added carry no cosign bundle; with the
