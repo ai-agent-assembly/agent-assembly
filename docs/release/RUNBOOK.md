@@ -40,8 +40,6 @@ All 10 checks must report ✓ before continuing. Common failures and what to do:
 - *Stale homebrew tap PR open* — close or merge it before tagging; otherwise
   the per-tag bot will open a parallel PR and reviewers will be unsure
   which one is current.
-- *Naked `pip install agent-assembly` in smoke-test.yml* — must be pinned;
-  see AAASM-2455 / AAASM-2457 for the recurrence history.
 
 ## 2. Tag push — IRREVERSIBLE
 
@@ -67,8 +65,9 @@ Four workflows fire in parallel from the tag push. **None waits on the others.**
 | `repository_dispatch` → node-sdk | Triggers `release-node.yml` which publishes 5 npm packages |
 | `repository_dispatch` → python-sdk | Triggers `release-python.yml` which publishes `agent-assembly` to PyPI |
 
-`smoke-test.yml` runs at the end of `release.yml` against whatever channels
-agent-assembly itself controls.
+The post-release artifact smoke test (`smoke-test.yml`) was deprecated and
+removed (AAASM-2772). Post-release artifact verification is performed manually
+per the "Post-release verification" section of `RELEASING.md`.
 
 ## 4. Manual gate — merge the Homebrew tap PR (within ~5 minutes)
 
@@ -123,7 +122,7 @@ if no installs have happened. Treat them as immutable in practice.
 
 The SDK repos (`python-sdk`, `node-sdk`, `go-sdk`) cut their own releases
 on their own cadence. The SDK CI is the SDK's own quality gate.
-`agent-assembly`'s release smoke verifies only what `agent-assembly` itself
+`agent-assembly`'s release covers only what `agent-assembly` itself
 publishes: Homebrew tap, ghcr.io images, crates.io tarballs, and the GH
 Release tarballs.
 
