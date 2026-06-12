@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Pure domain logic for Agent Assembly — no_std compatible"
 
 [dependencies]
-aa-security  = { path = "../aa-security", version = "0.0.1-alpha.6", optional = true }
+aa-security  = { path = "../aa-security", version = "0.0.1-alpha.7", optional = true }
 async-trait  = { workspace = true, optional = true }
 cfg-if       = "1"
 chrono       = { workspace = true, default-features = false, features = ["clock"], optional = true }
