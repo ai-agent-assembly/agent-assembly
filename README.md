@@ -2,11 +2,15 @@
 
 > Governance-native runtime for AI agents — open-source core.
 
-[![CI](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
-[![Docs](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml/badge.svg)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
-[![codecov](https://codecov.io/gh/ai-agent-assembly/agent-assembly/branch/master/graph/badge.svg)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver)](https://github.com/ai-agent-assembly/agent-assembly/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=master&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=master&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
+[![Release](https://img.shields.io/badge/release-v0.0.1--alpha.5-3b82f6?logo=github)](https://github.com/ai-agent-assembly/agent-assembly/releases)
+[![Coverage](https://img.shields.io/codecov/c/github/ai-agent-assembly/agent-assembly?logo=codecov&logoColor=white)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
+[![Quality Gate](https://img.shields.io/sonar/quality_gate/AI-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=AI-agent-assembly_agent-assembly)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-%E2%89%A51.75-orange?logo=rust)](https://www.rust-lang.org)
+[![Style](https://img.shields.io/badge/style-rustfmt-000?logo=rust)](https://github.com/rust-lang/rustfmt)
+[![Lints](https://img.shields.io/badge/lints-clippy-blue?logo=rust)](https://github.com/rust-lang/rust-clippy)
 
 
 ## Install the CLI
