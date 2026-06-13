@@ -37,6 +37,16 @@ updates:
     commit-message:
       prefix: "⬆"
     open-pull-requests-limit: 10
+    ignore:
+      # time 0.3.48 introduced an E0119 trait-coherence conflict that breaks
+      # rcgen 0.14.8 (our pinned cert-gen dep, used by aa-gateway/aa-proxy):
+      #   error[E0119]: conflicting implementations of trait `From<…HourBase>`
+      # No fixable combination exists yet — 0.3.48 is the latest `time` and
+      # 0.14.8 is the latest published `rcgen` (no 0.14.9 / 0.15). Skip this
+      # one broken release; a later `time` (0.3.49+) or an `rcgen` fix will
+      # re-enable the bump automatically. See PR #1026.
+      - dependency-name: "time"
+        versions: ["0.3.48"]
 
   # ── Dashboard (pnpm) ─────────────────────────────────────────────────────
   # React + TypeScript frontend scaffold located in dashboard/, managed with
