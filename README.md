@@ -26,7 +26,7 @@ The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh)
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-alpha.8 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-alpha.9 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Custom install directory
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
@@ -120,13 +120,13 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-alpha.8`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.8)
+[`v0.0.1-alpha.9`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.9)
 (2026-06-13). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
 |---|---|
-| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.8`) |
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`) |
 | crates.io | ✅ Workspace crates published at the pre-release version |
 | Homebrew tap | ✅ `aasm` formula published for tagged releases |
 | PyPI / npm | ✅ SDK pre-releases published from the release tag |
