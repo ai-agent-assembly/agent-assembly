@@ -224,7 +224,7 @@ dev-verify passed (22s total)
 - [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
 - [Architecture Overview](docs/src/architecture.md) — three-layer interception model
 - [Policy examples](policy-examples/) — reference governance policies
-- [Runnable examples](https://github.com/AI-agent-assembly/agent-assembly-examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
+- [Runnable examples](https://github.com/ai-agent-assembly/agent-assembly-examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
 
 ## Running with Docker Compose
 
