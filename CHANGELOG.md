@@ -5,6 +5,74 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.8] — 2026-06-13 (pre-release)
+
+> **Not for production use.** Eighth pre-release in the v0.0.1 dry-run
+> series. Re-runs the full release pipeline with the AAASM-2797
+> storage-crate path-dep version fix baked into master.
+
+### Why a fresh bump rather than recovering alpha-7
+
+alpha-7 published only `aa-core@0.0.1-alpha.7` to crates.io then
+`publish-crates` died: 5 publishable storage/cache crates added
+between alpha-3 and alpha-5 (aa-storage, aa-storage-memory,
+aa-storage-redis, aa-storage-sqlite-buffer, aa-cache) carried path-
+deps without the `version = "..."` literal that cargo publish demands.
+
+`gh run rerun --failed` uses the workflow definition at the time of
+the original tag push, so re-running cannot pick up the post-merged
+improvement. Bumping to alpha-8 with a fresh tag validates the entire
+release flow.
+
+### Recovery fix verified by this tag
+
+* **AAASM-2797 (PR #1024)** — Added `version = "0.0.1-alpha.7"` to 8
+  path-dep declarations across 5 storage/cache crates. Pattern matches
+  the existing publishable workspace crates.
+
+### What this tag adds to crates.io for the first time
+
+The 5 storage/cache crates publish for the FIRST TIME on this
+release. The 9 historical publishable crates (aa-core, aa-proto,
+aa-ebpf-common, aa-ebpf, aa-runtime, aa-proxy, aa-sandbox, aa-gateway,
+aa-cli) publish at alpha-8 alongside their existing rows.
+
+### Still-open follow-up
+
+* **Homebrew `brew install + test (macOS)`** silent SIGKILL — the
+  AAASM-2792 revert to `--release` didn't fix it (post-AAASM-2575,
+  `--release` is the fast profile, not size-optimized). Suspect is a
+  new transitive dep added since alpha-5. The Homebrew tap formula is
+  correct and users can install manually; only the CI gate fails.
+  Investigation tracked separately.
+
+### Install
+
+```bash
+# Native binaries (Homebrew + GH Release tarballs)
+brew install ai-agent-assembly/homebrew-agent-assembly/aasm  # may need --force
+curl -L https://github.com/ai-agent-assembly/agent-assembly/releases/download/v0.0.1-alpha.8/aasm-aarch64-apple-darwin.tar.gz | tar xz
+
+# crates.io — first end-to-end validated publish of all 14 crates ever
+cargo install aasm --version 0.0.1-alpha.8
+
+# Container images
+docker pull ghcr.io/ai-agent-assembly/aa-runtime:v0.0.1-alpha.8
+
+# Language SDKs
+pip install --pre agent-assembly==0.0.1a8
+npm install @agent-assembly/sdk@0.0.1-alpha.8
+```
+
+### Refs
+
+* This tag's prep: `AAASM-2805`
+* Predecessor: `AAASM-2786` (alpha-7)
+* Recovery fix: `AAASM-2797` (PR #1024)
+* Multi-layer chain (4-layer clear-out complete): `AAASM-2346` → `AAASM-2463` → `AAASM-2775` → `AAASM-2797`
+
+---
+
 ## [0.0.1-alpha.7] — 2026-06-13 (pre-release)
 
 > **Not for production use.** Seventh pre-release in the v0.0.1 dry-run
