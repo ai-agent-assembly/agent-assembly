@@ -132,6 +132,20 @@ publishes. This is a coordination signal, not a gate. If an SDK publish
 fails, the SDK's own follow-up release fixes it independently — the
 `agent-assembly` tag is unaffected.
 
+### SDK-only hotfixes — do not cut an agent-assembly tag
+
+When an operator is asked to ship a fix that lives **only** in a Python
+or TypeScript SDK surface (no change to the `aasm` binary, no change to
+a shared Rust crate), do **not** cut a fresh `agent-assembly` tag for it.
+Cutting an agent-assembly tag triggers crates.io publishes, ghcr.io image
+builds, and a Homebrew tap PR — all wasted work for a fix that touches
+none of those artifacts. Instead, dispatch the SDK's own release workflow
+in SDK-only hotfix mode and reuse the existing `agent-assembly` tag as
+`binary_source_tag`. See `node-sdk/docs/release/RUNBOOK.md` section 2 and
+`python-sdk/docs/release/RUNBOOK.md` section 2 for the per-SDK procedure,
+including the `.N` (semver) vs `.postN` (PEP 440) version-naming
+asymmetry between the two ecosystems.
+
 ## 8. Operator gates — one-time-per-environment setup
 
 These must be set up once, before the first release, and again whenever
