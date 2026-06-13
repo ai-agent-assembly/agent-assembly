@@ -64,7 +64,7 @@ html { font-size: 16px; }
 .aaasm-light-dark-toggle { color: var(--icons); }
 .aaasm-light-dark-toggle:hover { color: var(--icons-hover); }
 
-/* ---- Doc version selector (AAASM-2752) ---- */
+/* ---- Doc version selector (AAASM-2752, sized per AAASM-2841) ---- */
 .aaasm-sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -75,21 +75,64 @@ html { font-size: 16px; }
 #aaasm-version-selector-label {
   display: inline-flex;
   align-items: center;
-  margin: 0 0.4rem;
+  margin: 0 0.6rem;
 }
 #aaasm-version-selector-label.hidden { display: none; }
 .aaasm-version-selector {
+  /* Closed-state trigger: rem values bumped from the initial 1.0 / 0.5 / 0.75
+     sizes so the trigger text is comfortably readable next to mdBook's native
+     toolbar icons. Trigger font 1.32rem (= 13.2px against mdBook's 1rem=10px),
+     option text 1.2375rem, padding scaled proportionally. min-height 40px
+     stays in px so the hit-target is preserved regardless of body typography.
+     Meets WCAG 2.5.5 (target ≥ 24px) and Apple HIG (≥ 40px). */
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 1.32rem;
+  line-height: 1.4;
   color: var(--icons);
   background: var(--theme-popup-bg, var(--bg));
   border: 1px solid var(--table-border-color, var(--icons));
-  border-radius: 4px;
-  padding: 0.15rem 0.35rem;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  min-width: 220px;
+  min-height: 40px;
   cursor: pointer;
 }
 .aaasm-version-selector:hover { color: var(--icons-hover); }
-.aaasm-version-selector optgroup { font-style: normal; font-weight: 600; }
+.aaasm-version-selector:focus-visible {
+  outline: 2px solid var(--sidebar-active, var(--links));
+  outline-offset: 2px;
+}
+/* Native option list: most engines (Chromium, Gecko) honour font-size on
+   <optgroup>/<option>; Safari is the most restrictive but accepts these
+   declarations harmlessly. All rem values are scaled with the trigger to
+   match its visual weight. */
+.aaasm-version-selector optgroup {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 1.32rem;
+  margin: 0.6rem 0 0.3rem;
+  padding: 0.3rem 0.6rem;
+}
+.aaasm-version-selector option {
+  font-size: 1.2375rem;
+  padding: 0.6rem 0.9rem;
+  min-height: 40px;
+  line-height: 1.5;
+}
+
+/* Mobile viewport: keep the trigger from overflowing the menu bar on narrow
+   screens. The native option popup is positioned by the user agent and will
+   anchor to the trigger; shrinking the trigger keeps it on-screen. */
+@media (max-width: 480px) {
+  .aaasm-version-selector {
+    min-width: 0;
+    width: 100%;
+    max-width: calc(100vw - 2rem);
+    font-size: 1.2375rem;
+    padding: 0.48rem 0.72rem;
+  }
+  #aaasm-version-selector-label { margin: 0 0.3rem; }
+}
 
 /* ---- Version-warning banner (AAASM-2752) ---- */
 .aaasm-version-banner {
@@ -100,7 +143,8 @@ html { font-size: 16px; }
   border-radius: 6px;
   background: #fff7e0;
   color: #5a4500;
-  font-size: 0.92rem;
+  /* Match mdBook body typography (general.css: body { font-size: 1.6rem }). */
+  font-size: 1.6rem;
   line-height: 1.5;
 }
 .aaasm-version-banner.hidden { display: none; }
