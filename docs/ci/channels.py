@@ -168,6 +168,7 @@ def compute_versions(
     channel: str,
     prior: Manifest | None = None,
     source: Manifest | None = None,
+    extra_archived: list[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     """Compute the published ``versions.json`` document for one docs cut.
 
@@ -183,6 +184,13 @@ def compute_versions(
         ``None`` on first deploy.
     source:
         The committed ``docs/versions.json`` source manifest, or ``None``.
+    extra_archived:
+        Additional version ids to seed into ``archived[]`` (e.g. the full list
+        of release git tags reachable at the time of the cut). The workflow
+        rebuilds a versioned subpath for every git tag on every deploy, so
+        ``extra_archived`` makes ``versions.json`` self-healing against a
+        prior live manifest that has lost entries (AAASM-2827). Unrecognised
+        version strings are dropped silently.
 
     Returns a dict ``{"channels": [...], "archived": [...]}`` with channels in
     display order (latest, pre-release, stable) and archived newest-first. The
@@ -216,6 +224,15 @@ def compute_versions(
                         "target": c["target"],
                     },
                 )
+
+    # Seed extra archived entries supplied by the workflow (typically the full
+    # list of release git tags). This is the authoritative source of truth: if
+    # the prior live manifest lost an entry but its tag still exists in git,
+    # this restores it on the next cut.
+    if extra_archived:
+        for tag in extra_archived:
+            if isinstance(tag, str) and parse_version(tag) is not None:
+                archived.setdefault(tag, {"id": tag, "title": tag})
 
     # Always guarantee a latest channel.
     channels.setdefault(
