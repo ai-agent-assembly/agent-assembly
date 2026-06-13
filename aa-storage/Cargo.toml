@@ -11,7 +11,7 @@ description = "Storage trait abstraction (pure interface) for the Agent Assembly
 # here. `serde`/`toml` back the `[storage]` config schema + driver registry; the
 # crate stays a pure interface (no `sqlx`/`redis`/`tonic` backend dependency).
 # `async-trait` is a dev-dep used by the conformance test's example implementation.
-aa-core   = { path = "../aa-core", version = "0.0.1-alpha.7" }
+aa-core   = { path = "../aa-core", version = "0.0.1-alpha.8" }
 serde     = { workspace = true }
 thiserror = { workspace = true }
 toml      = { workspace = true }

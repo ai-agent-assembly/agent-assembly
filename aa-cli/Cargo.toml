@@ -11,8 +11,8 @@ name = "aasm"
 path = "src/main.rs"
 
 [dependencies]
-aa-core              = { path = "../aa-core", version = "0.0.1-alpha.7" }
-aa-security          = { path = "../aa-security", version = "0.0.1-alpha.7", features = ["serde"] }
+aa-core              = { path = "../aa-core", version = "0.0.1-alpha.8" }
+aa-security          = { path = "../aa-security", version = "0.0.1-alpha.8", features = ["serde"] }
 # strip-for-publish:begin devtool
 # AAASM-2340: these three deps wire `aasm run` + `aasm tools` to the
 # `aa-devtool*` adapter crates. The dev-tool subsystem isn't ready to
@@ -20,16 +20,16 @@ aa-security          = { path = "../aa-security", version = "0.0.1-alpha.7", fea
 # (and the source files that consume it) before `cargo workspaces publish`
 # runs. Source builds keep the full surface — no edits required to
 # develop on `aasm run` / `aasm tools` locally.
-aa-devtool           = { path = "../aa-devtool", version = "0.0.1-alpha.7" }
-aa-devtool-codex     = { path = "../aa-devtool-codex", version = "0.0.1-alpha.7" }
-aa-devtool-windsurf  = { path = "../aa-devtool-windsurf", version = "0.0.1-alpha.7" }
+aa-devtool           = { path = "../aa-devtool", version = "0.0.1-alpha.8" }
+aa-devtool-codex     = { path = "../aa-devtool-codex", version = "0.0.1-alpha.8" }
+aa-devtool-windsurf  = { path = "../aa-devtool-windsurf", version = "0.0.1-alpha.8" }
 # strip-for-publish:end devtool
-aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.7" }
-aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.7" }
-aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.7" }
-aa-storage           = { path = "../aa-storage", version = "0.0.1-alpha.7" }
-aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-alpha.7" }
-aa-storage-redis     = { path = "../aa-storage-redis", version = "0.0.1-alpha.7" }
+aa-gateway           = { path = "../aa-gateway", version = "0.0.1-alpha.8" }
+aa-proxy             = { path = "../aa-proxy", version = "0.0.1-alpha.8" }
+aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-alpha.8" }
+aa-storage           = { path = "../aa-storage", version = "0.0.1-alpha.8" }
+aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-alpha.8" }
+aa-storage-redis     = { path = "../aa-storage-redis", version = "0.0.1-alpha.8" }
 anyhow         = { workspace = true }
 async-trait    = { workspace = true }
 axum           = { workspace = true }
