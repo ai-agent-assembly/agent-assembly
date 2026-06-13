@@ -125,14 +125,15 @@ jobs:
             echo "channel=latest" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Restore previously published versions
+      - name: Fetch prior live versions.json
+        # AAASM-2752 + AAASM-2827: the live manifest is the only place that
+        # carries the moving channel targets (pre-release -> vX.Y.Z-pre).
+        # archived[] is rebuilt from git tags in the next step so a missing
+        # or truncated prior manifest is no longer a permanent loss.
         if: github.event_name != 'pull_request'
         id: restore
         continue-on-error: true
         run: |
-          # Aggregate existing published versions so we never wipe old
-          # version subpaths. We pull the live Pages site root; if the site
-          # does not exist yet (first deploy) this is a no-op.
           base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
           echo "Fetching existing versions.json from ${base_url}/versions.json"
           if curl -fsSL "${base_url}/versions.json" -o prior-versions.json; then
@@ -142,6 +143,86 @@ jobs:
             echo "prior_versions=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Rebuild every release tag's docs subpath from git
+        # AAASM-2827: the previous design mirrored prior subpaths from the
+        # live Pages site with `wget -r`, which silently lost versions when
+        # the mirror failed and only worked if the prior deploy was itself
+        # whole. Rebuild every archived release directly from its git tag
+        # instead — git is the source of truth, and this loop is idempotent
+        # and self-healing: if a prior release never published docs (e.g.
+        # because its Release workflow failed), it is recovered on the next
+        # successful deploy.
+        if: github.event_name != 'pull_request'
+        env:
+          VERSION: ${{ steps.docver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+
+          # Enumerate every release tag (vX.Y.Z[-pre]) reachable in the
+          # repository. The workflow's checkout uses fetch-depth: 0 so all
+          # tags are local.
+          mapfile -t TAGS < <(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sort)
+          : > extra-archived.txt
+
+          # Workspace for tag worktrees. We use git worktree (cheaper than
+          # a fresh clone per tag) and tear each one down after use.
+          BUILD_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$BUILD_ROOT" || true' EXIT
+
+          for tag in "${TAGS[@]}"; do
+            # Skip the tag being cut this run; the freshly built docs/book
+            # is placed in _site/$VERSION below by the assemble step.
+            if [ "$tag" = "$VERSION" ]; then
+              echo "$tag" >> extra-archived.txt
+              continue
+            fi
+
+            # Already restored from the artifact upload of a prior step?
+            # (Defensive — no current step pre-populates _site, but this
+            # keeps the loop idempotent if one is added later.)
+            if [ -f "_site/$tag/index.html" ]; then
+              echo "Skipping $tag (already present in _site)"
+              echo "$tag" >> extra-archived.txt
+              continue
+            fi
+
+            workdir="$BUILD_ROOT/$tag"
+            echo "::group::Rebuild $tag"
+            # `git worktree add --detach` checks out the tag's tree without
+            # touching the current branch state. A tag whose docs/ subtree
+            # is missing or whose mdBook config has drifted past this
+            # workflow's mdbook version is logged and skipped — its subpath
+            # will fall back to the prior live mirror (if any) or 404.
+            if ! git worktree add --detach "$workdir" "$tag" >/dev/null 2>&1; then
+              echo "::warning::Could not check out $tag; skipping."
+              echo "::endgroup::"
+              continue
+            fi
+            if [ ! -f "$workdir/docs/book.toml" ]; then
+              echo "::warning::$tag has no docs/book.toml; skipping."
+              git worktree remove --force "$workdir" >/dev/null 2>&1 || true
+              echo "::endgroup::"
+              continue
+            fi
+            if ! mdbook build "$workdir/docs"; then
+              echo "::warning::mdbook build failed for $tag; skipping."
+              git worktree remove --force "$workdir" >/dev/null 2>&1 || true
+              echo "::endgroup::"
+              continue
+            fi
+            mkdir -p "_site/$tag"
+            cp -R "$workdir/docs/book/." "_site/$tag/"
+            git worktree remove --force "$workdir" >/dev/null 2>&1 || true
+            echo "$tag" >> extra-archived.txt
+            echo "::endgroup::"
+          done
+
+          echo "Rebuilt archive subpaths:"
+          find _site -maxdepth 1 -mindepth 1 -type d | sort
+          echo "extra-archived.txt:"
+          cat extra-archived.txt
+
       - name: Assemble versioned Pages site
         if: github.event_name != 'pull_request'
         env:
@@ -149,46 +230,24 @@ jobs:
           CHANNEL: ${{ steps.docver.outputs.channel }}
         run: |
           set -euo pipefail
-          base_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY##*/}"
 
           mkdir -p _site
-          # 1. Mirror existing published subpaths so they survive this deploy
-          #    (deploy-pages replaces the whole site with the artifact). We
-          #    union the prior channel targets + archived ids.
-          if [ -f prior-versions.json ]; then
-            python3 - <<'PYIDS' > prior-ids.txt
-          import json
-          d = json.load(open("prior-versions.json"))
-          ids = set()
-          for c in d.get("channels", []):
-              if isinstance(c, dict) and c.get("target"):
-                  ids.add(c["target"])
-          for a in d.get("archived", []):
-              if isinstance(a, dict) and a.get("id"):
-                  ids.add(a["id"])
-          print(" ".join(sorted(ids)))
-          PYIDS
-            for v in $(cat prior-ids.txt); do
-              if [ "$v" = "$VERSION" ]; then continue; fi
-              echo "Restoring existing version subpath: $v"
-              mkdir -p "_site/$v"
-              wget -q -e robots=off -np -r -nH --cut-dirs=1 -P "_site" "${base_url}/${v}/" \
-                || echo "WARN: could not mirror ${v}; it re-publishes from its own tag run."
-            done
-          fi
 
-          # 2. Place the freshly built book at the target version subpath.
+          # 1. Place the freshly built book at the target version subpath.
+          #    Archive subpaths for all *other* release tags were already
+          #    materialised by the rebuild step above.
           rm -rf "_site/$VERSION"
           mkdir -p "_site/$VERSION"
           cp -R docs/book/. "_site/$VERSION/"
 
-          # 3. Recompute versions.json via the testable channel module
+          # 2. Recompute versions.json via the testable channel module
           #    (docs/ci/channels.py), which applies the pre-release semver
-          #    gate: the pre-release channel is emitted only when the newest
-          #    pre-release strictly leads the newest stable release.
+          #    gate and unions extra-archived.txt (written by the rebuild
+          #    step) into archived[]. AAASM-2827: this makes archived[]
+          #    self-healing against a missing/truncated prior manifest.
           python3 docs/ci/build_versions.py "$VERSION" "$CHANNEL" _site/versions.json
 
-          # 4. Root redirect (stable -> pre-release -> latest, resolved client-side).
+          # 3. Root redirect (stable -> pre-release -> latest, resolved client-side).
           cp docs/site-root-index.html _site/index.html
 
           echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
