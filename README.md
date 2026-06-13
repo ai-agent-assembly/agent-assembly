@@ -4,7 +4,8 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=master&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=master&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
-[![Release](https://img.shields.io/badge/release-v0.0.1--alpha.5-3b82f6?logo=github)](https://github.com/ai-agent-assembly/agent-assembly/releases)
+[![GitHub release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver&logo=github&label=release)](https://github.com/ai-agent-assembly/agent-assembly/releases)
+[![crates.io](https://img.shields.io/crates/v/aa-cli?logo=rust&label=crates.io)](https://crates.io/crates/aa-cli)
 [![Coverage](https://img.shields.io/codecov/c/github/ai-agent-assembly/agent-assembly?logo=codecov&logoColor=white)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
 [![Quality Gate](https://img.shields.io/sonar/quality_gate/AI-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=AI-agent-assembly_agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](LICENSE)
@@ -25,7 +26,7 @@ The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh)
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-alpha.5 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-alpha.8 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Custom install directory
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
@@ -115,17 +116,17 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-06-06)_. The
+🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-06-13)_. The
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-alpha.5`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.5)
-(2026-06-03). The coordinated release tag also publishes the CLI, crates, SDK
+[`v0.0.1-alpha.8`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-alpha.8)
+(2026-06-13). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
 |---|---|
-| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.5`) |
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.8`) |
 | crates.io | ✅ Workspace crates published at the pre-release version |
 | Homebrew tap | ✅ `aasm` formula published for tagged releases |
 | PyPI / npm | ✅ SDK pre-releases published from the release tag |
