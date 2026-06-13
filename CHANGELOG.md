@@ -5,6 +5,56 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.9] — 2026-06-13 (pre-release)
+
+> **Not for production use.** Ninth pre-release in the v0.0.1 dry-run
+> series. Carries agent-assembly docs polish forward and drives a fresh
+> SDK fan-out so node-sdk + python-sdk content merged since alpha-8
+> lands on npm / PyPI. Unlike alpha-5 through alpha-8, this bump is
+> **not** a recovery from a specific publish-crates blocker — alpha-8
+> completed end-to-end.
+
+### What rides this tag
+
+agent-assembly master content since alpha-8:
+
+- **AAASM-2199** — README link to `agent-assembly-examples`.
+- **AAASM-2827** — docs archive retention (`extra_archived` seed +
+  rebuild-every-tag-from-git CI).
+- **AAASM-2833** — dynamic GitHub-release badge in README + docs.
+- **AAASM-2841** — version-selector typography polish in the agent-assembly book.
+
+node-sdk content riding the npm publish:
+
+- **AAASM-2842** — public `GatewayClient` + `createNoopGatewayClient` re-exports
+  (offline tool governance via the public surface).
+- **AAASM-2199** — README link to examples.
+- **AAASM-2829** — docs archive backfill for alpha-3 / alpha-4 / alpha-6.
+
+### Expected post-tag sequence
+
+1. `release.yml` → builds binaries → GH Release → `publish-crates`
+   re-publishes all 14 publishable crates at `0.0.1-alpha.9`.
+2. `docker.yml` → ghcr.io images at the new tag.
+3. `notify-downstream` → `repository_dispatch` to node-sdk + python-sdk.
+4. node-sdk publishes `@agent-assembly/sdk@0.0.1-alpha.9` + 4 sub-packages.
+5. python-sdk publishes `agent-assembly==0.0.1a9`.
+6. `update-homebrew-tap` opens a tap PR.
+
+### Behaviour delta on the crates.io `aasm` binary
+
+Unchanged from alpha-5 through alpha-8. The published `aasm` binary
+omits the `aasm run <tool>` and `aasm tools` subcommands while the
+dev-tool subsystem is being finished. Local source builds
+(`cargo build -p aa-cli`) expose the full surface unchanged.
+
+### Refs
+
+- This tag's prep: `AAASM-2849`
+- Predecessor: `AAASM-2805` (alpha-8)
+
+---
+
 ## [0.0.1-alpha.8] — 2026-06-13 (pre-release)
 
 > **Not for production use.** Eighth pre-release in the v0.0.1 dry-run
