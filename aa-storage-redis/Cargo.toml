@@ -9,11 +9,11 @@ description = "Redis L2 shared-cache storage driver (SessionStore, RateLimitCoun
 [dependencies]
 # Trait contract — the storage traits live in `aa-core::storage` and are
 # re-exported verbatim by the `aa-storage` facade.
-aa-storage = { path = "../aa-storage" }
+aa-storage = { path = "../aa-storage", version = "0.0.1-alpha.7" }
 # Pulled in only to enable `aa-core`'s `serde` feature so `PolicyDocument`
 # (re-exported through `aa-storage`) gains `Serialize`/`Deserialize`, which the
 # JSON-backed `RedisPolicyStore` needs. No `aa-core` items are named directly.
-aa-core = { path = "../aa-core", features = ["serde"] }
+aa-core = { path = "../aa-core", version = "0.0.1-alpha.7", features = ["serde"] }
 
 async-trait = { workspace = true }
 # `redis = 1.2` matches the workspace pin. `tokio-rustls-comp` backs the
@@ -33,7 +33,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 testcontainers-modules = { workspace = true, features = ["redis"] }
 # Second driver for the mixed-config registry-integration test (redis backs the
 # L2 kinds; memory backs the durable kinds).
-aa-storage-memory = { path = "../aa-storage-memory" }
+aa-storage-memory = { path = "../aa-storage-memory", version = "0.0.1-alpha.7" }
 
 [lints]
 workspace = true
