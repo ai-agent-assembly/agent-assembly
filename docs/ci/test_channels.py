@@ -146,5 +146,62 @@ class ChannelGateScenarioTests(unittest.TestCase):
         self.assertNotIn("stable", chans)
 
 
+class ExtraArchivedSeedingTests(unittest.TestCase):
+    """Regression: AAASM-2827.
+
+    The live ``versions.json`` lost prior tags after a sequence of failed
+    releases meant earlier docs cuts never ran. The next successful cut then
+    inherited the truncated ``archived[]`` and the loss became permanent.
+
+    The fix: callers pass the full list of release git tags as
+    ``extra_archived`` so ``archived[]`` is reconstituted from the
+    authoritative source (git) on every deploy.
+    """
+
+    def test_extra_archived_restores_missing_tags(self) -> None:
+        # Reproduce the live state at the time of AAASM-2827: prior manifest
+        # has only v0.0.1-alpha.8 archived, but git tags v0.0.1-alpha.4..8
+        # all exist and are now rebuilt by the workflow.
+        prior = _prior(
+            pre_release="v0.0.1-alpha.8",
+            archived=["v0.0.1-alpha.8"],
+        )
+        tags = [
+            "v0.0.1-alpha.4",
+            "v0.0.1-alpha.5",
+            "v0.0.1-alpha.6",
+            "v0.0.1-alpha.7",
+            "v0.0.1-alpha.8",
+        ]
+        doc = compute_versions(
+            "latest", "latest", prior=prior, extra_archived=tags
+        )
+        ids = _archived_ids(doc)
+        for tag in tags:
+            self.assertIn(tag, ids)
+        # Newest-first ordering — the bumped tag heads the list.
+        self.assertEqual(ids[0], "v0.0.1-alpha.8")
+
+    def test_extra_archived_drops_non_version_strings(self) -> None:
+        # ``latest`` is the live latest-channel target and must never enter
+        # archived[]; ``not-a-version`` is a guard against garbled input.
+        doc = compute_versions(
+            "latest",
+            "latest",
+            extra_archived=["latest", "not-a-version", "v0.1.0"],
+        )
+        ids = _archived_ids(doc)
+        self.assertEqual(ids, ["v0.1.0"])
+
+    def test_extra_archived_idempotent_with_prior(self) -> None:
+        # An entry already present in prior is not duplicated when also
+        # supplied via extra_archived.
+        prior = _prior(archived=["v0.1.0"])
+        doc = compute_versions(
+            "latest", "latest", prior=prior, extra_archived=["v0.1.0", "v0.2.0"]
+        )
+        self.assertEqual(_archived_ids(doc), ["v0.2.0", "v0.1.0"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

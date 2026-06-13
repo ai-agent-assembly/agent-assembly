@@ -2,10 +2,13 @@
 
 Usage:  python3 docs/ci/build_versions.py <VERSION> <CHANNEL> <OUTPUT>
 
-Reads the prior live manifest from ``prior-versions.json`` (if present) and the
-committed source manifest from ``docs/versions.json`` (if present), computes the
-published manifest via :func:`channels.compute_versions` (which applies the
-pre-release semver gate), and writes it to ``<OUTPUT>``.
+Reads the prior live manifest from ``prior-versions.json`` (if present), the
+committed source manifest from ``docs/versions.json`` (if present), and an
+optional ``extra-archived.txt`` (one tag per line; AAASM-2827) listing every
+git tag the workflow has rebuilt into a versioned subpath this run. Computes
+the published manifest via :func:`channels.compute_versions` (which applies
+the pre-release semver gate and unions ``extra_archived`` into ``archived[]``)
+and writes it to ``<OUTPUT>``.
 """
 
 from __future__ import annotations
@@ -31,12 +34,38 @@ def _load(path: str) -> Manifest | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _load_extra_archived(path: str) -> list[str]:
+    """Read a newline-separated list of version tags, dropping blanks/comments.
+
+    Returns an empty list if the file is missing; ``channels.compute_versions``
+    drops non-version strings, so a malformed file is degraded silently rather
+    than failing the deploy.
+    """
+    file = Path(path)
+    if not file.exists():
+        return []
+    tags: list[str] = []
+    for raw in file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        tags.append(line)
+    return tags
+
+
 def main(argv: list[str]) -> None:
     """Recompute versions.json for one docs cut and write it to ``argv[3]``."""
     version, channel, output = argv[1], argv[2], argv[3]
     prior = _load("prior-versions.json")
     source = _load("docs/versions.json")
-    out = compute_versions(version, channel, prior=prior, source=source)
+    extra_archived = _load_extra_archived("extra-archived.txt")
+    out = compute_versions(
+        version,
+        channel,
+        prior=prior,
+        source=source,
+        extra_archived=extra_archived,
+    )
     Path(output).write_text(json.dumps(out, indent=2))
     print("versions.json:", json.dumps(out))
 
