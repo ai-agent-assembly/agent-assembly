@@ -64,7 +64,7 @@ html { font-size: 16px; }
 .aaasm-light-dark-toggle { color: var(--icons); }
 .aaasm-light-dark-toggle:hover { color: var(--icons-hover); }
 
-/* ---- Doc version selector (AAASM-2752) ---- */
+/* ---- Doc version selector (AAASM-2752, sized per AAASM-2841) ---- */
 .aaasm-sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -75,21 +75,59 @@ html { font-size: 16px; }
 #aaasm-version-selector-label {
   display: inline-flex;
   align-items: center;
-  margin: 0 0.4rem;
+  margin: 0 0.5rem;
 }
 #aaasm-version-selector-label.hidden { display: none; }
 .aaasm-version-selector {
+  /* Closed-state trigger: match surrounding menu-bar typography and meet
+     WCAG 2.5.5 (target ≥ 24px) / Apple HIG (≥ 40px) touch-target guidance. */
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 1rem;
+  line-height: 1.4;
   color: var(--icons);
   background: var(--theme-popup-bg, var(--bg));
   border: 1px solid var(--table-border-color, var(--icons));
-  border-radius: 4px;
-  padding: 0.15rem 0.35rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  min-width: 220px;
+  min-height: 40px;
   cursor: pointer;
 }
 .aaasm-version-selector:hover { color: var(--icons-hover); }
-.aaasm-version-selector optgroup { font-style: normal; font-weight: 600; }
+.aaasm-version-selector:focus-visible {
+  outline: 2px solid var(--sidebar-active, var(--links));
+  outline-offset: 2px;
+}
+/* Native option list: most engines (Chromium, Gecko) honour font-size on
+   <optgroup>/<option>; Safari is the most restrictive but accepts these
+   declarations harmlessly. */
+.aaasm-version-selector optgroup {
+  font-style: normal;
+  font-weight: 600;
+  font-size: 1rem;
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.25rem 0.5rem;
+}
+.aaasm-version-selector option {
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.75rem;
+  min-height: 40px;
+  line-height: 1.5;
+}
+
+/* Mobile viewport: keep the trigger from overflowing the menu bar on narrow
+   screens. The native option popup is positioned by the user agent and will
+   anchor to the trigger; shrinking the trigger keeps it on-screen. */
+@media (max-width: 480px) {
+  .aaasm-version-selector {
+    min-width: 0;
+    width: 100%;
+    max-width: calc(100vw - 2rem);
+    font-size: 0.9375rem;
+    padding: 0.4rem 0.6rem;
+  }
+  #aaasm-version-selector-label { margin: 0 0.25rem; }
+}
 
 /* ---- Version-warning banner (AAASM-2752) ---- */
 .aaasm-version-banner {
