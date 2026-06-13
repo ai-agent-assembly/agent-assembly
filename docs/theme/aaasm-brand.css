@@ -75,20 +75,24 @@ html { font-size: 16px; }
 #aaasm-version-selector-label {
   display: inline-flex;
   align-items: center;
-  margin: 0 0.5rem;
+  margin: 0 0.6rem;
 }
 #aaasm-version-selector-label.hidden { display: none; }
 .aaasm-version-selector {
-  /* Closed-state trigger: match surrounding menu-bar typography and meet
-     WCAG 2.5.5 (target ≥ 24px) / Apple HIG (≥ 40px) touch-target guidance. */
+  /* Closed-state trigger: rem values bumped from the initial 1.0 / 0.5 / 0.75
+     sizes so the trigger text is comfortably readable next to mdBook's native
+     toolbar icons. Trigger font 1.32rem (= 13.2px against mdBook's 1rem=10px),
+     option text 1.2375rem, padding scaled proportionally. min-height 40px
+     stays in px so the hit-target is preserved regardless of body typography.
+     Meets WCAG 2.5.5 (target ≥ 24px) and Apple HIG (≥ 40px). */
   font: inherit;
-  font-size: 1rem;
+  font-size: 1.32rem;
   line-height: 1.4;
   color: var(--icons);
   background: var(--theme-popup-bg, var(--bg));
   border: 1px solid var(--table-border-color, var(--icons));
   border-radius: 6px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.6rem 0.9rem;
   min-width: 220px;
   min-height: 40px;
   cursor: pointer;
@@ -100,17 +104,18 @@ html { font-size: 16px; }
 }
 /* Native option list: most engines (Chromium, Gecko) honour font-size on
    <optgroup>/<option>; Safari is the most restrictive but accepts these
-   declarations harmlessly. */
+   declarations harmlessly. All rem values are scaled with the trigger to
+   match its visual weight. */
 .aaasm-version-selector optgroup {
   font-style: normal;
   font-weight: 600;
-  font-size: 1rem;
-  margin: 0.5rem 0 0.25rem;
-  padding: 0.25rem 0.5rem;
+  font-size: 1.32rem;
+  margin: 0.6rem 0 0.3rem;
+  padding: 0.3rem 0.6rem;
 }
 .aaasm-version-selector option {
-  font-size: 0.9375rem;
-  padding: 0.5rem 0.75rem;
+  font-size: 1.2375rem;
+  padding: 0.6rem 0.9rem;
   min-height: 40px;
   line-height: 1.5;
 }
@@ -123,10 +128,10 @@ html { font-size: 16px; }
     min-width: 0;
     width: 100%;
     max-width: calc(100vw - 2rem);
-    font-size: 0.9375rem;
-    padding: 0.4rem 0.6rem;
+    font-size: 1.2375rem;
+    padding: 0.48rem 0.72rem;
   }
-  #aaasm-version-selector-label { margin: 0 0.25rem; }
+  #aaasm-version-selector-label { margin: 0 0.3rem; }
 }
 
 /* ---- Version-warning banner (AAASM-2752) ---- */
@@ -138,7 +143,8 @@ html { font-size: 16px; }
   border-radius: 6px;
   background: #fff7e0;
   color: #5a4500;
-  font-size: 0.92rem;
+  /* Match mdBook body typography (general.css: body { font-size: 1.6rem }). */
+  font-size: 1.6rem;
   line-height: 1.5;
 }
 .aaasm-version-banner.hidden { display: none; }
