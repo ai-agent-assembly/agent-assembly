@@ -10,8 +10,8 @@ description = "PostgreSQL storage driver (L3 primary) for the Agent Assembly per
 publish = false
 
 [dependencies]
-aa-core    = { path = "../aa-core", version = "0.0.1-alpha.8", features = ["serde"] }
-aa-storage = { path = "../aa-storage", version = "0.0.1-alpha.8" }
+aa-core    = { path = "../aa-core", version = "0.0.1-alpha.9", features = ["serde"] }
+aa-storage = { path = "../aa-storage", version = "0.0.1-alpha.9" }
 async-trait = { workspace = true }
 sqlx       = { workspace = true, default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
 serde      = { workspace = true }

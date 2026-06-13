@@ -5,6 +5,70 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-alpha.9] — 2026-06-13 (pre-release)
+
+> **Not for production use.** Ninth pre-release in the v0.0.1 dry-run
+> series. First coordinated release after the AAASM-2851 SDK release
+> decoupling chapter — validates that the `repository_dispatch` fan-out
+> still works end-to-end after the restructure.
+
+### What rides this tag
+
+agent-assembly master content since alpha-8:
+
+- **AAASM-2199** — README link to `agent-assembly-examples`
+- **AAASM-2827** — docs archive retention (`extra_archived` seed +
+  rebuild-every-tag-from-git CI)
+- **AAASM-2833** — dynamic GitHub-release badge in README + docs
+- **AAASM-2841** — version-selector typography polish
+- **AAASM-2858** — SDK runbook cross-link
+
+node-sdk content riding the `@agent-assembly/sdk` npm publish:
+
+- **AAASM-2851 chain** — full SDK release decoupling (AAASM-2852 through
+  AAASM-2869 — schema, Resolve, publish_mode gating, version-docs,
+  runbooks, dry-run, verification, F1 live, main-only fix, %0A%0A fix,
+  README badges)
+- **AAASM-2842** — public `GatewayClient` + `createNoopGatewayClient`
+  re-exports
+- **AAASM-2870** — README badge polish
+
+python-sdk content riding the `agent-assembly` PyPI publish:
+
+- **AAASM-2851 chain** — symmetric python-sdk side (AAASM-2856, 2857
+  schema + Resolve refactor + composite action rename)
+- **AAASM-2863** — property-test for tag → PEP 440 conversion
+- **AAASM-2868** — docs CI gate fix
+- **AAASM-2869** — runbook documentation of both publish-release-tag
+  and deploy-release-docs gates
+
+### Expected post-tag sequence
+
+1. `release.yml` → builds binaries → GH Release → `publish-crates`
+   re-publishes all 14 publishable crates at `0.0.1-alpha.9`.
+2. `docker.yml` → ghcr.io images at the new tag.
+3. `notify-downstream` → `repository_dispatch` to node-sdk + python-sdk.
+4. node-sdk publishes `@agent-assembly/sdk@0.0.1-alpha.9` + 4 sub-packages
+   — **live-validates AAASM-2857's refactored Resolve step + composite
+   action on the `repository_dispatch` path**.
+5. python-sdk publishes `agent-assembly==0.0.1a9`.
+6. `update-homebrew-tap` opens a tap PR.
+
+### Behaviour delta on the crates.io `aasm` binary
+
+Unchanged from alpha-5 through alpha-8. The published `aasm` binary
+omits the `aasm run <tool>` and `aasm tools` subcommands while the
+dev-tool subsystem is being finished. Local source builds
+(`cargo build -p aa-cli`) expose the full surface unchanged.
+
+### Refs
+
+- This tag's prep: `AAASM-2849`
+- Predecessor: `AAASM-2805` (alpha-8)
+- AAASM-2851 chain (closed before this release): AAASM-2852 through AAASM-2870
+
+---
+
 ## [0.0.1-alpha.8] — 2026-06-13 (pre-release)
 
 > **Not for production use.** Eighth pre-release in the v0.0.1 dry-run
