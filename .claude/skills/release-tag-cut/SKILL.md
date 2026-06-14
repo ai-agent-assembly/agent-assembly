@@ -316,6 +316,36 @@ Surface both confirmations to the operator, then suggest:
 > matrix (GH Release, crates.io, Homebrew tap PR, ghcr.io images, npm,
 > PyPI) per `docs/release/RUNBOOK.md` sections 3–5.
 
+## What's expected when done
+
+When this skill exits cleanly, the operator should be able to confirm
+success by running these two commands directly:
+
+```bash
+# 1. Tag is visible on the remote.
+git ls-remote --tags remote v<X>
+# Expected: one line — <sha>\trefs/tags/v<X>
+
+# 2. release.yml is queued, in-progress, or already succeeded for this tag.
+gh run list --workflow release.yml --limit 1
+# Expected: a row with HEAD BRANCH=v<X> and STATUS in
+#           {queued, in_progress, completed} (conclusion=success if completed).
+```
+
+If either check returns empty / not-found, the skill did not complete the
+push — re-run step 6 or investigate the failure before declaring done.
+
+Once `release.yml` has finished (watch with
+`gh run watch --workflow release.yml`), the operator's next move is:
+
+```text
+/release-validate-channels v<X>
+```
+
+That skill walks the downstream channel matrix (GH Release artifacts,
+crates.io propagation, Homebrew tap PR review, ghcr.io image push, npm and
+PyPI publish) per `docs/release/RUNBOOK.md` sections 3–5.
+
 ## What this skill explicitly does not do
 
 - Open the bump PR (that is the operator's job, per RUNBOOK section 1).
