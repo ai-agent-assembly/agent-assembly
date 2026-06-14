@@ -346,6 +346,39 @@ That skill walks the downstream channel matrix (GH Release artifacts,
 crates.io propagation, Homebrew tap PR review, ghcr.io image push, npm and
 PyPI publish) per `docs/release/RUNBOOK.md` sections 3–5.
 
+## What's auto-handled (do NOT manually run)
+
+Once the tag is pushed, `release.yml` and its downstream jobs perform the
+following actions automatically. The operator MUST NOT replicate any of
+these by hand — doing so will either duplicate publishes or break the
+workflow's idempotency assumptions:
+
+- **GitHub Release creation** — the `publish` job in `release.yml` auto-runs
+  `gh release create` against `v<X>` with the generated artifacts and the
+  body sourced from `docs/release/v<X>.md`. Do NOT run `gh release create`
+  manually.
+- **`cargo publish` for every workspace crate** — the `publish-crates` job
+  walks the crate dependency order and publishes each crate to crates.io in
+  the right sequence. Do NOT run `cargo publish` on any crate by hand.
+- **Homebrew tap PR** — the `update-homebrew-tap` job auto-opens a bump PR
+  against `ai-agent-assembly/homebrew-tap`. The operator's only job is to
+  merge it via the `/homebrew-tap-merge` skill once it's green; do NOT open
+  the tap PR manually.
+- **Downstream SDK fanout** — the `notify-downstream-sdks` job fires a
+  `repository_dispatch` event into `node-sdk` and `python-sdk` (and any
+  future SDK repo on the dispatch list). Do NOT manually `gh workflow run`
+  or open SDK PRs for the version bump.
+- **FFI source-pin bump PRs on the SDKs** (post-AAASM-2883) — the
+  `update-node-sdk-ffi-pin` and `update-python-sdk-ffi-pin` jobs auto-open
+  PRs against `node-sdk` and `python-sdk` to advance the `aa-ffi-*` git-SHA
+  pin to the freshly tagged revision. Do NOT push manual pin-bump commits;
+  the bot PRs are the source of truth.
+
+If a job listed above fails inside `release.yml`, fix the workflow (or
+re-run via the GH Actions UI) — do NOT compensate by running the underlying
+command locally. Local compensation will diverge from the workflow's audit
+log and is explicitly out of scope for this skill.
+
 ## What this skill explicitly does not do
 
 - Open the bump PR (that is the operator's job, per RUNBOOK section 1).
