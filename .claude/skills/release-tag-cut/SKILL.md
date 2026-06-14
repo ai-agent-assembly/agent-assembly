@@ -1,6 +1,6 @@
 ---
 name: release-tag-cut
-description: Cut a coordinated agent-assembly release tag — bump workspace Cargo version literals, regenerate Cargo.lock, tag, and push.
+description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new alpha-series agent-assembly release (e.g. 0.0.1-alpha.N) on a green master and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
 ---
 
 # release-tag-cut
