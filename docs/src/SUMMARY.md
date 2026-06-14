@@ -48,6 +48,7 @@
   - [Team budgets and cost](usage-guide/team-budgets.md)
   - [Observe in the dashboard](usage-guide/observe-in-dashboard.md)
   - [Choosing interception layers](usage-guide/interception-layers.md)
+  - [Runnable examples](usage-guide/examples.md)
   - [Troubleshooting](usage-guide/troubleshooting.md)
 
 # Security Model
