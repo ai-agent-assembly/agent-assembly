@@ -15,6 +15,40 @@ this SKILL.md only encodes the steps Claude Code itself runs.
 > push) is owned by `/release-validate-channels`, invoked by the operator once
 > `release.yml` finishes.
 
+## When to use
+
+Pick this skill when **all** of the following hold:
+
+- The operator has decided agent-assembly is ready for a new pre-release tag
+  in the alpha series (e.g. cutting `0.0.1-alpha.10` after `0.0.1-alpha.9`).
+- The most recent CI run on `master` is green.
+- Draft release notes exist (or the operator is prepared to write them inline
+  during step 5).
+- The working tree is clean and `master` is up to date with `remote/master`.
+
+The triggering operator phrasing is typically:
+
+> "Cut alpha-N+1", "Tag v0.0.1-alpha.10", "Release the next alpha".
+
+## When NOT to use
+
+This skill is **alpha-series, agent-assembly-monorepo, full-fanout** specific.
+Pick a different path in any of the following cases:
+
+- **SDK-only release** — use `/sdk-only-release` (or the equivalent skill) in
+  the target SDK repo (`python-sdk`, `node-sdk`, `go-sdk`). Cutting an
+  `agent-assembly` tag for an SDK-only change wastes a full crates.io publish
+  cycle.
+- **GA or non-pre-release tag** (`v1.0.0`, `v0.1.0`, etc.) — this skill is
+  intentionally scoped to the alpha pre-release cadence. A GA cut needs the
+  release-readiness checklist + manual review, not this autopilot path.
+- **Hotfix to an already-tagged release** — use the SDK-only path (if the fix
+  is SDK-side) or a follow-up patch tag coordinated via the RUNBOOK; do not
+  re-cut the same tag.
+- **Pre-conditions not met** — if `master` is dirty, behind `remote/master`,
+  or has a red CI run, stop and surface the gap to the operator instead of
+  running this skill.
+
 ## Pre-conditions
 
 All of the following MUST hold before any step below runs. If any fails,
