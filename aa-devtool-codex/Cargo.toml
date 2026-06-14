@@ -8,7 +8,7 @@ repository.workspace = true
 description = "DevToolAdapter implementation for the OpenAI Codex CLI (AAASM-202 / F75)."
 
 [dependencies]
-aa-core      = { path = "../aa-core", version = "0.0.1-alpha.9", features = ["std", "alloc", "serde"] }
+aa-core      = { path = "../aa-core", version = "0.0.1-beta.1", features = ["std", "alloc", "serde"] }
 async-trait  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
