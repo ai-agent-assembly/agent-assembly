@@ -1,6 +1,6 @@
 ---
 name: release-validate-channels
-description: Validate a published agent-assembly release across all distribution channels (GitHub Release, crates.io, npm, PyPI, Homebrew, SDK fanouts, docs sites).
+description: Validate a published agent-assembly release across every distribution channel — GitHub Release, crates.io, npm, PyPI, Homebrew tap, the python-sdk and node-sdk repository_dispatch fan-outs, docs sites, and GHCR. Use after a release tag's release.yml run completes to confirm the tag propagated to every channel, or when an operator asks whether a published release is fully live. Read-only: it probes and reports a green/red matrix but never modifies any registry, repository, or tap.
 ---
 
 # release-validate-channels
