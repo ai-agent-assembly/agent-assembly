@@ -247,6 +247,25 @@ gh api /repos/ai-agent-assembly/homebrew-agent-assembly/contents/Formula/aasm.rb
 The output should print one `version "<X>"` line and four `sha256 "<hash>"`
 lines matching the upstream release.
 
+## What's auto-handled (do NOT manually run)
+
+These steps are owned by the release pipeline or are explicitly forbidden
+inside this skill — do not attempt them manually:
+
+- **Opening the bot PR** — handled by `release.yml`'s `update-homebrew-tap`
+  job, triggered on every `agent-assembly` tag push. Wait for it; do not
+  hand-open a tap PR.
+- **Editing `Formula/aasm.rb` by hand** — never. Any manual edit will be
+  undone by the next bot rebase, and a mismatched sha256 indicates a real
+  release-artifact problem upstream (escalate, do not "fix" the formula).
+- **`brew update-bottles` / `brew bottle …`** — not part of this tap's
+  lifecycle. The tap installs from binary tarballs (no bottle DSL); there
+  is nothing to bottle here.
+- **Local `git push --force` to the bot branch** — use the server-side
+  `gh api … /pulls/<n>/update-branch -f update_method=rebase` pattern from
+  step 3. The classifier blocks local force-push to active PRs without
+  explicit auth, and a force-push would also break the bot's audit trail.
+
 ## AAASM-2871 quirk (live until Homebrew/brew#22719 ships)
 
 The `brew install + test (macOS)` check requires
