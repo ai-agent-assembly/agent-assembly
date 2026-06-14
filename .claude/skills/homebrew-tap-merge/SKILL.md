@@ -1,6 +1,6 @@
 ---
 name: homebrew-tap-merge
-description: Verify + merge the auto-opened homebrew-agent-assembly bot PR for a new agent-assembly release.
+description: Verify and merge the bot PR that release.yml auto-opens on homebrew-agent-assembly for a new agent-assembly release. Use when a bot/aasm-<version> PR is open on the Homebrew tap and needs sha256 cross-verification against the upstream SHA256SUMS, a stale-master server-side rebase, or the AAASM-2871 macOS-CI tap-trust workaround before it can be merged.
 ---
 
 # SKILL.md — homebrew-tap-merge
