@@ -111,50 +111,37 @@ echo "current=$CURRENT target=<X>"
 `$CURRENT` is the literal that must be replaced everywhere. Refuse to proceed
 if `$CURRENT` equals `<X>` (no-op release) or if the value cannot be parsed.
 
-### 2. Compute the per-crate file set
+### 2. Bump every Cargo.toml version literal + regenerate Cargo.lock
 
-The version literal appears in the workspace `Cargo.toml` and in every
-member crate's `Cargo.toml`. Enumerate them:
+Run the helper script — it enumerates `**/Cargo.toml` declaring `$CURRENT`,
+sed-replaces each, regenerates `Cargo.lock`, and refuses no-op invocations:
 
 ```bash
-git grep -l "^version = \"$CURRENT\"" -- '**/Cargo.toml' Cargo.toml | sort -u
+./scripts/release-tag-cut.sh "$CURRENT" "<X>"
 ```
 
-For reference, the AAASM-2849 alpha-9 bump touched **~16 crates with ~43
-literal occurrences**. Expect a file count in that order of magnitude. Surface
-the file list to the operator before mutating.
+The script prints the file list before mutating (sanity check it), then
+runs `cargo update --workspace`. For reference, the AAASM-2849 alpha-9 cut
+touched **~16 crates with ~43 literal occurrences**.
 
-### 3. `sed` each literal in place; commit
-
-Replace in every enumerated file, then create one atomic commit:
+### 3. Commit the version bump — Cargo.toml diff only
 
 ```bash
-git grep -l "^version = \"$CURRENT\"" -- '**/Cargo.toml' Cargo.toml \
-  | xargs sed -i.bak -E "s/^version = \"$CURRENT\"$/version = \"<X>\"/"
-find . -name 'Cargo.toml.bak' -delete
-
-git add -A
+git add '**/Cargo.toml' Cargo.toml
 git commit -m "🔧 (release): Bump workspace to v<X>"
 ```
 
-After this commit, every Cargo.toml that previously declared `$CURRENT`
-must now declare `<X>` exactly. Verify with
-`git grep -l "^version = \"$CURRENT\"" -- '**/Cargo.toml' Cargo.toml`
-returning empty.
+Verify with `git grep -l "^version = \"$CURRENT\""` returning empty.
 
-### 4. Regenerate `Cargo.lock` — separate commit
-
-`Cargo.lock` is regenerated separately so the diff is reviewable in isolation
-and the version-bump commit stays minimal:
+### 4. Commit `Cargo.lock` separately — reviewable in isolation
 
 ```bash
-cargo update --workspace
 git add Cargo.lock
 git commit -m "🔧 (release): Regenerate Cargo.lock for v<X>"
 ```
 
-If `cargo update --workspace` is unavailable in the environment (network
-sandbox, etc.) fall back to `cargo generate-lockfile` and re-resolve.
+If the helper's `cargo update --workspace` failed (network sandbox, etc.),
+fall back to `cargo generate-lockfile` and re-resolve before committing.
 
 ### 5. Create the annotated tag
 
