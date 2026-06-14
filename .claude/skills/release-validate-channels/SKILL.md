@@ -452,6 +452,41 @@ A successful invocation produces, in this exact order:
 The operator should not have to read the rest of the SKILL.md to act on
 the result — the matrix and the final line are the deliverable.
 
+## What's auto-handled (do NOT manually run)
+
+This section is the **read-only boundary callout**. It exists so neither
+the operator nor an LLM driving this skill is tempted to "fix" things from
+inside the validation loop.
+
+- **The skill never modifies any registry, repository, tap, or workflow.**
+  By contract, every probe is a `gh`, `curl`, `npm view`, or
+  `docker manifest inspect` — all read-only. Any sub-step that would write
+  state (re-publish, retry, yank, merge, tag, push) is out of scope.
+
+- **The skill does not retry failed publishes.** Retry mechanics live in
+  [`docs/release/RUNBOOK.md`](../../../docs/release/RUNBOOK.md) section 6
+  ("Recovery"). The skill surfaces the failing workflow run URL; the
+  operator (or a separate skill like `/homebrew-tap-merge`) drives the
+  retry.
+
+- **The skill does not gate `release.yml`'s `release-status-aggregator`
+  job.** `release.yml` has its own internal aggregator that decides
+  whether the tag cut itself succeeded. This skill is the *external*
+  cross-channel confirmation — it runs after the aggregator is green and
+  validates that the publishes the aggregator authorised actually landed.
+  The two complement each other; the skill is not a replacement and does
+  not block the workflow.
+
+- **go-sdk is out of scope by design.** The Go SDK cuts its own
+  `goreleaser`-driven tag on its own cadence (see RUNBOOK § 7). This skill
+  must **not** flag go-sdk as a missing channel, must not probe a
+  non-existent `release-go.yml`, and must not include go-sdk in the
+  matrix. The 9-channel matrix is complete as-is.
+
+If a fix is required, exit the skill with the matrix, then invoke the
+appropriate write-side skill or RUNBOOK procedure separately. Re-running
+this skill afterwards to confirm the fix is the correct loop.
+
 ## Worked example — `v0.0.1-alpha.9` (2026-06-14)
 
 The concrete shape of a successful run, against the real channel state on
