@@ -57,6 +57,8 @@ Note: branches and tags push to `remote` (`ai-agent-assembly/agent-assembly`),
 ## 3. What runs automatically after tag push
 
 Four workflows fire in parallel from the tag push. **None waits on the others.**
+`release.yml` additionally opens two SDK FFI source-pin bump PRs as part of its
+job set (see the source-sync rows below).
 
 | Workflow                  | What it produces                              |
 | ------------------------- | --------------------------------------------- |
@@ -64,6 +66,8 @@ Four workflows fire in parallel from the tag push. **None waits on the others.**
 | `docker.yml`              | ghcr.io images: `python:<version>`, `go:<version>` |
 | `repository_dispatch` → node-sdk | Triggers `release-node.yml` which publishes 5 npm packages |
 | `repository_dispatch` → python-sdk | Triggers `release-python.yml` which publishes `agent-assembly` to PyPI |
+| `release.yml` → node-sdk FFI pin | Opens a bot PR on node-sdk bumping `native/aa-ffi-node/Cargo.toml` `aa-sdk-client` git-SHA pin to the tagged commit (source-sync, **not** a publish) |
+| `release.yml` → python-sdk FFI pin | Opens a bot PR on python-sdk bumping all 3 pins (`aa-core`/`aa-proto`/`aa-sdk-client`) in `native/aa-ffi-python/Cargo.toml` to the tagged commit (source-sync, **not** a publish) |
 
 The post-release artifact smoke test (`smoke-test.yml`) was deprecated and
 removed (AAASM-2772). Post-release artifact verification is performed manually
@@ -146,6 +150,26 @@ in SDK-only hotfix mode and reuse the existing `agent-assembly` tag as
 including the `.N` (semver) vs `.postN` (PEP 440) version-naming
 asymmetry between the two ecosystems.
 
+### SDK FFI source-pin auto-bump — source-sync, not a publish
+
+`release.yml`'s `update-node-sdk-ffi-pin` and `update-python-sdk-ffi-pin` jobs
+open bot PRs (via `peter-evans/create-pull-request@v8`) that keep each SDK's
+FFI **source** pin current with the just-released `agent-assembly` commit. They
+do **not** publish anything.
+
+- **Merging the bump PR does NOT trigger an SDK release.** `release-node.yml` /
+  `release-python.yml` fire only on `repository_dispatch`
+  (`agent-assembly-release-published`) and `workflow_dispatch` — neither has a
+  `push:` trigger. The npm/PyPI publish already happened at tag time via the
+  `notify-downstream` `repository_dispatch` fan-out (section 3).
+- **One-cycle lag.** The bump PR is opened *after* the publish, so the SDK
+  published at vX was compiled (maturin / napi) from the *previous* pin. The
+  bundled runtime binaries are correct — they are selected via
+  `binary_source_tag` — and only the thin FFI shim reflects the prior
+  `aa-sdk-client` SHA. Merging the bump PR brings the source current for the
+  *next* release. To make it zero-lag, merge the bump PR **before** cutting the
+  next tag.
+
 ## 8. Operator gates — one-time-per-environment setup
 
 These must be set up once, before the first release, and again whenever
@@ -162,10 +186,18 @@ the credential rotates. Not part of the per-release loop.
   `HOMEBREW_TAP_TOKEN` expire on the cadence configured at the GitHub /
   crates.io side. `release-readiness.sh` check 8 verifies all three exist
   in the repo; it does not verify they're still valid.
+- **SDK FFI-pin bot tokens.** `NODE_SDK_BOT_TOKEN` and `PYTHON_SDK_BOT_TOKEN`
+  are required by the `update-node-sdk-ffi-pin` / `update-python-sdk-ffi-pin`
+  jobs (section 3) to open the source-pin bump PRs. Without them the jobs fail
+  with `peter-evans/create-pull-request` "no token". Each is a token with
+  `contents:write` + `pull-requests:write` scoped to the respective SDK repo
+  (`node-sdk`, `python-sdk`).
 
 After rotation:
 ```bash
 gh secret set CRATES_IO_TOKEN --repo ai-agent-assembly/agent-assembly
 gh secret set CROSS_REPO_DISPATCH_PAT --repo ai-agent-assembly/agent-assembly
 gh secret set HOMEBREW_TAP_TOKEN --repo ai-agent-assembly/agent-assembly
+gh secret set NODE_SDK_BOT_TOKEN --repo ai-agent-assembly/agent-assembly
+gh secret set PYTHON_SDK_BOT_TOKEN --repo ai-agent-assembly/agent-assembly
 ```
