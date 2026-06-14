@@ -57,6 +57,8 @@ Note: branches and tags push to `remote` (`ai-agent-assembly/agent-assembly`),
 ## 3. What runs automatically after tag push
 
 Four workflows fire in parallel from the tag push. **None waits on the others.**
+`release.yml` additionally opens two SDK FFI source-pin bump PRs as part of its
+job set (see the source-sync rows below).
 
 | Workflow                  | What it produces                              |
 | ------------------------- | --------------------------------------------- |
@@ -64,6 +66,8 @@ Four workflows fire in parallel from the tag push. **None waits on the others.**
 | `docker.yml`              | ghcr.io images: `python:<version>`, `go:<version>` |
 | `repository_dispatch` → node-sdk | Triggers `release-node.yml` which publishes 5 npm packages |
 | `repository_dispatch` → python-sdk | Triggers `release-python.yml` which publishes `agent-assembly` to PyPI |
+| `release.yml` → node-sdk FFI pin | Opens a bot PR on node-sdk bumping `native/aa-ffi-node/Cargo.toml` `aa-sdk-client` git-SHA pin to the tagged commit (source-sync, **not** a publish) |
+| `release.yml` → python-sdk FFI pin | Opens a bot PR on python-sdk bumping all 3 pins (`aa-core`/`aa-proto`/`aa-sdk-client`) in `native/aa-ffi-python/Cargo.toml` to the tagged commit (source-sync, **not** a publish) |
 
 The post-release artifact smoke test (`smoke-test.yml`) was deprecated and
 removed (AAASM-2772). Post-release artifact verification is performed manually
