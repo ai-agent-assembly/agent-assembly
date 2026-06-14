@@ -48,6 +48,26 @@ red in `scripts/check-release.sh` output.
 - Upstream `agent-assembly` release for the same tag is published.
 - `SHA256SUMS` asset exists on the upstream release.
 
+## How to use
+
+Invoke from a shell or via the slash command:
+
+```text
+/homebrew-tap-merge <PR_NUMBER>
+```
+
+Example: `/homebrew-tap-merge 16` — verify + merge tap PR #16 for
+`aasm 0.0.1-alpha.9`.
+
+**Required inputs**:
+
+- `<PR_NUMBER>` — the bot PR number on
+  `ai-agent-assembly/homebrew-agent-assembly`. Resolve with
+  `gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open`.
+- Upstream `agent-assembly` release for the matching tag must already be
+  published with the `SHA256SUMS` asset attached (the helper script
+  `scripts/verify-tap-sha256.sh` downloads this).
+
 ## Do Not Assume
 - Do not assume the 4 sha256 lines in `Formula/aasm.rb` are correct — verify
   every one against the upstream `SHA256SUMS` asset.
@@ -70,16 +90,25 @@ Expected: single file `Formula/aasm.rb`, ~5 additions and ~5 deletions
 
 ### 2. Cross-verify all 4 sha256 lines vs upstream
 
+Run the helper:
+
+```bash
+./scripts/verify-tap-sha256.sh <tag> [<pr>]
+# e.g. ./scripts/verify-tap-sha256.sh v0.0.1-alpha.9 16
+```
+
+Exits 0 iff all 4 sha256s in the formula match the upstream `SHA256SUMS`
+asset (one per platform — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`). Non-zero exit
+prints a mismatch table — **escalate; do not merge**.
+
+For ad-hoc inspection, the equivalent manual flow is:
+
 ```bash
 gh release download <tag> -A SHA256SUMS \
   --repo ai-agent-assembly/agent-assembly --dir /tmp/aasm-<tag>
 gh pr diff <n> --repo ai-agent-assembly/homebrew-agent-assembly
 ```
-
-For each of the 4 `sha256 "<hash>"` lines in the diff (one per platform —
-`aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`,
-`x86_64-unknown-linux-gnu`), confirm the hash matches the corresponding row
-in `/tmp/aasm-<tag>/SHA256SUMS`. Mismatch → escalate; do not merge.
 
 ### 3. Handle red `brew install + test (macOS)` check
 
