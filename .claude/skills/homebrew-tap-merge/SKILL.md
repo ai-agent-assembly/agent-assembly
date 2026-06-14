@@ -17,6 +17,26 @@ The skill lives in `agent-assembly` because the `homebrew-agent-assembly` tap
 repo has no Jira component; the skill is logically owned by the upstream that
 publishes to it.
 
+## When to use
+
+Invoke this skill when `agent-assembly`'s `release.yml` has finished its
+`update-homebrew-tap` job and a `bot/aasm-<version>` PR is now open on
+`ai-agent-assembly/homebrew-agent-assembly`, and the operator (or
+`release-watch`) wants to verify the bot diff and merge it so `brew install
+aasm` picks up the new release.
+
+## When NOT to use
+
+- **Tap PR not yet open** — `release.yml` hasn't finished `update-homebrew-tap`
+  yet. Wait for the upstream release workflow rather than opening a manual PR.
+- **Tap PR has manual edits beyond the bot's diff** — anything outside the
+  version line + 4 sha256 lines is out of scope for this skill. Escalate; do
+  not auto-merge a hand-edited formula.
+- **AAASM-2871 (Homebrew/brew#22719) is patched upstream** — if the tap's
+  `brew install + test` workflow no longer needs `HOMEBREW_NO_REQUIRE_TAP_TRUST=1`,
+  the stale-master rebase shortcut may no longer be required; re-evaluate the
+  step 3 branch before relying on this skill verbatim.
+
 ## Type
 Command-like. Invoked manually after a release tag is pushed, or by
 `release-watch` / `/release-preparation` when the Homebrew channel is still
