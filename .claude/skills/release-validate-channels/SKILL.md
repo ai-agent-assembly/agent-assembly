@@ -16,6 +16,40 @@ Code itself runs after each tag push.
 > has already fired and is responsible for confirming that what `release.yml`
 > *intended* to publish actually landed on every channel it owns.
 
+## When to use
+
+Invoke this skill when **all** of the following are true:
+
+- The operator has just cut a tag via `/release-tag-cut` (or the tag arrived
+  via the equivalent CI path).
+- `release.yml` on `ai-agent-assembly/agent-assembly` for that tag shows
+  `status=completed` and `conclusion=success`.
+- The operator wants a deterministic, paste-ready confirmation that every
+  downstream channel (GitHub Release assets, crates.io, npm, PyPI, Homebrew
+  tap, the python-sdk / node-sdk fanout dispatches, docs sites, and GHCR)
+  caught up with the new tag.
+
+The skill is the read-only counterpart to `/release-tag-cut`: tag-cut writes
+the tag and lets the publish workflows fan out; this skill confirms the
+fan-out landed.
+
+## When NOT to use
+
+Skip (or defer) this skill in any of the following cases:
+
+- **`release.yml` has not finished yet.** The pre-condition check fails fast
+  with the run URL. Wait for `conclusion=success` first, or accept that
+  channels 2–9 will be mid-flight and the result is meaningless.
+- **The tag is non-published or withdrawn.** Tags that never triggered
+  `release.yml` (e.g. internal markers, mis-pushed branches) have no channel
+  state to validate. There is nothing to probe.
+- **The operator wants to fix a broken channel.** This skill is *read-only*
+  by contract — it surfaces deviations and the exact commands that surface
+  them, but it does NOT retry publishes, merge tap PRs, or yank versions.
+  Retries and recovery live in [`docs/release/RUNBOOK.md`](../../../docs/release/RUNBOOK.md)
+  section 6 ("Recovery"). Re-running this skill after a manual retry is
+  fine; using it as the retry mechanism is not.
+
 ## Pre-conditions
 
 All of the following MUST hold before any probe below runs. If any fails,
