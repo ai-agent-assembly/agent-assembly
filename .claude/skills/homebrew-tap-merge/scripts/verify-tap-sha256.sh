@@ -5,7 +5,7 @@
 # AAASM-2888 — extracted from .claude/skills/homebrew-tap-merge/SKILL.md step 2.
 #
 # Usage:
-#   scripts/verify-tap-sha256.sh <tag> [<pr>]
+#   .claude/skills/homebrew-tap-merge/scripts/verify-tap-sha256.sh <tag> [<pr>]
 #
 #   <tag>  Upstream agent-assembly tag (e.g. v0.0.1-alpha.9).
 #   <pr>   Optional tap PR number. If given, the formula content is fetched
