@@ -227,6 +227,26 @@ in the formula bump.
   `scripts/check-release.sh v<version>`) to confirm the Homebrew row goes
   green.
 
+## What's expected when done
+
+When this skill completes successfully, all of the following must hold:
+
+- Tap `master`'s `Formula/aasm.rb` shows the new `version "<X>"` line and
+  the 4 sha256s that match upstream `SHA256SUMS` for the corresponding tag.
+- The bot PR is **closed and merged** (squash), not just approved.
+- The operator can immediately follow up with
+  `/release-validate-channels v<X>` and see the Homebrew row report ✓.
+
+Quick verification command from any shell with `gh` configured:
+
+```bash
+gh api /repos/ai-agent-assembly/homebrew-agent-assembly/contents/Formula/aasm.rb \
+  -H "Accept: application/vnd.github.raw" | grep -E "^  version |^      sha256"
+```
+
+The output should print one `version "<X>"` line and four `sha256 "<hash>"`
+lines matching the upstream release.
+
 ## AAASM-2871 quirk (live until Homebrew/brew#22719 ships)
 
 The `brew install + test (macOS)` check requires
