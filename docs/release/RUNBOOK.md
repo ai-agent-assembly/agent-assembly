@@ -186,10 +186,18 @@ the credential rotates. Not part of the per-release loop.
   `HOMEBREW_TAP_TOKEN` expire on the cadence configured at the GitHub /
   crates.io side. `release-readiness.sh` check 8 verifies all three exist
   in the repo; it does not verify they're still valid.
+- **SDK FFI-pin bot tokens.** `NODE_SDK_BOT_TOKEN` and `PYTHON_SDK_BOT_TOKEN`
+  are required by the `update-node-sdk-ffi-pin` / `update-python-sdk-ffi-pin`
+  jobs (section 3) to open the source-pin bump PRs. Without them the jobs fail
+  with `peter-evans/create-pull-request` "no token". Each is a token with
+  `contents:write` + `pull-requests:write` scoped to the respective SDK repo
+  (`node-sdk`, `python-sdk`).
 
 After rotation:
 ```bash
 gh secret set CRATES_IO_TOKEN --repo ai-agent-assembly/agent-assembly
 gh secret set CROSS_REPO_DISPATCH_PAT --repo ai-agent-assembly/agent-assembly
 gh secret set HOMEBREW_TAP_TOKEN --repo ai-agent-assembly/agent-assembly
+gh secret set NODE_SDK_BOT_TOKEN --repo ai-agent-assembly/agent-assembly
+gh secret set PYTHON_SDK_BOT_TOKEN --repo ai-agent-assembly/agent-assembly
 ```
