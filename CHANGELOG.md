@@ -5,6 +5,27 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-beta.1] — 2026-06-14 (pre-release)
+
+> **Not for production use.** First beta-channel pre-release in the v0.0.1
+> series — promotes the channel up from `0.0.1-alpha.9`. No API, ABI, or
+> wire-protocol stability commitment.
+
+### Added
+
+- **AAASM-2934** — full multi-page **Examples** sections across the SDK
+  docs surfacing the runnable `agent-assembly-examples` demos: node-sdk
+  (AAASM-2935), python-sdk (AAASM-2936), go-sdk (AAASM-2937), plus an
+  agent-assembly core-docs Examples pointer (AAASM-2938).
+
+### Changed
+
+- **AAASM-2951** — bumped workspace + 16 path-dep version literals from
+  `0.0.1-alpha.9` to `0.0.1-beta.1`. Coordinated release across
+  agent-assembly + python-sdk + node-sdk + go-sdk; drives
+  `@agent-assembly/sdk@0.0.1-beta.1`, `agent-assembly==0.0.1b1`, and
+  `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.1` downstream.
+
 ## [0.0.1-alpha.9] — 2026-06-13 (pre-release)
 
 > **Not for production use.** Ninth pre-release in the v0.0.1 dry-run
