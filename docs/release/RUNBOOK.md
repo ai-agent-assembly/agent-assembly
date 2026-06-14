@@ -150,6 +150,26 @@ in SDK-only hotfix mode and reuse the existing `agent-assembly` tag as
 including the `.N` (semver) vs `.postN` (PEP 440) version-naming
 asymmetry between the two ecosystems.
 
+### SDK FFI source-pin auto-bump — source-sync, not a publish
+
+`release.yml`'s `update-node-sdk-ffi-pin` and `update-python-sdk-ffi-pin` jobs
+open bot PRs (via `peter-evans/create-pull-request@v8`) that keep each SDK's
+FFI **source** pin current with the just-released `agent-assembly` commit. They
+do **not** publish anything.
+
+- **Merging the bump PR does NOT trigger an SDK release.** `release-node.yml` /
+  `release-python.yml` fire only on `repository_dispatch`
+  (`agent-assembly-release-published`) and `workflow_dispatch` — neither has a
+  `push:` trigger. The npm/PyPI publish already happened at tag time via the
+  `notify-downstream` `repository_dispatch` fan-out (section 3).
+- **One-cycle lag.** The bump PR is opened *after* the publish, so the SDK
+  published at vX was compiled (maturin / napi) from the *previous* pin. The
+  bundled runtime binaries are correct — they are selected via
+  `binary_source_tag` — and only the thin FFI shim reflects the prior
+  `aa-sdk-client` SHA. Merging the bump PR brings the source current for the
+  *next* release. To make it zero-lag, merge the bump PR **before** cutting the
+  next tag.
+
 ## 8. Operator gates — one-time-per-environment setup
 
 These must be set up once, before the first release, and again whenever
