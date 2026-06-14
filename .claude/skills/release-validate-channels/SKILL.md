@@ -50,6 +50,42 @@ Skip (or defer) this skill in any of the following cases:
   section 6 ("Recovery"). Re-running this skill after a manual retry is
   fine; using it as the retry mechanism is not.
 
+## How to use
+
+**Invocation.**
+
+```text
+/release-validate-channels v<X>
+```
+
+Concrete example:
+
+```text
+/release-validate-channels v0.0.1-alpha.9
+```
+
+**Required inputs.**
+
+| Input | Source | Notes |
+|---|---|---|
+| `<TAG>` | Operator argument | Published agent-assembly release tag (e.g. `v0.0.1-alpha.9`). The skill does not invent or guess tags. |
+| `release.yml` run for `<TAG>` | `gh run list` (see Pre-conditions) | Must be `status=completed`, `conclusion=success`. The skill aborts fast if not. |
+
+**Behaviour.** The skill is **read-only**. It runs the nine channel probes
+in the order defined under "The channel matrix" below and emits a single
+green / red Markdown table (see "Output — the green/red matrix"). It does
+not mutate any registry, repository, tap, or workflow. Safe to re-run as
+many times as needed; idempotent by construction.
+
+**Typical operator flow.**
+
+1. Cut the tag (`/release-tag-cut v<X>`).
+2. Watch `release.yml` until it goes green.
+3. Run `/release-validate-channels v<X>`.
+4. Paste the resulting matrix into the post-release note or follow-up
+   ticket. Any red row carries the literal failing command and its output
+   so triage does not require re-running the probe.
+
 ## Pre-conditions
 
 All of the following MUST hold before any probe below runs. If any fails,
