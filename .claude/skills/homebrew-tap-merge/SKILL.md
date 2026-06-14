@@ -1,40 +1,46 @@
 ---
 name: homebrew-tap-merge
-description: Verify + merge the auto-opened homebrew-agent-assembly bot PR for a new agent-assembly release.
+description: Verify and merge the bot PR that release.yml auto-opens on homebrew-agent-assembly for a new agent-assembly release. Use when a bot/aasm-<version> PR is open on the Homebrew tap and needs sha256 cross-verification against the upstream SHA256SUMS, a stale-master server-side rebase, or the AAASM-2871 macOS-CI tap-trust workaround before it can be merged.
 ---
 
 # SKILL.md — homebrew-tap-merge
 
 ## Purpose
-Codify the bot-PR-to-merge flow on the `ai-agent-assembly/homebrew-agent-assembly`
-tap. After each `agent-assembly` release, the `update-homebrew-tap` job in
-`release.yml` (see `docs/release/RUNBOOK.md` § "Manual gate — merge the
-Homebrew tap PR") opens a `bot/aasm-<version>` PR that updates `Formula/aasm.rb`
-with the new version + 4 SHA256 sums. Merging is mechanically simple but has
-gotchas worth codifying — this skill owns that flow.
 
-The skill lives in `agent-assembly` because the `homebrew-agent-assembly` tap
-repo has no Jira component; the skill is logically owned by the upstream that
-publishes to it.
+After each `agent-assembly` release, `release.yml`'s `update-homebrew-tap` job
+opens a `bot/aasm-<version>` PR on `ai-agent-assembly/homebrew-agent-assembly`
+that bumps `Formula/aasm.rb` (version line + 4 SHA256 sums). This skill owns the
+verify-and-merge flow for that PR so `brew install aasm` picks up the release.
 
-## Type
-Command-like. Invoked manually after a release tag is pushed, or by
-`release-watch` / `/release-preparation` when the Homebrew channel is still
-red in `scripts/check-release.sh` output.
+The skill lives in `agent-assembly` because the tap repo has no Jira component;
+it is logically owned by the upstream that publishes to it.
 
-## Pre-conditions
-- Bot PR number provided (resolve via
-  `gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open`).
-- Upstream `agent-assembly` release for the same tag is published.
-- `SHA256SUMS` asset exists on the upstream release.
+## When to use
 
-## Do Not Assume
-- Do not assume the 4 sha256 lines in `Formula/aasm.rb` are correct — verify
-  every one against the upstream `SHA256SUMS` asset.
-- Do not assume a red `brew install + test (macOS)` check is a real failure
-  — check if the PR is on a stale master first (see step 3 below).
-- Do not assume Homebrew/brew#22719 has shipped — the AAASM-2871 quirk is
-  still live as of this skill's authoring.
+Invoke when `release.yml`'s `update-homebrew-tap` job has finished and a
+`bot/aasm-<version>` PR is open on `ai-agent-assembly/homebrew-agent-assembly`,
+and the operator (or `release-watch`) wants to verify the bot diff and merge it.
+
+## When NOT to use
+
+- **Tap PR not yet open** — wait for `release.yml`; do not hand-open a PR.
+- **Tap PR has manual edits beyond the bot's diff** — anything outside the
+  version line + 4 sha256 lines is out of scope. Escalate; do not auto-merge a
+  hand-edited formula.
+- **AAASM-2871 (Homebrew/brew#22719) is patched upstream** — if the tap's `brew
+  install + test` workflow no longer needs `HOMEBREW_NO_REQUIRE_TAP_TRUST=1`,
+  the step-3 rebase shortcut may no longer be required; re-evaluate.
+
+## How to use
+
+```text
+/homebrew-tap-merge <PR_NUMBER>
+```
+
+Example: `/homebrew-tap-merge 16`. Resolve the PR number with
+`gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open`. The
+matching upstream `agent-assembly` release must already be published with its
+`SHA256SUMS` asset attached.
 
 ## Executable plan
 
@@ -45,34 +51,30 @@ gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
   --json files,additions,deletions
 ```
 
-Expected: single file `Formula/aasm.rb`, ~5 additions and ~5 deletions
-(version line + 4 sha256 lines). Reject anything broader as out-of-scope.
+Expected: single file `Formula/aasm.rb`, ~5 additions and ~5 deletions. Reject
+anything broader as out-of-scope.
 
 ### 2. Cross-verify all 4 sha256 lines vs upstream
 
 ```bash
-gh release download <tag> -A SHA256SUMS \
-  --repo ai-agent-assembly/agent-assembly --dir /tmp/aasm-<tag>
-gh pr diff <n> --repo ai-agent-assembly/homebrew-agent-assembly
+.claude/skills/homebrew-tap-merge/scripts/verify-tap-sha256.sh <tag> [<pr>]
+# e.g. .claude/skills/homebrew-tap-merge/scripts/verify-tap-sha256.sh v0.0.1-alpha.9 16
 ```
 
-For each of the 4 `sha256 "<hash>"` lines in the diff (one per platform —
-`aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`,
-`x86_64-unknown-linux-gnu`), confirm the hash matches the corresponding row
-in `/tmp/aasm-<tag>/SHA256SUMS`. Mismatch → escalate; do not merge.
+Exits 0 iff all 4 sha256s match the upstream `SHA256SUMS` asset (one per
+platform: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`). Non-zero exit prints a
+mismatch table — **escalate; do not merge**.
 
 ### 3. Handle red `brew install + test (macOS)` check
-
-Check whether the PR is on stale master:
 
 ```bash
 gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
   --json baseRefOid,mergeable,mergeStateStatus
 ```
 
-- **If `mergeStateStatus` is `BEHIND` or the base SHA is older than master's tip**
-  — trigger a server-side rebase (avoids local force-push, works through the
-  classifier):
+- If `mergeStateStatus` is `BEHIND` (stale master), trigger a **server-side**
+  rebase (no local force-push):
 
   ```bash
   gh api -X PUT \
@@ -80,19 +82,10 @@ gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
     -f update_method=rebase
   ```
 
-  The endpoint takes an optional `expected_head_sha` for safety. Wait for CI
-  to re-run, then re-evaluate.
+  Wait for CI to re-run, then re-evaluate. See the AAASM-2871 note below.
 
-- **If the PR is up to date** — surface the failure log:
-
-  ```bash
-  gh run view --repo ai-agent-assembly/homebrew-agent-assembly \
-    --job <id> --log-failed
-  ```
-
-  Look for the AAASM-2871 fingerprint: `sandbox-exec` exits with status 1
-  silently inside the `brew install + test` step. See memory entry
-  `project_homebrew_tap_sandbox_kills_install` for full context.
+- If the PR is up to date, surface the failure log with
+  `gh run view --repo ai-agent-assembly/homebrew-agent-assembly --job <id> --log-failed`.
 
 ### 4. Merge
 
@@ -102,49 +95,36 @@ Once CI is green and sha256s are verified:
 gh pr merge <n> --repo ai-agent-assembly/homebrew-agent-assembly --squash
 ```
 
-Use the tap's configured strategy (squash, per `docs/release/RUNBOOK.md`).
-
-## Post-conditions
-- Tap `master` branch's `Formula/aasm.rb` has the new version + 4 sha256s.
-- `brew install aasm` (on a fresh `brew update`) now resolves to the new
-  version. Until the merge happens, `brew install aasm` still resolves to
-  the previous version — the bot branch is invisible to `brew install`.
-- Suggest follow-up: invoke `/release-validate-channels` (or re-run
-  `scripts/check-release.sh v<version>`) to confirm the Homebrew row goes
-  green.
-
 ## AAASM-2871 quirk (live until Homebrew/brew#22719 ships)
 
-The `brew install + test (macOS)` check requires
-`HOMEBREW_NO_REQUIRE_TAP_TRUST=1` in the workflow env. If a bot PR pre-dates
-this fix being applied to the tap's CI workflow, it needs a rebase against
-master first (step 3 above). Once Homebrew/brew#22719 ships and the workaround
-is removed, this requirement can be dropped from this skill.
+The tap's `brew install + test (macOS)` check needs
+`HOMEBREW_NO_REQUIRE_TAP_TRUST=1` in the workflow env. A bot PR on stale master
+predates that fix and fails with a silent `sandbox-exec` SIGKILL — the step-3
+server-side rebase pulls in the env and clears it. Limit to one rebase attempt
+before escalating. Background: memory entry
+`project_homebrew_tap_sandbox_kills_install`.
 
-## Output
+## Do NOT (auto-handled or forbidden)
 
-Report the merge with:
+- **Opening the bot PR** — owned by `release.yml`'s `update-homebrew-tap` job.
+- **Editing `Formula/aasm.rb` by hand** — never. A mismatched sha256 means a
+  real upstream release-artifact problem; escalate, do not "fix" the formula.
+- **Local `git push --force` to the bot branch** — use the server-side
+  `update-branch` API (step 3); force-push breaks the bot's audit trail.
+- **Merging past a red `brew install + test` check** — users hit the same
+  failure on `brew install`.
 
-```
-### Homebrew tap merge
-- PR #<n> — verified 4 sha256s vs upstream SHA256SUMS — merged via squash
-- Follow-up: re-run scripts/check-release.sh v<version> to confirm Homebrew row
-```
+## Post-conditions
 
-## Safe-Fix Guidance
-- Do not edit `Formula/aasm.rb` by hand to "fix" a mismatched sha256 — the
-  upstream release artifact is the source of truth; if hashes don't match,
-  the release tarball or the bot is broken, not the formula. Escalate.
-- Do not bypass a red `brew install + test (macOS)` check by merging anyway
-  — Homebrew users will hit the same failure on `brew install`.
-- Do not local-rebase + force-push the bot branch; use the server-side
-  `update-branch` API call to keep the audit trail clean.
-- Limit to one rebase attempt before escalating — repeated failures indicate
-  a real formula or release-artifact problem.
+- Tap `master`'s `Formula/aasm.rb` has the new version + 4 verified sha256s.
+- The bot PR is **closed and merged** (squash), not just approved.
+- Follow up with `/release-validate-channels v<version>` (or re-run
+  `scripts/check-release.sh v<version>`) and confirm the Homebrew row goes green.
 
-## Cross-links
-- `docs/release/RUNBOOK.md` § "Manual gate — merge the Homebrew tap PR"
-- `.github/workflows/release.yml` § `update-homebrew-tap` job (the producer
-  of these PRs)
-- Memory entry `project_homebrew_tap_sandbox_kills_install` (AAASM-2871
-  background)
+## Detailed references
+
+- [EXAMPLES.md](EXAMPLES.md) — full worked alpha-9 walk-through of all 4 steps,
+  including the stale-master rebase path and the verified sha256 table.
+- `scripts/verify-tap-sha256.sh` — the step-2 cross-verification helper.
+- `docs/release/RUNBOOK.md` § "Manual gate — merge the Homebrew tap PR".
+- `.github/workflows/release.yml` § `update-homebrew-tap` job (PR producer).
