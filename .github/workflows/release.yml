@@ -488,7 +488,7 @@ jobs:
   update-python-sdk-ffi-pin:
     # AAASM-2883: after every tag push, open a PR on python-sdk that bumps
     # all three git-SHA pins (`aa-core`, `aa-proto`, `aa-sdk-client`) in
-    # `rust/aa-ffi-python/Cargo.toml` to the exact commit this release
+    # `native/aa-ffi-python/Cargo.toml` to the exact commit this release
     # was cut from. Per ADR 0002 / AAASM-2559 the three pins MUST share a
     # single SHA so cargo resolves one checkout of the agent-assembly
     # workspace; this job rewrites all three together. Mirrors
@@ -508,7 +508,7 @@ jobs:
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
           path: sdk
 
-      - name: Rewrite rust/aa-ffi-python/Cargo.toml git-SHA pins
+      - name: Rewrite native/aa-ffi-python/Cargo.toml git-SHA pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
@@ -520,14 +520,14 @@ jobs:
           # historical edits, so the regex tolerates `[^"]*` for the URL.
           for crate in aa-core aa-proto aa-sdk-client; do
             sed -i -E "s|(${crate} = \{ git = \"[^\"]*\", rev = )\"[0-9a-f]{40}\"|\\1\"${NEW_SHA}\"|" \
-              rust/aa-ffi-python/Cargo.toml
+              native/aa-ffi-python/Cargo.toml
           done
           # All three pins must now point at NEW_SHA (ADR 0002 / AAASM-2559).
           for crate in aa-core aa-proto aa-sdk-client; do
-            grep -q "^${crate} = .*rev = \"${NEW_SHA}\"" rust/aa-ffi-python/Cargo.toml \
+            grep -q "^${crate} = .*rev = \"${NEW_SHA}\"" native/aa-ffi-python/Cargo.toml \
               || { echo "::error::${crate} rev rewrite produced unexpected result"; exit 1; }
           done
-          git -C . diff -- rust/aa-ffi-python/Cargo.toml || true
+          git -C . diff -- native/aa-ffi-python/Cargo.toml || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
         uses: peter-evans/create-pull-request@v8
@@ -541,7 +541,7 @@ jobs:
           title: "🤖 (aa-ffi-python): Bump aa-core/aa-proto/aa-sdk-client pin to ${{ github.ref_name }}"
           body: |
             Auto-bump the three shared git-SHA pins (`aa-core`, `aa-proto`,
-            `aa-sdk-client`) in `rust/aa-ffi-python/Cargo.toml` to track
+            `aa-sdk-client`) in `native/aa-ffi-python/Cargo.toml` to track
             agent-assembly release `${{ github.ref_name }}` (commit
             `${{ github.sha }}`).
 
