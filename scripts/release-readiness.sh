@@ -96,7 +96,8 @@ fi
 
 # 8. Required secrets present in this repo
 SECRETS="$(gh secret list --repo ai-agent-assembly/agent-assembly 2>/dev/null | awk '{print $1}')"
-for SECRET in CRATES_IO_TOKEN CROSS_REPO_DISPATCH_PAT HOMEBREW_TAP_TOKEN; do
+for SECRET in CRATES_IO_TOKEN CROSS_REPO_DISPATCH_PAT HOMEBREW_TAP_TOKEN \
+              NODE_SDK_BOT_TOKEN PYTHON_SDK_BOT_TOKEN; do
   if printf '%s\n' "$SECRETS" | grep -qx "$SECRET"; then
     pass "Secret $SECRET present"
   else
