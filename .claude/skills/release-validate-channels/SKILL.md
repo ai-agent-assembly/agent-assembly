@@ -409,6 +409,49 @@ Replace `✓` with `✗` for any red channel and append, on the line beneath,
 the exact failing command and its literal output so the operator has
 everything needed to triage without re-running the probe.
 
+## What's expected when done
+
+A successful invocation produces, in this exact order:
+
+1. **A paste-ready Markdown matrix** — one row per channel, status column,
+   detail column. The operator can paste it directly into a release-cut
+   ticket, post-release note, or the parent Jira issue. The matrix format
+   is the one shown under "Output" above; the worked example below is its
+   canonical filled-in shape.
+
+2. **Every anomaly is named with the literal command output that surfaced
+   it.** The skill must not say "channel X looks off" without quoting the
+   exact `gh`, `curl`, or `npm view` invocation and its actual stdout /
+   stderr. Triage downstream relies on being able to re-run (or skip
+   re-running) the same probe by hand.
+
+3. **Specific follow-up recommendations per red row.** The skill names the
+   next action; it does not perform it.
+
+   | Red channel | Recommended follow-up |
+   |---|---|
+   | GitHub Release assets diverged | Re-check `release.yml` run logs for the `build-artifacts` / `sign-release` job — re-trigger per RUNBOOK § 6. |
+   | crates.io row red | Inspect the `Publish workspace to crates.io` job log in the `release.yml` run for `<TAG>`; immutable registry, recovery is a fresh tag. |
+   | npm row red | Inspect `release-node.yml` run on `ai-agent-assembly/node-sdk`. If only sub-packages are missing, the matrix publish failed silently. |
+   | PyPI row red | Inspect `release-python.yml` run on `ai-agent-assembly/python-sdk`. Yanked shadow is a soft red — annotate, do not block. |
+   | Homebrew tap row red, with open bot PR | Invoke `/homebrew-tap-merge` once the bot PR opens. |
+   | Homebrew tap row red, no bot PR | Check the `update-homebrew-tap` job in `release.yml`. |
+   | python-sdk / node-sdk fanout row red | Surface the run URL; let the operator re-trigger per RUNBOOK § 6. |
+   | Docs sites row red | Soft red — documentation staleness only; surface and move on. |
+   | GHCR row red | Confirm whether this `release.yml` iteration is expected to publish GHCR; if yes, surface the `docker.yml` run URL. |
+
+4. **A definitive go / no-go statement.** The last line of the skill's
+   output is one of:
+
+   - `All channels green for <TAG>.` (every row ✓)
+   - `<TAG> validated with <N> soft notes — see annotations.` (only soft
+     reds, e.g. yanked PyPI shadow, deferred GHCR)
+   - `<TAG> has <N> hard red channels — operator action required.` (one
+     or more hard reds; follow the table above)
+
+The operator should not have to read the rest of the SKILL.md to act on
+the result — the matrix and the final line are the deliverable.
+
 ## Worked example — `v0.0.1-alpha.9` (2026-06-14)
 
 The concrete shape of a successful run, against the real channel state on
