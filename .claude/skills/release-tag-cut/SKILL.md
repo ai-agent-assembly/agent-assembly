@@ -49,6 +49,33 @@ Pick a different path in any of the following cases:
   or has a red CI run, stop and surface the gap to the operator instead of
   running this skill.
 
+## How to use
+
+**Invocation**:
+
+```text
+/release-tag-cut <X>
+```
+
+where `<X>` is the target version literal exactly as it will appear in
+`Cargo.toml` and in the git tag (e.g. `0.0.1-alpha.10`, NOT `v0.0.1-alpha.10`
+— the leading `v` is added only at tag time).
+
+**Required context**:
+
+- Repository checkout is the main `agent-assembly/` working tree, not a
+  worktree. Tags are pushed from the main checkout per project convention.
+- `remote` is the configured remote name pointing at
+  `ai-agent-assembly/agent-assembly` (project convention — not `origin`).
+- The operator has supplied `<X>`; the skill never invents a version number.
+
+**Parameter substitution**:
+
+Every `<X>` placeholder in the Executable plan below binds to the
+operator-supplied version. Treat each `<X>` as a literal string replacement
+applied at the start of execution; do not derive or increment versions
+mid-run.
+
 ## Pre-conditions
 
 All of the following MUST hold before any step below runs. If any fails,
