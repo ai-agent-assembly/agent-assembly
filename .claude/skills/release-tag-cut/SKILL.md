@@ -48,6 +48,23 @@ Pick a different path in any of the following cases:
 - **Pre-conditions not met** — if `master` is dirty, behind `remote/master`,
   or has a red CI run, stop and surface the gap to the operator.
 
+## Downstream SDK coordination
+
+After this skill ends (`git push remote v<X>`), agent-assembly's `release.yml` will publish the GitHub Release and fire two automation jobs:
+
+- `notify-downstream` — `repository_dispatch` so node-sdk and python-sdk know `aasm-*` binaries are downloadable (AAASM-2336).
+- `update-{node|python|go}-sdk-ffi-pin` — opens an auto-bump PR on each SDK that aligns the `aa-sdk-client` git-SHA pin on master with this tag's commit (AAASM-2883 + AAASM-3006).
+
+### Operator rule for the SDK side (codified in each SDK's `sdk-only-release` skill — AAASM-3007)
+
+Until **all three** of the following are true for this tag, operators MUST NOT dispatch the SDK release workflows (`release-node.yml` or `release-python.yml`) for the matching version:
+
+1. agent-assembly's `Release` workflow has reached the `notify-downstream` step.
+2. The auto-bump PR (`bot/aa-ffi-pin-v<X>`) has been opened on each SDK repo.
+3. The auto-bump PR has been reviewed and merged.
+
+Pre-dispatching the SDK release with `npm_version=<X>` / `pypi_version=<X>` against the previous agent-assembly release content burns the version slot on npm + PyPI and ships stale content to users. See AAASM-3007 for the 2026-06-15 incident that motivated this SOP.
+
 ## How to use
 
 **Invocation**:
