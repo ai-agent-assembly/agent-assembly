@@ -82,6 +82,7 @@
 
 # Governance
 
+- [Policy YAML Reference](policy-reference.md)
 - [L0-L3 Capability Matrix](governance/capability-matrix.md)
 - [Policy RBAC Role Matrix](policy-rbac.md)
 
