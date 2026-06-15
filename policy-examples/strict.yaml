@@ -1,0 +1,51 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: strict
+  version: "1.0.0"
+  description: >
+    Lock everything down. Deny all unknown tools, cap spend at $5/day,
+    and block any payload that trips the sensitive-data scanner. Use this
+    as the baseline for high-risk or untrusted agents.
+spec:
+  scope: global
+
+  network:
+    # Empty-but-present allowlist still allows any host (an empty list means
+    # "no restriction"). To actually restrict egress, list the exact hosts.
+    allowlist:
+      - api.openai.com
+      - api.anthropic.com
+
+  budget:
+    daily_limit_usd: 5.0
+    monthly_limit_usd: 100.0
+    timezone: "UTC"
+    action_on_exceed: suspend
+
+  data:
+    # Block the payload outright when the scanner finds a credential.
+    credential_action: block
+    sensitive_patterns:
+      - "sk-[A-Za-z0-9]{20,}"
+      - "AKIA[0-9A-Z]{16}"
+      - "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+
+  # Capability floor: deny the dangerous categories regardless of per-tool rules.
+  capabilities:
+    deny:
+      - terminal_exec
+      - file_write
+      - network_inbound
+
+  # Deny every tool that is not explicitly allowed below.
+  tools:
+    "*":
+      allow: false
+    read_file:
+      allow: true
+      limit_per_hour: 60
+    http_get:
+      allow: true
+      limit_per_hour: 30
+      requires_approval_if: "url contains \"internal\""
