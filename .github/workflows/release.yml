@@ -713,11 +713,16 @@ jobs:
           event-type: agent-assembly-release-published
           client-payload: '{"release_tag": "${{ github.ref_name }}"}'
 
-      # go-sdk intentionally NOT dispatched: pure-Go module, no aasm
-      # binary consumption in its release pipeline (`goreleaser.yaml`
-      # is a check-only workflow; Go module proxy auto-indexes from
-      # git tags directly). Add a dispatch step here if that ever
-      # changes.
+      # go-sdk intentionally NOT dispatched from this job: pure-Go
+      # module, no `aasm-*` binary consumption in its release pipeline
+      # (`goreleaser.yaml` is a check-only workflow; Go module proxy
+      # auto-indexes from git tags directly). Add a dispatch step here
+      # if that ever changes.
+      #
+      # NOTE: this exclusion is scoped to BINARY-PUBLISH RACE
+      # COORDINATION only. go-sdk's `aa-sdk-client` Cargo git-SHA pin
+      # is still kept in lockstep with each release via the dedicated
+      # `update-go-sdk-ffi-pin` job above (AAASM-3006).
 
   release-status-aggregator:
     permissions:
