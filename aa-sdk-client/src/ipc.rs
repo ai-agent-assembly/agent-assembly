@@ -53,8 +53,13 @@ pub fn spawn_ipc_thread(socket_path: PathBuf) -> Result<IpcHandle, std::io::Erro
 
 /// The async event loop running on the background thread.
 ///
-/// Connects to the runtime socket, sends an initial heartbeat, then
-/// processes commands from the mpsc channel until shutdown.
+/// Connects to the runtime socket, sends an initial heartbeat, then ships event
+/// reports **fire-and-forget** — it does not block waiting for a per-event
+/// acknowledgement. `aa-runtime` does not ack heartbeats or event reports; it
+/// only emits *unsolicited* responses (violation alerts, policy/approval
+/// decisions), which a dedicated reader task drains so the socket never backs
+/// up. Blocking on an ack the runtime never sends would deadlock this loop and
+/// hang `shutdown()` (AAASM-3000).
 async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) {
     use tokio::net::UnixStream;
 
@@ -70,48 +75,51 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
         }
     };
 
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    // Owned halves let the reader run on its own task without racing the writer.
+    let (reader, mut writer) = stream.into_split();
 
-    // Send initial heartbeat to verify connection.
+    // Send the initial heartbeat (fire-and-forget — the runtime does not ack it).
     if let Err(e) = codec::write_heartbeat(&mut writer).await {
         tracing::error!(error = %e, "failed to send initial heartbeat");
         return;
     }
 
-    // Read the Ack response.
-    match codec::read_response(&mut reader).await {
-        Ok(codec::RuntimeResponse::Ack) => {
-            tracing::debug!("connected to aa-runtime, heartbeat acknowledged");
-        }
-        Ok(other) => {
-            tracing::warn!(?other, "unexpected response to heartbeat");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to read heartbeat ack");
-            return;
-        }
-    }
+    // Drain unsolicited runtime responses on a dedicated task: reads never race
+    // writes (no cancellation hazard) and the connection cannot stall.
+    let reader_task = tokio::spawn(drain_responses(reader));
 
-    // Process commands from the calling thread.
+    // Process commands from the calling thread. Event reports are fire-and-forget.
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             IpcCommand::SendEvent(event) => {
                 if let Err(e) = codec::write_event_report(&mut writer, &event).await {
                     tracing::error!(error = %e, "failed to send event report");
                 }
-                // Read Ack.
-                match codec::read_response(&mut reader).await {
-                    Ok(codec::RuntimeResponse::Ack) => {}
-                    Ok(other) => {
-                        tracing::warn!(?other, "unexpected response to event report");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to read event report ack");
-                    }
-                }
             }
             IpcCommand::Shutdown => {
                 tracing::debug!("IPC shutdown requested");
+                break;
+            }
+        }
+    }
+
+    reader_task.abort();
+}
+
+/// Continuously read and discard unsolicited responses from the runtime.
+///
+/// `aa-runtime` sends violation alerts and policy/approval decisions
+/// asynchronously. The SDK does not yet act on them, but they must be drained
+/// so the connection does not stall. Exits on EOF or a read error (e.g. the
+/// runtime closing the connection), or when aborted on shutdown.
+async fn drain_responses(mut reader: tokio::net::unix::OwnedReadHalf) {
+    loop {
+        match codec::read_response(&mut reader).await {
+            Ok(response) => {
+                tracing::debug!(?response, "received unsolicited runtime response");
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "runtime response stream ended");
                 break;
             }
         }
