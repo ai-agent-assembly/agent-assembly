@@ -5,6 +5,33 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-beta.2] — 2026-06-15 (pre-release)
+
+> **Not for production use.** Second pre-release in the v0.0.1 beta
+> channel — a forward-roll cut on top of `0.0.1-beta.1` carrying the
+> AAASM-3000 IPC deadlock fix. No API, ABI, or wire-protocol stability
+> commitment.
+
+### Fixed
+
+- **AAASM-3000** — `aa-sdk-client` IPC event reporting is now
+  fire-and-forget, closing the deadlock that occurred when the runtime
+  accepted but did not ack the event report. `send_event` returns as
+  soon as the codec has accepted the frame instead of blocking on a
+  runtime ack.
+
+### Changed
+
+- **AAASM-2959** — release pipeline now syncs `aa-ffi-python` and
+  `aa-ffi-node` `Cargo.lock` when bumping the workspace SDK pins, so
+  the published native bindings always match the tagged
+  `aa-sdk-client` revision.
+- **AAASM-3004** — bumped workspace + 16 path-dep version literals from
+  `0.0.1-beta.1` to `0.0.1-beta.2`. Coordinated release across
+  agent-assembly + python-sdk + node-sdk + go-sdk; drives
+  `@agent-assembly/sdk@0.0.1-beta.2`, `agent-assembly==0.0.1b2`, and
+  `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.2` downstream.
+
 ## [0.0.1-beta.1] — 2026-06-14 (pre-release)
 
 > **Not for production use.** First beta-channel pre-release in the v0.0.1
