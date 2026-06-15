@@ -128,11 +128,27 @@ To add a new crate to the workspace:
 
 ## Pull Requests
 
-- Open a PR against `master`.
+- Open a PR against `master` — never against another feature branch (stacked
+  branches are fine for local development, but every PR targets `master`).
 - Title format: `[<ticket>] <emoji> (<scope>): <summary>`
-- Fill in the PR template — all checklist items must be addressed.
+- Fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md) — all checklist items must be addressed.
+- Keep PRs focused: one concern per PR, ideally under 500 lines of diff.
 - CI must be green before review is requested.
 - At least **1 approval** from the Pioneer team is required to merge.
+
+## Code Review
+
+What to expect during review, as both an author and a reviewer:
+
+- **Reviewers** look for correctness, test coverage, adherence to the
+  architecture, and the commit conventions above — not style nits that the
+  automated hooks already enforce.
+- **Authors** should respond to every comment (resolve it or explain why not),
+  re-request review after pushing changes, and avoid force-pushing while a
+  review is in progress so reviewers can see incremental diffs.
+- A PR merges only once all blocking comments are resolved, CI is green, and a
+  Pioneer-team approval is present. The merge strategy is squash for feature
+  PRs and rebase for dependency bumps.
 
 ## Developer Certificate of Origin (DCO)
 
