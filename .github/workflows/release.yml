@@ -462,6 +462,21 @@ jobs:
             || { echo "::error::aa-sdk-client rev rewrite produced unexpected result"; exit 1; }
           git -C . diff -- native/aa-ffi-node/Cargo.toml || true
 
+      - name: Regenerate native/aa-ffi-node/Cargo.lock for the new pin
+        shell: bash
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd sdk
+          # AAASM-2959: re-resolve the lock so it matches the just-rewritten
+          # Cargo.toml rev. node pins only aa-sdk-client; its transitive
+          # aa-core/aa-proto from the same git source update with it. This only
+          # re-resolves the lock (no compile), so cargo alone suffices.
+          cargo update --manifest-path native/aa-ffi-node/Cargo.toml \
+            -p aa-sdk-client --precise "${NEW_SHA}"
+          git -C . diff -- native/aa-ffi-node/Cargo.lock || true
+
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
         uses: peter-evans/create-pull-request@v8
         with:
