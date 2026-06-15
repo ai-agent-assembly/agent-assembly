@@ -105,6 +105,68 @@ A runtime version may support multiple protocol versions to allow SDK upgrades w
 
 ---
 
+## Dual-URL SDK configuration
+
+Starting with the v0.0.1 SDK line, every SDK accepts **two** endpoint fields so
+a single install can target either a single-host OSS deployment or a split
+enterprise deployment (gRPC gateway and HTTP control plane on different hosts).
+
+| Field (Python / Node / Go) | What it addresses | Scheme |
+|---|---|---|
+| `gateway_url` / `gatewayUrl` / `WithGatewayURL` | gRPC endpoint of the gateway | `host:port`, no scheme |
+| `control_plane_url` / `controlPlaneUrl` / `WithControlPlaneURL` | HTTP base URL for the control plane — `aa-api` (OSS) or the FastAPI cloud (enterprise) | full URL with scheme |
+
+The HTTP control plane serves agent registration, policy checks, and topology
+edges (`POST /agents/{id}/register`, `POST /agents/{id}/policy/check`,
+`POST /topology/edges`). The gRPC transport carries the streaming op-control,
+lifecycle, audit, and approval flows and always reads `gateway_url`.
+
+### Backwards-compatible default
+
+`control_plane_url` is **optional**. When it is not set, each SDK defaults it to
+the resolved `gateway_url`, so a single-host OSS dev install keeps working with
+only one endpoint configured — the pre-feature behaviour is preserved exactly.
+It only needs a distinct value when the HTTP control plane and the gRPC gateway
+live on separate hosts (the production enterprise topology).
+
+### Resolution order and environment variables
+
+Each field resolves as **explicit init argument > environment variable > unset**:
+
+| Field | Environment variable |
+|---|---|
+| `gateway_url` / `gatewayUrl` / `WithGatewayURL` | `AA_GATEWAY_URL` |
+| `control_plane_url` / `controlPlaneUrl` / `WithControlPlaneURL` | `AA_CONTROL_PLANE_URL` |
+
+If `control_plane_url` is still unset after this chain, it falls back to
+`gateway_url` as described above.
+
+### Per-SDK notes
+
+- **Python** ([AAASM-2028](https://lightning-dust-mite.atlassian.net/browse/AAASM-2028)) —
+  `control_plane_url` is a keyword argument on `init_assembly`, threaded into
+  `GatewayClient` (httpx). The gRPC path (`op_control`) continues to read
+  `gateway_url`.
+- **Node** ([AAASM-2029](https://lightning-dust-mite.atlassian.net/browse/AAASM-2029)) —
+  `controlPlaneUrl` is an optional field on `AssemblyConfig`. When set, the
+  gateway client routes its HTTP traffic at it; the gRPC transport
+  (`op-control`) keeps using `gatewayUrl`.
+- **Go** ([AAASM-2030](https://lightning-dust-mite.atlassian.net/browse/AAASM-2030)) —
+  `assembly.WithControlPlaneURL` stores the value on the runtime options for
+  parity with the other SDKs. The Go SDK has no HTTP control-plane caller today
+  (lifecycle is delegated to the `aasm` runtime), so the field is in place ready
+  for the first HTTP caller; gRPC dial behaviour is unchanged.
+
+### Authoritative strategy source
+
+The enterprise-vs-OSS connectivity strategy — why the second field exists, the
+transport split, and the per-SDK survey — is owned by
+`agent-assembly-enterprise/docs/sdk-compatibility.md` (filed under AAASM-1953).
+This section documents the OSS-visible surface of that convention; the
+enterprise doc is the authoritative source for the strategy.
+
+---
+
 ## CI Enforcement
 
 A CI check (`compat-matrix-check`) enforces that this file is updated whenever version-carrying files change in a pull request.
