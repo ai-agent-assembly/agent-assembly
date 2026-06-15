@@ -305,6 +305,7 @@ mdbook serve docs --open
 | [Architecture Overview](docs/src/architecture.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
 | [Command-Line Interface](docs/src/cli.md) | `aasm` global flags, command groups, and examples |
+| [Policy YAML Reference](docs/src/policy-reference.md) | Complete per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
 | [Dashboard](docs/src/dashboard.md) | Web console and terminal (TUI) governance dashboards |
 | [Local Development](docs/src/development/local-development.md) | From-clone setup, everyday build/test loop, git hooks |
 | [Releases](docs/src/releases.md) | Release state, distribution channels, and process |
