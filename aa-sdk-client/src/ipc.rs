@@ -194,4 +194,68 @@ mod tests {
         // Clean up.
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    /// Regression for AAASM-3000: a runtime that never acks (like the real
+    /// `aa-runtime`, which ignores heartbeats and only emits unsolicited
+    /// responses) must not deadlock the client — events ship fire-and-forget
+    /// and shutdown returns promptly. The pre-fix loop blocked forever reading
+    /// a heartbeat ack that never came, so `shutdown()` hung.
+    #[tokio::test]
+    async fn shutdown_is_clean_when_runtime_never_acks() {
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        use tokio::net::UnixListener;
+
+        let socket_path = format!("/tmp/aa-test-noack-{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        // Mock runtime mimicking the real one: read whatever the client sends
+        // and never reply with an ack.
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = stream.read(&mut buf).await {
+                if n == 0 {
+                    break; // client closed the connection
+                }
+            }
+        });
+
+        let mut handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+
+        // Ship several events — fire-and-forget, must not block.
+        for i in 0..5 {
+            let event = aa_proto::assembly::audit::v1::AuditEvent {
+                event_id: format!("evt-{i}"),
+                ..Default::default()
+            };
+            handle
+                .cmd_tx
+                .send(IpcCommand::SendEvent(Box::new(event)))
+                .await
+                .unwrap();
+        }
+
+        // Shutdown must return promptly (pre-fix: hung forever on the ack read).
+        handle.cmd_tx.send(IpcCommand::Shutdown).await.unwrap();
+        let thread = handle.thread.take().unwrap();
+        let joined = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || thread.join()),
+        )
+        .await;
+
+        assert!(
+            joined.is_ok(),
+            "IPC thread did not shut down within 5s — deadlock regression (AAASM-3000)"
+        );
+        joined
+            .unwrap()
+            .expect("join task panicked")
+            .expect("IPC thread panicked");
+
+        server.abort();
+        let _ = std::fs::remove_file(&socket_path);
+    }
 }
