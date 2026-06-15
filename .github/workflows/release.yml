@@ -544,6 +544,21 @@ jobs:
           done
           git -C . diff -- native/aa-ffi-python/Cargo.toml || true
 
+      - name: Regenerate native/aa-ffi-python/Cargo.lock for the new pins
+        shell: bash
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd sdk
+          # AAASM-2959: re-resolve the lock so it matches the just-rewritten
+          # Cargo.toml revs. python pins all three shared crates, so update all
+          # three to NEW_SHA together. This only re-resolves the lock (no
+          # compile), so cargo alone suffices.
+          cargo update --manifest-path native/aa-ffi-python/Cargo.toml \
+            -p aa-core -p aa-proto -p aa-sdk-client --precise "${NEW_SHA}"
+          git -C . diff -- native/aa-ffi-python/Cargo.lock || true
+
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
         uses: peter-evans/create-pull-request@v8
         with:
