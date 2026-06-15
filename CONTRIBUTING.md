@@ -220,8 +220,13 @@ Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/
 
 ## Reporting Issues
 
-Use the GitHub issue templates:
-- **Bug report** — reproducible steps, expected vs actual behaviour, environment.
-- **Feature request** — motivation, proposed solution, alternatives considered.
+File issues through the GitHub issue templates so they capture the detail
+maintainers need to act:
 
-For security issues, see [SECURITY.md](SECURITY.md).
+- [**Bug report**](.github/ISSUE_TEMPLATE/bug_report.md) — reproducible steps, expected vs actual behaviour, environment.
+- [**Feature request**](.github/ISSUE_TEMPLATE/feature_request.md) — motivation, proposed solution, alternatives considered.
+
+Search [existing issues](https://github.com/ai-agent-assembly/agent-assembly/issues) before opening a new one to avoid duplicates.
+
+**Do not** open a public issue for a security vulnerability — see
+[SECURITY.md](SECURITY.md) for the private disclosure process.
