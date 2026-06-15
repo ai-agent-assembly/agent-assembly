@@ -57,23 +57,49 @@ on; the faster linker is opt-in.
 
 ## Branch Naming
 
+Branch names have four parts:
+
 ```
-<version>/<ticket-number>/<short-summary>
+<release-or-phase>/<ticket-number>/<type>/<short-summary>
 ```
 
-Example: `v0.0.1/AAASM-42/add_agent_registry`
+- `<release-or-phase>` — milestone or sprint identifier (e.g. `v0.0.1`, `phase1`)
+- `<ticket-number>` — the Jira ticket reference (e.g. `AAASM-42`)
+- `<type>` — one of `feat`, `fix`, `refactor`, `test`, `docs`, `config`, `deps`, `remove`, `lint`
+- `<short-summary>` — 2–4 words from the ticket title in `snake_case`
+
+Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
 ## Commit Style
 
-Use [Gitmoji](https://gitmoji.dev/) prefixed messages:
+Commit messages follow [Gitmoji](https://gitmoji.dev/)-prefixed
+[Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <emoji> (<scope>): <imperative summary>
 ```
 
-**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable.
+- `<emoji>` — a [Gitmoji](https://gitmoji.dev/) marking the change category
+  (see the table below)
+- `<scope>` — the affected crate or area (e.g. `aa-core`, `ci`, `docs`)
+- `<imperative summary>` — imperative mood, under 72 characters
+
+| Emoji | Category | Conventional type |
+|---|---|---|
+| ✨ | New feature | `feat` |
+| 🐛 | Bug fix | `fix` |
+| ♻️ | Refactor (no behaviour change) | `refactor` |
+| ✅ | Tests | `test` |
+| 📝 | Documentation | `docs` |
+| 🔧 | Configuration / CI | `config` / `ci` |
+| ⬆️ | Dependency upgrade | `deps` |
+| 🗑️ | Deletion / removal | `remove` |
+| 🚨 | Lint / type-error fix | `style` |
+
+**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable so a reviewer can follow each step.
 
 Examples:
+
 - `✨ (aa-core): Add AgentId newtype wrapper`
 - `🐛 (aa-gateway): Fix policy evaluation order for overlapping rules`
 - `🔧 (ci): Add matrix build for MSRV check`
