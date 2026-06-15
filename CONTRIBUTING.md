@@ -2,6 +2,14 @@
 
 Thank you for your interest in contributing! This guide explains how to set up your environment and submit changes.
 
+By participating in this project you agree to abide by our
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+For the fastest path from a fresh clone to a verified local environment, follow
+the [Quickstart in the README](README.md#quickstart) (`make dev-setup` +
+`make dev-verify`). The sections below cover the manual setup and the
+day-to-day contribution workflow in more detail.
+
 ## Prerequisites
 
 - **Rust stable** (≥ 1.75) — install via [rustup](https://rustup.rs/)
