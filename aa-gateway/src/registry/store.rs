@@ -191,6 +191,15 @@ pub struct AgentRegistry {
     storage: Option<Arc<dyn StorageBackend>>,
 }
 
+/// Validated outcome of a reparent precheck: the values the mutation step of
+/// [`AgentRegistry::reparent`] needs after the cycle/depth checks pass.
+struct ReparentPlan {
+    /// The child's parent before the move (used to unlink its children list).
+    old_parent_key: Option<[u8; 16]>,
+    /// The child's depth under the new parent (`new_parent.depth + 1`).
+    new_child_depth: u32,
+}
+
 impl AgentRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -486,72 +495,83 @@ impl AgentRegistry {
     /// into a `Vec` before any mutation so there is no re-entrant `get_mut`.
     fn apply_orphan_mode_recursive(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
         match mode {
-            OrphanMode::Suspend => {
-                // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
-                let grandchildren = self.children_of(&child_key);
+            OrphanMode::Suspend => self.orphan_suspend(child_key, mode, effects),
+            OrphanMode::PromoteToRoot => self.orphan_promote_to_root(child_key, effects),
+            OrphanMode::CascadeDeregister => self.orphan_cascade_deregister(child_key, mode, effects),
+        }
+    }
 
-                if let Some(mut entry) = self.agents.get_mut(&child_key) {
-                    let old_status = format!("{:?}", entry.status);
-                    entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "suspended",
-                        old_status,
-                        new_status: "suspended:parent_deregistered".to_string(),
-                    });
-                }
+    /// `Suspend` arm of [`apply_orphan_mode_recursive`]: mark this child
+    /// suspended (ParentDeregistered) then recurse into grandchildren.
+    fn orphan_suspend(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
+        // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
+        let grandchildren = self.children_of(&child_key);
 
-                for gk in grandchildren {
-                    self.apply_orphan_mode_recursive(gk, mode, effects);
+        if let Some(mut entry) = self.agents.get_mut(&child_key) {
+            let old_status = format!("{:?}", entry.status);
+            entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "suspended",
+                old_status,
+                new_status: "suspended:parent_deregistered".to_string(),
+            });
+        }
+
+        for gk in grandchildren {
+            self.apply_orphan_mode_recursive(gk, mode, effects);
+        }
+    }
+
+    /// `PromoteToRoot` arm of [`apply_orphan_mode_recursive`]: detach this
+    /// direct child into a new root and recompute its subtree depths. Only
+    /// direct children become roots; their children keep relative structure.
+    fn orphan_promote_to_root(&self, child_key: [u8; 16], effects: &mut Vec<OrphanEffect>) {
+        if let Some(mut entry) = self.agents.get_mut(&child_key) {
+            let old_status = format!("{:?}", entry.status);
+            entry.parent_key = None;
+            entry.parent_agent_id = None;
+            entry.root_agent_id = None;
+            entry.depth = 0;
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "promoted_to_root",
+                old_status,
+                new_status: "active:root".to_string(),
+            });
+        }
+
+        // Recalculate depth for this subtree now that the promoted child is depth 0.
+        self.recalculate_depth_recursive(child_key, 0);
+    }
+
+    /// `CascadeDeregister` arm of [`apply_orphan_mode_recursive`]: post-order
+    /// teardown — recurse into grandchildren first, then remove this child and
+    /// detach it from the team index.
+    fn orphan_cascade_deregister(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
+        // Post-order teardown: recurse into grandchildren first.
+        let grandchildren = self.children_of(&child_key);
+        for gk in grandchildren {
+            self.apply_orphan_mode_recursive(gk, mode, effects);
+        }
+
+        // Now remove this child.
+        self.control_senders.remove(&child_key);
+        if let Some((_, record)) = self.agents.remove(&child_key) {
+            if let Some(ref tid) = record.team_id {
+                if let Some(set) = self.team_index.get(tid) {
+                    set.remove(&child_key);
                 }
             }
-
-            OrphanMode::PromoteToRoot => {
-                // Only direct children become new roots; their children keep relative structure.
-                if let Some(mut entry) = self.agents.get_mut(&child_key) {
-                    let old_status = format!("{:?}", entry.status);
-                    entry.parent_key = None;
-                    entry.parent_agent_id = None;
-                    entry.root_agent_id = None;
-                    entry.depth = 0;
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "promoted_to_root",
-                        old_status,
-                        new_status: "active:root".to_string(),
-                    });
-                }
-
-                // Recalculate depth for this subtree now that the promoted child is depth 0.
-                self.recalculate_depth_recursive(child_key, 0);
-            }
-
-            OrphanMode::CascadeDeregister => {
-                // Post-order teardown: recurse into grandchildren first.
-                let grandchildren = self.children_of(&child_key);
-                for gk in grandchildren {
-                    self.apply_orphan_mode_recursive(gk, mode, effects);
-                }
-
-                // Now remove this child.
-                self.control_senders.remove(&child_key);
-                if let Some((_, record)) = self.agents.remove(&child_key) {
-                    if let Some(ref tid) = record.team_id {
-                        if let Some(set) = self.team_index.get(tid) {
-                            set.remove(&child_key);
-                        }
-                    }
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "deregistered",
-                        old_status: format!("{:?}", record.status),
-                        new_status: "deregistered".to_string(),
-                    });
-                }
-            }
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "deregistered",
+                old_status: format!("{:?}", record.status),
+                new_status: "deregistered".to_string(),
+            });
         }
     }
 
@@ -568,33 +588,17 @@ impl AgentRegistry {
         }
     }
 
-    /// Move `child` from its current parent (if any) to `new_parent`.
+    /// Validate a proposed reparent and compute the values the mutation needs.
     ///
-    /// Updates `child`'s `parent_key`, `parent_agent_id`, `root_agent_id`,
-    /// and `depth`; maintains the old and new parent `children` lists; and
-    /// recursively recomputes `depth` and `root_agent_id` for the entire
-    /// subtree rooted at `child` so topology-aware policy evaluations see
-    /// the new ancestry on the next call.
-    ///
-    /// Idempotent: when `child`'s current parent already equals `new_parent`,
-    /// returns `Ok(())` without touching any record.
-    ///
-    /// # Errors
-    ///
-    /// * [`RegistryError::NotFound`] — `child` or `new_parent` is not in the
-    ///   registry.
-    /// * [`RegistryError::Lineage`] with
-    ///   [`LineageError::CircularDelegation`] — `new_parent` is `child`
-    ///   itself or sits within `child`'s subtree, so the move would create
-    ///   a cycle.
-    /// * [`RegistryError::Lineage`] with [`LineageError::MaxDepthExceeded`]
-    ///   — the deepest leaf of the moved subtree would land at or past
-    ///   [`DEFAULT_MAX_AGENT_DEPTH`] under `new_parent`.
-    pub fn reparent(&self, child: &[u8; 16], new_parent: &[u8; 16]) -> Result<(), RegistryError> {
-        // Serialise against concurrent register / reparent so the cycle and
-        // depth checks stay consistent with the eventual mutation.
-        let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
-
+    /// Returns `Ok(None)` for the idempotent same-parent fast path (no work
+    /// needed), `Ok(Some(plan))` when the move is valid, or an error when
+    /// `child`/`new_parent` is missing or the move would create a cycle or
+    /// exceed the depth bound.
+    fn validate_reparent(
+        &self,
+        child: &[u8; 16],
+        new_parent: &[u8; 16],
+    ) -> Result<Option<ReparentPlan>, RegistryError> {
         let (old_parent_key, current_child_depth) = match self.agents.get(child) {
             Some(r) => (r.parent_key, r.depth),
             None => return Err(RegistryError::NotFound(*child)),
@@ -602,7 +606,7 @@ impl AgentRegistry {
 
         // Idempotent same-parent fast path.
         if old_parent_key.as_ref() == Some(new_parent) {
-            return Ok(());
+            return Ok(None);
         }
 
         if !self.agents.contains_key(new_parent) {
@@ -643,6 +647,50 @@ impl AgentRegistry {
                 max: DEFAULT_MAX_AGENT_DEPTH,
             }));
         }
+
+        Ok(Some(ReparentPlan {
+            old_parent_key,
+            new_child_depth,
+        }))
+    }
+
+    /// Move `child` from its current parent (if any) to `new_parent`.
+    ///
+    /// Updates `child`'s `parent_key`, `parent_agent_id`, `root_agent_id`,
+    /// and `depth`; maintains the old and new parent `children` lists; and
+    /// recursively recomputes `depth` and `root_agent_id` for the entire
+    /// subtree rooted at `child` so topology-aware policy evaluations see
+    /// the new ancestry on the next call.
+    ///
+    /// Idempotent: when `child`'s current parent already equals `new_parent`,
+    /// returns `Ok(())` without touching any record.
+    ///
+    /// # Errors
+    ///
+    /// * [`RegistryError::NotFound`] — `child` or `new_parent` is not in the
+    ///   registry.
+    /// * [`RegistryError::Lineage`] with
+    ///   [`LineageError::CircularDelegation`] — `new_parent` is `child`
+    ///   itself or sits within `child`'s subtree, so the move would create
+    ///   a cycle.
+    /// * [`RegistryError::Lineage`] with [`LineageError::MaxDepthExceeded`]
+    ///   — the deepest leaf of the moved subtree would land at or past
+    ///   [`DEFAULT_MAX_AGENT_DEPTH`] under `new_parent`.
+    pub fn reparent(&self, child: &[u8; 16], new_parent: &[u8; 16]) -> Result<(), RegistryError> {
+        // Serialise against concurrent register / reparent so the cycle and
+        // depth checks stay consistent with the eventual mutation.
+        let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Validate the move (existence, idempotency, cycle, depth bound) and
+        // recover the values the mutation below needs.
+        let Some(plan) = self.validate_reparent(child, new_parent)? else {
+            // Idempotent same-parent fast path.
+            return Ok(());
+        };
+        let ReparentPlan {
+            old_parent_key,
+            new_child_depth,
+        } = plan;
 
         // The new subtree root is the new_parent's own root (the new_parent
         // itself when it is a root agent).
