@@ -3,13 +3,17 @@ import type { TraceEvent } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './PayloadModal.css'
 
-const REDACTED_LINE_RE = /^(\s*)"([^"]+)":\s*(.*?)(,?)\s*$/
+// Single greedy `.*` to end-of-line (no overlapping `.*?`/`,?`/`\s*` tail) keeps
+// this linear; the trailing comma is derived in code below. The previous form
+// could backtrack on whitespace-heavy payload lines. See typescript:S5852.
+const REDACTED_LINE_RE = /^(\s*)"([^"]+)":\s*(.*)$/
 
 function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): ReactNode[] {
   return formatted.split('\n').map((line, i) => {
     const match = REDACTED_LINE_RE.exec(line)
     if (match && redactedSet.has(match[2])) {
-      const [, indent, key, , trailing] = match
+      const [, indent, key, rawValue] = match
+      const trailing = rawValue.trimEnd().endsWith(',') ? ',' : ''
       const sentinel = `"<redacted: ${key}>"`
       return (
         <span key={i} data-testid="redacted-field" className="payload-modal__redacted">
