@@ -10,18 +10,24 @@
 //! The design decisions:
 //!
 //! * **Throughput via batching (AAASM-2563).** The writer drains the channel
-//!   into batches of up to `batch_size`, writes each batch with a single
-//!   multi-row `INSERT … ON CONFLICT (event_id) DO NOTHING`, and acks the whole
-//!   batch with one JetStream ack — one DB round-trip and one ack per batch
-//!   instead of per event.
+//!   into batches of up to `batch_size` and writes each batch with a single
+//!   multi-row `INSERT … ON CONFLICT (event_id) DO NOTHING` — one DB round-trip
+//!   per batch instead of per event. Acks are then sent per message (see
+//!   *At-least-once* below) but without blocking on a server ack confirmation, so
+//!   the extra acks do not stall the writer.
 //! * **Idempotency.** A normal event becomes an [`AuditLogRecord`] keyed by the
 //!   event's own `event_id`; `ON CONFLICT (event_id) DO NOTHING` deduplicates
 //!   retries and intra-batch repeats. Each conflict bumps
 //!   `aa_audit_duplicates_total`.
-//! * **At-least-once.** The pull-consumer uses `AckPolicy::All`; the batch's
-//!   last message is acked only after the whole batch persists, which — in
-//!   stream order — acknowledges every message up to it. A failed batch is left
-//!   un-acked so NATS redelivers after `ack_wait`.
+//! * **At-least-once across restarts (AAASM-3073).** The pull-consumer uses
+//!   `AckPolicy::Explicit` and acks **each** message individually, only after its
+//!   row is persisted. An `AckPolicy::All` collapse (ack the batch's last message
+//!   to cover everything below it) is *unsafe across a restart*: redelivered +
+//!   still-pending messages arrive out of stream-sequence order, so acking the
+//!   highest sequence would acknowledge lower sequences that were never persisted
+//!   — silently dropping them. Per-message explicit acks never acknowledge an
+//!   unpersisted sequence. A message whose write failed is left un-acked so NATS
+//!   redelivers it after `ack_wait`; the `event_id` PK collapses the redelivery.
 //! * **Backpressure.** The channel is bounded; when it is full the producer
 //!   *awaits* room (`send().await`) rather than dropping, so large bursts queue
 //!   durably in JetStream instead of entering redelivery cycles. The in-flight
@@ -57,7 +63,7 @@ const STREAM_NAME: &str = "AUDIT";
 const DURABLE_NAME: &str = "aa-gateway-audit-consumer";
 /// Default bound on the producer→writer channel (spec/AC: 8192).
 const DEFAULT_CHANNEL_CAPACITY: usize = 8192;
-/// Default max events coalesced into one multi-row INSERT + one batch ack.
+/// Default max events coalesced into one multi-row INSERT (acked per message).
 const DEFAULT_BATCH_SIZE: usize = 1024;
 /// How long an un-acked message waits before JetStream redelivers it.
 const ACK_WAIT: Duration = Duration::from_secs(30);
@@ -95,7 +101,7 @@ pub struct AuditConsumerConfig {
     pub postgres: PostgresPoolConfig,
     /// Bound on the producer→writer channel.
     pub channel_capacity: usize,
-    /// Max events coalesced into one multi-row INSERT + one batch ack.
+    /// Max events coalesced into one multi-row INSERT (acked per message).
     pub batch_size: usize,
     /// JetStream stream name.
     pub stream_name: String,
@@ -218,10 +224,13 @@ pub async fn spawn(
             &config.durable_name,
             consumer::pull::Config {
                 durable_name: Some(config.durable_name.clone()),
-                // AckPolicy::All lets one ack cover a whole contiguous batch.
-                ack_policy: consumer::AckPolicy::All,
+                // Explicit per-message acks (AAASM-3073): each message is acked
+                // only after its own row is persisted. An AckPolicy::All collapse
+                // would acknowledge unpersisted lower sequences when, after a
+                // restart, redelivered messages arrive out of stream order.
+                ack_policy: consumer::AckPolicy::Explicit,
                 ack_wait: ACK_WAIT,
-                // Batched acking keeps up to channel_capacity + batch_size
+                // Per-message acking keeps up to channel_capacity + batch_size
                 // messages delivered-but-un-acked in flight. The server's
                 // default max_ack_pending (1000) would throttle below that and
                 // stall delivery; raise it to match — our real backpressure is
@@ -324,7 +333,7 @@ async fn run_producer(
 }
 
 /// DB-writer task: coalesce messages into batches, persist each batch with one
-/// multi-row INSERT, and ack the whole batch with one JetStream ack.
+/// multi-row INSERT, then ack each persisted message individually.
 ///
 /// Exits when the channel is closed (producer gone) after draining every
 /// buffered message.
@@ -382,56 +391,103 @@ fn classify(payload: &[u8]) -> Result<Classified, serde_json::Error> {
     })
 }
 
-/// Persist one batch, then ack it. On any DB error the batch is left un-acked so
-/// JetStream redelivers it — idempotent because the `event_id` PK collapses
-/// retries.
+/// How a message was handled, deciding whether it may be acked.
+enum Disposition {
+    /// A normal audit row, persisted only if the batch INSERT succeeds.
+    Audit,
+    /// A heartbeat, persisted only if its `touch_last_heartbeat` succeeds.
+    Heartbeat {
+        agent_id: String,
+        ts: Option<DateTime<Utc>>,
+    },
+    /// An undecodable payload: never retriable, so always safe to ack.
+    Undecodable,
+}
+
+/// Persist one batch, then ack each persisted message individually.
+///
+/// Under `AckPolicy::Explicit` a message must be acked **only after its own row
+/// is durable** — acking covers exactly that message, never neighbouring
+/// sequences. This is what makes the consumer safe across a restart, where
+/// redelivered + pending messages arrive out of stream-sequence order (AAASM-3073).
+///
+/// Audit rows go in one multi-row INSERT (all-or-nothing), so on success every
+/// audit message in the batch is durable and acked; on failure none are acked and
+/// JetStream redelivers them — idempotent because the `event_id` PK collapses
+/// retries. Heartbeats are acked per successful touch. Undecodable payloads can't
+/// be retried into validity, so they are acked to advance past them.
+///
+/// Acks use [`ack`](jetstream::Message::ack), which publishes the ack without
+/// awaiting a server confirmation (async ack), so per-message acking does not
+/// block the writer on a round-trip per message.
 async fn process_batch(batch: &[jetstream::Message], sink: &PgAuditSink, lifecycle: &PgLifecycleStore) {
     let mut records = Vec::with_capacity(batch.len());
-    let mut heartbeats = Vec::new();
+    let mut dispositions = Vec::with_capacity(batch.len());
     for message in batch {
         match classify(&message.payload) {
-            Ok(Classified::Audit(record)) => records.push(record),
-            Ok(Classified::Heartbeat { agent_id, ts }) => heartbeats.push((agent_id, ts)),
+            Ok(Classified::Audit(record)) => {
+                records.push(record);
+                dispositions.push(Disposition::Audit);
+            }
+            Ok(Classified::Heartbeat { agent_id, ts }) => {
+                dispositions.push(Disposition::Heartbeat { agent_id, ts });
+            }
             Err(err) => {
-                // Malformed payloads can't be retried into validity; drop them
-                // (the batch ack covers them) and surface the count.
+                // Malformed payloads can't be retried into validity; ack them to
+                // advance past them and surface the count.
                 metrics::counter!(METRIC_DECODE_ERRORS).increment(1);
                 tracing::warn!(%err, "audit consumer: dropping undecodable message");
+                dispositions.push(Disposition::Undecodable);
             }
         }
     }
 
+    // Persist the audit rows; on failure leave every audit message un-acked.
     let submitted = records.len() as u64;
-    if submitted > 0 {
+    let audit_persisted = if submitted > 0 {
         match sink.insert_audit_logs(&records).await {
             Ok(inserted) => {
                 metrics::counter!(METRIC_INSERTED).increment(inserted);
                 metrics::counter!(METRIC_DUPLICATES).increment(submitted - inserted);
+                true
             }
             Err(err) => {
                 metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
-                tracing::warn!(%err, "audit consumer: batch insert failed, leaving batch un-acked");
-                return;
+                tracing::warn!(%err, "audit consumer: batch insert failed, leaving messages un-acked");
+                false
+            }
+        }
+    } else {
+        true
+    };
+
+    // Ack each message individually, only if its own write succeeded.
+    let mut heartbeats_touched = 0_u64;
+    for (message, disposition) in batch.iter().zip(&dispositions) {
+        let acked = match disposition {
+            Disposition::Audit => audit_persisted,
+            Disposition::Undecodable => true,
+            Disposition::Heartbeat { agent_id, ts } => match lifecycle.touch_last_heartbeat(agent_id, *ts).await {
+                Ok(()) => {
+                    heartbeats_touched += 1;
+                    true
+                }
+                Err(err) => {
+                    metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
+                    tracing::warn!(%err, "audit consumer: heartbeat touch failed, leaving message un-acked");
+                    false
+                }
+            },
+        };
+        if acked {
+            if let Err(err) = message.ack().await {
+                tracing::warn!(%err, "audit consumer: ack failed after successful write");
             }
         }
     }
 
-    for (agent_id, ts) in &heartbeats {
-        if let Err(err) = lifecycle.touch_last_heartbeat(agent_id, *ts).await {
-            metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
-            tracing::warn!(%err, "audit consumer: heartbeat touch failed, leaving batch un-acked");
-            return;
-        }
-    }
-    if !heartbeats.is_empty() {
-        metrics::counter!(METRIC_HEARTBEATS).increment(heartbeats.len() as u64);
-    }
-
-    // AckPolicy::All: acking the last message acks the whole contiguous batch.
-    if let Some(last) = batch.last() {
-        if let Err(err) = last.ack().await {
-            tracing::warn!(%err, "audit consumer: ack failed after successful batch write");
-        }
+    if heartbeats_touched > 0 {
+        metrics::counter!(METRIC_HEARTBEATS).increment(heartbeats_touched);
     }
 }
 
