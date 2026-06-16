@@ -31,6 +31,67 @@ export interface TraceTimelineProps {
   readonly onSelectEvent?: (event: TraceEvent) => void
 }
 
+interface TraceEventRowProps {
+  readonly event: TraceEvent
+  readonly isLast: boolean
+  readonly onSelectEvent?: (event: TraceEvent) => void
+}
+
+/**
+ * A single timeline step. Extracted from `TraceTimeline`'s map callback to
+ * keep the parent's cognitive complexity low (SonarCloud typescript:S3776);
+ * rendering and interaction wiring for one event live here.
+ */
+function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
+  const sev = severityKey(event)
+  const icon = ICON_BY_TYPE[event.type] ?? '·'
+  const tooltipReason =
+    event.type === 'policy_violation' ? event.violationReason : undefined
+  const iconNode = (
+    <div className="trace-event__icon-circle" aria-hidden="true">{icon}</div>
+  )
+  const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
+  const handleKeyDown = onSelectEvent
+    ? (e: React.KeyboardEvent<HTMLLIElement>) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelectEvent(event)
+        }
+      }
+    : undefined
+
+  return (
+    <li
+      className={onSelectEvent ? 'trace-event trace-event--clickable' : 'trace-event'}
+      data-testid="trace-event"
+      data-severity={sev}
+      data-event-type={event.type}
+      role={onSelectEvent ? 'button' : undefined}
+      tabIndex={onSelectEvent ? 0 : undefined}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="trace-event__rail">
+        {tooltipReason ? (
+          <Tooltip content={tooltipReason}>{iconNode}</Tooltip>
+        ) : (
+          iconNode
+        )}
+        {!isLast && <div className="trace-event__rail-line" />}
+      </div>
+      <div className="trace-event__body">
+        <div className="trace-event__head">
+          <span className="trace-event__label">{event.type}</span>
+          <span className="trace-event__time">{formatTime(event.timestamp)}</span>
+          <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
+        </div>
+        <div className="trace-event__detail">{truncatePreview(event.payloadPreview)}</div>
+        <div className="trace-event__meta">{event.agent}</div>
+      </div>
+    </li>
+  )
+}
+
 /**
  * Trace timeline rendered as a vertical sequence of step-cards
  * (AAASM-1391 — matches `design/v1/hi-fi/trace.jsx` `TraceStep`).
@@ -43,56 +104,14 @@ export interface TraceTimelineProps {
 export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
   return (
     <ol className="trace-timeline" data-testid="trace-timeline">
-      {events.map((event, index) => {
-        const sev = severityKey(event)
-        const icon = ICON_BY_TYPE[event.type] ?? '·'
-        const tooltipReason =
-          event.type === 'policy_violation' ? event.violationReason : undefined
-        const iconNode = (
-          <div className="trace-event__icon-circle" aria-hidden="true">{icon}</div>
-        )
-        const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
-        const handleKeyDown = onSelectEvent
-          ? (e: React.KeyboardEvent<HTMLLIElement>) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelectEvent(event)
-              }
-            }
-          : undefined
-        const isLast = index === events.length - 1
-        return (
-          <li
-            key={event.id}
-            className={onSelectEvent ? 'trace-event trace-event--clickable' : 'trace-event'}
-            data-testid="trace-event"
-            data-severity={sev}
-            data-event-type={event.type}
-            role={onSelectEvent ? 'button' : undefined}
-            tabIndex={onSelectEvent ? 0 : undefined}
-            onClick={handleClick}
-            onKeyDown={handleKeyDown}
-          >
-            <div className="trace-event__rail">
-              {tooltipReason ? (
-                <Tooltip content={tooltipReason}>{iconNode}</Tooltip>
-              ) : (
-                iconNode
-              )}
-              {!isLast && <div className="trace-event__rail-line" />}
-            </div>
-            <div className="trace-event__body">
-              <div className="trace-event__head">
-                <span className="trace-event__label">{event.type}</span>
-                <span className="trace-event__time">{formatTime(event.timestamp)}</span>
-                <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
-              </div>
-              <div className="trace-event__detail">{truncatePreview(event.payloadPreview)}</div>
-              <div className="trace-event__meta">{event.agent}</div>
-            </div>
-          </li>
-        )
-      })}
+      {events.map((event, index) => (
+        <TraceEventRow
+          key={event.id}
+          event={event}
+          isLast={index === events.length - 1}
+          onSelectEvent={onSelectEvent}
+        />
+      ))}
     </ol>
   )
 }
