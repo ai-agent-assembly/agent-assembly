@@ -628,7 +628,7 @@ mod tests {
         let mut event = make_event(LlmApiPattern::OpenAi);
         // Embed a well-known OpenAI API key pattern in a message content field.
         event.request_body = Some(Bytes::from(
-            r#"{"model":"gpt-4","messages":[{"role":"user","content":"my key is sk-proj-aBcDeFgHiJkLmNoPqRsT1234567890abcdef1234567890ab"}]}"#,
+            r#"{"model":"gpt-4","messages":[{"role":"user","content":"my key is sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab"}]}"#,
         ));
         event.response_body = None;
 
@@ -645,7 +645,7 @@ mod tests {
         let mut event = make_event(LlmApiPattern::OpenAi);
         // Response body with a credential embedded in a field.
         event.response_body = Some(Bytes::from(
-            r#"{"model":"gpt-4","usage":{"prompt_tokens":5,"completion_tokens":8},"debug":"sk-proj-aBcDeFgHiJkLmNoPqRsT1234567890abcdef1234567890ab"}"#,
+            r#"{"model":"gpt-4","usage":{"prompt_tokens":5,"completion_tokens":8},"debug":"sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab"}"#,
         ));
 
         let fields = interceptor.intercept(&event).await.unwrap().unwrap();
@@ -656,7 +656,7 @@ mod tests {
         let pipeline_event = rx.try_recv().expect("should receive pipeline event");
         let event_str = format!("{pipeline_event:?}");
         assert!(
-            !event_str.contains("sk-proj-"),
+            !event_str.contains("TESTONLY-NOT-REAL"),
             "pipeline event must not contain raw credential"
         );
     }
@@ -668,7 +668,7 @@ mod tests {
         let mut event = make_event(LlmApiPattern::OpenAi);
         // Body contains a credential — but scanner is disabled.
         event.response_body = Some(Bytes::from(
-            r#"{"model":"gpt-4","usage":{"prompt_tokens":5,"completion_tokens":8},"debug":"sk-proj-aBcDeFgHiJkLmNoPqRsT1234567890abcdef1234567890ab"}"#,
+            r#"{"model":"gpt-4","usage":{"prompt_tokens":5,"completion_tokens":8},"debug":"sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab"}"#,
         ));
 
         let fields = interceptor.intercept(&event).await.unwrap().unwrap();
