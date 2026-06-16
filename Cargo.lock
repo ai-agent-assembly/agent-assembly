@@ -266,6 +266,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
+ "bs58",
  "chrono",
  "chrono-tz",
  "clap",
