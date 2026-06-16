@@ -420,6 +420,63 @@ fn spawn_audit_drain(
     });
 }
 
+/// Spawn (into `tracker`) the task that converts pipeline `PipelineEvent::Audit`
+/// interception events to governance `AuditEntry`s and publishes them to NATS via
+/// the same fire-and-forget [`AuditPublisher`](crate::audit_publisher::AuditPublisher)
+/// (AAASM-2610).
+///
+/// This subscriber runs *alongside* the correlation-engine subscriber — both
+/// read the same broadcast channel, but only this task converts and publishes.
+/// `LayerDegradation` events are not audit events and are ignored here.
+///
+/// ## No double-publish vs the approval stream
+///
+/// The approval audit stream (`spawn_audit_drain`) publishes `AuditEntry`s
+/// produced by the `ApprovalQueue` for approval *decisions* (requested /
+/// granted / denied / timed-out). This task publishes `AuditEntry`s converted
+/// from `PipelineEvent::Audit` *interception* events (SDK / eBPF / proxy tool,
+/// file, network, process calls). The two are disjoint sources carried on
+/// different channels — an approval decision never travels on the pipeline
+/// broadcast as a `PipelineEvent::Audit`, so each logical audit event reaches
+/// NATS exactly once.
+///
+/// Publish failures are absorbed by the publisher (buffered to SQLite), so a
+/// NATS outage never crashes or blocks the pipeline.
+fn spawn_pipeline_audit_publisher(
+    tracker: &TaskTracker,
+    mut rx: tokio::sync::broadcast::Receiver<crate::pipeline::PipelineEvent>,
+    publisher: std::sync::Arc<crate::audit_publisher::AuditPublisher>,
+    token: CancellationToken,
+) {
+    tracker.spawn(async move {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::info!("pipeline audit publisher shutting down");
+                    break;
+                }
+                result = rx.recv() => match result {
+                    Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
+                        let entry = crate::audit_publisher::enriched_to_audit_entry(&enriched);
+                        publisher.publish(entry).await;
+                    }
+                    Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => {
+                        // Layer degradation is an operational event, not an audit event.
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(dropped = n, "pipeline audit publisher lagged — audit events lost");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("broadcast channel closed — pipeline audit publisher exiting");
+                        break;
+                    }
+                },
+            }
+        }
+        tracing::info!("pipeline audit publisher task exiting");
+    });
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -512,6 +569,21 @@ pub async fn run(config: RuntimeConfig) {
         }
         None => crate::approval::ApprovalQueue::new(),
     };
+
+    // AAASM-2610: when audit publishing is enabled, convert pipeline
+    // interception events (PipelineEvent::Audit from SDK/eBPF/proxy) to
+    // governance AuditEntry and publish them to NATS. Subscribe before
+    // `broadcast_tx` is moved into the pipeline task. This runs alongside the
+    // correlation subscriber and is disjoint from the approval audit drain, so
+    // each logical audit event is published exactly once.
+    if let Some(publisher) = &audit_publisher {
+        spawn_pipeline_audit_publisher(
+            &tracker,
+            broadcast_tx.subscribe(),
+            std::sync::Arc::clone(publisher),
+            token.clone(),
+        );
+    }
 
     // Clone inbound_tx for the health/metrics handler before IpcServer consumes it.
     let inbound_tx_health = inbound_tx.clone();
