@@ -23,29 +23,23 @@
 //!   `aa_audit_consumer_inserted_total` across both consumer lifetimes equals
 //!   `N` (no event inserted twice).
 //!
-//! ## Status — currently a known-failing regression guard (AAASM-3073)
+//! ## Status — durability regression guard (AAASM-3073 fixed)
 //!
-//! This test **fails today** because it surfaces a real product bug: the
-//! consumer uses `AckPolicy::All` and acks only the last message of each batch,
-//! which is safe only while processing order matches stream-sequence order. On
-//! restart the redelivered + still-pending messages no longer arrive in strict
-//! sequence order, so an `AckPolicy::All` ack on a high-sequence batch
-//! acknowledges lower sequences that were never persisted — they are dropped and
-//! never redelivered (`num_redelivered` stays 0 while `ack_floor` jumps to the
-//! head). Roughly 100–200 of 4000 events are lost per run, deterministically.
-//!
-//! Per AAASM-2609's directive *"do not weaken the assertion; file a Bug"*, the
-//! exactly-once assertions below are kept strict and the test is marked
-//! `#[ignore]`, pinned to **AAASM-3073**. Once the consumer's ack strategy is
-//! fixed (e.g. `AckPolicy::Explicit` per persisted message, or acking only the
-//! highest contiguously-persisted sequence), remove the `#[ignore]` and this
-//! becomes the durability regression guard the Epic AC always needed.
+//! This test previously failed because the consumer used `AckPolicy::All` and
+//! acked only the last message of each batch, which is safe only while processing
+//! order matches stream-sequence order. On restart the redelivered + still-pending
+//! messages no longer arrive in strict sequence order, so an `AckPolicy::All` ack
+//! on a high-sequence batch acknowledged lower sequences that were never persisted
+//! — they were dropped and never redelivered. AAASM-3073 fixed that by switching
+//! to `AckPolicy::Explicit` and acking each message only after its own row is
+//! persisted, so the assertions below now hold and this is the live durability
+//! regression guard the Epic AC always needed.
 //!
 //! Requires Docker. Gated behind the `audit-consumer` feature. Run explicitly:
 //!
 //! ```text
 //! cargo nextest run -p aa-integration-tests --features audit-consumer \
-//!     --test e2e_gateway_restart_durability --run-ignored all
+//!     --test e2e_gateway_restart_durability
 //! ```
 #![cfg(feature = "audit-consumer")]
 
@@ -121,10 +115,11 @@ async fn wait_for_first_rows(pool: &sqlx::PgPool, deadline: Duration) -> i64 {
     }
 }
 
-// Known-failing pending the AckPolicy::All restart-ack fix (AAASM-3073). The
-// assertions are intentionally strict: they encode the at-least-once contract
-// this Epic promises. Re-enable by deleting `#[ignore]` once AAASM-3073 lands.
-#[ignore = "AAASM-3073: consumer loses events across restart (AckPolicy::All ack collapse); re-enable when fixed"]
+// Durability regression guard (AAASM-3073 fixed). The assertions are
+// intentionally strict: they encode the at-least-once contract this Epic
+// promises. The consumer now acks each message individually under
+// AckPolicy::Explicit, so a restart redelivers and re-persists the un-acked tail
+// with zero loss and exactly-once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gateway_restart_loses_zero_acked_audit_events() {
     // A Prometheus recorder so the consumer's insert/duplicate counters can be
