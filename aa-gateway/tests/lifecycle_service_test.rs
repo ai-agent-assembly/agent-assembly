@@ -28,7 +28,7 @@ fn test_agent_id() -> ProtoAgentId {
     ProtoAgentId {
         org_id: "org-test".into(),
         team_id: "team-test".into(),
-        agent_id: "agent-lifecycle-1".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     }
 }
 
@@ -182,6 +182,43 @@ async fn register_with_invalid_public_key_returns_error() {
         .unwrap_err();
 
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
+}
+
+/// AAASM-152 regression: Register must reject an `agent_id` that is not a
+/// syntactically-valid `did:key` DID.
+#[tokio::test]
+async fn register_with_non_did_agent_id_returns_invalid_argument() {
+    let (addr, _registry) = start_server().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    let status = client
+        .register(RegisterRequest {
+            agent_id: Some(ProtoAgentId {
+                org_id: "org-test".into(),
+                team_id: "team-test".into(),
+                // Non-empty, but not a did:key — must be rejected.
+                agent_id: "agent-lifecycle-1".into(),
+            }),
+            name: "malformed-id-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: test_ed25519_public_key_hex(),
+            metadata: Default::default(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(
+        status.message().contains("did:key"),
+        "error should mention did:key, got: {}",
+        status.message()
+    );
 }
 
 #[tokio::test]
@@ -485,7 +522,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
     let parent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
-        agent_id: "parent-echo".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
     };
     client
         .register(RegisterRequest {
@@ -505,7 +542,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
     let agent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
-        agent_id: "agent-echo-1".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
     };
 
     let reg_resp = client
@@ -518,14 +555,17 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("parent-echo".into()),
+            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
             ..Default::default()
         })
         .await
         .unwrap()
         .into_inner();
 
-    assert_eq!(reg_resp.parent_agent_id, Some("parent-echo".into()));
+    assert_eq!(
+        reg_resp.parent_agent_id,
+        Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into())
+    );
     assert_eq!(reg_resp.team_id, Some("team-echo".into()));
     // root_agent_id must be echoed back — parent is root so root = parent's key
     assert!(reg_resp.root_agent_id.is_some());
@@ -542,7 +582,7 @@ async fn register_without_topology_returns_none_echo_fields() {
     let agent_id = ProtoAgentId {
         org_id: "org-no-topo".into(),
         team_id: String::new(),
-        agent_id: "agent-no-topo-1".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     };
 
     let reg_resp = client
@@ -577,7 +617,7 @@ async fn root_agent_id_for_root_agent_is_set_to_self() {
     let agent_proto_id = ProtoAgentId {
         org_id: "root-org".into(),
         team_id: "root-team".into(),
-        agent_id: "root-agent-A".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     };
     let expected_key = aa_gateway::registry::convert::proto_agent_id_to_key(&agent_proto_id);
 
@@ -619,7 +659,7 @@ async fn root_agent_id_chains_3_levels() {
     let proto_a = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "agent-A".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
     };
     let key_a = aa_gateway::registry::convert::proto_agent_id_to_key(&proto_a);
     client
@@ -641,7 +681,7 @@ async fn root_agent_id_chains_3_levels() {
     let proto_b = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "agent-B".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
     };
     client
         .register(RegisterRequest {
@@ -653,7 +693,7 @@ async fn root_agent_id_chains_3_levels() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("agent-A".into()),
+            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
             ..Default::default()
         })
         .await
@@ -663,7 +703,7 @@ async fn root_agent_id_chains_3_levels() {
     let proto_c = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "agent-C".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD4T".into(),
     };
     let resp_c = client
         .register(RegisterRequest {
@@ -675,7 +715,7 @@ async fn root_agent_id_chains_3_levels() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("agent-B".into()),
+            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into()),
             ..Default::default()
         })
         .await
@@ -864,7 +904,7 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
             agent_id: Some(ProtoAgentId {
                 org_id: "unknown-org".into(),
                 team_id: "unknown-team".into(),
-                agent_id: "orphan-B".into(),
+                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
             }),
             name: "orphan".into(),
             framework: "custom".into(),
@@ -903,7 +943,7 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
     let proto_id = ProtoAgentId {
         org_id: "org-obs".into(),
         team_id: "team-obs".into(),
-        agent_id: "experimental-agent-1".into(),
+        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     };
 
     client
