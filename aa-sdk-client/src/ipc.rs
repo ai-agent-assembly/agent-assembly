@@ -4,10 +4,15 @@
 //! current-thread runtime. The calling thread communicates with the background
 //! thread via an mpsc command channel.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::mpsc as blocking_mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
+
+use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
 
 use crate::codec;
 
@@ -16,9 +21,23 @@ use crate::codec;
 pub enum IpcCommand {
     /// Send an audit event to the runtime.
     SendEvent(Box<aa_proto::assembly::audit::v1::AuditEvent>),
+    /// Synchronously query the runtime for a policy decision on an action. The
+    /// `CheckActionResponse` is delivered on `resp`; the calling thread blocks
+    /// on it (see [`crate::client::AssemblyClient::query_policy`]).
+    QueryPolicy {
+        request: Box<CheckActionRequest>,
+        resp: blocking_mpsc::Sender<CheckActionResponse>,
+    },
     /// Gracefully shut down the IPC connection.
     Shutdown,
 }
+
+/// Response senders awaiting a synchronous policy decision, in FIFO order.
+///
+/// The command loop pushes one when it writes a `PolicyQuery`; the reader pops
+/// the oldest when a `PolicyResponse` arrives. The wire carries no correlation
+/// id, so responses match queries by order over the single connection.
+type PendingQueries = Arc<Mutex<VecDeque<blocking_mpsc::Sender<CheckActionResponse>>>>;
 
 /// Handle to the background IPC thread.
 ///
@@ -84,16 +103,36 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
         return;
     }
 
-    // Drain unsolicited runtime responses on a dedicated task: reads never race
-    // writes (no cancellation hazard) and the connection cannot stall.
-    let reader_task = tokio::spawn(drain_responses(reader));
+    // Pending synchronous policy queries, routed back by the reader task.
+    let pending: PendingQueries = Arc::new(Mutex::new(VecDeque::new()));
 
-    // Process commands from the calling thread. Event reports are fire-and-forget.
+    // Drain unsolicited runtime responses (and route policy responses to their
+    // waiting queries) on a dedicated task: reads never race writes (no
+    // cancellation hazard) and the connection cannot stall.
+    let reader_task = tokio::spawn(drain_responses(reader, Arc::clone(&pending)));
+
+    // Process commands from the calling thread. Event reports are fire-and-forget;
+    // policy queries register a waiter and write a `PolicyQuery`.
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             IpcCommand::SendEvent(event) => {
                 if let Err(e) = codec::write_event_report(&mut writer, &event).await {
                     tracing::error!(error = %e, "failed to send event report");
+                }
+            }
+            IpcCommand::QueryPolicy { request, resp } => {
+                // Queue the response sender BEFORE writing, so the reader can
+                // never observe the response before the sender is registered.
+                if let Ok(mut q) = pending.lock() {
+                    q.push_back(resp);
+                }
+                if let Err(e) = codec::write_policy_query(&mut writer, &request).await {
+                    tracing::error!(error = %e, "failed to send policy query");
+                    // The query never went out — drop the sender we just queued
+                    // so the caller unblocks with QueryFailed instead of hanging.
+                    if let Ok(mut q) = pending.lock() {
+                        q.pop_back();
+                    }
                 }
             }
             IpcCommand::Shutdown => {
@@ -106,17 +145,27 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
     reader_task.abort();
 }
 
-/// Continuously read and discard unsolicited responses from the runtime.
+/// Read responses from the runtime: route each `PolicyResponse` to the oldest
+/// waiting synchronous query, and drain everything else (violation alerts,
+/// approval decisions) so the connection does not stall.
 ///
-/// `aa-runtime` sends violation alerts and policy/approval decisions
-/// asynchronously. The SDK does not yet act on them, but they must be drained
-/// so the connection does not stall. Exits on EOF or a read error (e.g. the
-/// runtime closing the connection), or when aborted on shutdown.
-async fn drain_responses(mut reader: tokio::net::unix::OwnedReadHalf) {
+/// Exits on EOF or a read error (e.g. the runtime closing the connection), or
+/// when aborted on shutdown.
+async fn drain_responses(mut reader: tokio::net::unix::OwnedReadHalf, pending: PendingQueries) {
     loop {
         match codec::read_response(&mut reader).await {
-            Ok(response) => {
-                tracing::debug!(?response, "received unsolicited runtime response");
+            Ok(codec::RuntimeResponse::PolicyResponse(resp)) => {
+                let waiting = pending.lock().ok().and_then(|mut q| q.pop_front());
+                match waiting {
+                    Some(tx) => {
+                        // Ignore send errors: the caller may have already timed out.
+                        let _ = tx.send(resp);
+                    }
+                    None => tracing::debug!("policy response with no pending query — dropping"),
+                }
+            }
+            Ok(other) => {
+                tracing::debug!(?other, "received unsolicited runtime response");
             }
             Err(e) => {
                 tracing::debug!(error = %e, "runtime response stream ended");
