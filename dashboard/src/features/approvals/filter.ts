@@ -26,9 +26,9 @@ export function deriveOptions(approvals: Approval[]): ApprovalsFilterOptions {
     if (a.action) actions.add(a.action)
   }
   return {
-    agents: [...agents].sort(),
-    teams: [...teams].sort(),
-    actions: [...actions].sort(),
+    agents: [...agents].sort((a, b) => a.localeCompare(b)),
+    teams: [...teams].sort((a, b) => a.localeCompare(b)),
+    actions: [...actions].sort((a, b) => a.localeCompare(b)),
   }
 }
 
