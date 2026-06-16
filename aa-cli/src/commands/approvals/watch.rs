@@ -232,47 +232,8 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
         if event::poll(Duration::from_millis(100)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = event::read() {
                 match handle_keypress(key, &mut state) {
-                    KeyAction::Approve => {
-                        if let Some(id) = state.selected_id().map(String::from) {
-                            terminal::disable_raw_mode().ok();
-                            let result = client::approve_action(ctx, &id, Some("approved via watch")).await;
-                            match result {
-                                Ok(_) => {
-                                    state.items.retain(|i| i.id != id);
-                                    if state.selected > 0 && state.selected >= state.items.len() {
-                                        state.selected = state.items.len().saturating_sub(1);
-                                    }
-                                }
-                                Err(e) => eprintln!("approve error: {e}"),
-                            }
-                            terminal::enable_raw_mode().ok();
-                            state.dirty = true;
-                        }
-                    }
-                    KeyAction::Reject => {
-                        if let Some(id) = state.selected_id().map(String::from) {
-                            terminal::disable_raw_mode().ok();
-                            print!("Rejection reason: ");
-                            std::io::stdout().flush().ok();
-                            let mut reason = String::new();
-                            std::io::stdin().read_line(&mut reason).ok();
-                            let reason = reason.trim();
-                            if !reason.is_empty() {
-                                let result = client::reject_action(ctx, &id, reason).await;
-                                match result {
-                                    Ok(_) => {
-                                        state.items.retain(|i| i.id != id);
-                                        if state.selected > 0 && state.selected >= state.items.len() {
-                                            state.selected = state.items.len().saturating_sub(1);
-                                        }
-                                    }
-                                    Err(e) => eprintln!("reject error: {e}"),
-                                }
-                            }
-                            terminal::enable_raw_mode().ok();
-                            state.dirty = true;
-                        }
-                    }
+                    KeyAction::Approve => handle_approve_key(&mut state, ctx).await,
+                    KeyAction::Reject => handle_reject_key(&mut state, ctx).await,
                     KeyAction::Quit => break,
                     KeyAction::None => {}
                 }
@@ -299,6 +260,54 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
 
     terminal::disable_raw_mode().ok();
     println!();
+}
+
+/// Drop the resolved approval `id` from the interactive list and clamp the
+/// selection cursor to the new bounds.
+fn remove_resolved(state: &mut InteractiveState, id: &str) {
+    state.items.retain(|i| i.id != id);
+    if state.selected > 0 && state.selected >= state.items.len() {
+        state.selected = state.items.len().saturating_sub(1);
+    }
+}
+
+/// Approve the currently-selected pending request over the API, removing it
+/// from the list on success. No-op when nothing is selected. Toggles raw mode
+/// off/on around the call so error output renders normally.
+async fn handle_approve_key(state: &mut InteractiveState, ctx: &ResolvedContext) {
+    let Some(id) = state.selected_id().map(String::from) else {
+        return;
+    };
+    terminal::disable_raw_mode().ok();
+    match client::approve_action(ctx, &id, Some("approved via watch")).await {
+        Ok(_) => remove_resolved(state, &id),
+        Err(e) => eprintln!("approve error: {e}"),
+    }
+    terminal::enable_raw_mode().ok();
+    state.dirty = true;
+}
+
+/// Reject the currently-selected pending request, prompting on stdin for a
+/// reason. An empty reason cancels the rejection. No-op when nothing is
+/// selected. Toggles raw mode off/on around the prompt and call.
+async fn handle_reject_key(state: &mut InteractiveState, ctx: &ResolvedContext) {
+    let Some(id) = state.selected_id().map(String::from) else {
+        return;
+    };
+    terminal::disable_raw_mode().ok();
+    print!("Rejection reason: ");
+    std::io::stdout().flush().ok();
+    let mut reason = String::new();
+    std::io::stdin().read_line(&mut reason).ok();
+    let reason = reason.trim();
+    if !reason.is_empty() {
+        match client::reject_action(ctx, &id, reason).await {
+            Ok(_) => remove_resolved(state, &id),
+            Err(e) => eprintln!("reject error: {e}"),
+        }
+    }
+    terminal::enable_raw_mode().ok();
+    state.dirty = true;
 }
 
 /// Execute the `aasm approvals watch` subcommand.
