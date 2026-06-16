@@ -358,4 +358,47 @@ mod tests {
         let addr = format!("127.0.0.1:{port}");
         assert!(wait_for_tcp(&addr, Duration::from_secs(1)));
     }
+
+    /// Create an executable file at `path` (sets the user-exec bit on Unix).
+    fn touch_executable(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn sibling_binary_resolves_aa_gateway_next_to_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        let gateway = dir.path().join("aa-gateway");
+        touch_executable(&gateway);
+
+        assert_eq!(sibling_binary(&exe), Some(gateway));
+    }
+
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // No aa-gateway alongside it.
+        assert_eq!(sibling_binary(&exe), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_not_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // A non-executable file named aa-gateway must not be selected.
+        std::fs::write(dir.path().join("aa-gateway"), b"not a binary").unwrap();
+        assert_eq!(sibling_binary(&exe), None);
+    }
 }
