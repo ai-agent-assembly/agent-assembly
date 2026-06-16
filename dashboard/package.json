@@ -62,5 +62,13 @@
     "typescript": "^5.5.3",
     "vite": "^8.0.14",
     "vitest": "^4.1.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "@babel/core": "^7.29.7",
+      "dompurify": "^3.4.10",
+      "esbuild": "^0.28.1",
+      "js-yaml": "^4.2.0"
+    }
   }
 }
