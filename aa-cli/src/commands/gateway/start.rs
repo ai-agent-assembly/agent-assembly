@@ -45,7 +45,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         None => {
             eprintln!(
                 "error: aa-gateway binary not found.\n\
-                 Tried: $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
+                 Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
             );
             return ExitCode::FAILURE;
         }
@@ -146,9 +146,20 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
 /// Resolve the `aa-gateway` binary path.
 ///
-/// Search order: directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
+/// Search order: directory of the running `aasm` executable →
+/// directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
 /// `./target/release/aa-gateway` → `./target/debug/aa-gateway`.
+///
+/// The exe-dir lookup is first so a release / Homebrew install — where
+/// `aa-gateway` ships alongside `aasm` in the same directory (AAASM-2975) —
+/// works even when that directory is not on `$PATH` (e.g. a tarball unpacked
+/// to an arbitrary location).
 pub fn resolve_binary() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(candidate) = sibling_binary(&exe) {
+            return Some(candidate);
+        }
+    }
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in path_var.split(':') {
             let candidate = PathBuf::from(dir).join("aa-gateway");
@@ -170,6 +181,13 @@ pub fn resolve_binary() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Return the `aa-gateway` binary sitting next to the given `aasm` executable
+/// path, if it exists and is executable.
+fn sibling_binary(exe: &std::path::Path) -> Option<PathBuf> {
+    let candidate = exe.parent()?.join("aa-gateway");
+    is_executable(&candidate).then_some(candidate)
 }
 
 #[cfg(unix)]
