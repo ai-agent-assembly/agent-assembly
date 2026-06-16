@@ -13,11 +13,13 @@
 //! not touch the agent-facing API.
 
 mod config;
+mod conversion;
 mod publisher;
 mod sink;
 mod subject;
 
 pub use config::{NatsConfig, NatsTlsConfig, DEFAULT_MAX_INFLIGHT, DEFAULT_URL};
+pub use conversion::enriched_to_audit_entry;
 pub use publisher::AuditPublisher;
 pub use sink::NatsAuditSink;
 pub use subject::subject_for;
