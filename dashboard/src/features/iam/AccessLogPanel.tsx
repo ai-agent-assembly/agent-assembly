@@ -50,7 +50,7 @@ export function AccessLogPanel() {
     const memberEmails = membersPage?.items.map((m) => m.email) ?? []
     const keyLabels =
       apiKeys?.filter((k) => k.status === 'active').map((k) => k.label ?? k.prefix) ?? []
-    return Array.from(new Set([...memberEmails, ...keyLabels])).sort()
+    return Array.from(new Set([...memberEmails, ...keyLabels])).sort((a, b) => a.localeCompare(b))
   }, [membersPage, apiKeys])
 
   const rows = events ?? []

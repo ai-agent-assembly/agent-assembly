@@ -21,7 +21,7 @@ describe('CANONICAL_ROUTES config', () => {
 
   it('covers all three groups (monitor, control, manage)', () => {
     const groups = new Set(CANONICAL_ROUTES.map((r) => r.group))
-    expect([...groups].sort()).toEqual(['control', 'manage', 'monitor'])
+    expect([...groups].sort((a, b) => a.localeCompare(b))).toEqual(['control', 'manage', 'monitor'])
     for (const group of ROUTE_GROUPS) {
       expect(CANONICAL_ROUTES.filter((r) => r.group === group).length).toBeGreaterThan(0)
     }
@@ -37,17 +37,17 @@ describe('CANONICAL_ROUTES config', () => {
   })
 
   it('includes the 12 canonical ids from design/v1/hi-fi/shell.jsx', () => {
-    const ids = CANONICAL_ROUTES.map((r) => r.id).sort()
+    const ids = CANONICAL_ROUTES.map((r) => r.id).sort((a, b) => a.localeCompare(b))
     expect(ids).toEqual(
       [
         'alerts', 'audit', 'capability', 'costs', 'fleet', 'identity',
         'live', 'overview', 'policy', 'scrub', 'teams', 'topology',
-      ].sort(),
+      ].sort((a, b) => a.localeCompare(b)),
     )
   })
 
   it('every num is a zero-padded two-digit sequence 01..12', () => {
-    const nums = CANONICAL_ROUTES.map((r) => r.num).sort()
+    const nums = CANONICAL_ROUTES.map((r) => r.num).sort((a, b) => a.localeCompare(b))
     expect(nums).toEqual([
       '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12',
     ])
