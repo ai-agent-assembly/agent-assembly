@@ -159,9 +159,12 @@ mod tests {
 
     #[test]
     fn embedded_placeholder_substitutes_in_place() {
-        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let store = store_with(&[("DB_PASSWORD", "TESTONLY_NOT_REAL_value")]);
         let result = resolve_placeholders(&json!("postgres://app:${DB_PASSWORD}@db:5432/prod"), &store).unwrap();
-        assert_eq!(result.resolved, json!("postgres://app:real-secret-abc@db:5432/prod"));
+        assert_eq!(
+            result.resolved,
+            json!("postgres://app:TESTONLY_NOT_REAL_value@db:5432/prod")
+        );
         assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
     }
 
@@ -182,12 +185,12 @@ mod tests {
 
     #[test]
     fn nested_array_recurses_into_leaves() {
-        let store = store_with(&[("API_TOKEN", "real-token-1")]);
+        let store = store_with(&[("API_TOKEN", "TESTONLY_NOT_REAL_token")]);
         let input = json!(["GET", "/v1/users", "Authorization: Bearer ${API_TOKEN}"]);
         let result = resolve_placeholders(&input, &store).unwrap();
         assert_eq!(
             result.resolved,
-            json!(["GET", "/v1/users", "Authorization: Bearer real-token-1"])
+            json!(["GET", "/v1/users", "Authorization: Bearer TESTONLY_NOT_REAL_token"])
         );
         assert_eq!(result.names_substituted, vec!["API_TOKEN"]);
     }
