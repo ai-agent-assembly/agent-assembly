@@ -119,109 +119,13 @@ async fn run_tui(ctx: &ResolvedContext) -> ExitCode {
         // Check for terminal input events (non-blocking, 50ms timeout).
         if ct_event::poll(Duration::from_millis(50)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = ct_event::read() {
-                // If an overlay is showing, Esc dismisses it.
-                if state.show_inspect {
-                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                        state.show_inspect = false;
-                    }
-                    continue;
-                }
-                if state.show_policy {
-                    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-                        state.show_policy = false;
-                    }
-                    continue;
-                }
-                // If a confirm dialog is showing, intercept y/n/Esc.
-                if let Some(dialog_action) = state.confirm_dialog {
-                    match key.code {
-                        KeyCode::Char('y') => {
-                            if let Some(ref approval) = dialog_approval {
-                                match dialog_action {
-                                    DialogAction::Approve => {
-                                        let _ = approvals_client::approve_action(
-                                            ctx,
-                                            &approval.id,
-                                            Some("approved via dashboard"),
-                                        )
-                                        .await;
-                                    }
-                                    DialogAction::Reject => {
-                                        let _ = approvals_client::reject_action(
-                                            ctx,
-                                            &approval.id,
-                                            "rejected via dashboard",
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                            state.confirm_dialog = None;
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            state.confirm_dialog = None;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    let action = input::handle_key(&mut state, key);
-                    match action {
-                        InputAction::Approve => {
-                            state.confirm_dialog = Some(DialogAction::Approve);
-                        }
-                        InputAction::Reject => {
-                            state.confirm_dialog = Some(DialogAction::Reject);
-                        }
-                        InputAction::Inspect => {
-                            state.show_inspect = true;
-                        }
-                        InputAction::PolicyView => {
-                            // Fetch policy YAML in background if not cached.
-                            if state.policy_yaml.is_none() {
-                                state.policy_yaml = fetch_policy_yaml();
-                            }
-                            state.show_policy = true;
-                        }
-                        InputAction::None => {}
-                    }
-                }
+                handle_key_event(&mut state, ctx, key, dialog_approval.as_ref()).await;
             }
         }
 
         // Drain all pending feed messages.
         while let Ok(msg) = rx.try_recv() {
-            match msg {
-                FeedMessage::StatusUpdate {
-                    runtime,
-                    agents,
-                    approvals_summary,
-                    pending_approvals,
-                    budget,
-                } => {
-                    state.runtime = runtime;
-                    state.agents = agents;
-                    state.approvals_summary = approvals_summary;
-                    state.pending_approvals = pending_approvals;
-                    state.budget = budget;
-                    // Clamp selections to valid range.
-                    if !state.agents.is_empty() {
-                        state.agent_selected = state.agent_selected.min(state.agents.len() - 1);
-                    } else {
-                        state.agent_selected = 0;
-                    }
-                    if !state.pending_approvals.is_empty() {
-                        state.approval_selected = state.approval_selected.min(state.pending_approvals.len() - 1);
-                    } else {
-                        state.approval_selected = 0;
-                    }
-                }
-                FeedMessage::Event(entry) => {
-                    state.push_event(entry);
-                }
-                FeedMessage::WsDisconnected => {
-                    // WS dropped — REST poller keeps going, so just note it.
-                }
-            }
+            apply_feed_message(&mut state, msg);
         }
 
         if state.should_quit {
@@ -231,6 +135,119 @@ async fn run_tui(ctx: &ResolvedContext) -> ExitCode {
 
     let _ = restore_terminal();
     ExitCode::SUCCESS
+}
+
+/// Handle one terminal key event against the dashboard `state`.
+///
+/// Overlay state takes precedence: when the inspect or policy overlay is open,
+/// `Esc`/`q` dismisses it and the key is consumed. When a confirm dialog is
+/// open, `y` commits the pending approve/reject over the API, `n`/`Esc`
+/// cancels. Otherwise the key is dispatched to [`input::handle_key`] and the
+/// resulting [`InputAction`] is applied.
+async fn handle_key_event(
+    state: &mut DashboardState,
+    ctx: &ResolvedContext,
+    key: crossterm::event::KeyEvent,
+    dialog_approval: Option<&crate::commands::status::models::ApprovalResponse>,
+) {
+    // If an overlay is showing, Esc dismisses it.
+    if state.show_inspect {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            state.show_inspect = false;
+        }
+        return;
+    }
+    if state.show_policy {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            state.show_policy = false;
+        }
+        return;
+    }
+    // If a confirm dialog is showing, intercept y/n/Esc.
+    if let Some(dialog_action) = state.confirm_dialog {
+        match key.code {
+            KeyCode::Char('y') => {
+                if let Some(approval) = dialog_approval {
+                    match dialog_action {
+                        DialogAction::Approve => {
+                            let _ =
+                                approvals_client::approve_action(ctx, &approval.id, Some("approved via dashboard"))
+                                    .await;
+                        }
+                        DialogAction::Reject => {
+                            let _ = approvals_client::reject_action(ctx, &approval.id, "rejected via dashboard").await;
+                        }
+                    }
+                }
+                state.confirm_dialog = None;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                state.confirm_dialog = None;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match input::handle_key(state, key) {
+        InputAction::Approve => {
+            state.confirm_dialog = Some(DialogAction::Approve);
+        }
+        InputAction::Reject => {
+            state.confirm_dialog = Some(DialogAction::Reject);
+        }
+        InputAction::Inspect => {
+            state.show_inspect = true;
+        }
+        InputAction::PolicyView => {
+            // Fetch policy YAML in background if not cached.
+            if state.policy_yaml.is_none() {
+                state.policy_yaml = fetch_policy_yaml();
+            }
+            state.show_policy = true;
+        }
+        InputAction::None => {}
+    }
+}
+
+/// Apply a single background [`FeedMessage`] to the dashboard `state`.
+///
+/// A `StatusUpdate` replaces the live snapshot and clamps the agent/approval
+/// selection indices to the new bounds; `Event` appends to the event log; a
+/// WS disconnect is a no-op (the REST poller keeps the snapshot fresh).
+fn apply_feed_message(state: &mut DashboardState, msg: FeedMessage) {
+    match msg {
+        FeedMessage::StatusUpdate {
+            runtime,
+            agents,
+            approvals_summary,
+            pending_approvals,
+            budget,
+        } => {
+            state.runtime = runtime;
+            state.agents = agents;
+            state.approvals_summary = approvals_summary;
+            state.pending_approvals = pending_approvals;
+            state.budget = budget;
+            // Clamp selections to valid range.
+            if !state.agents.is_empty() {
+                state.agent_selected = state.agent_selected.min(state.agents.len() - 1);
+            } else {
+                state.agent_selected = 0;
+            }
+            if !state.pending_approvals.is_empty() {
+                state.approval_selected = state.approval_selected.min(state.pending_approvals.len() - 1);
+            } else {
+                state.approval_selected = 0;
+            }
+        }
+        FeedMessage::Event(entry) => {
+            state.push_event(entry);
+        }
+        FeedMessage::WsDisconnected => {
+            // WS dropped — REST poller keeps going, so just note it.
+        }
+    }
 }
 
 /// Attempt to load the active policy YAML from the local policy history store.
