@@ -86,15 +86,7 @@ impl TarjanState<'_> {
 
         // v is the root of an SCC when its lowlink equals its discovery index.
         if self.lowlink[&v] == self.index_map[&v] {
-            let mut scc: Vec<AgentId> = Vec::new();
-            loop {
-                let w = self.stack.pop().expect("Tarjan stack invariant violated");
-                self.on_stack.remove(&w);
-                scc.push(w);
-                if w == v {
-                    break;
-                }
-            }
+            let scc = self.pop_scc(v);
             // A real cycle: SCC with > 1 member, or a single node with a self-loop.
             if scc.len() > 1 || self.self_loops.contains(&scc[0]) {
                 return Some(scc);
@@ -102,6 +94,20 @@ impl TarjanState<'_> {
         }
 
         None
+    }
+
+    /// Pop the stack down to and including SCC root `v`, returning the members.
+    fn pop_scc(&mut self, v: AgentId) -> Vec<AgentId> {
+        let mut scc: Vec<AgentId> = Vec::new();
+        loop {
+            let w = self.stack.pop().expect("Tarjan stack invariant violated");
+            self.on_stack.remove(&w);
+            scc.push(w);
+            if w == v {
+                break;
+            }
+        }
+        scc
     }
 }
 
