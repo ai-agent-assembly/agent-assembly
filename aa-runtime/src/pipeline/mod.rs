@@ -267,30 +267,17 @@ async fn handle_policy_query(
     sequence_counter: &AtomicU64,
 ) {
     // ── Gateway forwarding path ─────────────────────────────────────────
-    if let Some(client) = gateway_client {
-        let mut guard = client.lock().await;
-        match guard.check_action(req.clone()).await {
-            Ok(resp) => {
-                tracing::debug!(connection_id, decision = resp.decision, "gateway responded");
-                // On Deny: surface a structured PolicyViolation event into
-                // the broadcast pipeline so the Live Ops dashboard sees the
-                // policy-engine evaluation latency. AAASM-1421 added the
-                // proto field; this is where it gets populated.
-                if resp.decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
-                    emit_gateway_violation(&req, &resp, connection_id, broadcast_tx, sequence_counter);
-                }
-                send_ipc_response(connection_id, IpcResponse::PolicyResponse(resp), response_router).await;
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    connection_id,
-                    error = %e,
-                    "gateway call failed — falling back to local policy evaluation"
-                );
-                // Fall through to local evaluation below.
-            }
-        }
+    if try_gateway_forward(
+        connection_id,
+        &req,
+        gateway_client,
+        response_router,
+        broadcast_tx,
+        sequence_counter,
+    )
+    .await
+    {
+        return;
     }
 
     // ── Local evaluation path ───────────────────────────────────────────
@@ -305,68 +292,8 @@ async fn handle_policy_query(
         .to_string();
 
     // 1. Check requires_approval_actions.
-    for rule in &policy.rules {
-        if rule.requires_approval_actions.iter().any(|a| a == action_str) {
-            let request_id = Uuid::new_v4();
-            let submitted_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_secs();
-            let approval_req = ApprovalRequest {
-                request_id,
-                agent_id: agent_id_str.clone(),
-                action: action_str.to_string(),
-                condition_triggered: rule.name.clone(),
-                submitted_at,
-                timeout_secs: rule.approval_timeout_secs as u64,
-                fallback: aa_core::PolicyResult::Deny {
-                    reason: "approval timed out".to_string(),
-                },
-                team_id: None,
-                timeout_override_secs: None,
-                escalation_role_override: None,
-            };
-            let (rid, fut) = approval_queue.submit(approval_req);
-
-            send_ipc_response(
-                connection_id,
-                IpcResponse::PolicyResponse(CheckActionResponse {
-                    decision: Decision::Pending as i32,
-                    approval_id: rid.to_string(),
-                    policy_rule: rule.name.clone(),
-                    ..Default::default()
-                }),
-                response_router,
-            )
-            .await;
-
-            // Spawn a task that awaits resolution and pushes the decision back.
-            let router = Arc::clone(response_router);
-            tokio::spawn(async move {
-                if let Ok(decision) = fut.await {
-                    let (approved, decided_by, reason) = match decision {
-                        RuntimeApprovalDecision::Approved { by, reason } => (true, by, reason.unwrap_or_default()),
-                        RuntimeApprovalDecision::Rejected { by, reason } => (false, by, reason),
-                        RuntimeApprovalDecision::TimedOut { .. } => {
-                            (false, "timeout".to_string(), "approval timed out".to_string())
-                        }
-                    };
-                    let decided_at_unix_ms = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or(Duration::ZERO)
-                        .as_millis() as i64;
-                    let proto = ProtoApprovalDecision {
-                        approval_id: rid.to_string(),
-                        approved,
-                        decided_by,
-                        reason,
-                        decided_at_unix_ms,
-                    };
-                    send_ipc_response(connection_id, IpcResponse::ApprovalDecision(proto), &router).await;
-                }
-            });
-            return;
-        }
+    if try_local_approval(connection_id, action_str, &agent_id_str, policy, approval_queue, response_router).await {
+        return;
     }
 
     // 2. Check blocked_actions.
@@ -397,6 +324,125 @@ async fn handle_policy_query(
         response_router,
     )
     .await;
+}
+
+/// Forward the request to the governance gateway over gRPC when a client is
+/// configured. Returns `true` when the request was fully handled (a response
+/// was sent); `false` when there is no client or the call failed, signalling
+/// the caller to fall back to local [`PolicyRules`] evaluation.
+async fn try_gateway_forward(
+    connection_id: u64,
+    req: &aa_proto::assembly::policy::v1::CheckActionRequest,
+    gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
+    response_router: &ResponseRouter,
+    broadcast_tx: &broadcast::Sender<PipelineEvent>,
+    sequence_counter: &AtomicU64,
+) -> bool {
+    let Some(client) = gateway_client else {
+        return false;
+    };
+    let mut guard = client.lock().await;
+    match guard.check_action(req.clone()).await {
+        Ok(resp) => {
+            tracing::debug!(connection_id, decision = resp.decision, "gateway responded");
+            // On Deny: surface a structured PolicyViolation event into
+            // the broadcast pipeline so the Live Ops dashboard sees the
+            // policy-engine evaluation latency. AAASM-1421 added the
+            // proto field; this is where it gets populated.
+            if resp.decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+                emit_gateway_violation(req, &resp, connection_id, broadcast_tx, sequence_counter);
+            }
+            send_ipc_response(connection_id, IpcResponse::PolicyResponse(resp), response_router).await;
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                connection_id,
+                error = %e,
+                "gateway call failed — falling back to local policy evaluation"
+            );
+            false
+        }
+    }
+}
+
+/// Apply the local `requires_approval_actions` rules. When a rule matches,
+/// submits an [`ApprovalRequest`], responds `PENDING`, spawns a task that
+/// pushes the eventual decision back, and returns `true`. Returns `false`
+/// when no rule requires approval for `action_str`.
+async fn try_local_approval(
+    connection_id: u64,
+    action_str: &str,
+    agent_id_str: &str,
+    policy: &PolicyRules,
+    approval_queue: &Arc<ApprovalQueue>,
+    response_router: &ResponseRouter,
+) -> bool {
+    for rule in &policy.rules {
+        if !rule.requires_approval_actions.iter().any(|a| a == action_str) {
+            continue;
+        }
+        let request_id = Uuid::new_v4();
+        let submitted_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+        let approval_req = ApprovalRequest {
+            request_id,
+            agent_id: agent_id_str.to_string(),
+            action: action_str.to_string(),
+            condition_triggered: rule.name.clone(),
+            submitted_at,
+            timeout_secs: rule.approval_timeout_secs as u64,
+            fallback: aa_core::PolicyResult::Deny {
+                reason: "approval timed out".to_string(),
+            },
+            team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+        let (rid, fut) = approval_queue.submit(approval_req);
+
+        send_ipc_response(
+            connection_id,
+            IpcResponse::PolicyResponse(CheckActionResponse {
+                decision: Decision::Pending as i32,
+                approval_id: rid.to_string(),
+                policy_rule: rule.name.clone(),
+                ..Default::default()
+            }),
+            response_router,
+        )
+        .await;
+
+        // Spawn a task that awaits resolution and pushes the decision back.
+        let router = Arc::clone(response_router);
+        tokio::spawn(async move {
+            if let Ok(decision) = fut.await {
+                let (approved, decided_by, reason) = match decision {
+                    RuntimeApprovalDecision::Approved { by, reason } => (true, by, reason.unwrap_or_default()),
+                    RuntimeApprovalDecision::Rejected { by, reason } => (false, by, reason),
+                    RuntimeApprovalDecision::TimedOut { .. } => {
+                        (false, "timeout".to_string(), "approval timed out".to_string())
+                    }
+                };
+                let decided_at_unix_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_millis() as i64;
+                let proto = ProtoApprovalDecision {
+                    approval_id: rid.to_string(),
+                    approved,
+                    decided_by,
+                    reason,
+                    decided_at_unix_ms,
+                };
+                send_ipc_response(connection_id, IpcResponse::ApprovalDecision(proto), &router).await;
+            }
+        });
+        return true;
+    }
+    false
 }
 
 /// Emit a structured `PolicyViolation` `AuditEvent` after the gateway
