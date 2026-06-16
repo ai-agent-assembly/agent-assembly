@@ -58,3 +58,62 @@ fn validate_did_key(value: &str) -> Result<(), &'static str> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proto_id(agent_id: &str) -> ProtoAgentId {
+        ProtoAgentId {
+            org_id: "acme-corp".into(),
+            team_id: "platform".into(),
+            agent_id: agent_id.into(),
+        }
+    }
+
+    #[test]
+    fn accepts_valid_did_key() {
+        // The DID used across the conformance vectors.
+        let id = proto_id("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T");
+        assert!(validate_proto_agent_id(&id).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_agent_id() {
+        let id = proto_id("");
+        assert_eq!(validate_proto_agent_id(&id), Err("agent_id is empty"));
+    }
+
+    #[test]
+    fn rejects_non_did_string() {
+        let id = proto_id("agent-lifecycle-1");
+        assert!(validate_proto_agent_id(&id).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_did_method() {
+        // A real DID, but not the did:key method.
+        let id = proto_id("did:web:example.com");
+        assert!(validate_proto_agent_id(&id).is_err());
+    }
+
+    #[test]
+    fn rejects_did_key_without_multibase_prefix() {
+        // Missing the leading 'z' base58btc multibase marker.
+        let id = proto_id("did:key:6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T");
+        assert!(validate_proto_agent_id(&id).is_err());
+    }
+
+    #[test]
+    fn rejects_did_key_with_empty_multibase() {
+        let id = proto_id("did:key:z");
+        assert!(validate_proto_agent_id(&id).is_err());
+    }
+
+    #[test]
+    fn rejects_did_key_with_invalid_base58() {
+        // '0', 'O', 'I', 'l' are not in the base58btc alphabet.
+        let id = proto_id("did:key:z0OIl");
+        assert!(validate_proto_agent_id(&id).is_err());
+    }
+}
