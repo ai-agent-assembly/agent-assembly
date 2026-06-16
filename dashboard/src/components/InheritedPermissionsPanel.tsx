@@ -151,7 +151,7 @@ function buildRows(perms: EffectivePermissions): PermissionRow[] {
   // Union of allow + deny gives every capability touched by the cascade.
   const universe = new Set<string>([...perms.allow, ...perms.deny])
   return Array.from(universe)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((cap) => ({
       capability: cap,
       category: categoryFor(cap),
