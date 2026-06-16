@@ -4,10 +4,15 @@
 //! current-thread runtime. The calling thread communicates with the background
 //! thread via an mpsc command channel.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::mpsc as blocking_mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
+
+use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
 
 use crate::codec;
 
@@ -16,9 +21,23 @@ use crate::codec;
 pub enum IpcCommand {
     /// Send an audit event to the runtime.
     SendEvent(Box<aa_proto::assembly::audit::v1::AuditEvent>),
+    /// Synchronously query the runtime for a policy decision on an action. The
+    /// `CheckActionResponse` is delivered on `resp`; the calling thread blocks
+    /// on it (see [`crate::client::AssemblyClient::query_policy`]).
+    QueryPolicy {
+        request: Box<CheckActionRequest>,
+        resp: blocking_mpsc::Sender<CheckActionResponse>,
+    },
     /// Gracefully shut down the IPC connection.
     Shutdown,
 }
+
+/// Response senders awaiting a synchronous policy decision, in FIFO order.
+///
+/// The command loop pushes one when it writes a `PolicyQuery`; the reader pops
+/// the oldest when a `PolicyResponse` arrives. The wire carries no correlation
+/// id, so responses match queries by order over the single connection.
+type PendingQueries = Arc<Mutex<VecDeque<blocking_mpsc::Sender<CheckActionResponse>>>>;
 
 /// Handle to the background IPC thread.
 ///
@@ -84,16 +103,36 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
         return;
     }
 
-    // Drain unsolicited runtime responses on a dedicated task: reads never race
-    // writes (no cancellation hazard) and the connection cannot stall.
-    let reader_task = tokio::spawn(drain_responses(reader));
+    // Pending synchronous policy queries, routed back by the reader task.
+    let pending: PendingQueries = Arc::new(Mutex::new(VecDeque::new()));
 
-    // Process commands from the calling thread. Event reports are fire-and-forget.
+    // Drain unsolicited runtime responses (and route policy responses to their
+    // waiting queries) on a dedicated task: reads never race writes (no
+    // cancellation hazard) and the connection cannot stall.
+    let reader_task = tokio::spawn(drain_responses(reader, Arc::clone(&pending)));
+
+    // Process commands from the calling thread. Event reports are fire-and-forget;
+    // policy queries register a waiter and write a `PolicyQuery`.
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             IpcCommand::SendEvent(event) => {
                 if let Err(e) = codec::write_event_report(&mut writer, &event).await {
                     tracing::error!(error = %e, "failed to send event report");
+                }
+            }
+            IpcCommand::QueryPolicy { request, resp } => {
+                // Queue the response sender BEFORE writing, so the reader can
+                // never observe the response before the sender is registered.
+                if let Ok(mut q) = pending.lock() {
+                    q.push_back(resp);
+                }
+                if let Err(e) = codec::write_policy_query(&mut writer, &request).await {
+                    tracing::error!(error = %e, "failed to send policy query");
+                    // The query never went out — drop the sender we just queued
+                    // so the caller unblocks with QueryFailed instead of hanging.
+                    if let Ok(mut q) = pending.lock() {
+                        q.pop_back();
+                    }
                 }
             }
             IpcCommand::Shutdown => {
@@ -106,17 +145,27 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
     reader_task.abort();
 }
 
-/// Continuously read and discard unsolicited responses from the runtime.
+/// Read responses from the runtime: route each `PolicyResponse` to the oldest
+/// waiting synchronous query, and drain everything else (violation alerts,
+/// approval decisions) so the connection does not stall.
 ///
-/// `aa-runtime` sends violation alerts and policy/approval decisions
-/// asynchronously. The SDK does not yet act on them, but they must be drained
-/// so the connection does not stall. Exits on EOF or a read error (e.g. the
-/// runtime closing the connection), or when aborted on shutdown.
-async fn drain_responses(mut reader: tokio::net::unix::OwnedReadHalf) {
+/// Exits on EOF or a read error (e.g. the runtime closing the connection), or
+/// when aborted on shutdown.
+async fn drain_responses(mut reader: tokio::net::unix::OwnedReadHalf, pending: PendingQueries) {
     loop {
         match codec::read_response(&mut reader).await {
-            Ok(response) => {
-                tracing::debug!(?response, "received unsolicited runtime response");
+            Ok(codec::RuntimeResponse::PolicyResponse(resp)) => {
+                let waiting = pending.lock().ok().and_then(|mut q| q.pop_front());
+                match waiting {
+                    Some(tx) => {
+                        // Ignore send errors: the caller may have already timed out.
+                        let _ = tx.send(resp);
+                    }
+                    None => tracing::debug!("policy response with no pending query — dropping"),
+                }
+            }
+            Ok(other) => {
+                tracing::debug!(?other, "received unsolicited runtime response");
             }
             Err(e) => {
                 tracing::debug!(error = %e, "runtime response stream ended");
@@ -257,5 +306,66 @@ mod tests {
 
         server.abort();
         let _ = std::fs::remove_file(&socket_path);
+    }
+
+    /// A synchronous `query_policy` against a runtime that answers `PolicyQuery`
+    /// with a `PolicyResponse` returns that decision to the blocking caller.
+    #[tokio::test]
+    async fn query_policy_returns_runtime_decision() {
+        use std::time::Duration;
+
+        use prost::Message;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        use crate::client::AssemblyClient;
+
+        let socket_path = format!("/tmp/aa-test-query-{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        // Mock runtime: read the heartbeat + the PolicyQuery, then reply with a
+        // Deny CheckActionResponse. Bodies here are < 128 bytes, so the
+        // length-delimiter varint is a single byte.
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_HEARTBEAT);
+            assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_POLICY_QUERY);
+            let len = stream.read_u8().await.unwrap() as usize;
+            if len > 0 {
+                let mut body = vec![0u8; len];
+                stream.read_exact(&mut body).await.unwrap();
+            }
+
+            let resp = aa_proto::assembly::policy::v1::CheckActionResponse {
+                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                ..Default::default()
+            };
+            let mut buf = Vec::new();
+            resp.encode(&mut buf).unwrap();
+            assert!(buf.len() < 128, "test assumes a single-byte length varint");
+            stream.write_u8(codec::TAG_POLICY_RESPONSE).await.unwrap();
+            stream.write_u8(buf.len() as u8).await.unwrap();
+            stream.write_all(&buf).await.unwrap();
+            stream.flush().await.unwrap();
+            // Keep the connection open so the client can read the reply.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+        let client = AssemblyClient::new(handle, Vec::new());
+
+        // query_policy blocks the calling thread, so run it off the async runtime.
+        let decision = tokio::task::spawn_blocking(move || {
+            client.query_policy(aa_proto::assembly::policy::v1::CheckActionRequest::default())
+        })
+        .await
+        .unwrap();
+
+        server.abort();
+        let _ = std::fs::remove_file(&socket_path);
+
+        let resp = decision.expect("query_policy should return the runtime decision");
+        assert_eq!(resp.decision, aa_proto::assembly::common::v1::Decision::Deny as i32);
     }
 }

@@ -15,6 +15,10 @@ pub enum SdkClientError {
     /// The background IPC thread's command channel is closed, so the event
     /// could not be enqueued.
     ChannelClosed,
+    /// A synchronous policy query did not complete: the runtime did not answer
+    /// within the timeout, or the IPC connection closed before a response
+    /// arrived. Callers should treat this as *fail-open* (the SDK is advisory).
+    QueryFailed,
 }
 
 impl std::fmt::Display for SdkClientError {
@@ -26,6 +30,9 @@ impl std::fmt::Display for SdkClientError {
             SdkClientError::LockPoisoned => write!(f, "AssemblyClient lock was poisoned"),
             SdkClientError::ChannelClosed => {
                 write!(f, "failed to enqueue event: IPC channel is closed")
+            }
+            SdkClientError::QueryFailed => {
+                write!(f, "policy query failed: runtime did not respond in time")
             }
         }
     }

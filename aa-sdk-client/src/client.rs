@@ -8,11 +8,16 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::error::SdkClientError;
 use crate::ipc::{IpcCommand, IpcHandle};
 #[cfg(feature = "preflight")]
 use crate::preflight::Preflight;
+
+/// How long [`AssemblyClient::query_policy`] blocks for a runtime decision
+/// before failing open with [`SdkClientError::QueryFailed`].
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Handle to an active Agent Assembly session.
 ///
@@ -155,6 +160,40 @@ impl AssemblyClient {
         };
 
         self.send(event)
+    }
+
+    /// Synchronously query the runtime for a policy decision on an action.
+    ///
+    /// Sends a `CheckActionRequest` to `aa-runtime` over the IPC connection and
+    /// blocks (up to [`QUERY_TIMEOUT`]) for the `CheckActionResponse`. Returns
+    /// [`SdkClientError::QueryFailed`] when the runtime does not answer in time
+    /// or the connection closes — callers must treat that as *fail-open* (the
+    /// SDK is advisory; the runtime/proxy/eBPF layers are authoritative).
+    ///
+    /// FFI shims that hold a language-runtime lock (e.g. Python's GIL) should
+    /// release it around this call, since it blocks the calling thread.
+    pub fn query_policy(
+        &self,
+        request: aa_proto::assembly::policy::v1::CheckActionRequest,
+    ) -> Result<aa_proto::assembly::policy::v1::CheckActionResponse, SdkClientError> {
+        let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+
+        // Enqueue under the lock, then release it before blocking on the
+        // response so a slow runtime cannot stall shutdown or other calls.
+        {
+            let guard = self.inner.lock().map_err(|_| SdkClientError::LockPoisoned)?;
+            let ipc = guard.as_ref().ok_or(SdkClientError::Shutdown)?;
+            ipc.cmd_tx
+                .blocking_send(IpcCommand::QueryPolicy {
+                    request: Box::new(request),
+                    resp: resp_tx,
+                })
+                .map_err(|_| SdkClientError::ChannelClosed)?;
+        }
+
+        resp_rx
+            .recv_timeout(QUERY_TIMEOUT)
+            .map_err(|_| SdkClientError::QueryFailed)
     }
 
     /// Shut down the IPC connection and join the background thread.
