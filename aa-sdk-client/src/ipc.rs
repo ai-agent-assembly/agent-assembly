@@ -307,4 +307,65 @@ mod tests {
         server.abort();
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    /// A synchronous `query_policy` against a runtime that answers `PolicyQuery`
+    /// with a `PolicyResponse` returns that decision to the blocking caller.
+    #[tokio::test]
+    async fn query_policy_returns_runtime_decision() {
+        use std::time::Duration;
+
+        use prost::Message;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        use crate::client::AssemblyClient;
+
+        let socket_path = format!("/tmp/aa-test-query-{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        // Mock runtime: read the heartbeat + the PolicyQuery, then reply with a
+        // Deny CheckActionResponse. Bodies here are < 128 bytes, so the
+        // length-delimiter varint is a single byte.
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_HEARTBEAT);
+            assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_POLICY_QUERY);
+            let len = stream.read_u8().await.unwrap() as usize;
+            if len > 0 {
+                let mut body = vec![0u8; len];
+                stream.read_exact(&mut body).await.unwrap();
+            }
+
+            let resp = aa_proto::assembly::policy::v1::CheckActionResponse {
+                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                ..Default::default()
+            };
+            let mut buf = Vec::new();
+            resp.encode(&mut buf).unwrap();
+            assert!(buf.len() < 128, "test assumes a single-byte length varint");
+            stream.write_u8(codec::TAG_POLICY_RESPONSE).await.unwrap();
+            stream.write_u8(buf.len() as u8).await.unwrap();
+            stream.write_all(&buf).await.unwrap();
+            stream.flush().await.unwrap();
+            // Keep the connection open so the client can read the reply.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+        let client = AssemblyClient::new(handle, Vec::new());
+
+        // query_policy blocks the calling thread, so run it off the async runtime.
+        let decision = tokio::task::spawn_blocking(move || {
+            client.query_policy(aa_proto::assembly::policy::v1::CheckActionRequest::default())
+        })
+        .await
+        .unwrap();
+
+        server.abort();
+        let _ = std::fs::remove_file(&socket_path);
+
+        let resp = decision.expect("query_policy should return the runtime decision");
+        assert_eq!(resp.decision, aa_proto::assembly::common::v1::Decision::Deny as i32);
+    }
 }
