@@ -45,7 +45,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         None => {
             eprintln!(
                 "error: aa-gateway binary not found.\n\
-                 Tried: $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
+                 Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
             );
             return ExitCode::FAILURE;
         }
@@ -146,9 +146,20 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
 /// Resolve the `aa-gateway` binary path.
 ///
-/// Search order: directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
+/// Search order: directory of the running `aasm` executable →
+/// directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
 /// `./target/release/aa-gateway` → `./target/debug/aa-gateway`.
+///
+/// The exe-dir lookup is first so a release / Homebrew install — where
+/// `aa-gateway` ships alongside `aasm` in the same directory (AAASM-2975) —
+/// works even when that directory is not on `$PATH` (e.g. a tarball unpacked
+/// to an arbitrary location).
 pub fn resolve_binary() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(candidate) = sibling_binary(&exe) {
+            return Some(candidate);
+        }
+    }
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in path_var.split(':') {
             let candidate = PathBuf::from(dir).join("aa-gateway");
@@ -170,6 +181,13 @@ pub fn resolve_binary() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Return the `aa-gateway` binary sitting next to the given `aasm` executable
+/// path, if it exists and is executable.
+fn sibling_binary(exe: &std::path::Path) -> Option<PathBuf> {
+    let candidate = exe.parent()?.join("aa-gateway");
+    is_executable(&candidate).then_some(candidate)
 }
 
 #[cfg(unix)]
@@ -339,5 +357,48 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         assert!(wait_for_tcp(&addr, Duration::from_secs(1)));
+    }
+
+    /// Create an executable file at `path` (sets the user-exec bit on Unix).
+    fn touch_executable(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn sibling_binary_resolves_aa_gateway_next_to_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        let gateway = dir.path().join("aa-gateway");
+        touch_executable(&gateway);
+
+        assert_eq!(sibling_binary(&exe), Some(gateway));
+    }
+
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // No aa-gateway alongside it.
+        assert_eq!(sibling_binary(&exe), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_not_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // A non-executable file named aa-gateway must not be selected.
+        std::fs::write(dir.path().join("aa-gateway"), b"not a binary").unwrap();
+        assert_eq!(sibling_binary(&exe), None);
     }
 }
