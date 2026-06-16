@@ -15,7 +15,9 @@ class MockWebSocket {
   onclose: (() => void) | null = null
   onerror: (() => void) | null = null
   onmessage: ((e: { data: string }) => void) | null = null
-  close() {}
+  close() {
+    /* intentionally empty: test WebSocket mock — no teardown needed */
+  }
 }
 vi.stubGlobal('WebSocket', MockWebSocket)
 

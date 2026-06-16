@@ -28,7 +28,9 @@ class MockWebSocket {
     }, 0)
   }
   close() { this.onclose?.() }
-  send() {}
+  send() {
+    /* intentionally empty: test WebSocket mock — outbound frames are ignored */
+  }
 
   static reset() { MockWebSocket.instances = [] }
 }

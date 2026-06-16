@@ -8,9 +8,15 @@ import type { ActionVolumeSeries } from './useActionVolumeQuery'
 
 // recharts uses ResizeObserver which is not available in jsdom
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
