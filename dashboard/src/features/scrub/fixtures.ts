@@ -35,7 +35,7 @@ export const PATTERNS: ScrubPattern[] = [
     id: 'GH_TOKEN',
     name: 'GitHub token',
     regex: 'gh[ps]_[A-Za-z0-9]{36}',
-    example: 'ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5z',
+    example: 'ghp_TESTONLYNOTREALxxxxxxxxxxxxxxxxxxxxx',
     replace: '[REDACTED:GH_TOKEN]',
     severity: 'critical',
     hits24h: 6,
