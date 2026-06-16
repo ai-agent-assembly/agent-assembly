@@ -11,6 +11,7 @@
  * paid up front by callers that never open the Overview tab.
  */
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import {
   Area,
   CartesianGrid,
@@ -53,7 +54,7 @@ export function SubtreeBurnChart({ agentId }: { agentId: string }) {
   if (isError || !data) {
     return (
       <div className="sbc" data-testid="subtree-burn-error">
-        <ErrorState onRetry={() => void refetch()} />
+        <ErrorState onRetry={() => ignorePromise(refetch())} />
       </div>
     )
   }

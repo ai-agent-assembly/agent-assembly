@@ -9,6 +9,7 @@
  * cascade explicitly denies it, where it was `denied_by_ancestor`.
  */
 import { useMemo } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { Link } from 'react-router-dom'
 import { useAgentCapabilitiesQuery } from '../features/agents/api'
 import type { EffectivePermissions, PermissionSource } from '../features/agents/api'
@@ -59,7 +60,7 @@ export function InheritedPermissionsPanel({ agentId }: { agentId: string }) {
   if (isError || !data) {
     return (
       <div className="ipp" data-testid="inherited-permissions-error">
-        <ErrorState onRetry={() => void refetch()} />
+        <ErrorState onRetry={() => ignorePromise(refetch())} />
       </div>
     )
   }
