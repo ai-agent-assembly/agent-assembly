@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
 
@@ -164,7 +165,7 @@ export function useSuspendTeam() {
       if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
     },
     onSettled: (_data, _err, { teamId }) => {
-      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+      ignorePromise(client.invalidateQueries({ queryKey: ['topology', 'team', teamId] }))
     },
   })
 }
@@ -180,7 +181,7 @@ export function useResumeTeam() {
       if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
     },
     onSettled: (_data, _err, { teamId }) => {
-      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+      ignorePromise(client.invalidateQueries({ queryKey: ['topology', 'team', teamId] }))
     },
   })
 }

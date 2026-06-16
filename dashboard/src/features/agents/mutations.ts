@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 
 interface SuspendInput {
@@ -35,8 +36,8 @@ export function useSuspendAgent() {
       return data
     },
     onSuccess: (_, { id }) => {
-      void qc.invalidateQueries({ queryKey: ['agents'] })
-      void qc.invalidateQueries({ queryKey: ['agents', id] })
+      ignorePromise(qc.invalidateQueries({ queryKey: ['agents'] }))
+      ignorePromise(qc.invalidateQueries({ queryKey: ['agents', id] }))
     },
   })
 }
@@ -52,8 +53,8 @@ export function useResumeAgent() {
       return data
     },
     onSuccess: (_, { id }) => {
-      void qc.invalidateQueries({ queryKey: ['agents'] })
-      void qc.invalidateQueries({ queryKey: ['agents', id] })
+      ignorePromise(qc.invalidateQueries({ queryKey: ['agents'] }))
+      ignorePromise(qc.invalidateQueries({ queryKey: ['agents', id] }))
     },
   })
 }

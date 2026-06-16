@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { iamQueryKeys } from './queryKeys'
 import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } from './types'
 
@@ -72,7 +73,7 @@ export function useInviteMemberMutation() {
   return useMutation({
     mutationFn: (input: InviteMemberInput) => inviteMember(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() }))
     },
   })
 }
@@ -125,7 +126,7 @@ export function useUpdateMemberRoleMutation() {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() }))
     },
   })
 }

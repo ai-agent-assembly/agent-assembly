@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
 
@@ -80,7 +81,7 @@ export function useCreatePolicy() {
     // replaced by the real `PolicyResponse` (with the server-assigned
     // version, rule_count, and active flag).
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['policies'] })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: ['policies'] }))
     },
   })
 }
