@@ -64,8 +64,14 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build aasm release binary
-        run: cargo build --release --target ${{ matrix.target }} -p aa-cli
+      - name: Build aasm + aa-gateway release binaries
+        # aasm is the operator CLI; aa-gateway is the core daemon that
+        # `aasm gateway start` spawns. Both must ship in the release tarball
+        # (AAASM-2975) so a release / Homebrew install can launch a core —
+        # without aa-gateway, `aasm gateway start` fails with
+        # "aa-gateway binary not found". aa-gateway is a normal host binary
+        # (no eBPF / cross-target quirks), so it builds for every matrix target.
+        run: cargo build --release --target ${{ matrix.target }} -p aa-cli -p aa-gateway
 
       - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
@@ -78,6 +84,17 @@ jobs:
           ls -lh "$BIN"
           file "$BIN"
           "$BIN" --version
+
+      - name: Verify aa-gateway binary built (size + type)
+        # aa-gateway is the daemon `aasm gateway start` spawns; it ships in the
+        # same tarball (AAASM-2975). We don't execute it here (it would bind a
+        # listener); a presence + Mach-O/ELF type check is enough — the archive
+        # step hard-fails anyway if the binary is missing.
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aa-gateway"
+          ls -lh "$BIN"
+          file "$BIN"
 
       - name: Codesign + notarize aasm (macOS — gated on Apple Developer creds)
         # Dormant until the operator sets the MACOS_SIGNING_ENABLED repo variable
@@ -118,11 +135,14 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary_key.p8" "$RUNNER_TEMP/aasm.zip"
           security delete-keychain "$KEYCHAIN"
 
-      - name: Archive binary
+      - name: Archive binaries
         shell: bash
         run: |
+          # Package both binaries side-by-side so they unpack into the same
+          # directory; `aasm gateway start` resolves aa-gateway next to the
+          # running aasm executable (AAASM-2975).
           tar -czf "aasm-${{ matrix.target }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" aasm
+            -C "target/${{ matrix.target }}/release" aasm aa-gateway
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
