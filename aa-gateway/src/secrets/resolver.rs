@@ -159,9 +159,12 @@ mod tests {
 
     #[test]
     fn embedded_placeholder_substitutes_in_place() {
-        let store = store_with(&[("DB_PASSWORD", "real-secret-abc")]);
+        let store = store_with(&[("DB_PASSWORD", "TESTONLY_NOT_REAL_value")]);
         let result = resolve_placeholders(&json!("postgres://app:${DB_PASSWORD}@db:5432/prod"), &store).unwrap();
-        assert_eq!(result.resolved, json!("postgres://app:real-secret-abc@db:5432/prod"));
+        assert_eq!(
+            result.resolved,
+            json!("postgres://app:TESTONLY_NOT_REAL_value@db:5432/prod")
+        );
         assert_eq!(result.names_substituted, vec!["DB_PASSWORD"]);
     }
 
