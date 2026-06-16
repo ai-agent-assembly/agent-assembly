@@ -11,10 +11,15 @@ type Phase = 'idle' | 'spinning' | 'done'
 
 const HEX = '0123456789abcdef'
 
+// These bytes back an agent's DID and key fingerprint — identity material, not
+// UI decoration — so they must come from a CSPRNG, never Math.random().
+// See typescript:S2245.
 function randHex(byteCount: number): string {
+  const bytes = new Uint8Array(byteCount)
+  crypto.getRandomValues(bytes)
   let out = ''
-  for (let i = 0; i < byteCount * 2; i++) {
-    out += HEX[Math.floor(Math.random() * 16)]
+  for (const byte of bytes) {
+    out += HEX[byte >> 4] + HEX[byte & 0x0f]
   }
   return out
 }
