@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { Link } from 'react-router-dom'
 import {
   useReactTable,
@@ -126,7 +127,7 @@ export function TeamsPage() {
           style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
         >
           <span>Failed to load teams.</span>
-          <button onClick={() => void overviewQuery.refetch()}>Retry</button>
+          <button onClick={() => ignorePromise(overviewQuery.refetch())}>Retry</button>
         </div>
       )}
 

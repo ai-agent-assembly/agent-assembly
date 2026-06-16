@@ -1,4 +1,5 @@
 import { Link, Outlet, useNavigate } from 'react-router-dom'
+import { ignorePromise } from '../lib/ignorePromise'
 import {
   useReactTable,
   getCoreRowModel,
@@ -423,7 +424,7 @@ export function FleetPage() {
           <button
             type="button"
             className="fleet-bulkbar__btn"
-            onClick={() => void onClickBulkResume()}
+            onClick={() => ignorePromise(onClickBulkResume())}
             disabled={bulkSuspendPending || bulkResumePending}
             data-testid="fleet-bulkbar-resume"
           >
@@ -443,7 +444,7 @@ export function FleetPage() {
       {view === 'agents' && isError && (
         <div className="fleet-error" data-testid="agents-error">
           <span>Failed to load agents.</span>
-          <button onClick={() => void refetch()}>Retry</button>
+          <button onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 

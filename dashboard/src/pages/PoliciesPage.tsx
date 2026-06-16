@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
 import { useSandboxSummaryQuery } from '../features/audit/api'
 import { extractEnforcementMode } from '../features/policies/policyYamlHelpers'
@@ -289,7 +290,7 @@ export function PoliciesPage() {
         <ErrorState
           title="Failed to load policies"
           description="The gateway returned an unexpected error."
-          onRetry={() => void refetch()}
+          onRetry={() => ignorePromise(refetch())}
         />
       ) : isLoading ? (
         <ul className="policies-list" data-testid="policies-list">
