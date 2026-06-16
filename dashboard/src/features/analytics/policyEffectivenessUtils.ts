@@ -95,5 +95,5 @@ export function collectDates(rules: PolicyRule[]): string[] {
       }
     }
   }
-  return result.sort()
+  return result.sort((a, b) => a.localeCompare(b))
 }
