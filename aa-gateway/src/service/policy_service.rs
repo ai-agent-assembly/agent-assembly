@@ -363,6 +363,119 @@ impl PolicyServiceImpl {
         }
     }
 
+    /// Emit a chain-hashed `ApprovalRouted` WORM audit entry for a routed
+    /// approval. Fire-and-forget over `audit_tx`; a full/closed channel is
+    /// logged (and counted as a drop) rather than blocking the approval path.
+    async fn emit_approval_routed_audit(
+        &self,
+        req: &CheckActionRequest,
+        team_id: &str,
+        approval_request_id: uuid::Uuid,
+        agent_id_val: AgentId,
+        session_id_val: SessionId,
+    ) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let payload = serde_json::json!({
+            "team_id": team_id,
+            "action_type": req.action_type,
+            "approval_id": approval_request_id.to_string(),
+        })
+        .to_string();
+        let mut last_hash = self.last_hash.lock().await;
+        let entry = AuditEntry::new(
+            seq,
+            now,
+            AuditEventType::ApprovalRouted,
+            agent_id_val,
+            session_id_val,
+            payload,
+            *last_hash,
+        );
+        *last_hash = *entry.entry_hash();
+        drop(last_hash);
+        if let Err(e) = self.audit_tx.try_send(entry) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
+                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::error!("audit channel closed — AuditWriter task has exited");
+                }
+            }
+        }
+    }
+
+    /// Register the pending escalation for `approval_id` with the in-memory (and,
+    /// when present, DB) escalation scheduler.
+    ///
+    /// Router-driven path (`routing_decision` is `Some`): use the decision's
+    /// `escalation_role` and `escalate_at`. Legacy path: resolve escalation
+    /// approvers and timeout from the `RoutingConfigStore`. Registration
+    /// failures are logged and do not abort the approval submission.
+    async fn register_escalation(
+        &self,
+        approval_id: uuid::Uuid,
+        routing_decision: Option<&crate::approval::RoutingDecision>,
+        team_id: &Option<String>,
+        timeout_secs: u32,
+        timeout_override: Option<u64>,
+        role_override: Option<&String>,
+    ) {
+        if let Some(decision) = routing_decision {
+            // Router-driven path: use the decision's escalation_role and escalate_at.
+            if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
+                let now_secs = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
+                let approvers = vec![decision.escalation_role.clone()];
+                if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
+                    tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+                }
+            }
+            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
+                if let Some(ref team_id_val) = decision.team_id {
+                    if let Err(e) = db_scheduler
+                        .register(
+                            approval_id,
+                            team_id_val.clone(),
+                            decision.escalation_role.clone(),
+                            "TeamAdmin".to_string(),
+                            decision.escalate_at,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
+                    }
+                }
+            }
+        } else if let (Some(ref tid), Some(ref scheduler)) = (team_id, &self.escalation_scheduler) {
+            // Legacy path: resolve escalation config from the RoutingConfigStore.
+            let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
+            let escalation_approvers = self
+                .routing_store
+                .as_ref()
+                .and_then(|store| store.get(tid))
+                .map(|cfg| {
+                    if let Some(role) = role_override {
+                        vec![role.clone()]
+                    } else {
+                        cfg.escalation_approvers.clone()
+                    }
+                })
+                .unwrap_or_default();
+            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
+                tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+            }
+        }
+    }
+
     /// Submit a `RequiresApproval` evaluation to the approval queue, await
     /// the human decision (with timeout), and return the final response.
     ///
@@ -415,40 +528,8 @@ impl PolicyServiceImpl {
 
         // Emit ApprovalRouted audit event (chain-hashed WORM log) when a team is identified.
         if let Some(ref tid) = team_id {
-            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            let payload = serde_json::json!({
-                "team_id": tid,
-                "action_type": req.action_type,
-                "approval_id": approval_request_id.to_string(),
-            })
-            .to_string();
-            let mut last_hash = self.last_hash.lock().await;
-            let entry = AuditEntry::new(
-                seq,
-                now,
-                AuditEventType::ApprovalRouted,
-                agent_id_val,
-                session_id_val,
-                payload,
-                *last_hash,
-            );
-            *last_hash = *entry.entry_hash();
-            drop(last_hash);
-            if let Err(e) = self.audit_tx.try_send(entry) {
-                match e {
-                    mpsc::error::TrySendError::Full(_) => {
-                        tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
-                        self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                    }
-                    mpsc::error::TrySendError::Closed(_) => {
-                        tracing::error!("audit channel closed — AuditWriter task has exited");
-                    }
-                }
-            }
+            self.emit_approval_routed_audit(req, tid, approval_request_id, agent_id_val, session_id_val)
+                .await;
         }
 
         let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
@@ -503,54 +584,15 @@ impl PolicyServiceImpl {
         };
 
         // Register the pending escalation with the scheduler.
-        if let Some(ref decision) = routing_decision {
-            // Router-driven path: use the decision's escalation_role and escalate_at.
-            if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
-                let now_secs = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
-                let approvers = vec![decision.escalation_role.clone()];
-                if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
-                    tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
-                }
-            }
-            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
-                if let Some(ref team_id_val) = decision.team_id {
-                    if let Err(e) = db_scheduler
-                        .register(
-                            approval_id,
-                            team_id_val.clone(),
-                            decision.escalation_role.clone(),
-                            "TeamAdmin".to_string(),
-                            decision.escalate_at,
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
-                    }
-                }
-            }
-        } else if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
-            // Legacy path: resolve escalation config from the RoutingConfigStore.
-            let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
-            let escalation_approvers = self
-                .routing_store
-                .as_ref()
-                .and_then(|store| store.get(tid))
-                .map(|cfg| {
-                    if let Some(ref role) = role_override {
-                        vec![role.clone()]
-                    } else {
-                        cfg.escalation_approvers.clone()
-                    }
-                })
-                .unwrap_or_default();
-            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
-                tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
-            }
-        }
+        self.register_escalation(
+            approval_id,
+            routing_decision.as_ref(),
+            &team_id,
+            timeout_secs,
+            timeout_override,
+            role_override.as_ref(),
+        )
+        .await;
 
         let (_id, future) = queue.submit(approval_req);
 
