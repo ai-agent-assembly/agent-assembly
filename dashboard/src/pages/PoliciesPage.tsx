@@ -135,6 +135,93 @@ function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
   )
 }
 
+function emptyStateTitle(filter: FilterTab): string {
+  if (filter === 'active') return 'No active policies'
+  if (filter === 'proposed') return 'No proposed policies'
+  return 'No policies yet'
+}
+
+function emptyStateDescription(filter: FilterTab): string {
+  return filter === 'all'
+    ? 'Create your first policy to get started.'
+    : 'Switch to All to see every policy.'
+}
+
+interface PoliciesContentProps {
+  readonly isError: boolean
+  readonly isLoading: boolean
+  readonly filter: FilterTab
+  readonly filtered: readonly Policy[]
+  readonly onRetry: () => void
+  readonly onNew: () => void
+  readonly onEdit: (policy: Policy) => void
+}
+
+/**
+ * The error / loading / empty / list state machine for the policies view.
+ * Extracted from PoliciesPage to keep its cognitive complexity low
+ * (SonarCloud typescript:S3776).
+ */
+function PoliciesContent({
+  isError,
+  isLoading,
+  filter,
+  filtered,
+  onRetry,
+  onNew,
+  onEdit,
+}: PoliciesContentProps) {
+  if (isError) {
+    return (
+      <ErrorState
+        title="Failed to load policies"
+        description="The gateway returned an unexpected error."
+        onRetry={onRetry}
+      />
+    )
+  }
+  if (isLoading) {
+    return (
+      <ul className="policies-list" data-testid="policies-list">
+        <PolicySkeletonRow />
+        <PolicySkeletonRow />
+        <PolicySkeletonRow />
+      </ul>
+    )
+  }
+  if (filtered.length === 0) {
+    return (
+      <EmptyState
+        title={emptyStateTitle(filter)}
+        description={emptyStateDescription(filter)}
+        action={
+          filter === 'all' ? (
+            <button
+              type="button"
+              className="policies-page__new-btn"
+              data-testid="new-policy-empty-btn"
+              onClick={onNew}
+            >
+              + new policy
+            </button>
+          ) : undefined
+        }
+      />
+    )
+  }
+  return (
+    <ul className="policies-list" data-testid="policies-list">
+      {filtered.map((policy) => (
+        <PolicyRow
+          key={`${policy.name}-${policy.version}`}
+          policy={policy}
+          onEdit={() => onEdit(policy)}
+        />
+      ))}
+    </ul>
+  )
+}
+
 export function PoliciesPage() {
   const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
   const { data: sandboxSummary } = useSandboxSummaryQuery({ window: '24h' })
@@ -286,56 +373,15 @@ export function PoliciesPage() {
         })}
       </nav>
 
-      {isError ? (
-        <ErrorState
-          title="Failed to load policies"
-          description="The gateway returned an unexpected error."
-          onRetry={() => ignorePromise(refetch())}
-        />
-      ) : isLoading ? (
-        <ul className="policies-list" data-testid="policies-list">
-          <PolicySkeletonRow />
-          <PolicySkeletonRow />
-          <PolicySkeletonRow />
-        </ul>
-      ) : filtered.length === 0 ? (
-        <EmptyState
-          title={
-            filter === 'active'
-              ? 'No active policies'
-              : filter === 'proposed'
-                ? 'No proposed policies'
-                : 'No policies yet'
-          }
-          description={
-            filter === 'all'
-              ? 'Create your first policy to get started.'
-              : 'Switch to All to see every policy.'
-          }
-          action={
-            filter === 'all' ? (
-              <button
-                type="button"
-                className="policies-page__new-btn"
-                data-testid="new-policy-empty-btn"
-                onClick={handleNew}
-              >
-                + new policy
-              </button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <ul className="policies-list" data-testid="policies-list">
-          {filtered.map((policy) => (
-            <PolicyRow
-              key={`${policy.name}-${policy.version}`}
-              policy={policy}
-              onEdit={() => handleEdit(policy)}
-            />
-          ))}
-        </ul>
-      )}
+      <PoliciesContent
+        isError={isError}
+        isLoading={isLoading}
+        filter={filter}
+        filtered={filtered}
+        onRetry={() => ignorePromise(refetch())}
+        onNew={handleNew}
+        onEdit={handleEdit}
+      />
 
       <OverlayHost name="policy-editor" onRequestClose={attemptCloseEditor}>
         <PolicyEditorOverlayContainer
