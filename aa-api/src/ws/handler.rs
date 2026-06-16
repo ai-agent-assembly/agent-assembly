@@ -145,74 +145,51 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     loop {
         let event = tokio::select! {
             Ok(pipeline_ev) = pipeline_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Violation,
-                    agent_id: extract_pipeline_agent_id(&pipeline_ev),
-                    payload: serde_json::to_value(EventPayload::Violation(
-                        build_violation_payload(&pipeline_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
+                Some(build_governance_event(
+                    &next_id,
+                    EventType::Violation,
+                    extract_pipeline_agent_id(&pipeline_ev),
+                    EventPayload::Violation(build_violation_payload(&pipeline_ev)),
+                ))
             }
             Ok(approval_ev) = approval_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Approval,
-                    agent_id: approval_ev.agent_id.clone(),
-                    payload: serde_json::to_value(EventPayload::Approval(
-                        build_approval_payload(&approval_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
+                Some(build_governance_event(
+                    &next_id,
+                    EventType::Approval,
+                    approval_ev.agent_id.clone(),
+                    EventPayload::Approval(build_approval_payload(&approval_ev)),
+                ))
             }
             Ok(expired_ev) = approval_expiry_rx.recv() => {
                 // AAASM-1453: a pending request's per-request timeout
                 // elapsed without a human decision. Propagate as an
                 // `approval` event with `status: "expired"` so the
                 // dashboard can move the row to the Expired section.
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Approval,
-                    agent_id: expired_ev.agent_id.clone(),
-                    payload: serde_json::to_value(EventPayload::Approval(
-                        build_expired_approval_payload(&expired_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
+                Some(build_governance_event(
+                    &next_id,
+                    EventType::Approval,
+                    expired_ev.agent_id.clone(),
+                    EventPayload::Approval(build_expired_approval_payload(&expired_ev)),
+                ))
             }
             Ok(budget_ev) = budget_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Budget,
-                    agent_id: format!("{:02x?}", budget_ev.agent_id.as_bytes()),
-                    payload: serde_json::to_value(EventPayload::Budget(
-                        build_budget_alert_payload(&budget_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
+                Some(build_governance_event(
+                    &next_id,
+                    EventType::Budget,
+                    format!("{:02x?}", budget_ev.agent_id.as_bytes()),
+                    EventPayload::Budget(build_budget_alert_payload(&budget_ev)),
+                ))
             }
             Ok(ops_ev) = ops_change_rx.recv() => {
                 // AAASM-1657 PR-H: forward operator-driven ops registry
                 // transitions to the dashboard so it can clear optimistic
                 // overrides and update the row in place by op_id.
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::OpsChange,
-                    agent_id: ops_ev.agent_id,
-                    payload: serde_json::to_value(EventPayload::OpsChange(ops_ev.payload))
-                        .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
+                Some(build_governance_event(
+                    &next_id,
+                    EventType::OpsChange,
+                    ops_ev.agent_id,
+                    EventPayload::OpsChange(ops_ev.payload),
+                ))
             }
             else => None,
         };
@@ -233,6 +210,24 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
 
     ping_handle.abort();
     reader_handle.abort();
+}
+
+/// Assemble a [`GovernanceEvent`] with the next monotonic id and current
+/// timestamp. A failed payload serialization falls back to `Value::Null`
+/// (`unwrap_or_default`), preserving the prior per-arm behaviour.
+fn build_governance_event(
+    next_id: &std::sync::atomic::AtomicU64,
+    event_type: EventType,
+    agent_id: String,
+    payload: EventPayload,
+) -> GovernanceEvent {
+    GovernanceEvent {
+        id: next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        event_type,
+        agent_id,
+        payload: serde_json::to_value(payload).unwrap_or_default(),
+        timestamp: chrono::Utc::now(),
+    }
 }
 
 /// Check whether an event passes the client's type and agent filters.
