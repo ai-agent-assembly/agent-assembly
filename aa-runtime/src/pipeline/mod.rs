@@ -292,7 +292,16 @@ async fn handle_policy_query(
         .to_string();
 
     // 1. Check requires_approval_actions.
-    if try_local_approval(connection_id, action_str, &agent_id_str, policy, approval_queue, response_router).await {
+    if try_local_approval(
+        connection_id,
+        action_str,
+        &agent_id_str,
+        policy,
+        approval_queue,
+        response_router,
+    )
+    .await
+    {
         return;
     }
 

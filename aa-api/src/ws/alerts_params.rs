@@ -169,14 +169,17 @@ impl AlertsWsQueryParams {
         let mut filter = AlertsFilter::unfiltered();
 
         if let Some(raw) = &self.events {
-            parse_csv_filter(raw, &mut filter.events, AlertsFilter::unfiltered().events, |tok| {
-                match tok.to_ascii_lowercase().as_str() {
+            parse_csv_filter(
+                raw,
+                &mut filter.events,
+                AlertsFilter::unfiltered().events,
+                |tok| match tok.to_ascii_lowercase().as_str() {
                     "fire" => Ok(AlertEventKind::Fire),
                     "resolve" => Ok(AlertEventKind::Resolve),
                     "silence" => Ok(AlertEventKind::Silence),
                     _ => Err(FilterError::UnknownEvent(tok.to_string())),
-                }
-            })?;
+                },
+            )?;
         }
 
         if let Some(raw) = &self.severity {

@@ -170,9 +170,8 @@ async fn handle_key_event(
                 if let Some(approval) = dialog_approval {
                     match dialog_action {
                         DialogAction::Approve => {
-                            let _ =
-                                approvals_client::approve_action(ctx, &approval.id, Some("approved via dashboard"))
-                                    .await;
+                            let _ = approvals_client::approve_action(ctx, &approval.id, Some("approved via dashboard"))
+                                .await;
                         }
                         DialogAction::Reject => {
                             let _ = approvals_client::reject_action(ctx, &approval.id, "rejected via dashboard").await;
