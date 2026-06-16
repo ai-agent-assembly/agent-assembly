@@ -141,6 +141,22 @@ Each field resolves as **explicit init argument > environment variable > unset**
 If `control_plane_url` is still unset after this chain, it falls back to
 `gateway_url` as described above.
 
+#### Canonical `AA_*` prefix and the deprecated `AAASM_*` alias
+
+`AA_*` is the **canonical** environment-variable prefix across all SDKs —
+`AA_GATEWAY_URL`, `AA_CONTROL_PLANE_URL`, and `AA_API_KEY`. New configuration
+should always use this prefix.
+
+The legacy **`AAASM_*`** prefix — used by the older zero-config gateway resolver
+in each SDK — is a **deprecated alias**. It is still honoured for
+backwards-compatibility, but reading a value from an `AAASM_*` variable emits a
+deprecation warning, and the alias will be removed in a future major version.
+Migrate to the `AA_*` names.
+
+This prefix reconciliation is tracked across the SDKs under
+[AAASM-3019](https://lightning-dust-mite.atlassian.net/browse/AAASM-3019);
+sibling subtasks update the Python, Node, and Go resolvers.
+
 ### Per-SDK notes
 
 - **Python** ([AAASM-2028](https://lightning-dust-mite.atlassian.net/browse/AAASM-2028)) —
