@@ -1215,6 +1215,202 @@ mod tests {
             .await
             .is_none());
     }
+
+    // ── spawn_pipeline_audit_publisher tests (AAASM-2610) ────────────────────
+
+    use aa_core::storage::{AuditEntry, AuditSink, Result as StorageResult};
+
+    /// An [`AuditSink`] that records every published entry's payload so tests
+    /// can assert what reached NATS.
+    struct RecordingSink {
+        published: std::sync::Mutex<Vec<AuditEntry>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                published: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn payloads(&self) -> Vec<String> {
+            self.published
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| e.payload().to_string())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuditSink for RecordingSink {
+        async fn emit(&self, event: AuditEntry) -> StorageResult<()> {
+            self.published.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// Build an [`AuditPublisher`] over the given recording sink with a fresh
+    /// on-disk fallback buffer (returned `TempDir` keeps it alive).
+    fn publisher_over(
+        sink: std::sync::Arc<RecordingSink>,
+    ) -> (
+        std::sync::Arc<crate::audit_publisher::AuditPublisher>,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let buffer = std::sync::Arc::new(
+            aa_storage_sqlite_buffer::EventBuffer::new(tmp.path().join("buffer.db"), 1_024).expect("buffer"),
+        );
+        let sink: std::sync::Arc<dyn AuditSink> = sink;
+        let publisher = std::sync::Arc::new(crate::audit_publisher::AuditPublisher::new(sink, buffer));
+        (publisher, tmp)
+    }
+
+    /// Build a `PipelineEvent::Audit` carrying a TOOL_CALL interception event.
+    fn pipeline_tool_call(event_id: &str, seq: u64) -> crate::pipeline::PipelineEvent {
+        use crate::pipeline::event::{EnrichedEvent, EventSource};
+        use aa_proto::assembly::audit::v1::AuditEvent;
+        use aa_proto::assembly::common::v1::ActionType;
+
+        crate::pipeline::PipelineEvent::Audit(Box::new(EnrichedEvent {
+            inner: AuditEvent {
+                event_id: event_id.to_string(),
+                action_type: ActionType::ToolCall as i32,
+                ..AuditEvent::default()
+            },
+            received_at_ms: 1_000,
+            source: EventSource::Sdk,
+            agent_id: "pipe-agent".to_string(),
+            connection_id: 1,
+            sequence_number: seq,
+        }))
+    }
+
+    /// The subscriber converts and publishes each pipeline `Audit` event, and
+    /// ignores `LayerDegradation` operational events.
+    #[tokio::test]
+    async fn pipeline_audit_publisher_publishes_converted_events() {
+        let sink = RecordingSink::new();
+        let (publisher, _tmp) = publisher_over(std::sync::Arc::clone(&sink));
+        let token = CancellationToken::new();
+        let tracker = TaskTracker::new();
+
+        let (tx, rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
+        super::spawn_pipeline_audit_publisher(&tracker, rx, std::sync::Arc::clone(&publisher), token.clone());
+
+        // Two audit events plus one degradation event that must be ignored.
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440010", 0))
+            .unwrap();
+        tx.send(crate::pipeline::PipelineEvent::LayerDegradation(
+            crate::pipeline::LayerDegradationInfo {
+                layer: "proxy".to_string(),
+                reason: "test".to_string(),
+                remaining_layers: vec![],
+            },
+        ))
+        .unwrap();
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440011", 1))
+            .unwrap();
+
+        // Wait until both audit events have been published (poll briefly).
+        for _ in 0..50 {
+            if sink.payloads().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let payloads = sink.payloads();
+        assert_eq!(payloads.len(), 2, "exactly the two Audit events should be published");
+        assert!(payloads.iter().all(|p| p.contains("\"action_type\":\"TOOL_CALL\"")));
+        assert!(payloads.iter().any(|p| p.contains("446655440010")));
+        assert!(payloads.iter().any(|p| p.contains("446655440011")));
+
+        token.cancel();
+        tracker.close();
+        let _ = tokio::time::timeout(Duration::from_secs(2), tracker.wait()).await;
+    }
+
+    /// The pipeline-audit publisher and the approval audit drain are disjoint:
+    /// approval-decision entries flow only through the approval queue's mpsc
+    /// drain, and pipeline interception entries flow only through the broadcast
+    /// subscriber. Driving both with a shared publisher must publish each
+    /// logical event exactly once — never the same event twice.
+    #[tokio::test]
+    async fn pipeline_and_approval_paths_do_not_double_publish() {
+        let sink = RecordingSink::new();
+        let (publisher, _tmp) = publisher_over(std::sync::Arc::clone(&sink));
+        let token = CancellationToken::new();
+        let tracker = TaskTracker::new();
+
+        // Approval path: an mpsc drain feeding the same publisher.
+        let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<AuditEntry>(16);
+        super::spawn_audit_drain(&tracker, audit_rx, std::sync::Arc::clone(&publisher), token.clone());
+        let approval_queue = crate::approval::ApprovalQueue::with_audit(audit_tx, [0u8; 32]);
+
+        // Pipeline path: the broadcast subscriber feeding the same publisher.
+        let (tx, rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
+        super::spawn_pipeline_audit_publisher(&tracker, rx, std::sync::Arc::clone(&publisher), token.clone());
+
+        // Drive one approval lifecycle (submit + approve ⇒ 2 approval entries:
+        // ApprovalRequested + ApprovalGranted).
+        let req = crate::approval::ApprovalRequest {
+            request_id: uuid::Uuid::new_v4(),
+            agent_id: "approval-agent".to_string(),
+            action: "read_file".to_string(),
+            condition_triggered: "sensitive".to_string(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 60,
+            fallback: aa_core::PolicyResult::Deny {
+                reason: "x".to_string(),
+            },
+            team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+        let id = req.request_id;
+        let (_rid, _fut) = approval_queue.submit(req);
+        approval_queue
+            .decide(
+                id,
+                crate::approval::ApprovalDecision::Approved {
+                    by: "alice".to_string(),
+                    reason: None,
+                },
+            )
+            .expect("decide");
+
+        // Drive one pipeline interception event.
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440020", 0))
+            .unwrap();
+
+        // Expect exactly 3 published entries total: 2 approval + 1 pipeline.
+        for _ in 0..50 {
+            if sink.published.lock().unwrap().len() == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let payloads = sink.payloads();
+        assert_eq!(
+            payloads.len(),
+            3,
+            "exactly 2 approval + 1 pipeline entries; no double-publish. got: {payloads:?}"
+        );
+        // The single pipeline interception event appears exactly once.
+        let pipeline_hits = payloads.iter().filter(|p| p.contains("446655440020")).count();
+        assert_eq!(pipeline_hits, 1, "pipeline event must be published exactly once");
+        // Approval entries carry the request/agent context, not the pipeline action_type.
+        let approval_hits = payloads.iter().filter(|p| p.contains("approval-agent")).count();
+        assert_eq!(approval_hits, 2, "both approval lifecycle entries present exactly once");
+
+        token.cancel();
+        tracker.close();
+        let _ = tokio::time::timeout(Duration::from_secs(2), tracker.wait()).await;
+    }
 }
 
 // ── Layer integration tests ─────────────────────────────────────────────
