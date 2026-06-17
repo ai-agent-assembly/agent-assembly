@@ -214,7 +214,10 @@ jobs:
 
       - name: Upload assets to GitHub Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v3
+        # AAASM-3135: pin to a full commit SHA (not the mutable v3 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # release-publishing job. SHA = tag v3.0.0.
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
             artifacts/aasm-*.tar.gz
