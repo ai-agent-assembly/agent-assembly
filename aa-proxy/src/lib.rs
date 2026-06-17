@@ -23,6 +23,7 @@ pub mod error;
 pub mod intercept;
 pub mod mcp_enforce;
 pub mod proxy;
+pub mod ssrf;
 pub mod tls;
 
 pub use config::ProxyConfig;
