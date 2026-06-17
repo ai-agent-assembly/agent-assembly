@@ -399,4 +399,61 @@ mod tests {
         let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(result, PolicyDecision::Allow);
     }
+
+    // ── Stage 2: network egress allowlist (F3 / AAASM-3127) ─────────────────
+
+    fn doc_with_allowlist(allowlist: Vec<String>) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.network = Some(crate::policy::document::NetworkPolicy { allowlist });
+        doc
+    }
+
+    fn net_action(url: &str) -> GovernanceAction {
+        GovernanceAction::NetworkRequest {
+            url: url.into(),
+            method: "GET".into(),
+        }
+    }
+
+    #[test]
+    fn stage_network_wildcard_matches_subdomain() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_non_matching_host() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_bare_apex() {
+        // `*.openai.com` must NOT match the bare apex `openai.com`.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://openai.com/")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_exact_match_allows() {
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_empty_allowlist_denies_all() {
+        // F3: an empty allowlist is the most restrictive posture — deny-all,
+        // not allow-all.
+        let doc = doc_with_allowlist(vec![]);
+        let d = stage_network(&doc, &net_action("https://api.openai.com/v1")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_no_network_section_is_noop() {
+        let doc = minimal_doc(None);
+        assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
+    }
 }
