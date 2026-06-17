@@ -148,6 +148,7 @@ mod tests {
         AuthenticatedCaller {
             key_id: "test".into(),
             scopes,
+            tenant: crate::auth::Tenant::default(),
         }
     }
 
