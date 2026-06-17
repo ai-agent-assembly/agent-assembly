@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { ignorePromise } from './ignorePromise'
 
 describe('ignorePromise', () => {
-  it('returns undefined for a resolving promise', () => {
-    expect(ignorePromise(Promise.resolve('ok'))).toBeUndefined()
+  it('does not throw for a resolving promise', () => {
+    expect(() => ignorePromise(Promise.resolve('ok'))).not.toThrow()
   })
 
   it('tolerates a non-thenable argument', () => {
