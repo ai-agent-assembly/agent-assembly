@@ -1736,4 +1736,75 @@ mod layer_integration {
         tracker.close();
         let _ = tokio::time::timeout(Duration::from_secs(1), tracker.wait()).await;
     }
+
+    /// Regression for AAASM-3128: the DEBUG-level TLS ring-buffer log must
+    /// never contain the decrypted-TLS `payload` bytes. Captures the tracing
+    /// output of [`super::log_ebpf_tls_event`] for an event whose payload holds
+    /// a known secret, and asserts the secret is absent while the scalar
+    /// metadata is present.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tls_event_log_omits_payload_plaintext() {
+        use std::sync::{Arc, Mutex};
+
+        use aa_ebpf::ringbuf::EbpfEvent;
+        use aa_ebpf_common::tls::{TlsCaptureEvent, MAX_PAYLOAD_LEN};
+        use tracing::subscriber;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        // Shared in-memory sink the fmt layer writes into.
+        #[derive(Clone, Default)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for BufWriter {
+            type Writer = BufWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        const SECRET: &[u8] = b"Authorization: Bearer sk-super-secret-token-value";
+        let mut payload = [0u8; MAX_PAYLOAD_LEN];
+        payload[..SECRET.len()].copy_from_slice(SECRET);
+        let event = EbpfEvent::Tls(Box::new(TlsCaptureEvent {
+            timestamp_ns: 42,
+            pid: 1234,
+            tid: 5678,
+            data_len: SECRET.len() as u32,
+            seq: 0,
+            direction: 0,
+            _pad: [0u8; 7],
+            payload,
+        }));
+
+        let sink = BufWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(sink.clone())
+            .finish();
+
+        subscriber::with_default(subscriber, || super::log_ebpf_tls_event(&event));
+
+        let out = String::from_utf8_lossy(&sink.0.lock().unwrap()).to_string();
+        assert!(
+            !out.contains("super-secret-token-value"),
+            "TLS log must not contain decrypted payload bytes; got: {out}"
+        );
+        assert!(
+            out.contains("1234"),
+            "scalar pid metadata should still be logged: {out}"
+        );
+        assert!(
+            out.contains("data_len"),
+            "scalar metadata should still be logged: {out}"
+        );
+    }
 }
