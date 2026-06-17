@@ -237,6 +237,39 @@ impl ProxyServer {
         }
     }
 
+    /// Resolve `target` and open a TCP connection, re-validating every resolved
+    /// address against the SSRF denylist immediately before connecting.
+    ///
+    /// This is the DNS-rebinding defense (AAASM-3130): a hostname that passes
+    /// the allowlist at CONNECT time can resolve to — or be flipped to — an
+    /// internal address (loopback, RFC-1918, link-local, cloud metadata) by the
+    /// time the proxy actually dials. We refuse any such address here. Resolved
+    /// addresses are filtered, not just the first, so a poisoned A-record set
+    /// cannot slip an internal IP through behind a public one.
+    async fn connect_revalidated(&self, target: &str) -> Result<TcpStream, ProxyError> {
+        let addrs: Vec<_> = tokio::net::lookup_host(target)
+            .await
+            .map_err(|e| ProxyError::Config(format!("dns resolution failed for {target}: {e}")))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(ProxyError::Config(format!("no addresses resolved for {target}")));
+        }
+        let safe: Vec<_> = addrs
+            .into_iter()
+            .filter(|addr| {
+                // Test-only escape hatch: in-process tests dial a loopback mock.
+                // Never relaxed in production (see `allow_private_connect_targets`).
+                self.config.allow_private_connect_targets || !crate::ssrf::is_blocked_ip(addr.ip())
+            })
+            .collect();
+        if safe.is_empty() {
+            return Err(ProxyError::Config(format!(
+                "ssrf: {target} resolved only to blocked address range"
+            )));
+        }
+        Ok(TcpStream::connect(&safe[..]).await?)
+    }
+
     /// Dial the upstream TLS endpoint (TCP connect + ClientHello).
     ///
     /// Honours [`ProxyConfig::upstream_override`] when set — used by
@@ -248,8 +281,11 @@ impl ProxyServer {
         target: &str,
     ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
         let upstream_tcp = match self.config.upstream_override {
+            // Integration-test path: the dial is redirected to a trusted local
+            // mock, so the SSRF re-validation below would (correctly) reject it.
+            // Skip it here; the override is never set in production.
             Some(addr) => TcpStream::connect(addr).await?,
-            None => TcpStream::connect(target).await?,
+            None => self.connect_revalidated(target).await?,
         };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
@@ -443,6 +479,16 @@ impl ProxyServer {
     /// pattern. Returns `None` when the connection is allowed. An empty
     /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
     fn connect_deny_reason(&self, host: &str) -> Option<&'static str> {
+        // SSRF guard (AAASM-3130): an IP-literal CONNECT target pointed at
+        // loopback / RFC-1918 / link-local / cloud-metadata space must be
+        // refused regardless of the allowlist — a hostname allowlist cannot
+        // express "but not internal addresses". Names are re-validated after
+        // resolution in `dial_upstream_tls` (DNS-rebind defense).
+        if !self.config.allow_private_connect_targets {
+            if let Some(true) = crate::ssrf::blocked_ip_literal(host) {
+                return Some("ssrf: blocked address range");
+            }
+        }
         if self.config.denied_hosts.iter().any(|denied| denied == host) {
             return Some("host policy");
         }
@@ -607,7 +653,13 @@ impl ProxyServer {
             // just tunnel the raw TCP bytes transparently.
             if self.config.llm_only && detect_api(host) == LlmApiPattern::Unknown {
                 tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
-                let upstream = TcpStream::connect(target).await?;
+                // SSRF re-validation also covers the transparent tunnel — this
+                // path forwards raw bytes without MitM, so it is the most likely
+                // SSRF vector if the host resolves to an internal address.
+                let upstream = match self.config.upstream_override {
+                    Some(addr) => TcpStream::connect(addr).await?,
+                    None => self.connect_revalidated(target).await?,
+                };
                 let (mut cr, mut cw) = tokio::io::split(stream);
                 let (mut ur, mut uw) = tokio::io::split(upstream);
                 tokio::select! {
@@ -736,5 +788,69 @@ impl ProxyServer {
 
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn server_with(denied_hosts: Vec<String>, allowlist: Vec<String>) -> Arc<ProxyServer> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let mut config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            denied_hosts,
+            network_allowlist: allowlist,
+            skip_upstream_tls_verify: false,
+            credential_action: crate::config::CredentialAction::default(),
+            upstream_override: None,
+            gateway_endpoint: None,
+            // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
+            allow_private_connect_targets: false,
+        };
+        config.bind_addr = ([127, 0, 0, 1], 0).into();
+        let (tx, _rx) = broadcast::channel(8);
+        ProxyServer::new(config, ca, tx)
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_blocks_metadata_ip_literal() {
+        // SSRF: the cloud metadata endpoint as an IP literal must be denied
+        // even with an empty allowlist (which is otherwise allow-all).
+        let server = server_with(vec![], vec![]).await;
+        assert_eq!(
+            server.connect_deny_reason("169.254.169.254"),
+            Some("ssrf: blocked address range")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_blocks_loopback_and_rfc1918_literals() {
+        let server = server_with(vec![], vec![]).await;
+        assert!(server.connect_deny_reason("127.0.0.1").is_some());
+        assert!(server.connect_deny_reason("10.0.0.5").is_some());
+        assert!(server.connect_deny_reason("192.168.1.1").is_some());
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_ssrf_check_precedes_allowlist() {
+        // Even if an operator allowlists the literal, the SSRF guard wins —
+        // a hostname allowlist must never be a way to reach internal space.
+        let server = server_with(vec![], vec!["169.254.169.254".to_string()]).await;
+        assert_eq!(
+            server.connect_deny_reason("169.254.169.254"),
+            Some("ssrf: blocked address range")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_allows_public_host() {
+        let server = server_with(vec![], vec![]).await;
+        assert_eq!(server.connect_deny_reason("api.openai.com"), None);
+        assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
     }
 }
