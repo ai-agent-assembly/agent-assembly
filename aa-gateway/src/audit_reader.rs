@@ -47,28 +47,7 @@ impl AuditReader {
 
         // Apply filters.
         if agent_filter.is_some() || event_filter.is_some() || org_id.is_some() {
-            all_entries.retain(|entry| {
-                if let Some(aid) = &agent_filter {
-                    if entry.agent_id() != *aid {
-                        return false;
-                    }
-                }
-                if let Some(types) = &event_filter {
-                    if !types.contains(&entry.event_type()) {
-                        return false;
-                    }
-                }
-                // AAASM-2008 — org_id filter scopes the result to a single
-                // tenant. Entries with org_id=None never match a non-None
-                // filter (multi-tenancy isolation requires explicit org
-                // tagging on the entry).
-                if let Some(org) = org_id {
-                    if entry.org_id() != Some(org) {
-                        return false;
-                    }
-                }
-                true
-            });
+            all_entries.retain(|entry| entry_matches(entry, agent_filter.as_ref(), event_filter.as_ref(), org_id));
         }
 
         // Sort by timestamp descending (newest first).
@@ -157,6 +136,36 @@ impl AuditReader {
 /// shadow payloads are constructed and tolerates non-JSON / malformed lines
 /// the same way `aggregate_violations` tolerates missing fields — by returning
 /// false rather than erroring.
+/// Whether an audit `entry` passes the (already-parsed) agent, event-type, and
+/// org filters. A `None` filter is unconstrained.
+///
+/// AAASM-2008 — the `org_id` filter scopes the result to a single tenant.
+/// Entries with `org_id=None` never match a non-`None` filter (multi-tenancy
+/// isolation requires explicit org tagging on the entry).
+fn entry_matches(
+    entry: &AuditEntry,
+    agent_filter: Option<&AgentId>,
+    event_filter: Option<&Vec<AuditEventType>>,
+    org_id: Option<&str>,
+) -> bool {
+    if let Some(aid) = agent_filter {
+        if entry.agent_id() != *aid {
+            return false;
+        }
+    }
+    if let Some(types) = event_filter {
+        if !types.contains(&entry.event_type()) {
+            return false;
+        }
+    }
+    if let Some(org) = org_id {
+        if entry.org_id() != Some(org) {
+            return false;
+        }
+    }
+    true
+}
+
 fn payload_has_dry_run_true(payload: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(payload)
         .ok()

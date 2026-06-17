@@ -53,110 +53,148 @@ pub(crate) fn evaluate_single_doc(
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
-    // Stage 1 — Schedule
-    if let Some(schedule) = &doc.schedule {
-        if let Some(ah) = &schedule.active_hours {
-            use chrono::Timelike;
-            let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
-            let now = chrono::Utc::now().with_timezone(&tz);
-            let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
-            if current_hhmm < ah.start || current_hhmm >= ah.end {
-                return PolicyDecision::Deny {
-                    reason: "outside active hours".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
+    if let Some(d) = stage_schedule(doc) {
+        return d;
     }
-
-    // Stage 2 — Network allowlist
-    if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-        if let Some(np) = &doc.network {
-            if !np.allowlist.is_empty() {
-                let host = url
-                    .split_once("://")
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .split('/')
-                    .next()
-                    .unwrap_or("");
-                if !np.allowlist.iter().any(|entry| entry == host) {
-                    return PolicyDecision::Deny {
-                        reason: "host not in network allowlist".into(),
-                        source_scope: doc.scope.clone(),
-                    };
-                }
-            }
-        }
+    if let Some(d) = stage_network(doc, action) {
+        return d;
     }
-
-    // Stage 3 — Tool allow/deny
-    if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-        if let Some(tp) = doc.tools.get(name) {
-            if !tp.allow {
-                return PolicyDecision::Deny {
-                    reason: "tool denied by policy".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
+    if let Some(d) = stage_tool_allow(doc, action) {
+        return d;
     }
-
-    // Stage 3.5 — Capability check
-    if let Some(caps) = &doc.capabilities {
-        if let Some(cap) = aa_core::action_to_capability(action) {
-            if caps.deny.contains(&cap) {
-                return PolicyDecision::Deny {
-                    reason: "capability denied by policy".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-            if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
-                return PolicyDecision::Deny {
-                    reason: "capability not in allow list".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
+    if let Some(d) = stage_capability(doc, action) {
+        return d;
     }
-
-    // Stage 5 — Approval condition
-    if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-        if let Some(tp) = doc.tools.get(name) {
-            if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty()
-                    && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
-                {
-                    return PolicyDecision::RequireApproval {
-                        reason: format!("approval required for tool '{name}'"),
-                        timeout_secs: doc.approval_timeout_secs,
-                    };
-                }
-            }
-        }
-    }
-
-    // Stage 5b — Approval condition for SendMessage (channel policy).
-    // Looks up the "message" sentinel key in the tools map; all inter-team
-    // channel rules are expressed as `requires_approval_if` on that key.
-    // The expression evaluator resolves source.team_id, target.team_id, and
-    // target.channel_id directly from the SendMessage action fields.
-    if let aa_core::GovernanceAction::SendMessage { .. } = action {
-        if let Some(tp) = doc.tools.get("message") {
-            if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty()
-                    && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
-                {
-                    return PolicyDecision::RequireApproval {
-                        reason: "approval required: cross-team channel policy".into(),
-                        timeout_secs: doc.approval_timeout_secs,
-                    };
-                }
-            }
-        }
+    if let Some(d) = stage_approval(doc, ctx, action, policy_ctx) {
+        return d;
     }
 
     PolicyDecision::Allow
+}
+
+/// Stage 1 — Schedule: deny when the current time is outside the doc's
+/// active-hours window.
+fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
+    let ah = doc.schedule.as_ref()?.active_hours.as_ref()?;
+    use chrono::Timelike;
+    let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
+    let now = chrono::Utc::now().with_timezone(&tz);
+    let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
+    if current_hhmm < ah.start || current_hhmm >= ah.end {
+        return Some(PolicyDecision::Deny {
+            reason: "outside active hours".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is absent
+/// from a non-empty allowlist.
+fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let aa_core::GovernanceAction::NetworkRequest { url, .. } = action else {
+        return None;
+    };
+    let np = doc.network.as_ref()?;
+    if np.allowlist.is_empty() {
+        return None;
+    }
+    let host = url
+        .split_once("://")
+        .map(|x| x.1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    if !np.allowlist.iter().any(|entry| entry == host) {
+        return Some(PolicyDecision::Deny {
+            reason: "host not in network allowlist".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stage 3 — Tool allow/deny: deny a `ToolCall` whose tool policy is not allowed.
+fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
+        return None;
+    };
+    let tp = doc.tools.get(name)?;
+    if !tp.allow {
+        return Some(PolicyDecision::Deny {
+            reason: "tool denied by policy".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stage 3.5 — Capability check: deny when this doc's capability set blocks the
+/// action's capability (explicit deny, or omitted from a non-empty allow set).
+fn stage_capability(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let caps = doc.capabilities.as_ref()?;
+    let cap = aa_core::action_to_capability(action)?;
+    if caps.deny.contains(&cap) {
+        return Some(PolicyDecision::Deny {
+            reason: "capability denied by policy".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
+        return Some(PolicyDecision::Deny {
+            reason: "capability not in allow list".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stages 5 & 5b — Approval condition: require approval when the tool's (or the
+/// `message` channel sentinel's) `requires_approval_if` expression evaluates
+/// true for the action.
+fn stage_approval(
+    doc: &PolicyDocument,
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+) -> Option<PolicyDecision> {
+    match action {
+        aa_core::GovernanceAction::ToolCall { name, .. }
+            if approval_condition_met(doc.tools.get(name), ctx, action, policy_ctx) =>
+        {
+            Some(PolicyDecision::RequireApproval {
+                reason: format!("approval required for tool '{name}'"),
+                timeout_secs: doc.approval_timeout_secs,
+            })
+        }
+        // The "message" sentinel key carries all inter-team channel rules; the
+        // expression evaluator resolves source/target team and channel ids from
+        // the SendMessage action fields directly.
+        aa_core::GovernanceAction::SendMessage { .. }
+            if approval_condition_met(doc.tools.get("message"), ctx, action, policy_ctx) =>
+        {
+            Some(PolicyDecision::RequireApproval {
+                reason: "approval required: cross-team channel policy".into(),
+                timeout_secs: doc.approval_timeout_secs,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether a tool/channel policy has a non-empty `requires_approval_if`
+/// expression that evaluates true for `action`.
+fn approval_condition_met(
+    tool_policy: Option<&crate::policy::document::ToolPolicy>,
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+) -> bool {
+    let Some(expr) = tool_policy.and_then(|tp| tp.requires_approval_if.as_ref()) else {
+        return false;
+    };
+    !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
 }
 
 /// Merge a cascade of policy documents into a single `PolicyDecision` using

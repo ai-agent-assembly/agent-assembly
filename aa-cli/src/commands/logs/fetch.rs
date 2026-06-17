@@ -8,6 +8,7 @@ use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
 use super::format::{format_log_json, format_log_line, is_within_time_range, parse_since, parse_until, LogLineData};
+use super::types::LogEventType;
 use super::LogsArgs;
 
 /// Paginated response envelope from `GET /api/v1/logs`.
@@ -100,10 +101,8 @@ pub fn run(args: LogsArgs, ctx: &ResolvedContext) -> ExitCode {
         if !is_within_time_range(&entry.timestamp, since.as_ref(), until.as_ref()) {
             continue;
         }
-        if let Some(ref types) = args.r#type {
-            if types.len() > 1 && !types.iter().any(|t| t.as_api_str() == entry.event_type) {
-                continue;
-            }
+        if !entry_matches_type_filter(entry, args.r#type.as_deref()) {
+            continue;
         }
         let line_data = entry.to_line_data();
         if use_json {
@@ -114,6 +113,18 @@ pub fn run(args: LogsArgs, ctx: &ResolvedContext) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// Whether `entry` passes the client-side multi-type filter.
+///
+/// The API accepts only a single `event_type`, so when more than one type was
+/// requested the gateway returns all of them and the surplus is filtered here.
+/// A single requested type (or none) is already satisfied by the server query.
+fn entry_matches_type_filter(entry: &LogEntry, types: Option<&[LogEventType]>) -> bool {
+    match types {
+        Some(types) if types.len() > 1 => types.iter().any(|t| t.as_api_str() == entry.event_type),
+        _ => true,
+    }
 }
 
 #[cfg(test)]

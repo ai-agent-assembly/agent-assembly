@@ -590,6 +590,17 @@ impl GatewayConfig {
             self.local.port = port;
             self.remote.listen_addr.set_port(port);
         }
+        self.apply_storage_env_overrides(&get_env)?;
+        self.apply_tls_env_overrides(&get_env);
+        Ok(())
+    }
+
+    /// Apply the `AAASM_STORAGE_*` / `AAASM_*_URL` / `AAASM_RETENTION_*`
+    /// env vars onto `self.storage`.
+    fn apply_storage_env_overrides<F>(&mut self, get_env: &F) -> Result<(), ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         if let Some(raw) = get_env("AAASM_STORAGE_BACKEND") {
             self.storage.backend = match raw.as_str() {
                 "sqlite" => StorageBackendType::Sqlite,
@@ -622,6 +633,15 @@ impl GatewayConfig {
                 _ => return Err(ConfigError::InvalidColdAction { raw }),
             };
         }
+        Ok(())
+    }
+
+    /// Apply the `AAASM_TLS_CERT` / `AAASM_TLS_KEY` env vars onto
+    /// `self.remote.tls`, creating the [`TlsConfig`] slot if either is set.
+    fn apply_tls_env_overrides<F>(&mut self, get_env: &F)
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let cert = get_env("AAASM_TLS_CERT");
         let key = get_env("AAASM_TLS_KEY");
         if cert.is_some() || key.is_some() {
@@ -636,7 +656,6 @@ impl GatewayConfig {
                 tls.key_file = PathBuf::from(path);
             }
         }
-        Ok(())
     }
 }
 

@@ -97,28 +97,7 @@ impl CorrelationEngine {
                 None => continue,
             };
 
-            let mut best_intent: Option<(&super::event::IntentEvent, u64)> = None;
-
-            for intent in &intents {
-                // Keyword must match.
-                if intent.action_keyword != action_keyword {
-                    continue;
-                }
-                // Intent must precede the action.
-                if intent.timestamp_ms >= action.timestamp_ms {
-                    continue;
-                }
-                // PIDs must be in the same causal group.
-                if !self.lineage.is_same_family(intent.pid, action.pid) {
-                    continue;
-                }
-
-                let delta = action.timestamp_ms - intent.timestamp_ms;
-                match &best_intent {
-                    Some((_, best_delta)) if delta >= *best_delta => {}
-                    _ => best_intent = Some((intent, delta)),
-                }
-            }
+            let best_intent = self.find_best_intent(action, action_keyword, &intents);
 
             if let Some((intent, delta)) = best_intent {
                 let strength = 1.0 - (delta as f64 / self.config.window_ms as f64).min(1.0);
@@ -155,6 +134,39 @@ impl CorrelationEngine {
         }
 
         results
+    }
+
+    /// Find the intent that best correlates with `action`: same keyword, same
+    /// causal PID family, preceding in time, and closest in time (smallest
+    /// delta). Returns the matched intent and its time delta in ms.
+    fn find_best_intent<'a>(
+        &self,
+        action: &super::event::ActionEvent,
+        action_keyword: &str,
+        intents: &[&'a super::event::IntentEvent],
+    ) -> Option<(&'a super::event::IntentEvent, u64)> {
+        let mut best_intent: Option<(&'a super::event::IntentEvent, u64)> = None;
+        for intent in intents {
+            // Keyword must match.
+            if intent.action_keyword != action_keyword {
+                continue;
+            }
+            // Intent must precede the action.
+            if intent.timestamp_ms >= action.timestamp_ms {
+                continue;
+            }
+            // PIDs must be in the same causal group.
+            if !self.lineage.is_same_family(intent.pid, action.pid) {
+                continue;
+            }
+
+            let delta = action.timestamp_ms - intent.timestamp_ms;
+            match &best_intent {
+                Some((_, best_delta)) if delta >= *best_delta => {}
+                _ => best_intent = Some((intent, delta)),
+            }
+        }
+        best_intent
     }
 
     /// Evict events older than the configured time window.
