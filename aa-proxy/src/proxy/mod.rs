@@ -237,6 +237,35 @@ impl ProxyServer {
         }
     }
 
+    /// Resolve `target` and open a TCP connection, re-validating every resolved
+    /// address against the SSRF denylist immediately before connecting.
+    ///
+    /// This is the DNS-rebinding defense (AAASM-3130): a hostname that passes
+    /// the allowlist at CONNECT time can resolve to — or be flipped to — an
+    /// internal address (loopback, RFC-1918, link-local, cloud metadata) by the
+    /// time the proxy actually dials. We refuse any such address here. Resolved
+    /// addresses are filtered, not just the first, so a poisoned A-record set
+    /// cannot slip an internal IP through behind a public one.
+    async fn connect_revalidated(&self, target: &str) -> Result<TcpStream, ProxyError> {
+        let addrs: Vec<_> = tokio::net::lookup_host(target)
+            .await
+            .map_err(|e| ProxyError::Config(format!("dns resolution failed for {target}: {e}")))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(ProxyError::Config(format!("no addresses resolved for {target}")));
+        }
+        let safe: Vec<_> = addrs
+            .into_iter()
+            .filter(|addr| !crate::ssrf::is_blocked_ip(addr.ip()))
+            .collect();
+        if safe.is_empty() {
+            return Err(ProxyError::Config(format!(
+                "ssrf: {target} resolved only to blocked address range"
+            )));
+        }
+        Ok(TcpStream::connect(&safe[..]).await?)
+    }
+
     /// Dial the upstream TLS endpoint (TCP connect + ClientHello).
     ///
     /// Honours [`ProxyConfig::upstream_override`] when set — used by
@@ -248,8 +277,11 @@ impl ProxyServer {
         target: &str,
     ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
         let upstream_tcp = match self.config.upstream_override {
+            // Integration-test path: the dial is redirected to a trusted local
+            // mock, so the SSRF re-validation below would (correctly) reject it.
+            // Skip it here; the override is never set in production.
             Some(addr) => TcpStream::connect(addr).await?,
-            None => TcpStream::connect(target).await?,
+            None => self.connect_revalidated(target).await?,
         };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
@@ -443,6 +475,14 @@ impl ProxyServer {
     /// pattern. Returns `None` when the connection is allowed. An empty
     /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
     fn connect_deny_reason(&self, host: &str) -> Option<&'static str> {
+        // SSRF guard (AAASM-3130): an IP-literal CONNECT target pointed at
+        // loopback / RFC-1918 / link-local / cloud-metadata space must be
+        // refused regardless of the allowlist — a hostname allowlist cannot
+        // express "but not internal addresses". Names are re-validated after
+        // resolution in `dial_upstream_tls` (DNS-rebind defense).
+        if let Some(true) = crate::ssrf::blocked_ip_literal(host) {
+            return Some("ssrf: blocked address range");
+        }
         if self.config.denied_hosts.iter().any(|denied| denied == host) {
             return Some("host policy");
         }
@@ -607,7 +647,13 @@ impl ProxyServer {
             // just tunnel the raw TCP bytes transparently.
             if self.config.llm_only && detect_api(host) == LlmApiPattern::Unknown {
                 tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
-                let upstream = TcpStream::connect(target).await?;
+                // SSRF re-validation also covers the transparent tunnel — this
+                // path forwards raw bytes without MitM, so it is the most likely
+                // SSRF vector if the host resolves to an internal address.
+                let upstream = match self.config.upstream_override {
+                    Some(addr) => TcpStream::connect(addr).await?,
+                    None => self.connect_revalidated(target).await?,
+                };
                 let (mut cr, mut cw) = tokio::io::split(stream);
                 let (mut ur, mut uw) = tokio::io::split(upstream);
                 tokio::select! {
