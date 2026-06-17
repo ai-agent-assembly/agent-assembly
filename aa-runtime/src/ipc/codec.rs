@@ -40,12 +40,28 @@ pub const TAG_APPROVAL_DECISION: u8 = 2;
 pub const TAG_ACK: u8 = 3;
 pub const TAG_VIOLATION_ALERT: u8 = 4;
 
+/// Maximum accepted length-delimited payload size, in bytes (8 MiB).
+///
+/// The wire length prefix is attacker-controlled: a peer on the UDS can send a
+/// varint claiming a multi-gigabyte payload, and `vec![0u8; len]` would attempt
+/// to allocate it before a single payload byte is read — a trivial local DoS
+/// (AAASM-3132). We reject any frame larger than this bound *before* allocating.
+/// 8 MiB comfortably exceeds any legitimate `CheckActionRequest` / `AuditEvent`
+/// while keeping a single hostile frame from exhausting memory.
+pub const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
+
 /// Errors that can occur during frame encoding or decoding.
 #[derive(Debug)]
 pub enum CodecError {
     Io(std::io::Error),
     UnknownTag(u8),
     DecodeError(prost::DecodeError),
+    /// The wire length prefix exceeded [`MAX_FRAME_LEN`]. Rejected before any
+    /// allocation so a hostile peer cannot force a large buffer alloc.
+    FrameTooLarge {
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for CodecError {
@@ -54,6 +70,9 @@ impl std::fmt::Display for CodecError {
             CodecError::Io(e) => write!(f, "IO error: {e}"),
             CodecError::UnknownTag(t) => write!(f, "unknown frame tag: {t}"),
             CodecError::DecodeError(e) => write!(f, "prost decode error: {e}"),
+            CodecError::FrameTooLarge { len, max } => {
+                write!(f, "frame length {len} exceeds maximum {max}")
+            }
         }
     }
 }
@@ -141,6 +160,15 @@ where
 {
     // Read the varint length (prost uses unsigned varint).
     let len = read_varint(reader).await? as usize;
+    // AAASM-3132: bound the claimed length BEFORE allocating. The prefix comes
+    // off the wire from an untrusted peer, so allocating `len` bytes first would
+    // let a single hostile frame exhaust memory.
+    if len > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge {
+            len,
+            max: MAX_FRAME_LEN,
+        });
+    }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
