@@ -429,7 +429,10 @@ jobs:
           git -C . diff -- Formula/aasm.rb || true
 
       - name: Open tap PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -501,7 +504,10 @@ jobs:
           git -C . diff -- native/aa-ffi-node/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
@@ -583,7 +589,10 @@ jobs:
           git -C . diff -- native/aa-ffi-python/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
@@ -670,7 +679,10 @@ jobs:
           git -C . diff -- native/aa-ffi-go/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: sdk
           token: ${{ secrets.GO_SDK_BOT_TOKEN }}
