@@ -3,10 +3,12 @@ import type { TraceEvent } from '../../features/trace/types'
 import { Tooltip } from '../Tooltip'
 import './PayloadModal.css'
 
-// Single greedy `.*` to end-of-line (no overlapping `.*?`/`,?`/`\s*` tail) keeps
-// this linear; the trailing comma is derived in code below. The previous form
-// could backtrack on whitespace-heavy payload lines. See typescript:S5852.
-const REDACTED_LINE_RE = /^(\s*)"([^"]+)":\s*(.*)$/
+// Provably linear: no `\s*`/`.*` overlap. The single greedy `(.*)` to end-of-line
+// absorbs any post-colon whitespace, so there is no overlapping-match region for
+// the engine to backtrack over. The render path reconstructs `"key": <sentinel>`
+// from scratch (it does not use the captured value's leading space) and the
+// trailing comma is derived in code below. See typescript:S5852.
+const REDACTED_LINE_RE = /^(\s*)"([^"]+)":(.*)$/
 
 function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): ReactNode[] {
   return formatted.split('\n').map((line, i) => {
