@@ -54,6 +54,44 @@ fn today_in_tz(tz: chrono_tz::Tz) -> chrono::NaiveDate {
     chrono::Utc::now().with_timezone(&tz).date_naive()
 }
 
+/// Accumulate `cost` into the [`BudgetState`] for `key` in `budgets`, resetting
+/// the window first when it has rolled over. Creates a fresh state on first use,
+/// seeding `monthly_spent_usd` when any monthly limit is configured and stamping
+/// `last_reset_at` for duration windows. Shared by the agent, team, and org
+/// tiers of [`BudgetTracker::record_cost`].
+#[allow(clippy::too_many_arguments)]
+fn accumulate_spend<K: Eq + std::hash::Hash>(
+    budgets: &DashMap<K, BudgetState>,
+    key: K,
+    cost: Decimal,
+    has_monthly: bool,
+    now: chrono::DateTime<chrono::Utc>,
+    today: chrono::NaiveDate,
+    window: BudgetWindow,
+    tz: chrono_tz::Tz,
+) {
+    budgets
+        .entry(key)
+        .and_modify(|s| {
+            s.maybe_reset_window(now, window, tz);
+            s.spent_usd += cost;
+            if let Some(m) = s.monthly_spent_usd.as_mut() {
+                *m += cost;
+            }
+        })
+        .or_insert_with(|| {
+            let mut s = BudgetState::new_for_date(today);
+            s.spent_usd += cost;
+            if has_monthly {
+                s.monthly_spent_usd = Some(cost);
+            }
+            if matches!(window, BudgetWindow::Duration(_)) {
+                s.last_reset_at = Some(now);
+            }
+            s
+        });
+}
+
 /// Per-agent and global budget tracker. All methods take `&self` — safe to share via `Arc`.
 pub struct BudgetTracker {
     /// Per-agent daily spend. `pub(crate)` for test date manipulation.
@@ -390,6 +428,43 @@ impl BudgetTracker {
         status
     }
 
+    /// Enforce a tier's (team or org) monthly-then-daily limits for the budget
+    /// state keyed by `key` in `budgets`, emitting threshold alerts via
+    /// [`Self::check_limit_and_alert`]. `alert_team_id` is the team label carried
+    /// on emitted alerts (`Some(team)` for the team tier, `None` for org).
+    /// Returns `true` on the first limit exceeded (monthly takes precedence).
+    fn tier_limit_exceeded(
+        &self,
+        budgets: &DashMap<String, BudgetState>,
+        key: &str,
+        agent_id: AgentId,
+        alert_team_id: Option<&str>,
+        monthly_limit: Option<Decimal>,
+        daily_limit: Option<Decimal>,
+    ) -> bool {
+        if let Some(limit) = monthly_limit {
+            if let Some(state) = budgets.get(key) {
+                if let Some(monthly) = state.monthly_spent_usd {
+                    if self.check_limit_and_alert(agent_id, alert_team_id, monthly, limit)
+                        == BudgetStatus::LimitExceeded
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        if let Some(limit) = daily_limit {
+            if let Some(state) = budgets.get(key) {
+                if self.check_limit_and_alert(agent_id, alert_team_id, state.spent_usd, limit)
+                    == BudgetStatus::LimitExceeded
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
     ///
@@ -412,26 +487,7 @@ impl BudgetTracker {
         let window = self.window;
         let tz = self.timezone;
 
-        self.per_agent
-            .entry(agent_id)
-            .and_modify(|s| {
-                s.maybe_reset_window(now, window, tz);
-                s.spent_usd += cost;
-                if let Some(m) = s.monthly_spent_usd.as_mut() {
-                    *m += cost;
-                }
-            })
-            .or_insert_with(|| {
-                let mut s = BudgetState::new_for_date(today);
-                s.spent_usd += cost;
-                if has_monthly {
-                    s.monthly_spent_usd = Some(cost);
-                }
-                if matches!(window, BudgetWindow::Duration(_)) {
-                    s.last_reset_at = Some(now);
-                }
-                s
-            });
+        accumulate_spend(&self.per_agent, agent_id, cost, has_monthly, now, today, window, tz);
 
         // Append to per-agent daily history (AAASM-1055). In-memory only; not
         // persisted across restarts. The subtree-burn endpoint reads this to
@@ -445,48 +501,26 @@ impl BudgetTracker {
             .or_insert(cost);
 
         if let Some(tid) = team_id {
-            self.team_budgets
-                .entry(tid.to_string())
-                .and_modify(|s| {
-                    s.maybe_reset_window(now, window, tz);
-                    s.spent_usd += cost;
-                    if let Some(m) = s.monthly_spent_usd.as_mut() {
-                        *m += cost;
-                    }
-                })
-                .or_insert_with(|| {
-                    let mut s = BudgetState::new_for_date(today);
-                    s.spent_usd += cost;
-                    if has_monthly {
-                        s.monthly_spent_usd = Some(cost);
-                    }
-                    if matches!(window, BudgetWindow::Duration(_)) {
-                        s.last_reset_at = Some(now);
-                    }
-                    s
-                });
-
-            // Check team monthly limit and emit alert.
-            if let Some(team_monthly_limit) = self.team_monthly_limit_usd {
-                if let Some(team_state) = self.team_budgets.get(tid) {
-                    if let Some(team_monthly) = team_state.monthly_spent_usd {
-                        let status = self.check_limit_and_alert(agent_id, Some(tid), team_monthly, team_monthly_limit);
-                        if status == BudgetStatus::LimitExceeded {
-                            return BudgetStatus::LimitExceeded;
-                        }
-                    }
-                }
-            }
-
-            // Check team daily limit and emit alert.
-            if let Some(team_daily_limit) = self.team_daily_limit_usd {
-                if let Some(team_state) = self.team_budgets.get(tid) {
-                    let status =
-                        self.check_limit_and_alert(agent_id, Some(tid), team_state.spent_usd, team_daily_limit);
-                    if status == BudgetStatus::LimitExceeded {
-                        return BudgetStatus::LimitExceeded;
-                    }
-                }
+            accumulate_spend(
+                &self.team_budgets,
+                tid.to_string(),
+                cost,
+                has_monthly,
+                now,
+                today,
+                window,
+                tz,
+            );
+            // Team-tier enforcement: monthly precedes daily by convention.
+            if self.tier_limit_exceeded(
+                &self.team_budgets,
+                tid,
+                agent_id,
+                Some(tid),
+                self.team_monthly_limit_usd,
+                self.team_daily_limit_usd,
+            ) {
+                return BudgetStatus::LimitExceeded;
             }
         }
 
@@ -494,47 +528,25 @@ impl BudgetTracker {
         // accumulate per-org spend into `org_budgets`, then enforce the
         // monthly limit (precedes daily by convention).
         if let Some(oid) = org_id {
-            self.org_budgets
-                .entry(oid.to_string())
-                .and_modify(|s| {
-                    s.maybe_reset_window(now, window, tz);
-                    s.spent_usd += cost;
-                    if let Some(m) = s.monthly_spent_usd.as_mut() {
-                        *m += cost;
-                    }
-                })
-                .or_insert_with(|| {
-                    let mut s = BudgetState::new_for_date(today);
-                    s.spent_usd += cost;
-                    if has_monthly {
-                        s.monthly_spent_usd = Some(cost);
-                    }
-                    if matches!(window, BudgetWindow::Duration(_)) {
-                        s.last_reset_at = Some(now);
-                    }
-                    s
-                });
-
-            // Check org monthly limit and emit alert.
-            if let Some(org_monthly_limit) = self.org_monthly_limit_usd {
-                if let Some(org_state) = self.org_budgets.get(oid) {
-                    if let Some(org_monthly) = org_state.monthly_spent_usd {
-                        let status = self.check_limit_and_alert(agent_id, None, org_monthly, org_monthly_limit);
-                        if status == BudgetStatus::LimitExceeded {
-                            return BudgetStatus::LimitExceeded;
-                        }
-                    }
-                }
-            }
-
-            // Check org daily limit and emit alert.
-            if let Some(org_daily_limit) = self.org_daily_limit_usd {
-                if let Some(org_state) = self.org_budgets.get(oid) {
-                    let status = self.check_limit_and_alert(agent_id, None, org_state.spent_usd, org_daily_limit);
-                    if status == BudgetStatus::LimitExceeded {
-                        return BudgetStatus::LimitExceeded;
-                    }
-                }
+            accumulate_spend(
+                &self.org_budgets,
+                oid.to_string(),
+                cost,
+                has_monthly,
+                now,
+                today,
+                window,
+                tz,
+            );
+            if self.tier_limit_exceeded(
+                &self.org_budgets,
+                oid,
+                agent_id,
+                None,
+                self.org_monthly_limit_usd,
+                self.org_daily_limit_usd,
+            ) {
+                return BudgetStatus::LimitExceeded;
             }
         }
 

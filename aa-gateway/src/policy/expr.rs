@@ -191,209 +191,25 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
 
         // List literal: ["item1", "item2", ...]
         if ch == '[' {
-            chars.next(); // consume '['
-            let mut items: Vec<String> = Vec::new();
-            loop {
-                // skip whitespace
-                while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() {
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-                match chars.peek() {
-                    Some(&']') => {
-                        chars.next();
-                        break;
-                    }
-                    Some(&'"') => {
-                        chars.next(); // consume opening quote
-                        let mut s = String::new();
-                        loop {
-                            match chars.next() {
-                                Some('"') => break,
-                                Some('\\') => match chars.next() {
-                                    Some('"') => s.push('"'),
-                                    Some('\\') => s.push('\\'),
-                                    Some(c) => {
-                                        s.push('\\');
-                                        s.push(c);
-                                    }
-                                    None => return None,
-                                },
-                                Some(c) => s.push(c),
-                                None => return None,
-                            }
-                        }
-                        items.push(s);
-                        // skip whitespace and optional comma
-                        while let Some(&c) = chars.peek() {
-                            if c.is_whitespace() || c == ',' {
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                    _ => return None, // unexpected token in list
-                }
-            }
-            tokens.push(Token::Literal(LiteralVal::StrList(items)));
+            tokens.push(lex_list_literal(&mut chars)?);
             continue;
         }
 
         // Quoted string literal
         if ch == '"' {
-            chars.next(); // consume opening quote
-            let mut s = String::new();
-            loop {
-                match chars.next() {
-                    Some('"') => break,
-                    Some('\\') => {
-                        // basic escape: \" and \\
-                        match chars.next() {
-                            Some('"') => s.push('"'),
-                            Some('\\') => s.push('\\'),
-                            Some(c) => {
-                                s.push('\\');
-                                s.push(c);
-                            }
-                            None => return None, // unterminated escape
-                        }
-                    }
-                    Some(c) => s.push(c),
-                    None => return None, // unterminated string
-                }
-            }
-            tokens.push(Token::Literal(LiteralVal::Str(s)));
+            tokens.push(lex_quoted_string(&mut chars)?);
             continue;
         }
 
         // Operator tokens that start with '<', '>', '=', '!'
         if ch == '<' || ch == '>' || ch == '=' || ch == '!' {
-            chars.next();
-            let op = if chars.peek() == Some(&'=') {
-                chars.next();
-                match ch {
-                    '<' => OpKind::Lte,
-                    '>' => OpKind::Gte,
-                    '=' => OpKind::Eq,
-                    '!' => OpKind::Ne,
-                    _ => return None,
-                }
-            } else {
-                match ch {
-                    '<' => OpKind::Lt,
-                    '>' => OpKind::Gt,
-                    _ => return None, // bare '=' or '!' without '=' is invalid
-                }
-            };
-            tokens.push(Token::Op(op));
+            tokens.push(lex_comparison_op(&mut chars)?);
             continue;
         }
 
         // Word tokens: keywords, field names, operators, numeric literals
         if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
-            let mut word = String::new();
-            while let Some(&c) = chars.peek() {
-                if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
-                    word.push(c);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-
-            // `args.<key>` / `args.<key>.<nested>` — synthesise a
-            // `FieldRef::ToolArg(json_pointer)`. Translates the dotted
-            // identifier into a JSON pointer the evaluator walks against
-            // the ToolCall's `args` JSON object. Empty pointer (bare
-            // `args`) is rejected so policies must reference a concrete
-            // field.
-            if let Some(rest) = word.strip_prefix("args.") {
-                if rest.is_empty() {
-                    return None;
-                }
-                let pointer = format!("/{}", rest.replace('.', "/"));
-                tokens.push(Token::Field(FieldRef::ToolArg(pointer)));
-                continue;
-            }
-
-            // `tool_result.<key>` / `tool_result.<key>.<nested>` — response-side
-            // mirror of `args.<key>`. Resolves to `FieldRef::ToolResult(pointer)`
-            // when a dotted path follows; the bare `tool_result` (no path) maps
-            // to `FieldRef::ToolResultWhole` so policies can match the entire
-            // serialised response as one string.
-            if let Some(rest) = word.strip_prefix("tool_result.") {
-                if rest.is_empty() {
-                    return None;
-                }
-                let pointer = format!("/{}", rest.replace('.', "/"));
-                tokens.push(Token::Field(FieldRef::ToolResult(pointer)));
-                continue;
-            }
-            if word == "tool_result" {
-                tokens.push(Token::Field(FieldRef::ToolResultWhole));
-                continue;
-            }
-
-            let token = match word.as_str() {
-                "AND" => Token::And,
-                "OR" => Token::Or,
-                "tool" => Token::Field(FieldRef::Tool),
-                "path" => Token::Field(FieldRef::Path),
-                "url" => Token::Field(FieldRef::Url),
-                "method" => Token::Field(FieldRef::Method),
-                "command" => Token::Field(FieldRef::Command),
-                "governance_level" => Token::Field(FieldRef::GovernanceLevel),
-                "agent.depth" => Token::Field(FieldRef::AgentDepth),
-                "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
-                "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
-                "child.tool" => Token::Field(FieldRef::ChildTool),
-                "child.risk_tier" => Token::Field(FieldRef::ChildRiskTier),
-                "agent.risk_tier" => Token::Field(FieldRef::AgentRiskTier),
-                "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
-                "source.team_id" => Token::Field(FieldRef::SourceTeamId),
-                "target.team_id" => Token::Field(FieldRef::TargetTeamId),
-                "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
-                "agent.age" => Token::Field(FieldRef::AgentAge),
-                "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
-                "agent.parent_agent_id" => Token::Field(FieldRef::AgentParentId),
-                "agent.team_id" => Token::Field(FieldRef::AgentTeamId),
-                "agent.children_count" => Token::Field(FieldRef::AgentChildrenCount),
-                "agent.is_root" => Token::Field(FieldRef::AgentIsRoot),
-                "agent.is_leaf" => Token::Field(FieldRef::AgentIsLeaf),
-                "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
-                "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
-                "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
-                "L3" => Token::Literal(LiteralVal::Level(GovernanceLevel::L3Native)),
-                "Low" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Low)),
-                "Medium" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Medium)),
-                "High" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::High)),
-                "Critical" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Critical)),
-                "contains" => Token::Op(OpKind::Contains),
-                "starts_with" => Token::Op(OpKind::StartsWith),
-                "in" => Token::Op(OpKind::In),
-                "not_in" => Token::Op(OpKind::NotIn),
-                other => {
-                    // Try to parse as a number
-                    if let Ok(n) = other.parse::<f64>() {
-                        Token::Literal(LiteralVal::Num(n))
-                    } else if other.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                        // Try to parse as a humantime duration (e.g. "24h", "30m", "1h30m").
-                        // Only attempt when the word starts with a digit — avoids false positives.
-                        if let Ok(d) = humantime::parse_duration(other) {
-                            Token::Literal(LiteralVal::Duration(d.as_secs()))
-                        } else {
-                            return None;
-                        }
-                    } else {
-                        return None; // unknown word
-                    }
-                }
-            };
-            tokens.push(token);
+            tokens.push(lex_word(&mut chars)?);
             continue;
         }
 
@@ -402,6 +218,196 @@ fn tokenize(expr: &str) -> Option<Vec<Token>> {
     }
 
     Some(tokens)
+}
+
+/// Type of the char cursor threaded through the sub-lexers.
+type CharCursor<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// Read a double-quoted string body (opening quote already at the cursor),
+/// handling `\"` and `\\` escapes. Returns the unescaped contents, or `None` on
+/// an unterminated string/escape.
+fn read_quoted_body(chars: &mut CharCursor) -> Option<String> {
+    chars.next(); // consume opening quote
+    let mut s = String::new();
+    loop {
+        match chars.next() {
+            Some('"') => break,
+            Some('\\') => match chars.next() {
+                Some('"') => s.push('"'),
+                Some('\\') => s.push('\\'),
+                Some(c) => {
+                    s.push('\\');
+                    s.push(c);
+                }
+                None => return None, // unterminated escape
+            },
+            Some(c) => s.push(c),
+            None => return None, // unterminated string
+        }
+    }
+    Some(s)
+}
+
+/// Lex a `["a", "b", ...]` list literal (cursor at the opening `[`).
+fn lex_list_literal(chars: &mut CharCursor) -> Option<Token> {
+    chars.next(); // consume '['
+    let mut items: Vec<String> = Vec::new();
+    loop {
+        skip_while(chars, |c| c.is_whitespace());
+        match chars.peek() {
+            Some(&']') => {
+                chars.next();
+                break;
+            }
+            Some(&'"') => {
+                items.push(read_quoted_body(chars)?);
+                // skip whitespace and optional comma
+                skip_while(chars, |c| c.is_whitespace() || c == ',');
+            }
+            _ => return None, // unexpected token in list
+        }
+    }
+    Some(Token::Literal(LiteralVal::StrList(items)))
+}
+
+/// Lex a single double-quoted string literal (cursor at the opening `"`).
+fn lex_quoted_string(chars: &mut CharCursor) -> Option<Token> {
+    Some(Token::Literal(LiteralVal::Str(read_quoted_body(chars)?)))
+}
+
+/// Lex a comparison operator starting with `< > = !` (cursor at that char).
+/// Handles the two-char `<= >= == !=` forms; bare `=`/`!` are invalid.
+fn lex_comparison_op(chars: &mut CharCursor) -> Option<Token> {
+    let ch = chars.next()?;
+    let op = if chars.peek() == Some(&'=') {
+        chars.next();
+        match ch {
+            '<' => OpKind::Lte,
+            '>' => OpKind::Gte,
+            '=' => OpKind::Eq,
+            '!' => OpKind::Ne,
+            _ => return None,
+        }
+    } else {
+        match ch {
+            '<' => OpKind::Lt,
+            '>' => OpKind::Gt,
+            _ => return None, // bare '=' or '!' without '=' is invalid
+        }
+    };
+    Some(Token::Op(op))
+}
+
+/// Advance `chars` past every leading character satisfying `pred`.
+fn skip_while(chars: &mut CharCursor, pred: impl Fn(char) -> bool) {
+    while let Some(&c) = chars.peek() {
+        if pred(c) {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+}
+
+/// Lex a word token: keyword, field name, word-operator, or numeric/duration
+/// literal (cursor at an identifier char).
+fn lex_word(chars: &mut CharCursor) -> Option<Token> {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word_to_token(&word)
+}
+
+/// Map a fully-read word to its [`Token`].
+///
+/// `args.<path>` / `tool_result.<path>` synthesise JSON-pointer field refs (a
+/// bare `args` is rejected; bare `tool_result` maps to the whole result). All
+/// other words resolve via the keyword table, then fall back to an `f64` or, for
+/// digit-leading words, a humantime duration. Returns `None` for unknown words.
+fn word_to_token(word: &str) -> Option<Token> {
+    // `args.<key>` / `args.<key>.<nested>` — JSON pointer into ToolCall args.
+    if let Some(rest) = word.strip_prefix("args.") {
+        if rest.is_empty() {
+            return None;
+        }
+        let pointer = format!("/{}", rest.replace('.', "/"));
+        return Some(Token::Field(FieldRef::ToolArg(pointer)));
+    }
+    // `tool_result.<key>` — response-side mirror of `args.<key>`.
+    if let Some(rest) = word.strip_prefix("tool_result.") {
+        if rest.is_empty() {
+            return None;
+        }
+        let pointer = format!("/{}", rest.replace('.', "/"));
+        return Some(Token::Field(FieldRef::ToolResult(pointer)));
+    }
+    if word == "tool_result" {
+        return Some(Token::Field(FieldRef::ToolResultWhole));
+    }
+
+    let token = match word {
+        "AND" => Token::And,
+        "OR" => Token::Or,
+        "tool" => Token::Field(FieldRef::Tool),
+        "path" => Token::Field(FieldRef::Path),
+        "url" => Token::Field(FieldRef::Url),
+        "method" => Token::Field(FieldRef::Method),
+        "command" => Token::Field(FieldRef::Command),
+        "governance_level" => Token::Field(FieldRef::GovernanceLevel),
+        "agent.depth" => Token::Field(FieldRef::AgentDepth),
+        "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
+        "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
+        "child.tool" => Token::Field(FieldRef::ChildTool),
+        "child.risk_tier" => Token::Field(FieldRef::ChildRiskTier),
+        "agent.risk_tier" => Token::Field(FieldRef::AgentRiskTier),
+        "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
+        "source.team_id" => Token::Field(FieldRef::SourceTeamId),
+        "target.team_id" => Token::Field(FieldRef::TargetTeamId),
+        "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
+        "agent.age" => Token::Field(FieldRef::AgentAge),
+        "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
+        "agent.parent_agent_id" => Token::Field(FieldRef::AgentParentId),
+        "agent.team_id" => Token::Field(FieldRef::AgentTeamId),
+        "agent.children_count" => Token::Field(FieldRef::AgentChildrenCount),
+        "agent.is_root" => Token::Field(FieldRef::AgentIsRoot),
+        "agent.is_leaf" => Token::Field(FieldRef::AgentIsLeaf),
+        "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
+        "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
+        "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
+        "L3" => Token::Literal(LiteralVal::Level(GovernanceLevel::L3Native)),
+        "Low" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Low)),
+        "Medium" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Medium)),
+        "High" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::High)),
+        "Critical" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Critical)),
+        "contains" => Token::Op(OpKind::Contains),
+        "starts_with" => Token::Op(OpKind::StartsWith),
+        "in" => Token::Op(OpKind::In),
+        "not_in" => Token::Op(OpKind::NotIn),
+        other => return word_literal_token(other),
+    };
+    Some(token)
+}
+
+/// Fallback for a non-keyword word: parse an `f64`, or — for words starting
+/// with an ASCII digit — a humantime duration. `None` for anything else.
+fn word_literal_token(word: &str) -> Option<Token> {
+    if let Ok(n) = word.parse::<f64>() {
+        Some(Token::Literal(LiteralVal::Num(n)))
+    } else if word.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        // Only attempt humantime when the word starts with a digit — avoids
+        // false positives (e.g. "in", "contains").
+        humantime::parse_duration(word)
+            .ok()
+            .map(|d| Token::Literal(LiteralVal::Duration(d.as_secs())))
+    } else {
+        None // unknown word
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,70 +439,31 @@ fn eval_clause_safe(
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
-    // agent.depth — numeric comparison against the current agent's delegation depth.
-    // Returns false (null-safe no-match) when no context is available.
-    if let FieldRef::AgentDepth = field {
-        let lhs = match policy_ctx.and_then(|c| c.agent_depth()) {
-            Some(d) => d as f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // team.active_agents — numeric comparison against the count of agents in the
-    // current agent's team. Returns false when the agent has no team (null-safe).
-    if let FieldRef::TeamActiveAgents = field {
-        let lhs = match policy_ctx.and_then(|c| c.team_active_agents()) {
-            Some(n) => n as f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // team.budget_remaining — numeric comparison against the remaining monthly
-    // budget for the current agent's team. Returns false when no budget entry or
-    // no monthly limit is configured (null-safe).
-    if let FieldRef::TeamBudgetRemaining = field {
-        let lhs = match policy_ctx.and_then(|c| c.team_budget_remaining()) {
-            Some(r) => r,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+    // Context-backed numeric fields share identical null-safe numeric semantics.
+    // `team.parallel_agents` delegates to the same registry query as
+    // `team.active_agents` by design.
+    let numeric_ctx_value: Option<f64> = match field {
+        FieldRef::AgentDepth => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d as f64),
+        FieldRef::TeamActiveAgents | FieldRef::TeamParallelAgents => {
+            policy_ctx.and_then(|c| c.team_active_agents()).map(|n| n as f64)
+        }
+        FieldRef::TeamBudgetRemaining => policy_ctx.and_then(|c| c.team_budget_remaining()),
+        FieldRef::AgentAge => policy_ctx.and_then(|c| c.agent_age_secs()).map(|a| a as f64),
+        FieldRef::AgentChildrenCount => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n as f64),
+        _ => None,
+    };
+    if matches!(
+        field,
+        FieldRef::AgentDepth
+            | FieldRef::TeamActiveAgents
+            | FieldRef::TeamParallelAgents
+            | FieldRef::TeamBudgetRemaining
+            | FieldRef::AgentAge
+            | FieldRef::AgentChildrenCount
+    ) {
+        return match numeric_ctx_value {
+            Some(lhs) => compare_numeric(lhs, op, literal),
+            None => false,
         };
     }
 
@@ -525,311 +492,44 @@ fn eval_clause_safe(
     // serialised body. Mirrors `args.<key>`'s null-safety contract: non-
     // `ToolResult` actions, unparseable result JSON, and unresolved pointers
     // all surface as no-match. The bare `tool_result` arm only accepts
-    // `contains` / `starts_with` against a string literal (regex-style
-    // pattern matching on the full body); equality / numeric / list ops
-    // don't have a sensible whole-body interpretation and fall through to
-    // false.
+    // `contains` / `starts_with` against a string literal.
     if matches!(field, FieldRef::ToolResult(_) | FieldRef::ToolResultWhole) {
         let result_str = match action {
             GovernanceAction::ToolResult { result, .. } => result.as_str(),
             _ => return false,
         };
         if let FieldRef::ToolResultWhole = field {
-            let lit = match literal {
-                LiteralVal::Str(s) => s.as_str(),
-                _ => return false,
-            };
-            return match op {
-                OpKind::Contains => result_str.contains(lit),
-                OpKind::StartsWith => result_str.starts_with(lit),
-                _ => false,
-            };
+            return eval_whole_body(result_str, op, literal);
         }
-        let pointer = match field {
-            FieldRef::ToolResult(p) => p,
-            _ => unreachable!(),
+        let FieldRef::ToolResult(pointer) = field else {
+            unreachable!()
         };
-        let result_value: serde_json::Value = match serde_json::from_str(result_str) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let resolved = match result_value.pointer(pointer) {
-            Some(v) => v,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq | OpKind::Ne => match (resolved, literal) {
-                (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
-                    if matches!(op, OpKind::Eq) {
-                        s == lit
-                    } else {
-                        s != lit
-                    }
-                }
-                (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
-                    Some(v) => {
-                        if matches!(op, OpKind::Eq) {
-                            (v - *lit).abs() < f64::EPSILON
-                        } else {
-                            (v - *lit).abs() >= f64::EPSILON
-                        }
-                    }
-                    None => false,
-                },
-                _ => false,
-            },
-            OpKind::Contains | OpKind::StartsWith => {
-                let value = match resolved.as_str() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                let lit = match literal {
-                    LiteralVal::Str(s) => s.as_str(),
-                    _ => return false,
-                };
-                if matches!(op, OpKind::Contains) {
-                    value.contains(lit)
-                } else {
-                    value.starts_with(lit)
-                }
-            }
-            OpKind::In | OpKind::NotIn => {
-                let value = match resolved.as_str() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                let list = match literal {
-                    LiteralVal::StrList(items) => items,
-                    _ => return false,
-                };
-                if matches!(op, OpKind::In) {
-                    list.iter().any(|item| item == value)
-                } else {
-                    list.iter().all(|item| item != value)
-                }
-            }
-            OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => {
-                let lhs = match resolved.as_f64() {
-                    Some(n) => n,
-                    None => return false,
-                };
-                let rhs = match literal {
-                    LiteralVal::Num(n) => *n,
-                    _ => return false,
-                };
-                match op {
-                    OpKind::Gt => lhs > rhs,
-                    OpKind::Gte => lhs >= rhs,
-                    OpKind::Lt => lhs < rhs,
-                    OpKind::Lte => lhs <= rhs,
-                    _ => unreachable!(),
-                }
-            }
-        };
+        return eval_json_pointer(result_str, pointer, op, literal);
     }
 
     // `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
-    //
-    // Null-safe at every step: non-ToolCall actions, unparseable args JSON,
-    // and unresolved pointers all surface as no-match rather than erroring.
-    // String comparisons require the resolved value to be a JSON string;
-    // numeric ops require a JSON number; list membership requires a string.
-    // Mixed-type comparisons (e.g. `args.timeout == "30"` against a number)
-    // are treated as no-match — policies must match the underlying type.
+    // Null-safe at every step (see `eval_json_pointer`).
     if let FieldRef::ToolArg(pointer) = field {
         let args_str = match action {
             GovernanceAction::ToolCall { args, .. } => args.as_str(),
             _ => return false,
         };
-        let args_value: serde_json::Value = match serde_json::from_str(args_str) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let resolved = match args_value.pointer(pointer) {
-            Some(v) => v,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq | OpKind::Ne => match (resolved, literal) {
-                (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
-                    if matches!(op, OpKind::Eq) {
-                        s == lit
-                    } else {
-                        s != lit
-                    }
-                }
-                (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
-                    Some(v) => {
-                        if matches!(op, OpKind::Eq) {
-                            (v - *lit).abs() < f64::EPSILON
-                        } else {
-                            (v - *lit).abs() >= f64::EPSILON
-                        }
-                    }
-                    None => false,
-                },
-                _ => false,
-            },
-            OpKind::Contains | OpKind::StartsWith => {
-                let value = match resolved.as_str() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                let lit = match literal {
-                    LiteralVal::Str(s) => s.as_str(),
-                    _ => return false,
-                };
-                if matches!(op, OpKind::Contains) {
-                    value.contains(lit)
-                } else {
-                    value.starts_with(lit)
-                }
-            }
-            OpKind::In | OpKind::NotIn => {
-                let value = match resolved.as_str() {
-                    Some(s) => s,
-                    None => return false,
-                };
-                let list = match literal {
-                    LiteralVal::StrList(items) => items,
-                    _ => return false,
-                };
-                if matches!(op, OpKind::In) {
-                    list.iter().any(|item| item == value)
-                } else {
-                    list.iter().all(|item| item != value)
-                }
-            }
-            OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => {
-                let lhs = match resolved.as_f64() {
-                    Some(n) => n,
-                    None => return false,
-                };
-                let rhs = match literal {
-                    LiteralVal::Num(n) => *n,
-                    _ => return false,
-                };
-                match op {
-                    OpKind::Gt => lhs > rhs,
-                    OpKind::Gte => lhs >= rhs,
-                    OpKind::Lt => lhs < rhs,
-                    OpKind::Lte => lhs <= rhs,
-                    _ => unreachable!(),
-                }
-            }
-        };
+        return eval_json_pointer(args_str, pointer, op, literal);
     }
 
-    // agent.risk_tier — ordinal comparison against the current agent's risk tier.
-    // Returns false (null-safe no-match) when context or registry lookup is absent.
-    if let FieldRef::AgentRiskTier = field {
-        let lhs = match policy_ctx.and_then(|c| c.agent_risk_tier()) {
-            Some(t) => t,
-            None => return false,
+    // Risk-tier fields — ordinal comparison against a Tier literal. Null-safe
+    // when context/registry lookup is absent (or the agent has no parent/child).
+    let tier_ctx_value = match field {
+        FieldRef::AgentRiskTier => Some(policy_ctx.and_then(|c| c.agent_risk_tier())),
+        FieldRef::ParentRiskTier => Some(policy_ctx.and_then(|c| c.parent_risk_tier())),
+        FieldRef::ChildRiskTier => Some(policy_ctx.and_then(|c| c.child_risk_tier())),
+        _ => None,
+    };
+    if let Some(tier) = tier_ctx_value {
+        let (Some(lhs), LiteralVal::Tier(rhs)) = (tier, literal) else {
+            return false;
         };
-        let rhs = match literal {
-            LiteralVal::Tier(t) => *t,
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // parent.risk_tier — ordinal comparison against the parent agent's risk tier.
-    // Returns false when context is absent, agent has no parent, or parent not in registry.
-    if let FieldRef::ParentRiskTier = field {
-        let lhs = match policy_ctx.and_then(|c| c.parent_risk_tier()) {
-            Some(t) => t,
-            None => return false,
-        };
-        let rhs = match literal {
-            LiteralVal::Tier(t) => *t,
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // child.risk_tier — ordinal comparison against the proposed risk tier of the
-    // child agent being spawned. Returns false when no spawn context is supplied.
-    if let FieldRef::ChildRiskTier = field {
-        let lhs = match policy_ctx.and_then(|c| c.child_risk_tier()) {
-            Some(t) => t,
-            None => return false,
-        };
-        let rhs = match literal {
-            LiteralVal::Tier(t) => *t,
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // team.parallel_agents — integer count of currently-running agents in the current team.
-    // Semantically equivalent to team.active_agents; delegates to the same registry query.
-    // Returns false (null-safe no-match) when the agent has no team.
-    if let FieldRef::TeamParallelAgents = field {
-        let lhs = match policy_ctx.and_then(|c| c.team_active_agents()) {
-            Some(n) => n as f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
-    }
-
-    // agent.age — numeric (seconds) comparison against the current agent's age since registration.
-    // Compares the agent's age in seconds against a Duration literal (e.g. `24h` = 86400s).
-    // Returns false (null-safe no-match) when context or registry lookup is absent.
-    if let FieldRef::AgentAge = field {
-        let lhs = match policy_ctx.and_then(|c| c.agent_age_secs()) {
-            Some(age) => age as f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
+        return compare_ord(lhs, *rhs, op);
     }
 
     // agent.parent_agent_id / agent.team_id — string comparison against an agent identity field.
@@ -844,45 +544,16 @@ fn eval_clause_safe(
             Some(v) => v,
             None => return false,
         };
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
+        // In/NotIn don't apply to these identity fields (preserves prior `_ => false`).
         return match op {
-            OpKind::Eq => id == rhs,
-            OpKind::Ne => id != rhs,
-            OpKind::Contains => id.contains(rhs),
-            OpKind::StartsWith => id.starts_with(rhs),
-            _ => false,
-        };
-    }
-
-    // agent.children_count — numeric comparison against the number of direct children.
-    // Returns false when the agent is not found in the registry (null-safe no-match).
-    if let FieldRef::AgentChildrenCount = field {
-        let lhs = match policy_ctx.and_then(|c| c.agent_children_count()) {
-            Some(n) => n as f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+            OpKind::In | OpKind::NotIn => false,
+            _ => compare_string(&id, op, literal),
         };
     }
 
     // agent.is_root / agent.is_leaf — boolean (0/1) topology flags.
     // is_root fires when depth == 0; is_leaf fires when children_count == 0.
     // Only Eq/Ne against numeric 1 or 0 are meaningful; other ops return false.
-    // Returns false when the backing data is unavailable (null-safe no-match).
     if matches!(field, FieldRef::AgentIsRoot | FieldRef::AgentIsLeaf) {
         let flag: Option<bool> = match field {
             FieldRef::AgentIsRoot => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d == 0),
@@ -890,13 +561,8 @@ fn eval_clause_safe(
             _ => unreachable!(),
         };
         let lhs = match flag {
-            Some(v) => {
-                if v {
-                    1.0_f64
-                } else {
-                    0.0_f64
-                }
-            }
+            Some(true) => 1.0_f64,
+            Some(false) => 0.0_f64,
             None => return false,
         };
         let rhs = match numeric_literal(literal) {
@@ -910,103 +576,18 @@ fn eval_clause_safe(
         };
     }
 
-    // source.team_id — string equality against the sending agent's team ID.
-    // Returns false (null-safe no-match) when the action is not SendMessage or
-    // the source_team_id field is None.
-    if let FieldRef::SourceTeamId = field {
-        let team_id = match action {
-            GovernanceAction::SendMessage { source_team_id, .. } => match source_team_id.as_deref() {
-                Some(id) => id.to_owned(),
-                None => return false,
-            },
-            _ => return false,
-        };
-        if *op == OpKind::In || *op == OpKind::NotIn {
-            if let LiteralVal::StrList(list) = literal {
-                return if *op == OpKind::In {
-                    list.iter().any(|s| s == &team_id)
-                } else {
-                    !list.iter().any(|s| s == &team_id)
-                };
-            }
-            return false;
-        }
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => team_id == rhs,
-            OpKind::Ne => team_id != rhs,
-            OpKind::Contains => team_id.contains(rhs),
-            OpKind::StartsWith => team_id.starts_with(rhs),
-            _ => false,
-        };
-    }
-
-    // target.team_id — string equality against the recipient team ID.
-    // Returns false when the action is not SendMessage or target_team_id is None.
-    if let FieldRef::TargetTeamId = field {
-        let team_id = match action {
-            GovernanceAction::SendMessage { target_team_id, .. } => match target_team_id.as_deref() {
-                Some(id) => id.to_owned(),
-                None => return false,
-            },
-            _ => return false,
-        };
-        if *op == OpKind::In || *op == OpKind::NotIn {
-            if let LiteralVal::StrList(list) = literal {
-                return if *op == OpKind::In {
-                    list.iter().any(|s| s == &team_id)
-                } else {
-                    !list.iter().any(|s| s == &team_id)
-                };
-            }
-            return false;
-        }
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => team_id == rhs,
-            OpKind::Ne => team_id != rhs,
-            OpKind::Contains => team_id.contains(rhs),
-            OpKind::StartsWith => team_id.starts_with(rhs),
-            _ => false,
-        };
-    }
-
-    // target.channel_id — string equality against the channel routing identifier.
-    // Returns false when the action is not SendMessage or channel_id is None.
-    if let FieldRef::TargetChannelId = field {
-        let channel_id = match action {
-            GovernanceAction::SendMessage { channel_id, .. } => match channel_id.as_deref() {
-                Some(id) => id.to_owned(),
-                None => return false,
-            },
-            _ => return false,
-        };
-        if *op == OpKind::In || *op == OpKind::NotIn {
-            if let LiteralVal::StrList(list) = literal {
-                return if *op == OpKind::In {
-                    list.iter().any(|s| s == &channel_id)
-                } else {
-                    !list.iter().any(|s| s == &channel_id)
-                };
-            }
-            return false;
-        }
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => channel_id == rhs,
-            OpKind::Ne => channel_id != rhs,
-            OpKind::Contains => channel_id.contains(rhs),
-            OpKind::StartsWith => channel_id.starts_with(rhs),
-            _ => false,
+    // SendMessage routing fields — string comparison against a per-action id.
+    // Returns false when the action is not SendMessage or the field is None.
+    let message_field_value = match field {
+        FieldRef::SourceTeamId => Some(send_message_field(action, MsgField::SourceTeam)),
+        FieldRef::TargetTeamId => Some(send_message_field(action, MsgField::TargetTeam)),
+        FieldRef::TargetChannelId => Some(send_message_field(action, MsgField::Channel)),
+        _ => None,
+    };
+    if let Some(value) = message_field_value {
+        return match value {
+            Some(id) => compare_string(&id, op, literal),
+            None => false,
         };
     }
 
@@ -1025,16 +606,7 @@ fn eval_clause_safe(
             // No agent level supplied → cannot compare; treat as no-match.
             None => return false,
         };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            OpKind::Gt => lhs > rhs,
-            OpKind::Gte => lhs >= rhs,
-            OpKind::Lt => lhs < rhs,
-            OpKind::Lte => lhs <= rhs,
-            // String operators do not apply to governance_level.
-            OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
-        };
+        return compare_ord(lhs, rhs, op);
     }
 
     let lhs = field_value(field, action);
@@ -1139,6 +711,153 @@ fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
     }
 }
 
+/// Apply a comparison `op` to two values of an ordered type. String operators
+/// (`contains` / `starts_with` / `in` / `not_in`) never apply to an ordered
+/// scalar and yield `false`. Shared by the numeric, risk-tier, and
+/// governance-level field handlers.
+fn compare_ord<T: PartialOrd>(lhs: T, rhs: T, op: &OpKind) -> bool {
+    match op {
+        OpKind::Eq => lhs == rhs,
+        OpKind::Ne => lhs != rhs,
+        OpKind::Gt => lhs > rhs,
+        OpKind::Gte => lhs >= rhs,
+        OpKind::Lt => lhs < rhs,
+        OpKind::Lte => lhs <= rhs,
+        OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+    }
+}
+
+/// Compare a context-resolved numeric `lhs` against a numeric `literal`.
+/// `false` (null-safe no-match) when the literal isn't numeric.
+fn compare_numeric(lhs: f64, op: &OpKind, literal: &LiteralVal) -> bool {
+    match numeric_literal(literal) {
+        Some(rhs) => compare_ord(lhs, rhs, op),
+        None => false,
+    }
+}
+
+/// Compare a resolved string `lhs` against a string/list `literal` for the
+/// identity-style fields. Supports `eq` / `ne` / `contains` / `starts_with`
+/// (string literal) and `in` / `not_in` (list literal); other shapes → `false`.
+fn compare_string(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (op, literal) {
+        (OpKind::In, LiteralVal::StrList(list)) => list.iter().any(|s| s == lhs),
+        (OpKind::NotIn, LiteralVal::StrList(list)) => !list.iter().any(|s| s == lhs),
+        (OpKind::Eq, LiteralVal::Str(rhs)) => lhs == rhs,
+        (OpKind::Ne, LiteralVal::Str(rhs)) => lhs != rhs,
+        (OpKind::Contains, LiteralVal::Str(rhs)) => lhs.contains(rhs.as_str()),
+        (OpKind::StartsWith, LiteralVal::Str(rhs)) => lhs.starts_with(rhs.as_str()),
+        _ => false,
+    }
+}
+
+/// Evaluate a whole-body (`tool_result`) match: only `contains` / `starts_with`
+/// against a string literal are meaningful; everything else is no-match.
+fn eval_whole_body(body: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let LiteralVal::Str(lit) = literal else {
+        return false;
+    };
+    match op {
+        OpKind::Contains => body.contains(lit.as_str()),
+        OpKind::StartsWith => body.starts_with(lit.as_str()),
+        _ => false,
+    }
+}
+
+/// Parse `json_str`, walk `pointer`, and compare the resolved value against
+/// `literal` via [`compare_json_value`]. Null-safe: unparseable JSON or an
+/// unresolved pointer surfaces as no-match (`false`).
+fn eval_json_pointer(json_str: &str, pointer: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let value: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    match value.pointer(pointer) {
+        Some(resolved) => compare_json_value(resolved, op, literal),
+        None => false,
+    }
+}
+
+/// Which `SendMessage` routing field to read in [`send_message_field`].
+enum MsgField {
+    SourceTeam,
+    TargetTeam,
+    Channel,
+}
+
+/// Extract one routing field from a `SendMessage` action. Returns `None` for any
+/// other action or when the chosen field is absent.
+fn send_message_field(action: &GovernanceAction, which: MsgField) -> Option<String> {
+    let GovernanceAction::SendMessage {
+        source_team_id,
+        target_team_id,
+        channel_id,
+        ..
+    } = action
+    else {
+        return None;
+    };
+    let field = match which {
+        MsgField::SourceTeam => source_team_id,
+        MsgField::TargetTeam => target_team_id,
+        MsgField::Channel => channel_id,
+    };
+    field.clone()
+}
+
+/// Compare a JSON value `resolved` (from an `args.<ptr>` / `tool_result.<ptr>`
+/// walk) against a `literal`. Type-strict: string ops require a JSON string,
+/// numeric ops a JSON number, `in`/`not_in` a JSON string against a list.
+/// Mismatched types are no-match (`false`).
+fn compare_json_value(resolved: &serde_json::Value, op: &OpKind, literal: &LiteralVal) -> bool {
+    match op {
+        OpKind::Eq | OpKind::Ne => match (resolved, literal) {
+            (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
+                if matches!(op, OpKind::Eq) {
+                    s == lit
+                } else {
+                    s != lit
+                }
+            }
+            (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
+                Some(v) => {
+                    if matches!(op, OpKind::Eq) {
+                        (v - *lit).abs() < f64::EPSILON
+                    } else {
+                        (v - *lit).abs() >= f64::EPSILON
+                    }
+                }
+                None => false,
+            },
+            _ => false,
+        },
+        OpKind::Contains | OpKind::StartsWith => match (resolved.as_str(), literal) {
+            (Some(value), LiteralVal::Str(lit)) => {
+                if matches!(op, OpKind::Contains) {
+                    value.contains(lit.as_str())
+                } else {
+                    value.starts_with(lit.as_str())
+                }
+            }
+            _ => false,
+        },
+        OpKind::In | OpKind::NotIn => match (resolved.as_str(), literal) {
+            (Some(value), LiteralVal::StrList(list)) => {
+                if matches!(op, OpKind::In) {
+                    list.iter().any(|item| item == value)
+                } else {
+                    list.iter().all(|item| item != value)
+                }
+            }
+            _ => false,
+        },
+        OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => match (resolved.as_f64(), literal) {
+            (Some(lhs), LiteralVal::Num(rhs)) => compare_ord(lhs, *rhs, op),
+            _ => false,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Token evaluation  (AND binds tighter than OR)
 // ---------------------------------------------------------------------------
@@ -1156,57 +875,61 @@ fn eval_tokens(
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
-    // Parse tokens into a sequence of clauses separated by AND/OR.
-    // Strategy: split into OR-groups where each group is a slice of
-    // AND-connected clauses.  Result = any OR-group where all clauses are true.
-
-    // First, extract clauses and combinators in order.
-    // Expected pattern: Clause (AND|OR Clause)*
-    // A "Clause" is three consecutive tokens: Field, Op, Literal.
-
-    let mut or_groups: Vec<Vec<Clause>> = vec![Vec::new()];
-
-    let mut i = 0;
-    while i < tokens.len() {
-        // Expect: Field Op Literal
-        match (&tokens[i], tokens.get(i + 1), tokens.get(i + 2)) {
-            (Token::Field(f), Some(Token::Op(op)), Some(Token::Literal(lit))) => {
-                let clause = Clause {
-                    field: f,
-                    op,
-                    literal: lit,
-                };
-                or_groups.last_mut().unwrap().push(clause);
-                i += 3;
-
-                // Now expect AND | OR | end
-                match tokens.get(i) {
-                    None => break,
-                    Some(Token::And) => {
-                        i += 1; // continue in the same OR group
-                    }
-                    Some(Token::Or) => {
-                        i += 1;
-                        or_groups.push(Vec::new()); // start a new OR group
-                    }
-                    _ => return true, // unexpected token → fail-safe
-                }
-            }
-            _ => return true, // unexpected structure → fail-safe
-        }
-    }
+    // Parse tokens into OR-groups of AND-connected clauses, then evaluate:
+    // OR across groups, AND within each group. Any parse anomaly is fail-safe
+    // (returns `true` — the condition fires).
+    let or_groups = match parse_or_groups(tokens) {
+        Some(g) => g,
+        None => return true, // unexpected structure → fail-safe
+    };
 
     // If nothing was parsed, that's a fail-safe trigger (empty expr)
     if or_groups.is_empty() || or_groups.iter().all(|g| g.is_empty()) {
         return true;
     }
 
-    // Evaluate: OR across groups, AND within each group
     or_groups.iter().any(|group| {
         group
             .iter()
             .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx))
     })
+}
+
+/// Parse a flat token stream into OR-groups of AND-connected [`Clause`]s.
+///
+/// Grammar: `Clause (AND|OR Clause)*` where a `Clause` is three consecutive
+/// `Field Op Literal` tokens. `AND` keeps the next clause in the current group;
+/// `OR` starts a new group. Returns `None` on any structural anomaly so the
+/// caller can apply its fail-safe (treat the expression as firing).
+fn parse_or_groups(tokens: &[Token]) -> Option<Vec<Vec<Clause<'_>>>> {
+    let mut or_groups: Vec<Vec<Clause>> = vec![Vec::new()];
+    let mut i = 0;
+    while i < tokens.len() {
+        // Expect: Field Op Literal
+        let (Token::Field(f), Some(Token::Op(op)), Some(Token::Literal(lit))) =
+            (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
+        else {
+            return None; // unexpected structure
+        };
+        or_groups.last_mut().unwrap().push(Clause {
+            field: f,
+            op,
+            literal: lit,
+        });
+        i += 3;
+
+        // Now expect AND | OR | end.
+        match tokens.get(i) {
+            None => break,
+            Some(Token::And) => i += 1, // continue in the same OR group
+            Some(Token::Or) => {
+                i += 1;
+                or_groups.push(Vec::new()); // start a new OR group
+            }
+            _ => return None, // unexpected token
+        }
+    }
+    Some(or_groups)
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,18 +1044,9 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 /// known variable is ≤ 2.
 pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
     for name in extract_field_names(expr) {
-        // `args.<key>` / `args.<key>.<nested>` is a structural identifier
-        // accepted by the lexer as `FieldRef::ToolArg`. There is no static
-        // list of valid keys (they're inspected against the live action's
-        // JSON-encoded args), so validation skips the membership check and
-        // defers null-safety to the runtime evaluator.
-        if name.starts_with("args.") && name.len() > "args.".len() {
-            continue;
-        }
-        // Same shape applies to `tool_result.<key>` (response-side
-        // FieldRef::ToolResult) and the bare `tool_result` shorthand
-        // (FieldRef::ToolResultWhole) — neither sits in a static list.
-        if name == "tool_result" || (name.starts_with("tool_result.") && name.len() > "tool_result.".len()) {
+        // Dynamic structural identifiers (args.*, tool_result, tool_result.*)
+        // have no static key list — defer their null-safety to the runtime.
+        if is_dynamic_field_name(&name) {
             continue;
         }
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
@@ -1346,6 +1060,17 @@ pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error:
         }
     }
     Ok(())
+}
+
+/// Whether `name` is a dynamic structural field identifier whose keys are not in
+/// any static list: `args.<key>` (→ `FieldRef::ToolArg`), `tool_result.<key>`
+/// (→ `FieldRef::ToolResult`), or the bare `tool_result`
+/// (→ `FieldRef::ToolResultWhole`). Such names skip the membership check.
+fn is_dynamic_field_name(name: &str) -> bool {
+    if name.starts_with("args.") && name.len() > "args.".len() {
+        return true;
+    }
+    name == "tool_result" || (name.starts_with("tool_result.") && name.len() > "tool_result.".len())
 }
 
 /// Validate that every `governance_level` literal in `expr` is one of the

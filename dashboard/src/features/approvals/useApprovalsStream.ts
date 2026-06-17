@@ -9,6 +9,19 @@ type ApprovalPayload = components['schemas']['ApprovalPayload']
 
 const MAX_BACKOFF_MS = 8000
 
+/**
+ * Prepend an incoming approval to the cached list, deduplicating by id.
+ * Hoisted to module scope to keep `ws.onmessage` from nesting > 4 deep.
+ */
+function mergeIncomingApproval(
+  prev: Approval[] | undefined,
+  incoming: Approval,
+): Approval[] {
+  if (!prev) return [incoming]
+  if (prev.some((a) => a.id === incoming.id)) return prev
+  return [incoming, ...prev]
+}
+
 function buildWsUrl(): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
   const wsBase = base
@@ -70,11 +83,9 @@ export function useApprovalsStream(): { connected: boolean } {
             routing_status: null,
             team_id: null,
           }
-          queryClient.setQueryData<Approval[]>(['approvals'], (prev) => {
-            if (!prev) return [incoming]
-            if (prev.some((a) => a.id === incoming.id)) return prev
-            return [incoming, ...prev]
-          })
+          queryClient.setQueryData<Approval[]>(['approvals'], (prev) =>
+            mergeIncomingApproval(prev, incoming),
+          )
         } catch {
           // Ignore malformed frames
         }

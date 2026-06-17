@@ -61,6 +61,37 @@ pub struct EvaluationResult {
     pub deny_action: Option<DenyAction>,
 }
 
+impl EvaluationResult {
+    /// A bare `Deny` with the given reason: no redacted payload, no findings,
+    /// no side-effect action. Used by the pre-scan pipeline stages where there
+    /// is nothing else to carry.
+    fn deny(reason: impl Into<String>) -> Self {
+        Self {
+            decision: aa_core::PolicyResult::Deny { reason: reason.into() },
+            redacted_payload: None,
+            credential_findings: vec![],
+            deny_action: None,
+        }
+    }
+
+    /// A `Deny` that still carries the post-scan redaction state (redacted
+    /// payload + findings) and an optional side-effect action. Used by the
+    /// budget stage, which denies after the credential scan has already run.
+    fn deny_with(
+        reason: impl Into<String>,
+        redacted_payload: Option<String>,
+        credential_findings: Vec<aa_security::CredentialFinding>,
+        deny_action: Option<DenyAction>,
+    ) -> Self {
+        Self {
+            decision: aa_core::PolicyResult::Deny { reason: reason.into() },
+            redacted_payload,
+            credential_findings,
+            deny_action,
+        }
+    }
+}
+
 /// Metadata captured when observe-mode evaluation suppresses a non-Allow
 /// decision. Returned alongside the (now-Allow) `EvaluationResult` so the
 /// service layer can emit a `dry_run: true` audit event recording what
@@ -623,70 +654,58 @@ impl PolicyEngine {
         self.evaluate_with_cascade(cascade, ctx, action)
     }
 
-    /// Single-policy evaluation path: used when no scoped policies are registered.
-    ///
-    /// This is the original 7-stage pipeline from before AAASM-220. When the
-    /// `scope_index` is empty, `evaluate` delegates here for full backward compat.
-    fn evaluate_primary(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
-        let policy = self.policy.load();
-
-        // Stage 1 — Schedule: check active hours window.
-        if let Some(schedule) = &policy.schedule {
-            if let Some(ah) = &schedule.active_hours {
-                use chrono::Timelike;
-                let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
-                let now = chrono::Utc::now().with_timezone(&tz);
-                let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
-                if current_hhmm < ah.start || current_hhmm >= ah.end {
-                    return EvaluationResult {
-                        decision: aa_core::PolicyResult::Deny {
-                            reason: "outside active hours".into(),
-                        },
-                        redacted_payload: None,
-                        credential_findings: vec![],
-                        deny_action: None,
-                    };
-                }
-            }
+    /// Stage 1 of [`Self::evaluate_primary`]: deny when the current time is
+    /// outside the policy's active-hours window. `None` when in-window or no
+    /// schedule is configured.
+    fn eval_schedule_stage(policy: &PolicyDocument) -> Option<EvaluationResult> {
+        let ah = policy.schedule.as_ref()?.active_hours.as_ref()?;
+        use chrono::Timelike;
+        let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
+        let now = chrono::Utc::now().with_timezone(&tz);
+        let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
+        if current_hhmm < ah.start || current_hhmm >= ah.end {
+            return Some(EvaluationResult::deny("outside active hours"));
         }
+        None
+    }
 
-        // Stage 2 — Network allowlist: only for NetworkRequest actions.
-        if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-            if let Some(np) = &policy.network {
-                if !np.allowlist.is_empty() {
-                    let host = url
-                        .split_once("://")
-                        .map(|x| x.1)
-                        .unwrap_or("")
-                        .split('/')
-                        .next()
-                        .unwrap_or("");
-                    if !np.allowlist.iter().any(|entry| entry == host) {
-                        return EvaluationResult {
-                            decision: aa_core::PolicyResult::Deny {
-                                reason: "host not in network allowlist".into(),
-                            },
-                            redacted_payload: None,
-                            credential_findings: vec![],
-                            deny_action: None,
-                        };
-                    }
-                }
-            }
+    /// Stage 2 of [`Self::evaluate_primary`]: deny a `NetworkRequest` whose host
+    /// is absent from a non-empty network allowlist. `None` otherwise.
+    fn eval_network_stage(policy: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<EvaluationResult> {
+        let aa_core::GovernanceAction::NetworkRequest { url, .. } = action else {
+            return None;
+        };
+        let np = policy.network.as_ref()?;
+        if np.allowlist.is_empty() {
+            return None;
         }
+        let host = url
+            .split_once("://")
+            .map(|x| x.1)
+            .unwrap_or("")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        if !np.allowlist.iter().any(|entry| entry == host) {
+            return Some(EvaluationResult::deny("host not in network allowlist"));
+        }
+        None
+    }
 
+    /// Stages 3-5b of [`Self::evaluate_primary`]: per-tool allow/deny, rate
+    /// limit, and approval conditions (for both `ToolCall` and `SendMessage`).
+    /// Returns the first non-Allow decision, or `None` to continue.
+    fn eval_tool_stages(
+        &self,
+        policy: &PolicyDocument,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+    ) -> Option<EvaluationResult> {
         // Stage 3 — Tool allow/deny.
         if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
             if let Some(tp) = policy.tools.get(name) {
                 if !tp.allow {
-                    return EvaluationResult {
-                        decision: aa_core::PolicyResult::Deny {
-                            reason: "tool denied by policy".into(),
-                        },
-                        redacted_payload: None,
-                        credential_findings: vec![],
-                        deny_action: None,
-                    };
+                    return Some(EvaluationResult::deny("tool denied by policy"));
                 }
             }
         }
@@ -695,87 +714,135 @@ impl PolicyEngine {
         if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
             if let Some(tp) = policy.tools.get(name) {
                 if let Some(limit) = tp.limit_per_hour {
-                    let entry = self
-                        .rate_state
-                        .entry(name.clone())
-                        .or_insert_with(|| Mutex::new(rate_limit::TokenBucket::new(limit)));
-                    let mut bucket = entry.lock().unwrap_or_else(|e| e.into_inner());
-                    if !bucket.try_consume() {
-                        return EvaluationResult {
-                            decision: aa_core::PolicyResult::Deny {
-                                reason: "rate limit exceeded".into(),
-                            },
-                            redacted_payload: None,
-                            credential_findings: vec![],
-                            deny_action: None,
-                        };
+                    if !self.try_consume_rate(name, limit) {
+                        return Some(EvaluationResult::deny("rate limit exceeded"));
                     }
                 }
             }
         }
 
-        // Stage 5 — Approval condition.
+        // Stage 5 — Approval condition for ToolCall.
         if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-            if let Some(tp) = policy.tools.get(name) {
-                if let Some(expr) = &tp.requires_approval_if {
-                    if !expr.is_empty() {
-                        let now_secs = chrono::Utc::now().timestamp() as u64;
-                        let pctx = self.registry.as_ref().map(|reg| {
-                            crate::policy::context::ProductionPolicyContext::new(
-                                reg.as_ref(),
-                                self.budget.as_ref(),
-                                *ctx.agent_id.as_bytes(),
-                                ctx.team_id.clone(),
-                                now_secs,
-                            )
-                        });
-                        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
-                            pctx.as_ref().map(|c| c as _);
-                        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
-                            return EvaluationResult {
-                                decision: aa_core::PolicyResult::RequiresApproval {
-                                    timeout_secs: policy.approval_timeout_secs,
-                                },
-                                redacted_payload: None,
-                                credential_findings: vec![],
-                                deny_action: None,
-                            };
-                        }
-                    }
-                }
+            if let Some(result) = self.eval_approval_condition(policy, policy.tools.get(name), ctx, action) {
+                return Some(result);
             }
         }
 
         // Stage 5b — Approval condition for SendMessage (channel policy).
         if let aa_core::GovernanceAction::SendMessage { .. } = action {
-            if let Some(tp) = policy.tools.get("message") {
-                if let Some(expr) = &tp.requires_approval_if {
-                    if !expr.is_empty() {
-                        let now_secs = chrono::Utc::now().timestamp() as u64;
-                        let pctx = self.registry.as_ref().map(|reg| {
-                            crate::policy::context::ProductionPolicyContext::new(
-                                reg.as_ref(),
-                                self.budget.as_ref(),
-                                *ctx.agent_id.as_bytes(),
-                                ctx.team_id.clone(),
-                                now_secs,
-                            )
-                        });
-                        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> =
-                            pctx.as_ref().map(|c| c as _);
-                        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
-                            return EvaluationResult {
-                                decision: aa_core::PolicyResult::RequiresApproval {
-                                    timeout_secs: policy.approval_timeout_secs,
-                                },
-                                redacted_payload: None,
-                                credential_findings: vec![],
-                                deny_action: None,
-                            };
-                        }
-                    }
+            if let Some(result) = self.eval_approval_condition(policy, policy.tools.get("message"), ctx, action) {
+                return Some(result);
+            }
+        }
+
+        None
+    }
+
+    /// Evaluate a tool/channel policy's `requires_approval_if` expression for
+    /// `action`. Returns a `RequiresApproval` result when the expression is
+    /// non-empty and evaluates true; `None` when there is no policy, no
+    /// expression, or the condition is not met.
+    fn eval_approval_condition(
+        &self,
+        policy: &PolicyDocument,
+        tool_policy: Option<&crate::policy::document::ToolPolicy>,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+    ) -> Option<EvaluationResult> {
+        let expr = tool_policy?.requires_approval_if.as_ref()?;
+        if expr.is_empty() {
+            return None;
+        }
+        let now_secs = chrono::Utc::now().timestamp() as u64;
+        let pctx = self.registry.as_ref().map(|reg| {
+            crate::policy::context::ProductionPolicyContext::new(
+                reg.as_ref(),
+                self.budget.as_ref(),
+                *ctx.agent_id.as_bytes(),
+                ctx.team_id.clone(),
+                now_secs,
+            )
+        });
+        let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
+        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
+            return Some(EvaluationResult {
+                decision: aa_core::PolicyResult::RequiresApproval {
+                    timeout_secs: policy.approval_timeout_secs,
+                },
+                redacted_payload: None,
+                credential_findings: vec![],
+                deny_action: None,
+            });
+        }
+        None
+    }
+
+    /// Map a budget policy's `action_on_exceed` to the [`DenyAction`] the
+    /// service layer should apply on a budget denial.
+    fn budget_deny_action(bp: &crate::policy::BudgetPolicy) -> Option<DenyAction> {
+        match bp.action_on_exceed {
+            ActionOnExceed::Suspend => Some(DenyAction::SuspendAgent),
+            ActionOnExceed::Deny => None,
+        }
+    }
+
+    /// Check a single budget policy's monthly-then-daily limits for `agent_id`,
+    /// returning the deny reason for the first limit exceeded, or `None` when
+    /// within budget (or a limit can't be represented as a decimal).
+    fn budget_exceeded_reason(
+        &self,
+        bp: &crate::policy::BudgetPolicy,
+        agent_id: &aa_core::identity::AgentId,
+    ) -> Option<&'static str> {
+        if let Some(limit) = bp.monthly_limit_usd {
+            if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
+                if self.budget.check_monthly(agent_id, limit_dec) {
+                    return Some("monthly budget exceeded");
                 }
             }
+        }
+        if let Some(limit) = bp.daily_limit_usd {
+            if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
+                if self.budget.check_daily(agent_id, limit_dec) {
+                    return Some("daily budget exceeded");
+                }
+            }
+        }
+        None
+    }
+
+    /// Try to consume one token from the per-tool rate-limit bucket, creating it
+    /// at `limit` tokens/hour on first use. Returns `false` when the bucket is
+    /// empty (request should be denied).
+    fn try_consume_rate(&self, name: &str, limit: u32) -> bool {
+        let entry = self
+            .rate_state
+            .entry(name.to_string())
+            .or_insert_with(|| Mutex::new(rate_limit::TokenBucket::new(limit)));
+        let mut bucket = entry.lock().unwrap_or_else(|e| e.into_inner());
+        bucket.try_consume()
+    }
+
+    /// Single-policy evaluation path: used when no scoped policies are registered.
+    ///
+    /// This is the original 7-stage pipeline from before AAASM-220. When the
+    /// `scope_index` is empty, `evaluate` delegates here for full backward compat.
+    fn evaluate_primary(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
+        let policy = self.policy.load();
+
+        // Stage 1 — Schedule: check active hours window.
+        if let Some(result) = Self::eval_schedule_stage(&policy) {
+            return result;
+        }
+
+        // Stage 2 — Network allowlist: only for NetworkRequest actions.
+        if let Some(result) = Self::eval_network_stage(&policy, action) {
+            return result;
+        }
+
+        // Stages 3-5b — Tool/message rules: allow/deny, rate limit, approval.
+        if let Some(result) = self.eval_tool_stages(&policy, ctx, action) {
+            return result;
         }
 
         // Stage 6 — Credential scan + custom pattern scan: redact in-memory, never deny.
@@ -784,14 +851,7 @@ impl PolicyEngine {
         // Pass 2: Policy-defined regex patterns from data.sensitive_patterns.
         // Both passes contribute to the same findings list. The merged ScanResult is used
         // to redact the payload once; the redacted text propagates — the original is dropped.
-        let text = match action {
-            aa_core::GovernanceAction::ToolCall { args, .. } => args.as_str(),
-            aa_core::GovernanceAction::ToolResult { result, .. } => result.as_str(),
-            aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
-            aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
-            aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
-            aa_core::GovernanceAction::SendMessage { .. } => "",
-        };
+        let text = action_scan_text(action);
 
         let scan = self.scanner.scan(text);
         let mut all_findings = scan.findings;
@@ -856,37 +916,9 @@ impl PolicyEngine {
 
         // Stage 7 — Budget check (monthly first, then daily).
         if let Some(bp) = &policy.budget {
-            let deny_action = match bp.action_on_exceed {
-                ActionOnExceed::Suspend => Some(DenyAction::SuspendAgent),
-                ActionOnExceed::Deny => None,
-            };
-            if let Some(limit) = bp.monthly_limit_usd {
-                if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
-                    if self.budget.check_monthly(&ctx.agent_id, limit_dec) {
-                        return EvaluationResult {
-                            decision: aa_core::PolicyResult::Deny {
-                                reason: "monthly budget exceeded".into(),
-                            },
-                            redacted_payload,
-                            credential_findings,
-                            deny_action,
-                        };
-                    }
-                }
-            }
-            if let Some(limit) = bp.daily_limit_usd {
-                if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
-                    if self.budget.check_daily(&ctx.agent_id, limit_dec) {
-                        return EvaluationResult {
-                            decision: aa_core::PolicyResult::Deny {
-                                reason: "daily budget exceeded".into(),
-                            },
-                            redacted_payload,
-                            credential_findings,
-                            deny_action,
-                        };
-                    }
-                }
+            let deny_action = Self::budget_deny_action(bp);
+            if let Some(reason) = self.budget_exceeded_reason(bp, &ctx.agent_id) {
+                return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, deny_action);
             }
         }
 
@@ -896,6 +928,48 @@ impl PolicyEngine {
             credential_findings,
             deny_action: None,
         }
+    }
+
+    /// Cascade capability guard: deny when the merged capability set (folded
+    /// across the whole cascade) blocks the action — either the capability is in
+    /// the merged deny set, or a non-empty merged allow set omits it. This
+    /// catches the cross-doc intersection case that per-doc checks miss
+    /// (AAASM-1046). `None` when the action is permitted.
+    fn cascade_capability_guard(
+        cascade: &[Arc<PolicyDocument>],
+        action: &aa_core::GovernanceAction,
+    ) -> Option<EvaluationResult> {
+        let merged_caps = Self::collect_merged_capabilities(cascade);
+        let cap = aa_core::action_to_capability(action)?;
+        if merged_caps.deny.contains(&cap) {
+            return Some(EvaluationResult::deny("capability denied by policy"));
+        }
+        if !merged_caps.allow.is_empty() && !merged_caps.allow.contains(&cap) {
+            return Some(EvaluationResult::deny("capability not in allow list"));
+        }
+        None
+    }
+
+    /// Stage 4 across a cascade: apply the most restrictive (minimum)
+    /// `limit_per_hour` found for the tool across all cascade docs. Returns a
+    /// deny when the shared bucket is exhausted; `None` otherwise.
+    fn cascade_rate_limit(
+        &self,
+        cascade: &[Arc<PolicyDocument>],
+        action: &aa_core::GovernanceAction,
+    ) -> Option<EvaluationResult> {
+        let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
+            return None;
+        };
+        let min_limit = cascade
+            .iter()
+            .filter_map(|doc| doc.tools.get(name))
+            .filter_map(|tp| tp.limit_per_hour)
+            .min()?;
+        if !self.try_consume_rate(name, min_limit) {
+            return Some(EvaluationResult::deny("rate limit exceeded"));
+        }
+        None
     }
 
     /// Cascade evaluation path: runs `merge_decisions` across all scoped policies,
@@ -942,85 +1016,21 @@ impl PolicyEngine {
             };
         }
 
-        // Cascade capability guard: checks the allow-list intersection case where no single
-        // doc denies the capability but the merged allow-list (after merge_capabilities)
-        // does not contain it. Per-doc stage 3.5 handles intra-doc denials; this guard
-        // handles cross-doc scenarios. The merged set is also used for dev-tool wiring
-        // (AAASM-1046).
-        let merged_caps = Self::collect_merged_capabilities(&cascade);
-        if let Some(cap) = aa_core::action_to_capability(action) {
-            if merged_caps.deny.contains(&cap) {
-                return EvaluationResult {
-                    decision: aa_core::PolicyResult::Deny {
-                        reason: "capability denied by policy".into(),
-                    },
-                    redacted_payload: None,
-                    credential_findings: vec![],
-                    deny_action: None,
-                };
-            }
-            if !merged_caps.allow.is_empty() && !merged_caps.allow.contains(&cap) {
-                return EvaluationResult {
-                    decision: aa_core::PolicyResult::Deny {
-                        reason: "capability not in allow list".into(),
-                    },
-                    redacted_payload: None,
-                    credential_findings: vec![],
-                    deny_action: None,
-                };
-            }
+        // Cascade capability guard (cross-doc merged allow/deny set).
+        if let Some(result) = Self::cascade_capability_guard(&cascade, action) {
+            return result;
         }
 
-        // Stage 4 — Rate limiting: use the most restrictive (minimum) limit_per_hour
-        // found across all cascade policies for the requested tool.
-        if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-            let min_limit = cascade
-                .iter()
-                .filter_map(|doc| doc.tools.get(name))
-                .filter_map(|tp| tp.limit_per_hour)
-                .min();
-
-            if let Some(limit) = min_limit {
-                let entry = self
-                    .rate_state
-                    .entry(name.clone())
-                    .or_insert_with(|| Mutex::new(rate_limit::TokenBucket::new(limit)));
-                let mut bucket = entry.lock().unwrap_or_else(|e| e.into_inner());
-                if !bucket.try_consume() {
-                    return EvaluationResult {
-                        decision: aa_core::PolicyResult::Deny {
-                            reason: "rate limit exceeded".into(),
-                        },
-                        redacted_payload: None,
-                        credential_findings: vec![],
-                        deny_action: None,
-                    };
-                }
-            }
+        // Stage 4 — Rate limiting across the cascade (most restrictive wins).
+        if let Some(result) = self.cascade_rate_limit(&cascade, action) {
+            return result;
         }
 
         // Stage 6 — Credential scan: accumulate custom patterns from all cascade docs.
-        let text = match action {
-            aa_core::GovernanceAction::ToolCall { args, .. } => args.as_str(),
-            aa_core::GovernanceAction::ToolResult { result, .. } => result.as_str(),
-            aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
-            aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
-            aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
-            aa_core::GovernanceAction::SendMessage { .. } => "",
-        };
+        let text = action_scan_text(action);
         let scan = self.scanner.scan(text);
         let mut all_findings = scan.findings;
-        for doc in &cascade {
-            if let Some(dp) = &doc.data {
-                for pattern in &dp.sensitive_patterns {
-                    if let Ok(re) = regex::Regex::new(pattern) {
-                        for m in re.find_iter(text) {
-                            all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
-                        }
-                    }
-                }
-            }
-        }
+        collect_cascade_custom_findings(&cascade, text, &mut all_findings);
 
         // Most-restrictive-wins across the cascade: Block > RedactOnly > AlertOnly.
         // Docs without a `data` section don't vote — RedactOnly remains the default.
@@ -1074,37 +1084,9 @@ impl PolicyEngine {
         let mut deny_action = None;
         for doc in &cascade {
             if let Some(bp) = &doc.budget {
-                let da = match bp.action_on_exceed {
-                    ActionOnExceed::Suspend => Some(DenyAction::SuspendAgent),
-                    ActionOnExceed::Deny => None,
-                };
-                if let Some(limit) = bp.monthly_limit_usd {
-                    if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
-                        if self.budget.check_monthly(&ctx.agent_id, limit_dec) {
-                            return EvaluationResult {
-                                decision: aa_core::PolicyResult::Deny {
-                                    reason: "monthly budget exceeded".into(),
-                                },
-                                redacted_payload,
-                                credential_findings,
-                                deny_action: da,
-                            };
-                        }
-                    }
-                }
-                if let Some(limit) = bp.daily_limit_usd {
-                    if let Ok(limit_dec) = rust_decimal::Decimal::try_from(limit) {
-                        if self.budget.check_daily(&ctx.agent_id, limit_dec) {
-                            return EvaluationResult {
-                                decision: aa_core::PolicyResult::Deny {
-                                    reason: "daily budget exceeded".into(),
-                                },
-                                redacted_payload,
-                                credential_findings,
-                                deny_action: da,
-                            };
-                        }
-                    }
+                let da = Self::budget_deny_action(bp);
+                if let Some(reason) = self.budget_exceeded_reason(bp, &ctx.agent_id) {
+                    return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, da);
                 }
                 deny_action = da;
             }
@@ -1335,39 +1317,61 @@ impl PolicyEngine {
 
         let mut cascade = Vec::new();
 
-        // Global — broadest scope
-        for &id in self.scope_index.policies_for_scope(&PolicyScope::Global) {
-            if let Some(doc) = self.scope_index.policy(id) {
-                cascade.push(Arc::clone(doc));
-            }
-        }
-
-        // Org — if agent has an org
+        // Broadest → narrowest scope.
+        self.push_scope_policies(&PolicyScope::Global, &mut cascade);
         if let Some(ref org_id) = lineage.org_id {
-            for &id in self.scope_index.policies_for_scope(&PolicyScope::Org(org_id.clone())) {
-                if let Some(doc) = self.scope_index.policy(id) {
-                    cascade.push(Arc::clone(doc));
-                }
-            }
+            self.push_scope_policies(&PolicyScope::Org(org_id.clone()), &mut cascade);
         }
-
-        // Team — if agent has a team
         if let Some(ref team_id) = lineage.team_id {
-            for &id in self.scope_index.policies_for_scope(&PolicyScope::Team(team_id.clone())) {
-                if let Some(doc) = self.scope_index.policy(id) {
-                    cascade.push(Arc::clone(doc));
-                }
-            }
+            self.push_scope_policies(&PolicyScope::Team(team_id.clone()), &mut cascade);
         }
-
-        // Agent — narrowest scope
-        for &id in self.scope_index.policies_for_scope(&PolicyScope::Agent(*agent_id)) {
-            if let Some(doc) = self.scope_index.policy(id) {
-                cascade.push(Arc::clone(doc));
-            }
-        }
+        self.push_scope_policies(&PolicyScope::Agent(*agent_id), &mut cascade);
 
         cascade
+    }
+
+    /// Append all policy documents registered for `scope` to `cascade`,
+    /// preserving the scope index's order.
+    fn push_scope_policies(&self, scope: &crate::policy::scope::PolicyScope, cascade: &mut Vec<Arc<PolicyDocument>>) {
+        for &id in self.scope_index.policies_for_scope(scope) {
+            if let Some(doc) = self.scope_index.policy(id) {
+                cascade.push(Arc::clone(doc));
+            }
+        }
+    }
+}
+
+/// Extract the text payload an action contributes to the credential scan.
+/// `SendMessage` carries no scannable text and maps to the empty string.
+fn action_scan_text(action: &aa_core::GovernanceAction) -> &str {
+    match action {
+        aa_core::GovernanceAction::ToolCall { args, .. } => args.as_str(),
+        aa_core::GovernanceAction::ToolResult { result, .. } => result.as_str(),
+        aa_core::GovernanceAction::FileAccess { path, .. } => path.as_str(),
+        aa_core::GovernanceAction::NetworkRequest { url, .. } => url.as_str(),
+        aa_core::GovernanceAction::ProcessExec { command } => command.as_str(),
+        aa_core::GovernanceAction::SendMessage { .. } => "",
+    }
+}
+
+/// Append findings from each cascade doc's `data.sensitive_patterns` regexes
+/// (matched against `text`) onto `all_findings`. Unparseable patterns are
+/// skipped silently — the same lenient behaviour as the inline scan it replaces.
+fn collect_cascade_custom_findings(
+    cascade: &[Arc<PolicyDocument>],
+    text: &str,
+    all_findings: &mut Vec<aa_security::CredentialFinding>,
+) {
+    for doc in cascade {
+        if let Some(dp) = &doc.data {
+            for pattern in &dp.sensitive_patterns {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    for m in re.find_iter(text) {
+                        all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
+                    }
+                }
+            }
+        }
     }
 }
 

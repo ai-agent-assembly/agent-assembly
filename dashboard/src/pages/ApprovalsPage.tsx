@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
 import { EmptyState } from '../components/EmptyState'
@@ -276,7 +277,7 @@ export function ApprovalsPage() {
           )}
 
           {isError && (
-            <ErrorState kind="generic" onRetry={() => void refetch()} />
+            <ErrorState kind="generic" onRetry={() => ignorePromise(refetch())} />
           )}
 
           {!isLoading && !isError && pending.length === 0 && (

@@ -238,55 +238,23 @@ impl PolicyValidator {
     ) -> Option<BudgetPolicy> {
         let raw = raw?;
 
-        if let Some(limit) = raw.daily_limit_usd {
-            if limit <= 0.0 {
-                errors.push(ValidationError::new("budget.daily_limit_usd", "must be greater than 0"));
-            }
-        }
-
-        if let Some(limit) = raw.monthly_limit_usd {
-            if limit <= 0.0 {
-                errors.push(ValidationError::new(
-                    "budget.monthly_limit_usd",
-                    "must be greater than 0",
-                ));
-            }
-            if let Some(daily) = raw.daily_limit_usd {
-                if limit < daily {
-                    errors.push(ValidationError::new(
-                        "budget.monthly_limit_usd",
-                        "must be >= daily_limit_usd",
-                    ));
-                }
-            }
-        }
+        validate_budget_limit_pair(
+            raw.daily_limit_usd,
+            raw.monthly_limit_usd,
+            "budget.daily_limit_usd",
+            "budget.monthly_limit_usd",
+            errors,
+        );
 
         // AAASM-2022 — Per-org limits use the same validation rules as the
         // global limits: positive, and monthly >= daily.
-        if let Some(limit) = raw.org_daily_limit_usd {
-            if limit <= 0.0 {
-                errors.push(ValidationError::new(
-                    "budget.org_daily_limit_usd",
-                    "must be greater than 0",
-                ));
-            }
-        }
-        if let Some(limit) = raw.org_monthly_limit_usd {
-            if limit <= 0.0 {
-                errors.push(ValidationError::new(
-                    "budget.org_monthly_limit_usd",
-                    "must be greater than 0",
-                ));
-            }
-            if let Some(daily) = raw.org_daily_limit_usd {
-                if limit < daily {
-                    errors.push(ValidationError::new(
-                        "budget.org_monthly_limit_usd",
-                        "must be >= org_daily_limit_usd",
-                    ));
-                }
-            }
-        }
+        validate_budget_limit_pair(
+            raw.org_daily_limit_usd,
+            raw.org_monthly_limit_usd,
+            "budget.org_daily_limit_usd",
+            "budget.org_monthly_limit_usd",
+            errors,
+        );
 
         // Validate timezone string if provided
         if let Some(tz_str) = &raw.timezone {
@@ -476,6 +444,35 @@ impl PolicyValidator {
             timeout_seconds: raw.timeout_seconds,
             escalation_role: raw.escalation_role,
         })
+    }
+}
+
+/// Validate a daily/monthly budget limit pair: each must be positive when
+/// present, and `monthly` must be >= `daily`. `daily_field` / `monthly_field`
+/// are the dotted field paths used in [`ValidationError`] messages.
+fn validate_budget_limit_pair(
+    daily: Option<f64>,
+    monthly: Option<f64>,
+    daily_field: &'static str,
+    monthly_field: &'static str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(limit) = daily {
+        if limit <= 0.0 {
+            errors.push(ValidationError::new(daily_field, "must be greater than 0"));
+        }
+    }
+    if let Some(limit) = monthly {
+        if limit <= 0.0 {
+            errors.push(ValidationError::new(monthly_field, "must be greater than 0"));
+        }
+        if let Some(daily) = daily {
+            if limit < daily {
+                // Cross-message references the daily field by its leaf name.
+                let daily_leaf = daily_field.rsplit('.').next().unwrap_or(daily_field);
+                errors.push(ValidationError::new(monthly_field, format!("must be >= {daily_leaf}")));
+            }
+        }
     }
 }
 

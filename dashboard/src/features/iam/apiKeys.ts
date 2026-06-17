@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 import { iamQueryKeys } from './queryKeys'
 import type { ApiKey, GenerateApiKeyInput, GeneratedApiKey } from './types'
@@ -126,7 +127,7 @@ export function useGenerateApiKeyMutation() {
   return useMutation({
     mutationFn: (input: GenerateApiKeyInput) => generateApiKey(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }
@@ -136,7 +137,7 @@ export function useRevokeApiKeyMutation() {
   return useMutation({
     mutationFn: (id: string) => revokeApiKey(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }
@@ -146,7 +147,7 @@ export function useRotateApiKeyMutation() {
   return useMutation({
     mutationFn: (id: string) => rotateApiKey(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }

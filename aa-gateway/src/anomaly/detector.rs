@@ -242,32 +242,9 @@ impl AnomalyDetector {
         network_allowlist: &[String],
         credential_owner_id: Option<AgentId>,
     ) -> Option<AnomalyEvent> {
-        // 1. Child process execution (Block) — highest priority
-        if let aa_core::GovernanceAction::ProcessExec { command } = action {
-            if let Some(event) = self.check_child_process(agent_id, command) {
-                return Some(event);
-            }
-        }
-
-        // 2. Unknown external connection (Block)
-        if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-            if let Some(event) = self.check_unknown_connection(agent_id, url, network_allowlist) {
-                return Some(event);
-            }
-        }
-
-        // 3. Data exfiltration attempt (Block)
-        if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-            if let Some(event) = self.check_data_exfiltration(agent_id, has_pii, url) {
-                return Some(event);
-            }
-        }
-
-        // 4. Loop runaway (Pause)
-        if let aa_core::GovernanceAction::ToolCall { name, args } = action {
-            if let Some(event) = self.check_loop_runaway(agent_id, name, args) {
-                return Some(event);
-            }
+        // Checks 1-4 are action-shape-specific (Block, then Pause).
+        if let Some(event) = self.detect_for_action(agent_id, action, has_pii, network_allowlist) {
+            return Some(event);
         }
 
         // 5. Behavior spike (Pause)
@@ -288,6 +265,29 @@ impl AnomalyDetector {
         }
 
         None
+    }
+
+    /// Run the action-shape-specific anomaly checks (process exec, unknown
+    /// connection, data exfiltration, loop runaway), short-circuiting on the
+    /// first detected anomaly in severity order (Block before Pause).
+    fn detect_for_action(
+        &self,
+        agent_id: AgentId,
+        action: &aa_core::GovernanceAction,
+        has_pii: bool,
+        network_allowlist: &[String],
+    ) -> Option<AnomalyEvent> {
+        match action {
+            // Child process execution (Block) — highest priority.
+            aa_core::GovernanceAction::ProcessExec { command } => self.check_child_process(agent_id, command),
+            // Unknown external connection (Block), then data exfiltration (Block).
+            aa_core::GovernanceAction::NetworkRequest { url, .. } => self
+                .check_unknown_connection(agent_id, url, network_allowlist)
+                .or_else(|| self.check_data_exfiltration(agent_id, has_pii, url)),
+            // Loop runaway (Pause).
+            aa_core::GovernanceAction::ToolCall { name, args } => self.check_loop_runaway(agent_id, name, args),
+            _ => None,
+        }
     }
 
     /// Compute a stable hash for a (tool_name, args) pair.

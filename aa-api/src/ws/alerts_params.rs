@@ -169,44 +169,26 @@ impl AlertsWsQueryParams {
         let mut filter = AlertsFilter::unfiltered();
 
         if let Some(raw) = &self.events {
-            if raw.trim().is_empty() {
-                // Treat empty string as "no filter override".
-            } else {
-                filter.events.clear();
-                for tok in raw.split(',') {
-                    let tok = tok.trim();
-                    if tok.is_empty() {
-                        continue;
-                    }
-                    let kind = match tok.to_ascii_lowercase().as_str() {
-                        "fire" => AlertEventKind::Fire,
-                        "resolve" => AlertEventKind::Resolve,
-                        "silence" => AlertEventKind::Silence,
-                        _ => return Err(FilterError::UnknownEvent(tok.to_string())),
-                    };
-                    filter.events.insert(kind);
-                }
-                if filter.events.is_empty() {
-                    // Whitespace-only csv → fall back to unfiltered.
-                    filter.events = AlertsFilter::unfiltered().events;
-                }
-            }
+            parse_csv_filter(
+                raw,
+                &mut filter.events,
+                AlertsFilter::unfiltered().events,
+                |tok| match tok.to_ascii_lowercase().as_str() {
+                    "fire" => Ok(AlertEventKind::Fire),
+                    "resolve" => Ok(AlertEventKind::Resolve),
+                    "silence" => Ok(AlertEventKind::Silence),
+                    _ => Err(FilterError::UnknownEvent(tok.to_string())),
+                },
+            )?;
         }
 
         if let Some(raw) = &self.severity {
-            if !raw.trim().is_empty() {
-                filter.severities.clear();
-                for tok in raw.split(',') {
-                    let tok = tok.trim();
-                    if tok.is_empty() {
-                        continue;
-                    }
-                    filter.severities.insert(WireSeverity::parse(tok)?);
-                }
-                if filter.severities.is_empty() {
-                    filter.severities = AlertsFilter::unfiltered().severities;
-                }
-            }
+            parse_csv_filter(
+                raw,
+                &mut filter.severities,
+                AlertsFilter::unfiltered().severities,
+                WireSeverity::parse,
+            )?;
         }
 
         filter.agent_id = self
@@ -217,6 +199,38 @@ impl AlertsWsQueryParams {
 
         Ok(filter)
     }
+}
+
+/// Parse a comma-separated `raw` filter value into `target`.
+///
+/// An empty/whitespace-only `raw` leaves `target` untouched (no override). A
+/// non-empty value clears `target`, parses each non-empty token via `parse`,
+/// and inserts the result. If every token was whitespace the set falls back to
+/// `default`. The first unparseable token short-circuits with its error.
+fn parse_csv_filter<T, E>(
+    raw: &str,
+    target: &mut std::collections::BTreeSet<T>,
+    default: std::collections::BTreeSet<T>,
+    parse: impl Fn(&str) -> Result<T, E>,
+) -> Result<(), E>
+where
+    T: Ord,
+{
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+    target.clear();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        target.insert(parse(tok)?);
+    }
+    if target.is_empty() {
+        *target = default;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

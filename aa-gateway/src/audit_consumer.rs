@@ -421,6 +421,24 @@ enum Disposition {
 /// awaiting a server confirmation (async ack), so per-message acking does not
 /// block the writer on a round-trip per message.
 async fn process_batch(batch: &[jetstream::Message], sink: &PgAuditSink, lifecycle: &PgLifecycleStore) {
+    let (records, dispositions) = classify_batch(batch);
+
+    // Persist the audit rows; on failure leave every audit message un-acked.
+    let audit_persisted = persist_audit_records(&records, sink).await;
+
+    // Ack each message individually, only if its own write succeeded.
+    let heartbeats_touched = ack_batch(batch, &dispositions, audit_persisted, lifecycle).await;
+
+    if heartbeats_touched > 0 {
+        metrics::counter!(METRIC_HEARTBEATS).increment(heartbeats_touched);
+    }
+}
+
+/// Decode each message in `batch`, splitting out the audit rows to insert and a
+/// per-message [`Disposition`] (parallel to `batch`) that drives acking.
+/// Undecodable payloads are counted and marked for ack — they can't be retried
+/// into validity.
+fn classify_batch(batch: &[jetstream::Message]) -> (Vec<AuditLogRecord>, Vec<Disposition>) {
     let mut records = Vec::with_capacity(batch.len());
     let mut dispositions = Vec::with_capacity(batch.len());
     for message in batch {
@@ -441,29 +459,42 @@ async fn process_batch(batch: &[jetstream::Message], sink: &PgAuditSink, lifecyc
             }
         }
     }
+    (records, dispositions)
+}
 
-    // Persist the audit rows; on failure leave every audit message un-acked.
+/// Insert the decoded audit rows in one all-or-nothing batch. Returns whether
+/// the write succeeded (vacuously `true` for an empty batch); on failure every
+/// audit message is left un-acked for JetStream redelivery.
+async fn persist_audit_records(records: &[AuditLogRecord], sink: &PgAuditSink) -> bool {
     let submitted = records.len() as u64;
-    let audit_persisted = if submitted > 0 {
-        match sink.insert_audit_logs(&records).await {
-            Ok(inserted) => {
-                metrics::counter!(METRIC_INSERTED).increment(inserted);
-                metrics::counter!(METRIC_DUPLICATES).increment(submitted - inserted);
-                true
-            }
-            Err(err) => {
-                metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
-                tracing::warn!(%err, "audit consumer: batch insert failed, leaving messages un-acked");
-                false
-            }
+    if submitted == 0 {
+        return true;
+    }
+    match sink.insert_audit_logs(records).await {
+        Ok(inserted) => {
+            metrics::counter!(METRIC_INSERTED).increment(inserted);
+            metrics::counter!(METRIC_DUPLICATES).increment(submitted - inserted);
+            true
         }
-    } else {
-        true
-    };
+        Err(err) => {
+            metrics::counter!(METRIC_WRITE_ERRORS).increment(1);
+            tracing::warn!(%err, "audit consumer: batch insert failed, leaving messages un-acked");
+            false
+        }
+    }
+}
 
-    // Ack each message individually, only if its own write succeeded.
+/// Ack each message whose own write succeeded: audit messages gated on
+/// `audit_persisted`, heartbeats on their `touch_last_heartbeat`, undecodable
+/// always. Returns the number of heartbeats successfully touched.
+async fn ack_batch(
+    batch: &[jetstream::Message],
+    dispositions: &[Disposition],
+    audit_persisted: bool,
+    lifecycle: &PgLifecycleStore,
+) -> u64 {
     let mut heartbeats_touched = 0_u64;
-    for (message, disposition) in batch.iter().zip(&dispositions) {
+    for (message, disposition) in batch.iter().zip(dispositions) {
         let acked = match disposition {
             Disposition::Audit => audit_persisted,
             Disposition::Undecodable => true,
@@ -485,10 +516,7 @@ async fn process_batch(batch: &[jetstream::Message], sink: &PgAuditSink, lifecyc
             }
         }
     }
-
-    if heartbeats_touched > 0 {
-        metrics::counter!(METRIC_HEARTBEATS).increment(heartbeats_touched);
-    }
+    heartbeats_touched
 }
 
 /// Map a sanitized audit event onto the `audit_logs` columns, using its

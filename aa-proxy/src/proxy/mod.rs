@@ -437,6 +437,116 @@ impl ProxyServer {
         Ok(())
     }
 
+    /// Evaluate egress policy for a `CONNECT` host. Returns `Some(reason)` when
+    /// the connection must be denied — the host is on the deny-list, or (when a
+    /// non-empty network allowlist is configured) it matches no allowlist
+    /// pattern. Returns `None` when the connection is allowed. An empty
+    /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
+    fn connect_deny_reason(&self, host: &str) -> Option<&'static str> {
+        if self.config.denied_hosts.iter().any(|denied| denied == host) {
+            return Some("host policy");
+        }
+        if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
+            return Some("network allowlist");
+        }
+        None
+    }
+
+    /// Inspect, enforce, and forward an LLM-pattern HTTPS request inside an
+    /// already-established TLS MitM tunnel.
+    ///
+    /// Reads the inbound HTTP request so the credential scanner runs against
+    /// the real body bytes before any byte reaches upstream. On a `Block`
+    /// verdict, returns `403` to the client without dialing upstream. Otherwise
+    /// dials upstream and forwards the (possibly redacted) request, then runs a
+    /// bidirectional copy until either side closes.
+    async fn handle_llm_mitm(
+        self: &Arc<Self>,
+        client_tls: tokio_rustls::server::TlsStream<TcpStream>,
+        host: &str,
+        target: &str,
+        pattern: LlmApiPattern,
+    ) -> Result<(), ProxyError> {
+        let mut client_reader = BufReader::new(client_tls);
+        let Some(req) = read_http_request(&mut client_reader).await? else {
+            // Client closed without sending a request line — nothing
+            // to do, just return cleanly.
+            return Ok(());
+        };
+
+        let verdict = self
+            .interceptor
+            .intercept_request(&req.body, self.config.credential_action);
+
+        // Emit the legacy ProxyEvent for the audit broadcast — keeps
+        // existing subscribers wired up unchanged.
+        let event = ProxyEvent {
+            agent_id: None,
+            pattern,
+            method: req.method.clone(),
+            path: req.target.clone(),
+            request_body: Some(bytes::Bytes::copy_from_slice(&req.body)),
+            response_body: None,
+            timestamp: SystemTime::now(),
+        };
+        self.interceptor.intercept(&event).await?;
+
+        if verdict.decision == VerdictDecision::Block {
+            tracing::info!(
+                %host,
+                findings = verdict.findings.len(),
+                "credential_action=Block: refusing forward, returning 403",
+            );
+            self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Blocked)
+                .await;
+            let mut client_tls = client_reader.into_inner();
+            client_tls
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
+
+        // Dial upstream only after we have decided not to block.
+        let upstream_tls = self.dial_upstream_tls(host, target).await?;
+
+        let outgoing_bytes = match verdict.decision {
+            VerdictDecision::ForwardRedacted => {
+                let body = verdict
+                    .redacted_body
+                    .as_deref()
+                    .expect("ForwardRedacted always carries redacted_body");
+                let bytes = serialize_http_request(&req, body);
+                self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
+                    .await;
+                bytes
+            }
+            VerdictDecision::AlertAndForward => {
+                let bytes = serialize_http_request(&req, &req.body);
+                // Emit an audit entry so operators can see the alert-mode
+                // decision (findings are still recorded, body is not).
+                self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Forwarded)
+                    .await;
+                bytes
+            }
+            _ => serialize_http_request(&req, &req.body),
+        };
+
+        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
+        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+
+        upstream_write.write_all(&outgoing_bytes).await?;
+
+        let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+        let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+        tokio::select! {
+            r = client_to_upstream => { r?; }
+            r = upstream_to_client => { r?; }
+        }
+        Ok(())
+    }
+
     /// Handle a single accepted TCP connection.
     ///
     /// Reads the first HTTP request line to determine whether this is a
@@ -471,30 +581,11 @@ impl ProxyServer {
             // Extract hostname (strip port) for deny check and certificate generation.
             let host = target.split(':').next().unwrap_or(target);
 
-            // Deny check: if the host is on the deny list, return 403 immediately.
-            if self.config.denied_hosts.iter().any(|denied| denied == host) {
-                tracing::info!(%host, "CONNECT denied by host policy");
-                let inner = reader.into_inner();
-                let mut stream = inner;
-                stream
-                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                    .await?;
-                self.interceptor.emit_policy_decision(host, true).await;
-                return Ok(());
-            }
-
-            // AAASM-1943: network egress allowlist enforcement. When the
-            // configured allowlist is non-empty, only hosts matching at
-            // least one pattern (exact / *.suffix / *) may CONNECT. Empty
-            // allowlist preserves the pre-AAASM-1943 default-open behaviour.
-            if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
-                tracing::info!(
-                    %host,
-                    patterns = self.config.network_allowlist.len(),
-                    "CONNECT denied by network allowlist"
-                );
-                let inner = reader.into_inner();
-                let mut stream = inner;
+            // Egress policy: deny-list, then AAASM-1943 network allowlist.
+            // Both return 403 + emit a deny decision and end the connection.
+            if let Some(reason) = self.connect_deny_reason(host) {
+                tracing::info!(%host, "CONNECT denied: {reason}");
+                let mut stream = reader.into_inner();
                 stream
                     .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                     .await?;
@@ -549,84 +640,7 @@ impl ProxyServer {
             // body bytes before any byte reaches upstream. For non-LLM
             // patterns we fall through to a raw bidirectional copy below.
             if pattern != LlmApiPattern::Unknown {
-                let mut client_reader = BufReader::new(client_tls);
-                let Some(req) = read_http_request(&mut client_reader).await? else {
-                    // Client closed without sending a request line — nothing
-                    // to do, just return cleanly.
-                    return Ok(());
-                };
-
-                let verdict = self
-                    .interceptor
-                    .intercept_request(&req.body, self.config.credential_action);
-
-                // Emit the legacy ProxyEvent for the audit broadcast — keeps
-                // existing subscribers wired up unchanged.
-                let event = ProxyEvent {
-                    agent_id: None,
-                    pattern,
-                    method: req.method.clone(),
-                    path: req.target.clone(),
-                    request_body: Some(bytes::Bytes::copy_from_slice(&req.body)),
-                    response_body: None,
-                    timestamp: SystemTime::now(),
-                };
-                self.interceptor.intercept(&event).await?;
-
-                if verdict.decision == VerdictDecision::Block {
-                    tracing::info!(
-                        %host,
-                        findings = verdict.findings.len(),
-                        "credential_action=Block: refusing forward, returning 403",
-                    );
-                    self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Blocked)
-                        .await;
-                    let mut client_tls = client_reader.into_inner();
-                    client_tls
-                        .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                        .await?;
-                    let _ = client_tls.shutdown().await;
-                    return Ok(());
-                }
-
-                // Dial upstream only after we have decided not to block.
-                let upstream_tls = self.dial_upstream_tls(host, target).await?;
-
-                let outgoing_bytes = match verdict.decision {
-                    VerdictDecision::ForwardRedacted => {
-                        let body = verdict
-                            .redacted_body
-                            .as_deref()
-                            .expect("ForwardRedacted always carries redacted_body");
-                        let bytes = serialize_http_request(&req, body);
-                        self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
-                            .await;
-                        bytes
-                    }
-                    VerdictDecision::AlertAndForward => {
-                        let bytes = serialize_http_request(&req, &req.body);
-                        // Emit an audit entry so operators can see the alert-mode
-                        // decision (findings are still recorded, body is not).
-                        self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Forwarded)
-                            .await;
-                        bytes
-                    }
-                    _ => serialize_http_request(&req, &req.body),
-                };
-
-                let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
-                let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
-
-                upstream_write.write_all(&outgoing_bytes).await?;
-
-                let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-                let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-                tokio::select! {
-                    r = client_to_upstream => { r?; }
-                    r = upstream_to_client => { r?; }
-                }
-                return Ok(());
+                return self.handle_llm_mitm(client_tls, host, target, pattern).await;
             }
 
             // Non-LLM pattern.

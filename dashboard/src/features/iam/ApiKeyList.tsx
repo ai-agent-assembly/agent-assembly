@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { useApiKeysQuery, useRevokeApiKeyMutation, useRotateApiKeyMutation } from './apiKeys'
 import { useToast } from '../../components/Toast'
 import type { ApiKey, GeneratedApiKey } from './types'
@@ -110,7 +111,7 @@ export function ApiKeyList({ selectedKeyId = null, onSelect, onRotated }: ApiKey
     return (
       <div className="iam-api-key-list__error" data-testid="api-key-list-error">
         <span>Failed to load API keys.</span>
-        <button type="button" onClick={() => void refetch()}>Retry</button>
+        <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
       </div>
     )
   }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { Link, useParams } from 'react-router-dom'
 import { useAgentQuery } from '../features/agents/api'
 import { useTraceQuery } from '../features/trace/api'
@@ -70,7 +71,7 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
       {isError && (
         <div data-testid="trace-error" style={{ marginTop: '1rem' }}>
           <p style={{ color: 'var(--danger)' }}>Failed to load trace.</p>
-          <button onClick={() => void refetch()}>Retry</button>
+          <button onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 

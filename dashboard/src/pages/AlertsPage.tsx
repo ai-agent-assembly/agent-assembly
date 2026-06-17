@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertList } from '../features/alerts/AlertList'
@@ -169,7 +170,7 @@ export function AlertsPage() {
           {alertsQuery.isError && (
             <AlertsErrorBanner
               message={alertsQuery.error?.message ?? 'unknown error'}
-              onRetry={() => void alertsQuery.refetch()}
+              onRetry={() => ignorePromise(alertsQuery.refetch())}
             />
           )}
 

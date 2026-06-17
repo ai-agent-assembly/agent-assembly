@@ -569,6 +569,111 @@ impl ApprovalQueue {
         }
     }
 
+    /// Capture the resolved record into `resolved_history` before any
+    /// audit/broadcast work so the HTTP `GET /approvals/{id}` + `?status=…`
+    /// filter can observe the decision (AAASM-1477). Evicts the oldest entry
+    /// once the history cap is reached.
+    fn record_resolution(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
+        let (status_str, decision_reason) = match decision {
+            ApprovalDecision::Approved { reason, .. } => ("approved", reason.clone()),
+            ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone())),
+            ApprovalDecision::TimedOut { .. } => ("timed_out", None),
+        };
+        let decided_at = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let record = ResolvedRecord {
+            request_id: req.request_id,
+            agent_id: req.agent_id.clone(),
+            action: req.action.clone(),
+            condition_triggered: req.condition_triggered.clone(),
+            submitted_at: req.submitted_at,
+            decided_at,
+            status: status_str.to_string(),
+            decided_by: decided_by.to_string(),
+            decision_reason,
+            team_id: req.team_id.clone(),
+        };
+        if let Ok(mut guard) = self.resolved_history.lock() {
+            if guard.len() >= self.resolved_history_cap {
+                guard.pop_front();
+            }
+            guard.push_back(record);
+        }
+    }
+
+    /// Emit a hash-chained audit entry for an approval decision over `audit_tx`
+    /// when an audit channel is configured. No-op when none is set.
+    fn emit_resolution_audit(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
+        let Some(audit_tx) = &self.audit_tx else {
+            return;
+        };
+        let audit_event_type = match decision {
+            ApprovalDecision::Approved { .. } => AuditEventType::ApprovalGranted,
+            ApprovalDecision::Rejected { .. } => AuditEventType::ApprovalDenied,
+            ApprovalDecision::TimedOut { .. } => AuditEventType::ApprovalTimedOut,
+        };
+        let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
+        let agent_id = AgentId::from_bytes(hash_to_16(&req.agent_id));
+        let session_id = SessionId::from_bytes(hash_to_16(&req.request_id.to_string()));
+        let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
+
+        let payload = serde_json::json!({
+            "request_id": req.request_id.to_string(),
+            "agent_id": &req.agent_id,
+            "action": &req.action,
+            "condition_triggered": &req.condition_triggered,
+            "decided_by": decided_by,
+        })
+        .to_string();
+
+        // Use try_lock to avoid blocking the resolve path; fall back to
+        // a broken chain link rather than deadlocking.
+        let (entry, hash_updated) = match self.audit_last_hash.try_lock() {
+            Ok(mut guard) => {
+                let entry = AuditEntry::new(
+                    seq,
+                    timestamp_ns,
+                    audit_event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    *guard,
+                );
+                *guard = *entry.entry_hash();
+                (entry, true)
+            }
+            Err(_) => {
+                let entry = AuditEntry::new(
+                    seq,
+                    timestamp_ns,
+                    audit_event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    [0u8; 32],
+                );
+                (entry, false)
+            }
+        };
+
+        if !hash_updated {
+            tracing::debug!(seq, "audit hash chain lock contended — entry uses zero previous_hash");
+        }
+
+        if let Err(e) = audit_tx.try_send(entry) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(seq, "audit channel full — approval event dropped");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::error!("audit channel closed — AuditWriter task has exited");
+                }
+            }
+        }
+    }
+
     /// Remove and settle the request identified by `id`.
     ///
     /// Returns `true` if the entry existed and the sender was consumed, `false`
@@ -582,36 +687,7 @@ impl ApprovalQueue {
                 ApprovalDecision::Rejected { by, .. } => ("ApprovalDenied", by.clone()),
                 ApprovalDecision::TimedOut { .. } => ("ApprovalTimedOut", "timeout".to_string()),
             };
-            // Capture the resolved record before any audit/broadcast work
-            // so the HTTP `GET /approvals/{id}` + `?status=…` filter can
-            // observe the decision (AAASM-1477).
-            let (status_str, decision_reason) = match &decision {
-                ApprovalDecision::Approved { reason, .. } => ("approved", reason.clone()),
-                ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone())),
-                ApprovalDecision::TimedOut { .. } => ("timed_out", None),
-            };
-            let decided_at = SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let record = ResolvedRecord {
-                request_id: req.request_id,
-                agent_id: req.agent_id.clone(),
-                action: req.action.clone(),
-                condition_triggered: req.condition_triggered.clone(),
-                submitted_at: req.submitted_at,
-                decided_at,
-                status: status_str.to_string(),
-                decided_by: decided_by.clone(),
-                decision_reason,
-                team_id: req.team_id.clone(),
-            };
-            if let Ok(mut guard) = self.resolved_history.lock() {
-                if guard.len() >= self.resolved_history_cap {
-                    guard.pop_front();
-                }
-                guard.push_back(record);
-            }
+            self.record_resolution(&req, &decision, &decided_by);
             tracing::info!(
                 event_type = event_type_str,
                 request_id = %req.request_id,
@@ -621,72 +697,7 @@ impl ApprovalQueue {
                 "approval decision recorded"
             );
 
-            // Record an audit entry for the approval decision.
-            if let Some(audit_tx) = &self.audit_tx {
-                let audit_event_type = match &decision {
-                    ApprovalDecision::Approved { .. } => AuditEventType::ApprovalGranted,
-                    ApprovalDecision::Rejected { .. } => AuditEventType::ApprovalDenied,
-                    ApprovalDecision::TimedOut { .. } => AuditEventType::ApprovalTimedOut,
-                };
-                let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
-                let agent_id = AgentId::from_bytes(hash_to_16(&req.agent_id));
-                let session_id = SessionId::from_bytes(hash_to_16(&req.request_id.to_string()));
-                let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
-
-                let payload = serde_json::json!({
-                    "request_id": req.request_id.to_string(),
-                    "agent_id": &req.agent_id,
-                    "action": &req.action,
-                    "condition_triggered": &req.condition_triggered,
-                    "decided_by": &decided_by,
-                })
-                .to_string();
-
-                // Use try_lock to avoid blocking the resolve path; fall back to
-                // a broken chain link rather than deadlocking.
-                let (entry, hash_updated) = match self.audit_last_hash.try_lock() {
-                    Ok(mut guard) => {
-                        let entry = AuditEntry::new(
-                            seq,
-                            timestamp_ns,
-                            audit_event_type,
-                            agent_id,
-                            session_id,
-                            payload,
-                            *guard,
-                        );
-                        *guard = *entry.entry_hash();
-                        (entry, true)
-                    }
-                    Err(_) => {
-                        let entry = AuditEntry::new(
-                            seq,
-                            timestamp_ns,
-                            audit_event_type,
-                            agent_id,
-                            session_id,
-                            payload,
-                            [0u8; 32],
-                        );
-                        (entry, false)
-                    }
-                };
-
-                if !hash_updated {
-                    tracing::debug!(seq, "audit hash chain lock contended — entry uses zero previous_hash");
-                }
-
-                if let Err(e) = audit_tx.try_send(entry) {
-                    match e {
-                        mpsc::error::TrySendError::Full(_) => {
-                            tracing::warn!(seq, "audit channel full — approval event dropped");
-                        }
-                        mpsc::error::TrySendError::Closed(_) => {
-                            tracing::error!("audit channel closed — AuditWriter task has exited");
-                        }
-                    }
-                }
-            }
+            self.emit_resolution_audit(&req, &decision, &decided_by);
 
             // Broadcast auto-expiration so subscribers (WS dashboard,
             // audit consumers) can surface the transition without polling.
