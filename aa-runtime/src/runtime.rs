@@ -152,7 +152,7 @@ fn spawn_ebpf_tls(
         loop {
             match reader.next().await {
                 Ok(Some(event)) => {
-                    tracing::debug!(?event, "TLS ring buffer event");
+                    log_ebpf_tls_event(&event);
                     let _ = &tls_broadcast_tx; // keep broadcast_tx alive for future forwarding
                 }
                 Ok(None) => {
@@ -168,6 +168,33 @@ fn spawn_ebpf_tls(
         }
     });
     tracing::info!("ebpf/tls sub-layer task spawned");
+}
+
+/// Log a ring-buffer event at DEBUG using **only scalar metadata**.
+///
+/// SECURITY (AAASM-3128): a `TlsCaptureEvent` carries up to
+/// [`aa_ebpf_common::tls::MAX_PAYLOAD_LEN`] bytes of decrypted-TLS plaintext —
+/// the credentials, tokens, and request bodies this layer exists to govern.
+/// Its derived `Debug` impl renders that payload, so logging the event with
+/// `?event` would dump raw secrets straight to the log sink, bypassing the
+/// credential scanner. This function deliberately emits only the scalar
+/// header fields (pid/tid/lengths/sequence/direction/timestamp) and never the
+/// `payload`.
+#[cfg(target_os = "linux")]
+fn log_ebpf_tls_event(event: &aa_ebpf::ringbuf::EbpfEvent) {
+    if let aa_ebpf::ringbuf::EbpfEvent::Tls(tls) = event {
+        tracing::debug!(
+            pid = tls.pid,
+            tid = tls.tid,
+            data_len = tls.data_len,
+            seq = tls.seq,
+            direction = tls.direction,
+            timestamp_ns = tls.timestamp_ns,
+            "TLS ring buffer event"
+        );
+    } else {
+        tracing::debug!("non-TLS ring buffer event on TLS reader");
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
