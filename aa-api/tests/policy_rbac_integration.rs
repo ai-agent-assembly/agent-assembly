@@ -180,10 +180,13 @@ async fn invalid_scope_string_returns_400() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── GET endpoints remain accessible without auth ────────────────────────────
+// ── GET endpoints are gated by the deny-by-default auth layer ───────────────
 
+/// Regression for AAASM-3125: prior to the router-level auth gate, read
+/// endpoints such as `GET /policies` were reachable without any credential.
+/// They now reject unauthenticated callers with 401.
 #[tokio::test]
-async fn list_policies_requires_no_auth() {
+async fn list_policies_requires_auth() {
     let app = common::test_app_with_auth(&[], 1000);
 
     let response = app
@@ -191,5 +194,5 @@ async fn list_policies_requires_no_auth() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
