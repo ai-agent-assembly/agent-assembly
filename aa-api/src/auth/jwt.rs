@@ -20,6 +20,16 @@ pub struct Claims {
     pub exp: u64,
     /// Scopes granted to this token.
     pub scope: Vec<Scope>,
+    /// AAASM-3139 — the team this token is scoped to. When present, a
+    /// non-admin caller is confined to its own team for per-tenant data
+    /// (e.g. `/costs`, `/agents/{id}/budget`). `None` on legacy tokens
+    /// issued before tenant claims existed, which therefore carry no team
+    /// scope (and remain admin-gated for cross-tenant data).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// AAASM-3139 — the org this token is scoped to. See [`Claims::team_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
 }
 
 /// Signs JWTs using HMAC-SHA256.
@@ -39,12 +49,29 @@ impl JwtSigner {
     ///
     /// The token expires after 24 hours.
     pub fn sign(&self, key_id: &str, scopes: &[Scope]) -> Result<String, JwtError> {
+        self.sign_with_tenant(key_id, scopes, None, None)
+    }
+
+    /// Sign a JWT that additionally carries a tenant scope (AAASM-3139).
+    ///
+    /// `team_id` / `org_id` confine a non-admin caller to its own tenant for
+    /// per-tenant data endpoints. Pass `None` for either to leave it unscoped.
+    /// The token expires after 24 hours.
+    pub fn sign_with_tenant(
+        &self,
+        key_id: &str,
+        scopes: &[Scope],
+        team_id: Option<String>,
+        org_id: Option<String>,
+    ) -> Result<String, JwtError> {
         let now = now_epoch_secs();
         let claims = Claims {
             sub: key_id.to_string(),
             iat: now,
             exp: now + TOKEN_EXPIRY_SECS,
             scope: scopes.to_vec(),
+            team_id,
+            org_id,
         };
         encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
     }
@@ -57,6 +84,8 @@ impl JwtSigner {
             iat: now_epoch_secs(),
             exp,
             scope: scopes.to_vec(),
+            team_id: None,
+            org_id: None,
         };
         encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
     }
