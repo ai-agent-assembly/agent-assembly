@@ -238,6 +238,8 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
         scopes,
         created_at: 1700000000,
         label: Some(format!("test key {id}")),
+        team_id: None,
+        org_id: None,
     };
     (key.as_str().to_string(), entry)
 }
@@ -247,4 +249,13 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
 pub fn generate_test_jwt(key_id: &str, scopes: &[Scope]) -> String {
     let signer = JwtSigner::new(TEST_SECRET);
     signer.sign(key_id, scopes).expect("signing should succeed")
+}
+
+/// Generate a test JWT scoped to a team tenant (AAASM-3139).
+#[allow(dead_code)]
+pub fn generate_test_jwt_for_team(key_id: &str, scopes: &[Scope], team_id: &str) -> String {
+    let signer = JwtSigner::new(TEST_SECRET);
+    signer
+        .sign_with_tenant(key_id, scopes, Some(team_id.to_string()), None)
+        .expect("signing should succeed")
 }

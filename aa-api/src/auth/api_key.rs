@@ -92,6 +92,14 @@ pub struct ApiKeyEntry {
     /// Optional human-readable label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// AAASM-3139 — the team this key is scoped to. When present, a non-admin
+    /// key is confined to its own team for per-tenant data. `None` leaves the
+    /// key unscoped (admin-gated for cross-tenant data), preserving legacy keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// AAASM-3139 — the org this key is scoped to. See [`ApiKeyEntry::team_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
 }
 
 /// In-memory store of API key entries loaded from a JSON file.
@@ -279,6 +287,8 @@ mod tests {
             scopes: vec![Scope::Read, Scope::Write],
             created_at: 1700000000,
             label: Some("test key".to_string()),
+            team_id: None,
+            org_id: None,
         };
         let store = ApiKeyStore {
             entries: vec![entry],
@@ -301,6 +311,8 @@ mod tests {
             scopes: vec![Scope::Read],
             created_at: 1700000000,
             label: None,
+            team_id: None,
+            org_id: None,
         };
         let store = ApiKeyStore {
             entries: vec![entry],

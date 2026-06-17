@@ -1361,6 +1361,8 @@ pub fn make_api_key(id: &str, scopes: Vec<aa_api::auth::scope::Scope>) -> (Strin
         scopes,
         created_at: 1_700_000_000,
         label: Some(format!("test key {id}")),
+        team_id: None,
+        org_id: None,
     };
     (key.as_str().to_string(), entry)
 }
