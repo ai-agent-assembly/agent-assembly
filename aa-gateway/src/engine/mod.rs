@@ -2611,4 +2611,86 @@ mod tests {
         let resolved = resolve_enforcement_mode(None, aa_core::EnforcementMode::Enforce);
         assert_eq!(resolved, aa_core::EnforcementMode::Enforce);
     }
+
+    // ── AAASM-3138: budget tenancy keyed by registered owner ────────────────
+
+    /// Build a minimal registry record for `agent_id` owned by `team`.
+    fn registry_record(agent_id: [u8; 16], team: &str, org: Option<&str>) -> crate::registry::store::AgentRecord {
+        crate::registry::store::AgentRecord {
+            agent_id,
+            name: "demo".to_string(),
+            framework: "test".to_string(),
+            version: "0".to_string(),
+            risk_tier: 0,
+            tool_names: Vec::new(),
+            public_key: String::new(),
+            credential_token: String::new(),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: crate::registry::AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some(team.to_string()),
+            org_id: org.map(str::to_string),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some(agent_id),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    #[test]
+    fn record_spend_keys_budget_by_registered_team_not_client_supplied() {
+        // AAASM-3138: a client must not be able to bill spend against a tenant
+        // it does not own by forging team_id in the request context. The budget
+        // must key on the agent's *registered* owner.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        registry
+            .register(registry_record([1u8; 16], "owner-team", Some("owner-org")))
+            .expect("register");
+
+        let engine = make_engine(empty_doc()).with_registry(registry);
+
+        // ctx carries a forged team_id / org_id that the agent does NOT own.
+        let mut ctx = make_ctx(); // agent_id = [1u8; 16]
+        ctx.team_id = Some("victim-team".to_string());
+        ctx.metadata.insert("org_id".to_string(), "victim-org".to_string());
+
+        engine.record_spend(&ctx, 7.0);
+
+        // Spend landed under the registered owner, not the forged tenant.
+        assert!(
+            engine.budget.team_state("owner-team").is_some(),
+            "spend must be attributed to the registered team"
+        );
+        assert!(
+            engine.budget.team_state("victim-team").is_none(),
+            "spend must NOT be attributed to the client-forged team"
+        );
+    }
+
+    #[test]
+    fn record_spend_falls_back_to_ctx_when_agent_unregistered() {
+        // With no registry attached, the legacy ctx-supplied tenancy is used —
+        // preserving behaviour for untenanted / pre-registry deployments.
+        let engine = make_engine(empty_doc());
+        let mut ctx = make_ctx();
+        ctx.team_id = Some("ctx-team".to_string());
+
+        engine.record_spend(&ctx, 3.0);
+
+        assert!(engine.budget.team_state("ctx-team").is_some());
+    }
 }
