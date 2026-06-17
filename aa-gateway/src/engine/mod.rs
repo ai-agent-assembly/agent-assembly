@@ -1153,13 +1153,37 @@ impl PolicyEngine {
     /// tracker's `record_raw_spend`, which fires 80%/95% threshold alerts.
     pub fn record_spend(&self, ctx: &aa_core::AgentContext, amount_usd: f64) {
         if let Ok(amount) = rust_decimal::Decimal::try_from(amount_usd) {
-            // AAASM-2022 — thread `org_id` from ctx.metadata so the spend
-            // rolls up into the Org tier's budget envelope. Falls back to
-            // None when convert.rs didn't populate the metadata key.
-            let org_id = ctx.metadata.get("org_id").map(String::as_str);
+            // AAASM-3138 — the budget tenancy key (team_id / org_id) must be the
+            // agent's *registered* owner, not the values the client put in the
+            // request. Trusting the client-supplied tenancy lets one tenant
+            // charge spend against — or exhaust the budget of — another tenant
+            // they don't own. Resolve from the registry by agent_id; the
+            // client-supplied ctx values are used only as a fallback when no
+            // registry is attached or the agent is unregistered.
+            // AAASM-2022 — `org_id` still rolls the spend up into the Org tier.
+            let (team_id, org_id) = self.authoritative_tenancy(ctx);
             self.budget
-                .record_raw_spend(ctx.agent_id, ctx.team_id.as_deref(), org_id, amount);
+                .record_raw_spend(ctx.agent_id, team_id.as_deref(), org_id.as_deref(), amount);
         }
+    }
+
+    /// Resolve the budget tenancy (`team_id`, `org_id`) for `ctx` from the
+    /// authoritative agent registry, falling back to the client-supplied
+    /// `ctx` values only when no registry is attached or the agent is not
+    /// registered.
+    ///
+    /// AAASM-3138: the registered owner is the trust anchor for budget keying —
+    /// a client must not be able to bill spend against a tenant it does not own
+    /// by forging `team_id` / `org_id` in the request.
+    fn authoritative_tenancy(&self, ctx: &aa_core::AgentContext) -> (Option<String>, Option<String>) {
+        if let Some(registry) = self.registry.as_ref() {
+            if let Some(record) = registry.get(ctx.agent_id.as_bytes()) {
+                return (record.team_id, record.org_id);
+            }
+        }
+        let team_id = ctx.team_id.clone();
+        let org_id = ctx.metadata.get("org_id").cloned();
+        (team_id, org_id)
     }
 
     /// Check whether an agent is within both daily and monthly budget limits.
