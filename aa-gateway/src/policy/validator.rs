@@ -432,7 +432,13 @@ impl PolicyValidator {
             tools.insert(
                 name,
                 ToolPolicy {
-                    allow: rt.allow.unwrap_or(true),
+                    // AAASM-3134: a tool entry that omits `allow` defaults to
+                    // DENY, not allow. A policy typo (e.g. `alow: true`) or a
+                    // half-written rule previously failed permissive — the tool
+                    // was allowed by default — which is the opposite of what a
+                    // governance control should do. Fail closed: an explicit
+                    // `allow: true` is required to permit a listed tool.
+                    allow: rt.allow.unwrap_or(false),
                     limit_per_hour: rt.limit_per_hour,
                     requires_approval_if: rt.requires_approval_if,
                 },
