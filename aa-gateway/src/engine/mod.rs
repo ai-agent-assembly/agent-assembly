@@ -1777,6 +1777,31 @@ mod tests {
     }
 
     #[test]
+    fn data_pattern_redacts_when_credential_action_is_alert_and_redact() {
+        // AAASM-3137: alert_and_redact must still redact the payload — the raw
+        // secret must NOT be forwarded even though an alert is raised.
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::AlertAndRedact,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(!result.credential_findings.is_empty());
+        // A redacted form IS set, and the raw secret is gone.
+        let redacted = result
+            .redacted_payload
+            .expect("alert_and_redact must produce a redacted payload");
+        assert!(
+            !redacted.contains("secret"),
+            "raw secret leaked in alert_and_redact mode"
+        );
+    }
+
+    #[test]
     fn budget_denies_when_exceeded() {
         let mut doc = empty_doc();
         doc.budget = Some(BudgetPolicy {
