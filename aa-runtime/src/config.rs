@@ -114,6 +114,19 @@ pub struct RuntimeConfig {
     /// Read from `AA_ENFORCEMENT_MAX_FIELD_BYTES`. Defaults to
     /// [`DEFAULT_MAX_FIELD_BYTES`] (64 KiB). Zero falls back to the default.
     pub enforcement_max_field_bytes: usize,
+
+    /// Whether a policy check **denies** when the gateway is configured but
+    /// unreachable (fail-closed), instead of falling back to permissive local
+    /// evaluation (fail-open).
+    ///
+    /// Read from `AA_GATEWAY_FAIL_CLOSED`. Defaults to `true` — the enforce
+    /// posture. The gateway is the authoritative policy decision point; when it
+    /// cannot be reached we must not silently default to Allow (AAASM-3110), so
+    /// the safe default is to deny. Set to `false` only for an observe /
+    /// disabled posture where the runtime should fall back to local rules and
+    /// allow on no match. Accepts `false`/`0`/`no`/`off` (case-insensitive) to
+    /// disable; any other value (or unset) keeps fail-closed.
+    pub gateway_fail_closed: bool,
 }
 
 impl RuntimeConfig {
@@ -143,6 +156,7 @@ impl RuntimeConfig {
     /// | `AA_NATS_CONFIG_PATH` | `Option<PathBuf>` | `None` (publisher disabled) |
     /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
+    /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -233,6 +247,12 @@ impl RuntimeConfig {
             .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_MAX_FIELD_BYTES);
 
+        // Fail-closed by default; only an explicit falsey value opts out.
+        let gateway_fail_closed = std::env::var("AA_GATEWAY_FAIL_CLOSED")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+            .unwrap_or(true);
+
         Ok(Self {
             agent_id,
             worker_threads,
@@ -250,6 +270,7 @@ impl RuntimeConfig {
             nats_config_path,
             audit_buffer_path,
             enforcement_max_field_bytes,
+            gateway_fail_closed,
         })
     }
 }
@@ -772,5 +793,31 @@ mod tests {
         );
 
         std::env::remove_var("AA_AGENT_ID");
+    }
+
+    #[test]
+    fn gateway_fail_closed_defaults_true_and_honors_falsey_opt_out() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-fc");
+
+        // Unset → fail-closed (the safe enforce default, AAASM-3110).
+        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+        assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
+
+        // Explicit falsey values opt out (observe/disabled posture).
+        for falsey in ["false", "0", "no", "off", "OFF", "False"] {
+            std::env::set_var("AA_GATEWAY_FAIL_CLOSED", falsey);
+            assert!(
+                !RuntimeConfig::from_env().unwrap().gateway_fail_closed,
+                "{falsey} should disable fail-closed"
+            );
+        }
+
+        // Any other value keeps fail-closed.
+        std::env::set_var("AA_GATEWAY_FAIL_CLOSED", "true");
+        assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
+
+        std::env::remove_var("AA_AGENT_ID");
+        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
     }
 }
