@@ -1,4 +1,5 @@
 import { useMembersQuery } from './api'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { RoleSelect } from './RoleSelect'
 import type { Member, Role } from './types'
 import './MemberList.css'
@@ -41,7 +42,7 @@ export function MemberList({ onBeforeRoleChange }: MemberListProps = {}) {
     return (
       <div className="iam-member-list__error" data-testid="member-list-error">
         <span>Failed to load members.</span>
-        <button type="button" onClick={() => void refetch()}>Retry</button>
+        <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
       </div>
     )
   }

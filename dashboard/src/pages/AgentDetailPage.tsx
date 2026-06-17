@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
@@ -245,7 +246,7 @@ export function AgentDetailPage() {
         {!agentLoading && (agentError || !agent) && (
           <div style={{ padding: '1.5rem' }} data-testid="agent-detail-error">
             <p style={{ color: 'var(--danger)' }}>Failed to load agent.</p>
-            <button onClick={() => void refetchAgent()}>Retry</button>
+            <button onClick={() => ignorePromise(refetchAgent())}>Retry</button>
             <br />
             <button
               type="button"

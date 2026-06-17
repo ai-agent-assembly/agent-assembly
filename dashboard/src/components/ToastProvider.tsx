@@ -3,15 +3,20 @@ import { ToastContext, type ToastVariant, type ToastMessage } from './ToastConte
 
 let _nextId = 0
 
+const TOAST_TTL_MS = 4000
+
+/** Remove the toast with `id` from a toast list (module-scope to avoid deep nesting). */
+function removeToast(list: ToastMessage[], id: number): ToastMessage[] {
+  return list.filter((t) => t.id !== id)
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
   const toast = useCallback((message: string, variant: ToastVariant = 'info') => {
     const id = _nextId++
     setToasts((prev) => [...prev, { id, message, variant }])
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, 4000)
+    setTimeout(() => setToasts((prev) => removeToast(prev, id)), TOAST_TTL_MS)
   }, [])
 
   return (

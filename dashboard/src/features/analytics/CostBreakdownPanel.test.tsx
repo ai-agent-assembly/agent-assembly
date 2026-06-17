@@ -13,9 +13,15 @@ import type { CostBucket } from './useCostBreakdownQuery'
 
 // recharts uses ResizeObserver
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 

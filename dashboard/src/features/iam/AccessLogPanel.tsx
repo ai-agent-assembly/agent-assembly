@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   useAccessLogQuery,
@@ -71,7 +72,7 @@ export function AccessLogPanel() {
         <h2>Access Log</h2>
         <div className="iam-access-log-panel__error" data-testid="access-log-error">
           <span>Failed to load access log.</span>
-          <button type="button" onClick={() => void refetch()}>
+          <button type="button" onClick={() => ignorePromise(refetch())}>
             Retry
           </button>
         </div>

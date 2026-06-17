@@ -1,4 +1,5 @@
 import { useAgentsQuery } from './agents'
+import { ignorePromise } from '../../lib/ignorePromise'
 import type { Agent, AgentStatus } from './types'
 import './AgentRegistryList.css'
 
@@ -31,7 +32,7 @@ export function AgentRegistryList({ selectedAgentId, onSelect }: AgentRegistryLi
     return (
       <div className="iam-agent-list__error" data-testid="agent-registry-error">
         <span>Failed to load agents.</span>
-        <button type="button" onClick={() => void refetch()}>Retry</button>
+        <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
       </div>
     )
   }
