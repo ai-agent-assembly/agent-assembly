@@ -24,9 +24,13 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         credential_action: CredentialAction::default(),
         upstream_override: None,
         gateway_endpoint: None,
-        // CONNECT targets here are public names; the loopback case uses the
-        // plain-HTTP path, so the SSRF guard stays active.
-        allow_private_connect_targets: false,
+        // Integration tests dial loopback mock upstreams over both the CONNECT
+        // and the plain-HTTP forward paths. The plain-HTTP path now re-validates
+        // resolved IPs against the SSRF denylist (AAASM-3140), which blocks
+        // loopback — so the test-only escape hatch must be enabled here, exactly
+        // as the CONNECT/tunnel paths already require for their loopback mocks.
+        // Production `from_env` keeps this false.
+        allow_private_connect_targets: true,
     }
 }
 
