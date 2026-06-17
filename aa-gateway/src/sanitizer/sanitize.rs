@@ -232,6 +232,27 @@ mod tests {
     }
 
     #[test]
+    fn drops_banned_keys_regardless_of_case() {
+        // AAASM-3136: a case-variant of a banned key must still be stripped,
+        // at the top level and nested inside the opaque payload container.
+        let raw = RawAuditEvent::new(json!({
+            "kind": "tool_call",
+            "agent_id": "acme/bot",
+            "Prompt": "top-level mixed case secret",
+            "payload": {
+                "TOOL_PAYLOAD": { "args": "nested upper-case secret" },
+                "steps": [{ "Completion": "deep mixed-case completion" }],
+            },
+        }));
+        let out = audit_value(raw);
+        assert!(!contains_key_recursive(&out, "Prompt"));
+        assert!(!contains_key_recursive(&out, "TOOL_PAYLOAD"));
+        assert!(!contains_key_recursive(&out, "Completion"));
+        // The vetted payload container itself survives.
+        assert!(contains_key_recursive(&out, "payload"));
+    }
+
+    #[test]
     fn drops_banned_keys_nested_in_payload() {
         let raw = RawAuditEvent::new(json!({
             "kind": "tool_call",
