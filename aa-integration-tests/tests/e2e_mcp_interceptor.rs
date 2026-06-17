@@ -810,6 +810,9 @@ mod proxy_e2e {
             credential_action: CredentialAction::default(),
             upstream_override: Some(upstream_override),
             gateway_endpoint: Some(format!("http://{gateway_addr}")),
+            // CONNECT host is a public name redirected via `upstream_override`,
+            // so the SSRF guard stays fully active.
+            allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;
         let (tx, rx) = broadcast::channel(64);

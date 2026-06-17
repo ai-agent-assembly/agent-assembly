@@ -24,6 +24,9 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         credential_action: CredentialAction::default(),
         upstream_override: None,
         gateway_endpoint: None,
+        // CONNECT targets here are public names; the loopback case uses the
+        // plain-HTTP path, so the SSRF guard stays active.
+        allow_private_connect_targets: false,
     }
 }
 
