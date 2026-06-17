@@ -89,16 +89,26 @@ fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
     None
 }
 
-/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is absent
-/// from a non-empty allowlist.
+/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is not
+/// permitted by the doc's egress allowlist.
+///
+/// Two correctness fixes over the previous inline matcher (F3/AAASM-3127):
+///
+/// * **Wildcards** — delegates to
+///   [`aa_core::policy::is_host_allowed_by_egress_allowlist`], the same
+///   wildcard-aware matcher the `aa-proxy` egress layer uses, so the engine
+///   and the proxy no longer disagree on `*.host` patterns. The previous
+///   `entry == host` exact-match silently failed to match any wildcard entry,
+///   denying legitimate traffic the operator believed they had allowed.
+/// * **Empty allowlist = deny-all** — a policy doc that declares a `network`
+///   section but leaves the allowlist empty is treated as "deny all egress",
+///   not "allow all egress". An empty allowlist is the most restrictive
+///   posture; failing open here defeated the whole egress control.
 fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let aa_core::GovernanceAction::NetworkRequest { url, .. } = action else {
         return None;
     };
     let np = doc.network.as_ref()?;
-    if np.allowlist.is_empty() {
-        return None;
-    }
     let host = url
         .split_once("://")
         .map(|x| x.1)
@@ -106,7 +116,10 @@ fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Op
         .split('/')
         .next()
         .unwrap_or("");
-    if !np.allowlist.iter().any(|entry| entry == host) {
+    // An empty allowlist denies all egress (fail-closed); `is_host_allowed_*`
+    // treats an empty list as allow-all, so guard it explicitly here.
+    let allowed = !np.allowlist.is_empty() && aa_core::policy::is_host_allowed_by_egress_allowlist(host, &np.allowlist);
+    if !allowed {
         return Some(PolicyDecision::Deny {
             reason: "host not in network allowlist".into(),
             source_scope: doc.scope.clone(),
@@ -385,5 +398,62 @@ mod tests {
         };
         let result = evaluate_single_doc(&doc, &ctx, &action, None);
         assert_eq!(result, PolicyDecision::Allow);
+    }
+
+    // ── Stage 2: network egress allowlist (F3 / AAASM-3127) ─────────────────
+
+    fn doc_with_allowlist(allowlist: Vec<String>) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.network = Some(crate::policy::document::NetworkPolicy { allowlist });
+        doc
+    }
+
+    fn net_action(url: &str) -> GovernanceAction {
+        GovernanceAction::NetworkRequest {
+            url: url.into(),
+            method: "GET".into(),
+        }
+    }
+
+    #[test]
+    fn stage_network_wildcard_matches_subdomain() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_non_matching_host() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_bare_apex() {
+        // `*.openai.com` must NOT match the bare apex `openai.com`.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://openai.com/")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_exact_match_allows() {
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_empty_allowlist_denies_all() {
+        // F3: an empty allowlist is the most restrictive posture — deny-all,
+        // not allow-all.
+        let doc = doc_with_allowlist(vec![]);
+        let d = stage_network(&doc, &net_action("https://api.openai.com/v1")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_no_network_section_is_noop() {
+        let doc = minimal_doc(None);
+        assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
     }
 }
