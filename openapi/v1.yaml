@@ -1404,12 +1404,11 @@ paths:
         Retrieve the current daily and monthly cost and budget summary,
         including per-agent breakdown and configured budget limits.
 
-        The per-agent and per-team breakdowns span every tenant, so they are
-        only populated for callers holding `Scope::Admin` (AAASM-3126). Because
-        the authenticated principal carries no org/team scope yet (AAASM-3128),
-        a non-admin caller cannot be filtered down to its own tenant — so it
-        receives only the aggregate totals with the cross-tenant breakdowns
-        elided rather than leaking every tenant's spend (cross-tenant IDOR).
+        Per-tenant filtering (AAASM-3139): an admin caller sees every tenant's
+        per-agent and per-team breakdown; a tenant-scoped caller sees only its own
+        team's row; a caller with neither admin scope nor a team scope receives the
+        aggregate totals only, with the breakdowns elided rather than leaking every
+        tenant's spend (the cross-tenant IDOR that AAASM-3126 admin-gated).
       operationId: get_cost_summary
       responses:
         '200':
