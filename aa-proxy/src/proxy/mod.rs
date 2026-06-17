@@ -763,7 +763,15 @@ impl ProxyServer {
             } else {
                 format!("{host}:80")
             };
-            let mut upstream = TcpStream::connect(&upstream_addr).await?;
+            // SSRF re-validation (AAASM-3140): the plain-HTTP forward path must
+            // route through the same resolved-IP denylist as the CONNECT/tunnel
+            // paths. Without this, a steered agent making a plain `http://`
+            // request could reach loopback / RFC-1918 / `169.254.169.254` after
+            // DNS resolution, bypassing the AAASM-3130 hardening.
+            let mut upstream = match self.config.upstream_override {
+                Some(addr) => TcpStream::connect(addr).await?,
+                None => self.connect_revalidated(&upstream_addr).await?,
+            };
 
             // Re-serialise and forward the original request.
             upstream.write_all(request_line.as_bytes()).await?;
