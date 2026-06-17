@@ -593,8 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn tool_allow_defaults_to_true_when_absent() {
+    fn tool_allow_defaults_to_false_when_absent() {
+        // AAASM-3134: a tool entry without an explicit `allow` must fail closed
+        // (deny), so a policy typo cannot silently permit a tool.
         let yaml = "tools:\n  bash:\n    limit_per_hour: 5\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(!out.document.tools["bash"].allow);
+    }
+
+    #[test]
+    fn tool_allow_true_is_honoured_when_explicit() {
+        let yaml = "tools:\n  bash:\n    allow: true\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.document.tools["bash"].allow);
     }
