@@ -30,7 +30,29 @@ use axum::Router;
 use crate::error::ProblemDetail;
 
 /// Build the v1 API router with all registered routes.
+///
+/// The router is split into two layers (AAASM-3125):
+///
+/// * [`public_router`] — endpoints that are reachable without a bearer
+///   credential: liveness, the token-issue endpoint (it authenticates the
+///   caller itself), the WebSocket upgrade handlers, and the SaaS webhook
+///   (HMAC-authenticated in-handler).
+/// * [`protected_router`] — everything else, gated by the deny-by-default
+///   [`require_authentication`] middleware. A newly-added route is
+///   authenticated unless it is deliberately mounted on the public router.
+///
+/// [`require_authentication`]: crate::auth::gate::require_authentication
 pub fn v1_router() -> Router {
+    public_router().merge(protected_router())
+}
+
+/// Build the router of endpoints reachable without a bearer credential.
+///
+/// These either need to be reachable to obtain a credential (`/auth/token`),
+/// are unauthenticated liveness probes (`/health`), authenticate themselves
+/// out of band (`/devtools/saas/{provider}/events` via HMAC), or perform
+/// their auth handshake during the WebSocket upgrade.
+fn public_router() -> Router {
     Router::new()
         // Health
         .route("/health", get(health::health))
@@ -38,6 +60,22 @@ pub fn v1_router() -> Router {
         .route("/ws/events", get(crate::ws::handler::ws_events_handler))
         // Auth
         .route("/auth/token", post(auth::issue_token))
+        // AAASM-1389: real-time alert event stream.
+        .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
+        // Dev tool webhooks — HMAC-authenticated in-handler.
+        .route("/devtools/saas/{provider}/events", post(devtools::saas_webhook))
+}
+
+/// Build the router of endpoints that require an authenticated caller.
+///
+/// The whole router is wrapped in the [`require_authentication`] gate via
+/// `route_layer`, so every handler runs only after a valid API key / JWT has
+/// been verified (or `AuthMode::Off` bypasses it). Per-handler scope and
+/// tenant checks remain the handler's responsibility.
+///
+/// [`require_authentication`]: crate::auth::gate::require_authentication
+fn protected_router() -> Router {
+    Router::new()
         // Secret Injection — tool dispatch (AAASM-1920)
         .route("/dispatch_tool", post(dispatch::dispatch_tool))
         // Agents
@@ -72,10 +110,6 @@ pub fn v1_router() -> Router {
         .route("/iam/api-keys/{id}/rotate", post(iam::rotate_api_key))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
-        // AAASM-1389: real-time alert event stream (placed BEFORE the
-        // /alerts/{id} catch-all so the literal "ws" path segment is
-        // matched first).
-        .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
         // AAASM-1648: silence-an-alert endpoint. Literal "silence" path
         // segment must come BEFORE /alerts/{id} so it isn't captured
         // as an id.
@@ -106,11 +140,6 @@ pub fn v1_router() -> Router {
                 .delete(destinations::delete_destination),
         )
         .route("/alerts/destinations/{id}/test", post(destinations::test_destination))
-        // Dev tool webhooks
-        .route(
-            "/devtools/saas/{provider}/events",
-            post(devtools::saas_webhook),
-        )
         // Tools
         .route("/tools", get(tools::list_tools))
         // Topology
@@ -138,6 +167,8 @@ pub fn v1_router() -> Router {
             get(admin::get_retention_policy).put(admin::update_retention_policy),
         )
         .route("/admin/retention-policy/run", post(admin::run_retention_policy))
+        // Deny-by-default auth gate over every protected route (AAASM-3125).
+        .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.

@@ -5,6 +5,7 @@ use axum::{Extension, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::auth::scope::{RequireRead, Scope};
 use crate::state::AppState;
 
 /// Per-agent cost entry within the budget summary.
@@ -60,39 +61,63 @@ pub struct CostSummary {
 ///
 /// Retrieve the current daily and monthly cost and budget summary,
 /// including per-agent breakdown and configured budget limits.
+///
+/// The per-agent and per-team breakdowns span every tenant, so they are
+/// only populated for callers holding `Scope::Admin` (AAASM-3126). Because
+/// the authenticated principal carries no org/team scope yet (AAASM-3128),
+/// a non-admin caller cannot be filtered down to its own tenant — so it
+/// receives only the aggregate totals with the cross-tenant breakdowns
+/// elided rather than leaking every tenant's spend (cross-tenant IDOR).
 #[utoipa::path(
     get,
     path = "/api/v1/costs",
     responses(
-        (status = 200, description = "Cost and budget summary", body = CostSummary)
+        (status = 200, description = "Cost and budget summary", body = CostSummary),
+        (status = 401, description = "Missing or invalid credentials"),
     ),
     tag = "costs"
 )]
-pub async fn get_cost_summary(Extension(state): Extension<AppState>) -> (StatusCode, Json<CostSummary>) {
+pub async fn get_cost_summary(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<CostSummary>) {
     let snapshot = state.budget_tracker.snapshot();
 
-    let per_agent: Vec<AgentCostEntry> = snapshot
-        .per_agent
-        .iter()
-        .map(|entry| AgentCostEntry {
-            agent_id: entry.agent_id_hex.clone(),
-            daily_spend_usd: entry.state.spent_usd.to_string(),
-            monthly_spend_usd: entry.state.monthly_spent_usd.map(|d| d.to_string()),
-            date: entry.state.date.to_string(),
-        })
-        .collect();
+    // Cross-tenant breakdowns are admin-only until the principal carries a
+    // tenant scope to filter on (AAASM-3126 / AAASM-3128).
+    let include_breakdown = caller.scopes.contains(&Scope::Admin);
 
-    let mut per_team: Vec<TeamCostEntry> = snapshot
-        .team_budgets
-        .iter()
-        .map(|(team_id, state)| TeamCostEntry {
-            team_id: team_id.clone(),
-            daily_spend_usd: state.spent_usd.to_string(),
-            monthly_spend_usd: state.monthly_spent_usd.map(|d| d.to_string()),
-            date: state.date.to_string(),
-        })
-        .collect();
-    per_team.sort_by(|a, b| a.team_id.cmp(&b.team_id));
+    let per_agent: Vec<AgentCostEntry> = if !include_breakdown {
+        Vec::new()
+    } else {
+        snapshot
+            .per_agent
+            .iter()
+            .map(|entry| AgentCostEntry {
+                agent_id: entry.agent_id_hex.clone(),
+                daily_spend_usd: entry.state.spent_usd.to_string(),
+                monthly_spend_usd: entry.state.monthly_spent_usd.map(|d| d.to_string()),
+                date: entry.state.date.to_string(),
+            })
+            .collect()
+    };
+
+    let per_team: Vec<TeamCostEntry> = if !include_breakdown {
+        Vec::new()
+    } else {
+        let mut rows: Vec<TeamCostEntry> = snapshot
+            .team_budgets
+            .iter()
+            .map(|(team_id, state)| TeamCostEntry {
+                team_id: team_id.clone(),
+                daily_spend_usd: state.spent_usd.to_string(),
+                monthly_spend_usd: state.monthly_spent_usd.map(|d| d.to_string()),
+                date: state.date.to_string(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.team_id.cmp(&b.team_id));
+        rows
+    };
 
     let summary = CostSummary {
         daily_spend_usd: snapshot.global.spent_usd.to_string(),

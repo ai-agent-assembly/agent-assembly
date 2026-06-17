@@ -10,6 +10,7 @@ use utoipa::ToSchema;
 
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
+use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -508,9 +509,20 @@ fn budget_row_to_response(row: aa_gateway::budget::BudgetRow) -> BudgetRowRespon
     tag = "agents"
 )]
 pub async fn get_agent_budget(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<BudgetRollupResponse>), ProblemDetail> {
+    // Cross-tenant IDOR guard (AAASM-3126): the authenticated principal does
+    // not yet carry an org/team scope (AAASM-3128), so an agent's budget
+    // rollup (which spans the agent's team / org / global totals) can only be
+    // safely served to admin callers. A non-admin caller cannot be confined to
+    // its own tenant, so reading an arbitrary agent's budget is denied.
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("Reading an agent's budget rollup requires admin scope"));
+    }
+
     let agent_id_bytes = parse_agent_id(&id)?;
     let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
 

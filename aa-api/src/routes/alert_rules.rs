@@ -24,6 +24,7 @@ use utoipa::ToSchema;
 
 use crate::alerts::rules::store::AlertRuleStoreError;
 use crate::alerts::rules::types::{AlertRule, AlertRuleValidationError, RuleMetric, RuleOperator, RuleSeverity};
+use crate::auth::scope::{RequireRead, RequireWrite};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -171,6 +172,7 @@ fn parse_severity(s: &str) -> Result<RuleSeverity, ProblemDetail> {
     tag = "alert-rules"
 )]
 pub async fn list_rules(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<ListRulesParams>,
 ) -> impl IntoResponse {
@@ -200,6 +202,7 @@ pub async fn list_rules(
     tag = "alert-rules"
 )]
 pub async fn create_rule(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Json(body): Json<AlertRuleRequest>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
@@ -234,6 +237,7 @@ fn not_found(id: &str) -> ProblemDetail {
     tag = "alert-rules"
 )]
 pub async fn get_rule(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
@@ -260,6 +264,7 @@ pub async fn get_rule(
     tag = "alert-rules"
 )]
 pub async fn update_rule(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Json(body): Json<AlertRuleRequest>,
@@ -290,6 +295,7 @@ pub async fn update_rule(
     tag = "alert-rules"
 )]
 pub async fn delete_rule(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {

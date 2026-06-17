@@ -785,6 +785,13 @@ export interface paths {
          * `GET /api/v1/costs` — cost and budget summary.
          * @description Retrieve the current daily and monthly cost and budget summary,
          *     including per-agent breakdown and configured budget limits.
+         *
+         *     The per-agent and per-team breakdowns span every tenant, so they are
+         *     only populated for callers holding `Scope::Admin` (AAASM-3126). Because
+         *     the authenticated principal carries no org/team scope yet (AAASM-3128),
+         *     a non-admin caller cannot be filtered down to its own tenant — so it
+         *     receives only the aggregate totals with the cross-tenant breakdowns
+         *     elided rather than leaking every tenant's spend (cross-tenant IDOR).
          */
         get: operations["get_cost_summary"];
         put?: never;
@@ -4855,6 +4862,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CostSummary"];
                 };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
