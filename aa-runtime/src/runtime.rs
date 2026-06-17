@@ -1228,6 +1228,7 @@ mod tests {
             nats_config_path,
             audit_buffer_path: std::env::temp_dir().join("aa-audit-buffer-audit-test.db"),
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
+            gateway_fail_closed: true,
         }
     }
 

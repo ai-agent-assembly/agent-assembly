@@ -32,6 +32,7 @@ fn verify_config(batch_size: usize) -> PipelineConfig {
         broadcast_capacity: 1_024,
         agent_id: "verify-agent".to_string(),
         enforcement: aa_runtime::pipeline::enforcement::EnforcementConfig::default(),
+        gateway_fail_closed: true,
     }
 }
 
