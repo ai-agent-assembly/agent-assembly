@@ -256,7 +256,11 @@ impl ProxyServer {
         }
         let safe: Vec<_> = addrs
             .into_iter()
-            .filter(|addr| !crate::ssrf::is_blocked_ip(addr.ip()))
+            .filter(|addr| {
+                // Test-only escape hatch: in-process tests dial a loopback mock.
+                // Never relaxed in production (see `allow_private_connect_targets`).
+                self.config.allow_private_connect_targets || !crate::ssrf::is_blocked_ip(addr.ip())
+            })
             .collect();
         if safe.is_empty() {
             return Err(ProxyError::Config(format!(
@@ -480,8 +484,10 @@ impl ProxyServer {
         // refused regardless of the allowlist — a hostname allowlist cannot
         // express "but not internal addresses". Names are re-validated after
         // resolution in `dial_upstream_tls` (DNS-rebind defense).
-        if let Some(true) = crate::ssrf::blocked_ip_literal(host) {
-            return Some("ssrf: blocked address range");
+        if !self.config.allow_private_connect_targets {
+            if let Some(true) = crate::ssrf::blocked_ip_literal(host) {
+                return Some("ssrf: blocked address range");
+            }
         }
         if self.config.denied_hosts.iter().any(|denied| denied == host) {
             return Some("host policy");
@@ -803,6 +809,8 @@ mod tests {
             credential_action: crate::config::CredentialAction::default(),
             upstream_override: None,
             gateway_endpoint: None,
+            // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
+            allow_private_connect_targets: false,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
         let (tx, _rx) = broadcast::channel(8);
