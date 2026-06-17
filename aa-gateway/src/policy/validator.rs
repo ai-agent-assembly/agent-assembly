@@ -229,6 +229,18 @@ impl PolicyValidator {
             }
         };
 
+        // AAASM-3133: reject an unparseable IANA timezone at load time. The
+        // engine fails closed on a bad tz at evaluation, but catching it here
+        // gives the operator an immediate, actionable error instead of a policy
+        // that silently denies every action once deployed.
+        if timezone.parse::<chrono_tz::Tz>().is_err() {
+            errors.push(ValidationError::new(
+                "schedule.active_hours.timezone",
+                "must be a valid IANA timezone (e.g. America/New_York)",
+            ));
+            return None;
+        }
+
         Some(ActiveHours { start, end, timezone })
     }
 
@@ -420,7 +432,13 @@ impl PolicyValidator {
             tools.insert(
                 name,
                 ToolPolicy {
-                    allow: rt.allow.unwrap_or(true),
+                    // AAASM-3134: a tool entry that omits `allow` defaults to
+                    // DENY, not allow. A policy typo (e.g. `alow: true`) or a
+                    // half-written rule previously failed permissive — the tool
+                    // was allowed by default — which is the opposite of what a
+                    // governance control should do. Fail closed: an explicit
+                    // `allow: true` is required to permit a listed tool.
+                    allow: rt.allow.unwrap_or(false),
                     limit_per_hour: rt.limit_per_hour,
                     requires_approval_if: rt.requires_approval_if,
                 },
@@ -575,8 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn tool_allow_defaults_to_true_when_absent() {
+    fn tool_allow_defaults_to_false_when_absent() {
+        // AAASM-3134: a tool entry without an explicit `allow` must fail closed
+        // (deny), so a policy typo cannot silently permit a tool.
         let yaml = "tools:\n  bash:\n    limit_per_hour: 5\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(!out.document.tools["bash"].allow);
+    }
+
+    #[test]
+    fn tool_allow_true_is_honoured_when_explicit() {
+        let yaml = "tools:\n  bash:\n    allow: true\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.document.tools["bash"].allow);
     }
@@ -803,6 +830,16 @@ mod tests {
         assert_eq!(ah.start, "09:00");
         assert_eq!(ah.end, "18:00");
         assert_eq!(ah.timezone, "Asia/Taipei");
+    }
+
+    #[test]
+    fn schedule_invalid_timezone_is_an_error() {
+        // AAASM-3133: a bogus IANA timezone must be rejected at load time, not
+        // silently accepted (and later fall back to UTC at evaluation).
+        let yaml =
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n    timezone: \"Mars/Phobos\"\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "invalid timezone must be a validation error");
     }
 
     // ── Capabilities validation ─────────────────────────────────────────────
