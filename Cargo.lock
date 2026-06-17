@@ -411,6 +411,7 @@ version = "0.0.1-beta.2"
 dependencies = [
  "aa-core",
  "aa-ebpf",
+ "aa-ebpf-common",
  "aa-proto",
  "aa-security",
  "aa-storage-sqlite-buffer",
