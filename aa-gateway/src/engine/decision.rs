@@ -77,7 +77,17 @@ pub(crate) fn evaluate_single_doc(
 fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
     let ah = doc.schedule.as_ref()?.active_hours.as_ref()?;
     use chrono::Timelike;
-    let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
+    // AAASM-3133: an unparseable timezone must fail closed. Silently falling
+    // back to UTC let an operator's active-hours window be evaluated in the
+    // wrong zone — e.g. a window meant for business hours in `America/New_York`
+    // evaluated in UTC could be wide open when it should be shut, bypassing the
+    // schedule control. Deny when the configured tz does not parse.
+    let Ok(tz) = ah.timezone.parse::<chrono_tz::Tz>() else {
+        return Some(PolicyDecision::Deny {
+            reason: format!("invalid schedule timezone: {}", ah.timezone),
+            source_scope: doc.scope.clone(),
+        });
+    };
     let now = chrono::Utc::now().with_timezone(&tz);
     let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
     if current_hhmm < ah.start || current_hhmm >= ah.end {

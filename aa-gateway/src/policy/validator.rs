@@ -229,6 +229,18 @@ impl PolicyValidator {
             }
         };
 
+        // AAASM-3133: reject an unparseable IANA timezone at load time. The
+        // engine fails closed on a bad tz at evaluation, but catching it here
+        // gives the operator an immediate, actionable error instead of a policy
+        // that silently denies every action once deployed.
+        if timezone.parse::<chrono_tz::Tz>().is_err() {
+            errors.push(ValidationError::new(
+                "schedule.active_hours.timezone",
+                "must be a valid IANA timezone (e.g. America/New_York)",
+            ));
+            return None;
+        }
+
         Some(ActiveHours { start, end, timezone })
     }
 
