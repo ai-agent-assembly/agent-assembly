@@ -44,6 +44,11 @@ which                       = { workspace = true }
 aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-beta.2" }
 libc    = { workspace = true }
 
+# Linux-only dev dep: the AAASM-3128 regression test constructs a
+# `TlsCaptureEvent` to prove the DEBUG log never emits its plaintext payload.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-beta.2", features = ["std"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
