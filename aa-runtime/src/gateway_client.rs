@@ -28,4 +28,17 @@ impl GatewayClient {
         let resp = self.client.check_action(req).await?;
         Ok(resp.into_inner())
     }
+
+    /// Build a client over a **lazy** channel to `endpoint` without connecting.
+    ///
+    /// Used by the AAASM-3110 fail-closed test to obtain a `GatewayClient`
+    /// whose `check_action` is guaranteed to fail (the endpoint never listens),
+    /// exercising the gateway-unreachable path without standing up a server.
+    #[cfg(test)]
+    pub(crate) fn connect_lazy(endpoint: &'static str) -> Self {
+        let channel = Channel::from_static(endpoint).connect_lazy();
+        Self {
+            client: PolicyServiceClient::new(channel),
+        }
+    }
 }
