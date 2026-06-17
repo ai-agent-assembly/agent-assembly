@@ -333,10 +333,15 @@ impl PolicyValidator {
             None | Some("redact_only") => CredentialAction::RedactOnly,
             Some("block") => CredentialAction::Block,
             Some("alert_only") => CredentialAction::AlertOnly,
+            // AAASM-3137: safe alerting mode — alert AND redact on forward.
+            Some("alert_and_redact") => CredentialAction::AlertAndRedact,
             Some(other) => {
                 errors.push(ValidationError::new(
                     "data.credential_action",
-                    format!("must be 'block', 'redact_only', or 'alert_only', got '{}'", other),
+                    format!(
+                        "must be 'block', 'redact_only', 'alert_only', or 'alert_and_redact', got '{}'",
+                        other
+                    ),
                 ));
                 CredentialAction::RedactOnly
             }
