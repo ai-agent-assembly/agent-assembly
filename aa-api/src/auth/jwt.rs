@@ -182,6 +182,26 @@ mod tests {
     }
 
     #[test]
+    fn test_jwt_tenant_claim_roundtrip() {
+        // AAASM-3139: a tenant-scoped token must carry team_id back through
+        // verification; a plain token leaves the tenant claim None.
+        let signer = JwtSigner::new(TEST_SECRET);
+        let verifier = JwtVerifier::new(TEST_SECRET);
+
+        let scoped = signer
+            .sign_with_tenant("key-1", &[Scope::Read], Some("alpha".into()), Some("org-1".into()))
+            .unwrap();
+        let claims = verifier.verify(&scoped).unwrap();
+        assert_eq!(claims.team_id.as_deref(), Some("alpha"));
+        assert_eq!(claims.org_id.as_deref(), Some("org-1"));
+
+        let plain = signer.sign("key-2", &[Scope::Read]).unwrap();
+        let plain_claims = verifier.verify(&plain).unwrap();
+        assert_eq!(plain_claims.team_id, None);
+        assert_eq!(plain_claims.org_id, None);
+    }
+
+    #[test]
     fn test_jwt_scopes_preserved() {
         let signer = JwtSigner::new(TEST_SECRET);
         let verifier = JwtVerifier::new(TEST_SECRET);
