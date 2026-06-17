@@ -89,16 +89,26 @@ fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
     None
 }
 
-/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is absent
-/// from a non-empty allowlist.
+/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is not
+/// permitted by the doc's egress allowlist.
+///
+/// Two correctness fixes over the previous inline matcher (F3/AAASM-3127):
+///
+/// * **Wildcards** — delegates to
+///   [`aa_core::policy::is_host_allowed_by_egress_allowlist`], the same
+///   wildcard-aware matcher the `aa-proxy` egress layer uses, so the engine
+///   and the proxy no longer disagree on `*.host` patterns. The previous
+///   `entry == host` exact-match silently failed to match any wildcard entry,
+///   denying legitimate traffic the operator believed they had allowed.
+/// * **Empty allowlist = deny-all** — a policy doc that declares a `network`
+///   section but leaves the allowlist empty is treated as "deny all egress",
+///   not "allow all egress". An empty allowlist is the most restrictive
+///   posture; failing open here defeated the whole egress control.
 fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let aa_core::GovernanceAction::NetworkRequest { url, .. } = action else {
         return None;
     };
     let np = doc.network.as_ref()?;
-    if np.allowlist.is_empty() {
-        return None;
-    }
     let host = url
         .split_once("://")
         .map(|x| x.1)
@@ -106,7 +116,10 @@ fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Op
         .split('/')
         .next()
         .unwrap_or("");
-    if !np.allowlist.iter().any(|entry| entry == host) {
+    // An empty allowlist denies all egress (fail-closed); `is_host_allowed_*`
+    // treats an empty list as allow-all, so guard it explicitly here.
+    let allowed = !np.allowlist.is_empty() && aa_core::policy::is_host_allowed_by_egress_allowlist(host, &np.allowlist);
+    if !allowed {
         return Some(PolicyDecision::Deny {
             reason: "host not in network allowlist".into(),
             source_scope: doc.scope.clone(),
