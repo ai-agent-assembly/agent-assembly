@@ -74,7 +74,16 @@ pub enum CredentialAction {
     RedactOnly,
     /// Forward the unmodified payload and raise an alert side-effect.
     /// Documented as a deliberate downgrade for low-risk audit-only modes.
+    ///
+    /// SECURITY (AAASM-3137): this forwards the *raw* secret upstream. Prefer
+    /// [`CredentialAction::AlertAndRedact`] when an alert is wanted but the
+    /// secret must still not leave the boundary.
     AlertOnly,
+    /// Raise an alert side-effect **and** forward a redacted payload. This is
+    /// the safe alerting mode: the operator gets notified of the finding, but
+    /// the raw secret is redacted before it leaves the boundary regardless of
+    /// the alert (AAASM-3137).
+    AlertAndRedact,
 }
 
 /// Validated data / PII policy.
