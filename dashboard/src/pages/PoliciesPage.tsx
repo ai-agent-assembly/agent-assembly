@@ -147,6 +147,83 @@ function emptyStateDescription(filter: FilterTab): string {
     : 'Switch to All to see every policy.'
 }
 
+interface PoliciesTabsProps {
+  readonly filter: FilterTab
+  readonly counts: Record<FilterTab, number>
+  readonly onSelect: (tab: FilterTab) => void
+}
+
+/**
+ * The filter tab strip. Extracted from PoliciesPage so its per-tab
+ * active/count-class branching does not count against the page's
+ * cognitive complexity (SonarCloud typescript:S3776).
+ */
+function PoliciesTabs({ filter, counts, onSelect }: PoliciesTabsProps) {
+  return (
+    <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
+      {FILTER_TABS.map((tab) => {
+        const active = filter === tab.id
+        const warnCount = tab.id === 'proposed' && counts.proposed > 0
+        return (
+          <button
+            type="button"
+            key={tab.id}
+            role="tab"
+            aria-selected={active}
+            data-testid={`policies-tab-${tab.id}`}
+            className={
+              active
+                ? 'policies-tabs__tab policies-tabs__tab--active'
+                : 'policies-tabs__tab'
+            }
+            onClick={() => onSelect(tab.id)}
+          >
+            {tab.label}
+            <span
+              className={
+                warnCount
+                  ? 'policies-tabs__count policies-tabs__count--warn'
+                  : 'policies-tabs__count'
+              }
+            >
+              {counts[tab.id]}
+            </span>
+          </button>
+        )
+      })}
+    </nav>
+  )
+}
+
+interface PoliciesSandboxBannerProps {
+  readonly summary: ReturnType<typeof useSandboxSummaryQuery>['data']
+  readonly onEnableLive: () => void
+}
+
+/**
+ * The observe-mode sandbox banner. Extracted from PoliciesPage so the
+ * nested optional-chaining for counts/top-rule does not count against the
+ * page's cognitive complexity (SonarCloud typescript:S3776).
+ */
+function PoliciesSandboxBanner({ summary, onEnableLive }: PoliciesSandboxBannerProps) {
+  const topRule = summary?.top_rule
+  return (
+    <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
+      <SandboxSummaryCard
+        policyName="All policies"
+        windowLabel="last 24h"
+        counts={{
+          wouldBeDenies: summary?.counts.would_be_denies ?? 0,
+          wouldBeRedactions: summary?.counts.would_be_redactions ?? 0,
+          wouldBePendingApprovals: summary?.counts.would_be_pending_approvals ?? 0,
+        }}
+        topRule={topRule ? { id: topRule.id, count: topRule.count } : undefined}
+        onEnableLiveEnforcement={onEnableLive}
+      />
+    </div>
+  )
+}
+
 interface PoliciesContentProps {
   readonly isError: boolean
   readonly isLoading: boolean
@@ -322,56 +399,13 @@ export function PoliciesPage() {
       </header>
 
       {showSandboxBanner ? (
-        <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
-          <SandboxSummaryCard
-            policyName="All policies"
-            windowLabel="last 24h"
-            counts={{
-              wouldBeDenies: sandboxSummary?.counts.would_be_denies ?? 0,
-              wouldBeRedactions: sandboxSummary?.counts.would_be_redactions ?? 0,
-              wouldBePendingApprovals: sandboxSummary?.counts.would_be_pending_approvals ?? 0,
-            }}
-            topRule={
-              sandboxSummary?.top_rule
-                ? { id: sandboxSummary.top_rule.id, count: sandboxSummary.top_rule.count }
-                : undefined
-            }
-            onEnableLiveEnforcement={openEnableLiveDialog}
-          />
-        </div>
+        <PoliciesSandboxBanner
+          summary={sandboxSummary}
+          onEnableLive={openEnableLiveDialog}
+        />
       ) : null}
 
-      <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
-        {FILTER_TABS.map((tab) => {
-          const active = filter === tab.id
-          return (
-            <button
-              type="button"
-              key={tab.id}
-              role="tab"
-              aria-selected={active}
-              data-testid={`policies-tab-${tab.id}`}
-              className={
-                active
-                  ? 'policies-tabs__tab policies-tabs__tab--active'
-                  : 'policies-tabs__tab'
-              }
-              onClick={() => setFilter(tab.id)}
-            >
-              {tab.label}
-              <span
-                className={
-                  tab.id === 'proposed' && counts.proposed > 0
-                    ? 'policies-tabs__count policies-tabs__count--warn'
-                    : 'policies-tabs__count'
-                }
-              >
-                {counts[tab.id]}
-              </span>
-            </button>
-          )
-        })}
-      </nav>
+      <PoliciesTabs filter={filter} counts={counts} onSelect={setFilter} />
 
       <PoliciesContent
         isError={isError}

@@ -288,72 +288,102 @@ export function PipelineCanvas({
       counters.req += 1
     }
 
+    // The `advance` phase arms are split into one helper per phase so each
+    // stays trivially simple and the dispatcher's cognitive complexity stays
+    // low (SonarCloud typescript:S3776). The state mutations and their order
+    // are identical to the original single `switch` — these are pure
+    // structural extractions; jsdom cannot exercise the canvas so behaviour is
+    // preserved by inspection, not unit test. All helpers close over the same
+    // `counters` and lane geometry as the original arms.
+    function advanceToL1(p: Particle, ts: number): boolean {
+      p.x += p.speed
+      if (p.x >= laneX('l1')) {
+        p.x = laneX('l1')
+        if (p.fate === 'identity-fail') {
+          p.phase = 'blocked'
+          p.blockedAt = 'l1'
+          counters.deny += 1
+        } else {
+          p.phase = 'in-l1'
+          p.tEnter = ts
+        }
+      }
+      return true
+    }
+
+    function advanceToL2(p: Particle, ts: number): boolean {
+      p.x += p.speed
+      if (p.x >= laneX('l2')) {
+        p.x = laneX('l2')
+        if (p.fate === 'deny') {
+          p.phase = 'blocked'
+          p.blockedAt = 'l2'
+          counters.deny += 1
+        } else if (p.fate === 'approval') {
+          p.phase = 'stuck-l2'
+          p.stuckAt = ts
+          counters.approval += 1
+        } else {
+          p.phase = 'in-l2'
+          p.tEnter = ts
+          if (p.fate === 'narrow') counters.narrow += 1
+        }
+      }
+      return true
+    }
+
+    function advanceToL3(p: Particle, ts: number): boolean {
+      p.x += p.speed
+      if (p.x >= laneX('l3')) {
+        p.x = laneX('l3')
+        p.phase = 'in-l3'
+        p.tEnter = ts
+        if (p.fate === 'scrub') counters.scrub += 1
+      }
+      return true
+    }
+
+    function advanceToExt(p: Particle): boolean {
+      p.x += p.speed * 1.4
+      if (p.x >= laneRightX('ext')) {
+        counters.allow += 1
+        return false
+      }
+      return true
+    }
+
+    /** Dwell helper: advances a particle to `next` after a fixed 200 ms hold. */
+    function advanceInLane(p: Particle, ts: number, next: Phase): boolean {
+      if (ts - (p.tEnter ?? ts) > 200) p.phase = next
+      return true
+    }
+
+    function advanceBlocked(p: Particle): boolean {
+      p.fadeAge = (p.fadeAge ?? 0) + 1
+      return (p.fadeAge ?? 0) <= 50
+    }
+
     function advance(p: Particle, ts: number): boolean {
       p.age += 1
       switch (p.phase) {
         case 'to-l1':
-          p.x += p.speed
-          if (p.x >= laneX('l1')) {
-            p.x = laneX('l1')
-            if (p.fate === 'identity-fail') {
-              p.phase = 'blocked'
-              p.blockedAt = 'l1'
-              counters.deny += 1
-            } else {
-              p.phase = 'in-l1'
-              p.tEnter = ts
-            }
-          }
-          return true
+          return advanceToL1(p, ts)
         case 'in-l1':
-          if (ts - (p.tEnter ?? ts) > 200) p.phase = 'to-l2'
-          return true
+          return advanceInLane(p, ts, 'to-l2')
         case 'to-l2':
-          p.x += p.speed
-          if (p.x >= laneX('l2')) {
-            p.x = laneX('l2')
-            if (p.fate === 'deny') {
-              p.phase = 'blocked'
-              p.blockedAt = 'l2'
-              counters.deny += 1
-            } else if (p.fate === 'approval') {
-              p.phase = 'stuck-l2'
-              p.stuckAt = ts
-              counters.approval += 1
-            } else {
-              p.phase = 'in-l2'
-              p.tEnter = ts
-              if (p.fate === 'narrow') counters.narrow += 1
-            }
-          }
-          return true
+          return advanceToL2(p, ts)
         case 'in-l2':
-          if (ts - (p.tEnter ?? ts) > 200) p.phase = 'to-l3'
-          return true
+          return advanceInLane(p, ts, 'to-l3')
         case 'to-l3':
-          p.x += p.speed
-          if (p.x >= laneX('l3')) {
-            p.x = laneX('l3')
-            p.phase = 'in-l3'
-            p.tEnter = ts
-            if (p.fate === 'scrub') counters.scrub += 1
-          }
-          return true
+          return advanceToL3(p, ts)
         case 'in-l3':
-          if (ts - (p.tEnter ?? ts) > 200) p.phase = 'to-ext'
-          return true
+          return advanceInLane(p, ts, 'to-ext')
         case 'to-ext':
-          p.x += p.speed * 1.4
-          if (p.x >= laneRightX('ext')) {
-            counters.allow += 1
-            return false
-          }
-          return true
+          return advanceToExt(p)
         case 'stuck-l2':
           return ts - (p.stuckAt ?? ts) < 4500
         case 'blocked':
-          p.fadeAge = (p.fadeAge ?? 0) + 1
-          return (p.fadeAge ?? 0) <= 50
+          return advanceBlocked(p)
       }
     }
 

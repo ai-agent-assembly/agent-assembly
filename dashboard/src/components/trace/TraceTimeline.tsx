@@ -38,6 +38,24 @@ interface TraceEventRowProps {
 }
 
 /**
+ * Builds the keyboard handler that activates a row on Enter/Space. Kept as a
+ * top-level helper so the nested `if`/boolean branching does not count against
+ * `TraceEventRow`'s cognitive complexity (SonarCloud typescript:S3776).
+ */
+function makeRowKeyDownHandler(
+  event: TraceEvent,
+  onSelectEvent?: (event: TraceEvent) => void,
+): ((e: React.KeyboardEvent<HTMLLIElement>) => void) | undefined {
+  if (!onSelectEvent) return undefined
+  return (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onSelectEvent(event)
+    }
+  }
+}
+
+/**
  * A single timeline step. Extracted from `TraceTimeline`'s map callback to
  * keep the parent's cognitive complexity low (SonarCloud typescript:S3776);
  * rendering and interaction wiring for one event live here.
@@ -51,14 +69,7 @@ function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
     <div className="trace-event__icon-circle" aria-hidden="true">{icon}</div>
   )
   const handleClick = onSelectEvent ? () => onSelectEvent(event) : undefined
-  const handleKeyDown = onSelectEvent
-    ? (e: React.KeyboardEvent<HTMLLIElement>) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onSelectEvent(event)
-        }
-      }
-    : undefined
+  const handleKeyDown = makeRowKeyDownHandler(event, onSelectEvent)
 
   return (
     <li
