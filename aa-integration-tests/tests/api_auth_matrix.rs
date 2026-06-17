@@ -36,6 +36,8 @@ fn build_expired_jwt() -> String {
         iat: 0,
         exp: 1, // epoch second 1 — always in the past
         scope: vec![],
+        team_id: None,
+        org_id: None,
     };
     encode(
         &Header::default(),
@@ -514,6 +516,8 @@ fn build_swapped_alg_jwt() -> String {
         iat: 0,
         exp: 9_999_999_999,
         scope: vec![],
+        team_id: None,
+        org_id: None,
     };
     let valid_jwt = encode(
         &Header::default(),

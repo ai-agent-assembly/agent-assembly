@@ -156,6 +156,7 @@ mod tests {
         let caller = AuthenticatedCaller {
             key_id: "test".to_string(),
             scopes: vec![Scope::Read, Scope::Write],
+            tenant: crate::auth::Tenant::default(),
         };
         assert!(RequireScope::check(&caller, Scope::Read).is_ok());
         assert!(RequireScope::check(&caller, Scope::Write).is_ok());

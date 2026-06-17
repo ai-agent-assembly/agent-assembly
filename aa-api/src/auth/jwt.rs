@@ -20,6 +20,16 @@ pub struct Claims {
     pub exp: u64,
     /// Scopes granted to this token.
     pub scope: Vec<Scope>,
+    /// AAASM-3139 — the team this token is scoped to. When present, a
+    /// non-admin caller is confined to its own team for per-tenant data
+    /// (e.g. `/costs`, `/agents/{id}/budget`). `None` on legacy tokens
+    /// issued before tenant claims existed, which therefore carry no team
+    /// scope (and remain admin-gated for cross-tenant data).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// AAASM-3139 — the org this token is scoped to. See [`Claims::team_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
 }
 
 /// Signs JWTs using HMAC-SHA256.
@@ -39,12 +49,29 @@ impl JwtSigner {
     ///
     /// The token expires after 24 hours.
     pub fn sign(&self, key_id: &str, scopes: &[Scope]) -> Result<String, JwtError> {
+        self.sign_with_tenant(key_id, scopes, None, None)
+    }
+
+    /// Sign a JWT that additionally carries a tenant scope (AAASM-3139).
+    ///
+    /// `team_id` / `org_id` confine a non-admin caller to its own tenant for
+    /// per-tenant data endpoints. Pass `None` for either to leave it unscoped.
+    /// The token expires after 24 hours.
+    pub fn sign_with_tenant(
+        &self,
+        key_id: &str,
+        scopes: &[Scope],
+        team_id: Option<String>,
+        org_id: Option<String>,
+    ) -> Result<String, JwtError> {
         let now = now_epoch_secs();
         let claims = Claims {
             sub: key_id.to_string(),
             iat: now,
             exp: now + TOKEN_EXPIRY_SECS,
             scope: scopes.to_vec(),
+            team_id,
+            org_id,
         };
         encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
     }
@@ -57,6 +84,8 @@ impl JwtSigner {
             iat: now_epoch_secs(),
             exp,
             scope: scopes.to_vec(),
+            team_id: None,
+            org_id: None,
         };
         encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
     }
@@ -150,6 +179,26 @@ mod tests {
 
         let result = verifier.verify(&token);
         assert!(result.is_err(), "token signed with different secret should be rejected");
+    }
+
+    #[test]
+    fn test_jwt_tenant_claim_roundtrip() {
+        // AAASM-3139: a tenant-scoped token must carry team_id back through
+        // verification; a plain token leaves the tenant claim None.
+        let signer = JwtSigner::new(TEST_SECRET);
+        let verifier = JwtVerifier::new(TEST_SECRET);
+
+        let scoped = signer
+            .sign_with_tenant("key-1", &[Scope::Read], Some("alpha".into()), Some("org-1".into()))
+            .unwrap();
+        let claims = verifier.verify(&scoped).unwrap();
+        assert_eq!(claims.team_id.as_deref(), Some("alpha"));
+        assert_eq!(claims.org_id.as_deref(), Some("org-1"));
+
+        let plain = signer.sign("key-2", &[Scope::Read]).unwrap();
+        let plain_claims = verifier.verify(&plain).unwrap();
+        assert_eq!(plain_claims.team_id, None);
+        assert_eq!(plain_claims.org_id, None);
     }
 
     #[test]

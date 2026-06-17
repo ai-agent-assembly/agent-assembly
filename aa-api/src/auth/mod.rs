@@ -85,6 +85,21 @@ impl IntoResponse for AuthError {
 
 /// The authenticated identity of a request caller.
 ///
+/// The tenant a caller is scoped to (AAASM-3139).
+///
+/// A caller with a `team_id` (or `org_id`) is confined to that tenant for
+/// per-tenant data endpoints. An empty `Tenant` (both `None`) means "no tenant
+/// scope" — such a caller can only see cross-tenant data if it also holds
+/// `Scope::Admin`. The synthetic bypass-mode caller and admin callers are not
+/// confined by tenant.
+#[derive(Debug, Clone, Default)]
+pub struct Tenant {
+    /// The team this caller is scoped to, if any.
+    pub team_id: Option<String>,
+    /// The org this caller is scoped to, if any.
+    pub org_id: Option<String>,
+}
+
 /// Populated by the `FromRequestParts` implementation, which validates
 /// either an API key (`aa_…`) or a JWT bearer token.
 #[derive(Debug, Clone)]
@@ -93,6 +108,22 @@ pub struct AuthenticatedCaller {
     pub key_id: String,
     /// Scopes granted to this caller.
     pub scopes: Vec<Scope>,
+    /// The tenant this caller is confined to for per-tenant data (AAASM-3139).
+    pub tenant: Tenant,
+}
+
+impl AuthenticatedCaller {
+    /// Whether this caller may see data for `team` without a separate admin gate.
+    ///
+    /// AAASM-3139: an admin sees every tenant; a tenant-scoped caller sees only
+    /// its own team. A caller with no team scope (and no admin) sees no
+    /// per-tenant data.
+    pub fn can_access_team(&self, team: &str) -> bool {
+        if self.scopes.contains(&Scope::Admin) {
+            return true;
+        }
+        self.tenant.team_id.as_deref() == Some(team)
+    }
 }
 
 /// Prefix used by API keys (`aa_`).
@@ -116,6 +147,8 @@ where
             return Ok(AuthenticatedCaller {
                 key_id: "__bypass__".to_string(),
                 scopes: vec![Scope::Read, Scope::Write, Scope::Admin],
+                // Bypass mode is admin — not confined to any tenant.
+                tenant: Tenant::default(),
             });
         }
 
@@ -151,6 +184,10 @@ where
             AuthenticatedCaller {
                 key_id: entry.id.clone(),
                 scopes: entry.scopes.clone(),
+                tenant: Tenant {
+                    team_id: entry.team_id.clone(),
+                    org_id: entry.org_id.clone(),
+                },
             }
         } else {
             // JWT path.
@@ -171,6 +208,10 @@ where
             AuthenticatedCaller {
                 key_id: claims.sub,
                 scopes: claims.scope,
+                tenant: Tenant {
+                    team_id: claims.team_id,
+                    org_id: claims.org_id,
+                },
             }
         };
 

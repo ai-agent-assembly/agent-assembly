@@ -513,14 +513,15 @@ pub async fn get_agent_budget(
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<BudgetRollupResponse>), ProblemDetail> {
-    // Cross-tenant IDOR guard (AAASM-3126): the authenticated principal does
-    // not yet carry an org/team scope (AAASM-3128), so an agent's budget
-    // rollup (which spans the agent's team / org / global totals) can only be
-    // safely served to admin callers. A non-admin caller cannot be confined to
-    // its own tenant, so reading an arbitrary agent's budget is denied.
-    if !caller.scopes.contains(&Scope::Admin) {
+    // Per-tenant authz (AAASM-3139, completing AAASM-3126's deferral): admin
+    // callers may read any agent's budget; a tenant-scoped caller may read only
+    // agents that belong to its own team. A caller with neither admin scope nor
+    // any team scope can never be authorized — deny it up front, before any
+    // existence check, so it cannot enumerate agents via 403-vs-404.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
         return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
-            .with_detail("Reading an agent's budget rollup requires admin scope"));
+            .with_detail("Reading an agent's budget rollup requires admin scope or a team scope"));
     }
 
     let agent_id_bytes = parse_agent_id(&id)?;
@@ -532,6 +533,19 @@ pub async fn get_agent_budget(
 
     let lineage = state.agent_registry.lineage(&agent_id_bytes);
     let team_id = lineage.as_ref().and_then(|l| l.team_id.as_deref());
+
+    // A tenant-scoped (non-admin) caller may only read agents in its own team;
+    // the rollup spans the agent's team / org / global totals, so a mismatch is
+    // a cross-tenant IDOR.
+    let authorized = match team_id {
+        Some(team) => caller.can_access_team(team),
+        // The agent has no team — only admin may read its (global-scoped) rollup.
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("Reading this agent's budget rollup requires admin scope or membership in its team"));
+    }
     let descendants = state.agent_registry.descendants_of(&agent_id_bytes);
 
     let rollup = aa_gateway::budget::compute_budget_rollup(

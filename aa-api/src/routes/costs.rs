@@ -62,12 +62,11 @@ pub struct CostSummary {
 /// Retrieve the current daily and monthly cost and budget summary,
 /// including per-agent breakdown and configured budget limits.
 ///
-/// The per-agent and per-team breakdowns span every tenant, so they are
-/// only populated for callers holding `Scope::Admin` (AAASM-3126). Because
-/// the authenticated principal carries no org/team scope yet (AAASM-3128),
-/// a non-admin caller cannot be filtered down to its own tenant — so it
-/// receives only the aggregate totals with the cross-tenant breakdowns
-/// elided rather than leaking every tenant's spend (cross-tenant IDOR).
+/// Per-tenant filtering (AAASM-3139): an admin caller sees every tenant's
+/// per-agent and per-team breakdown; a tenant-scoped caller sees only its own
+/// team's row; a caller with neither admin scope nor a team scope receives the
+/// aggregate totals only, with the breakdowns elided rather than leaking every
+/// tenant's spend (the cross-tenant IDOR that AAASM-3126 admin-gated).
 #[utoipa::path(
     get,
     path = "/api/v1/costs",
@@ -83,13 +82,17 @@ pub async fn get_cost_summary(
 ) -> (StatusCode, Json<CostSummary>) {
     let snapshot = state.budget_tracker.snapshot();
 
-    // Cross-tenant breakdowns are admin-only until the principal carries a
-    // tenant scope to filter on (AAASM-3126 / AAASM-3128).
-    let include_breakdown = caller.scopes.contains(&Scope::Admin);
+    // Per-tenant filtering (AAASM-3139, completing AAASM-3126's deferral):
+    // * Admin callers see every tenant's breakdown.
+    // * A tenant-scoped caller sees ONLY its own team's row (and no per-agent
+    //   breakdown — the snapshot's per-agent list is not keyed by team, so
+    //   including it would leak other tenants' agents).
+    // * A caller with neither admin scope nor a team scope sees aggregate
+    //   totals only — the breakdowns stay empty rather than leaking spend.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let caller_team = caller.tenant.team_id.as_deref();
 
-    let per_agent: Vec<AgentCostEntry> = if !include_breakdown {
-        Vec::new()
-    } else {
+    let per_agent: Vec<AgentCostEntry> = if is_admin {
         snapshot
             .per_agent
             .iter()
@@ -100,14 +103,16 @@ pub async fn get_cost_summary(
                 date: entry.state.date.to_string(),
             })
             .collect()
+    } else {
+        Vec::new()
     };
 
-    let per_team: Vec<TeamCostEntry> = if !include_breakdown {
-        Vec::new()
-    } else {
+    let per_team: Vec<TeamCostEntry> = if is_admin || caller_team.is_some() {
         let mut rows: Vec<TeamCostEntry> = snapshot
             .team_budgets
             .iter()
+            // Non-admin tenant callers see only their own team's row.
+            .filter(|(team_id, _)| is_admin || caller_team == Some(team_id.as_str()))
             .map(|(team_id, state)| TeamCostEntry {
                 team_id: team_id.clone(),
                 daily_spend_usd: state.spent_usd.to_string(),
@@ -117,6 +122,8 @@ pub async fn get_cost_summary(
             .collect();
         rows.sort_by(|a, b| a.team_id.cmp(&b.team_id));
         rows
+    } else {
+        Vec::new()
     };
 
     let summary = CostSummary {
