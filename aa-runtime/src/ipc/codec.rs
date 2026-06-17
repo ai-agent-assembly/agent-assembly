@@ -40,12 +40,28 @@ pub const TAG_APPROVAL_DECISION: u8 = 2;
 pub const TAG_ACK: u8 = 3;
 pub const TAG_VIOLATION_ALERT: u8 = 4;
 
+/// Maximum accepted length-delimited payload size, in bytes (8 MiB).
+///
+/// The wire length prefix is attacker-controlled: a peer on the UDS can send a
+/// varint claiming a multi-gigabyte payload, and `vec![0u8; len]` would attempt
+/// to allocate it before a single payload byte is read — a trivial local DoS
+/// (AAASM-3132). We reject any frame larger than this bound *before* allocating.
+/// 8 MiB comfortably exceeds any legitimate `CheckActionRequest` / `AuditEvent`
+/// while keeping a single hostile frame from exhausting memory.
+pub const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
+
 /// Errors that can occur during frame encoding or decoding.
 #[derive(Debug)]
 pub enum CodecError {
     Io(std::io::Error),
     UnknownTag(u8),
     DecodeError(prost::DecodeError),
+    /// The wire length prefix exceeded [`MAX_FRAME_LEN`]. Rejected before any
+    /// allocation so a hostile peer cannot force a large buffer alloc.
+    FrameTooLarge {
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for CodecError {
@@ -54,6 +70,9 @@ impl std::fmt::Display for CodecError {
             CodecError::Io(e) => write!(f, "IO error: {e}"),
             CodecError::UnknownTag(t) => write!(f, "unknown frame tag: {t}"),
             CodecError::DecodeError(e) => write!(f, "prost decode error: {e}"),
+            CodecError::FrameTooLarge { len, max } => {
+                write!(f, "frame length {len} exceeds maximum {max}")
+            }
         }
     }
 }
@@ -141,6 +160,15 @@ where
 {
     // Read the varint length (prost uses unsigned varint).
     let len = read_varint(reader).await? as usize;
+    // AAASM-3132: bound the claimed length BEFORE allocating. The prefix comes
+    // off the wire from an untrusted peer, so allocating `len` bytes first would
+    // let a single hostile frame exhaust memory.
+    if len > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge {
+            len,
+            max: MAX_FRAME_LEN,
+        });
+    }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -385,5 +413,42 @@ mod tests {
         assert_eq!(decoded.policy_rule, "block-files");
         assert_eq!(decoded.blocked_action, "FILE_OPERATION");
         assert_eq!(decoded.reason, "file access not permitted");
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_prefix_rejected_before_alloc() {
+        // AAASM-3132: a hostile peer claims a ~4 GiB payload via the varint
+        // length prefix but sends no payload bytes. The decoder must reject it
+        // with FrameTooLarge *before* allocating, so the tiny cursor (just the
+        // tag + varint) does not hang on `read_exact` and no huge buffer is
+        // allocated.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, u32::MAX as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        match result {
+            Err(CodecError::FrameTooLarge { len, max }) => {
+                assert_eq!(len, u32::MAX as usize);
+                assert_eq!(max, MAX_FRAME_LEN);
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_at_max_len_boundary_is_accepted() {
+        // A prefix exactly equal to MAX_FRAME_LEN must not be rejected by the
+        // bound itself; here it fails later (truncated payload) — proving the
+        // limit is `>` and not `>=`.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, MAX_FRAME_LEN as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        assert!(
+            !matches!(result, Err(CodecError::FrameTooLarge { .. })),
+            "MAX_FRAME_LEN itself must be accepted by the bound"
+        );
     }
 }
