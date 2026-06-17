@@ -861,4 +861,32 @@ mod tests {
         assert_eq!(server.connect_deny_reason("api.openai.com"), None);
         assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
     }
+
+    #[tokio::test]
+    async fn plain_http_forward_blocks_ssrf_resolved_ip() {
+        // AAASM-3140 regression: a plain-HTTP (non-CONNECT) request whose host
+        // resolves to a denied IP (here, loopback) must be refused by the same
+        // SSRF resolved-IP re-validation that guards the CONNECT/tunnel paths.
+        // Before the fix the plain-HTTP path dialed the upstream directly,
+        // bypassing the denylist.
+        let server = server_with(vec![], vec![]).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        // Plain HTTP request targeting a loopback literal — a blocked range.
+        client
+            .write_all(b"GET http://127.0.0.1/secret HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+
+        let result = server.handle_connection(server_stream).await;
+        let err = result.expect_err("plain-HTTP request to a blocked IP must be refused");
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("ssrf")),
+            "expected SSRF denial, got: {err:?}"
+        );
+    }
 }
