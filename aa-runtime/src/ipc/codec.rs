@@ -414,4 +414,41 @@ mod tests {
         assert_eq!(decoded.blocked_action, "FILE_OPERATION");
         assert_eq!(decoded.reason, "file access not permitted");
     }
+
+    #[tokio::test]
+    async fn oversized_frame_prefix_rejected_before_alloc() {
+        // AAASM-3132: a hostile peer claims a ~4 GiB payload via the varint
+        // length prefix but sends no payload bytes. The decoder must reject it
+        // with FrameTooLarge *before* allocating, so the tiny cursor (just the
+        // tag + varint) does not hang on `read_exact` and no huge buffer is
+        // allocated.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, u32::MAX as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        match result {
+            Err(CodecError::FrameTooLarge { len, max }) => {
+                assert_eq!(len, u32::MAX as usize);
+                assert_eq!(max, MAX_FRAME_LEN);
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_at_max_len_boundary_is_accepted() {
+        // A prefix exactly equal to MAX_FRAME_LEN must not be rejected by the
+        // bound itself; here it fails later (truncated payload) — proving the
+        // limit is `>` and not `>=`.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, MAX_FRAME_LEN as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        assert!(
+            !matches!(result, Err(CodecError::FrameTooLarge { .. })),
+            "MAX_FRAME_LEN itself must be accepted by the bound"
+        );
+    }
 }
