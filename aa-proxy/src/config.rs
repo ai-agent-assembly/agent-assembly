@@ -69,8 +69,13 @@ pub struct ProxyConfig {
     pub network_allowlist: Vec<String>,
 
     /// When `true`, the proxy skips TLS certificate verification when
-    /// connecting to upstream servers. Intended for integration tests only —
-    /// never enable in production.
+    /// connecting to upstream servers. Intended for integration tests only.
+    ///
+    /// AAASM-3131: honoured **only in debug builds**. In a release build the
+    /// `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` env var is ignored and this stays
+    /// `false`, so a deployed production binary can never disable upstream cert
+    /// verification. When it *is* active (debug), [`crate::run`] prints a loud
+    /// startup banner.
     /// Env: `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` — default: `false`
     pub skip_upstream_tls_verify: bool,
 
@@ -151,9 +156,25 @@ impl ProxyConfig {
             _ => Vec::new(),
         };
 
-        let skip_upstream_tls_verify = match std::env::var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY") {
+        let skip_upstream_tls_verify_requested = match std::env::var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY") {
             Ok(val) => val == "1" || val.to_lowercase() == "true",
             Err(_) => false,
+        };
+        // AAASM-3131: this flag disables upstream certificate verification and
+        // is for integration tests only. In a release (production) build it must
+        // be unreachable — silently ignore the request and shout, so a stray env
+        // var in a deployed binary cannot quietly turn the proxy into a MitM that
+        // trusts any upstream certificate.
+        let skip_upstream_tls_verify = if cfg!(debug_assertions) {
+            skip_upstream_tls_verify_requested
+        } else {
+            if skip_upstream_tls_verify_requested {
+                tracing::error!(
+                    "AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY is set but IGNORED in a release build — \
+                     upstream TLS verification stays ENABLED. This flag is debug-only."
+                );
+            }
+            false
         };
 
         let credential_action = match std::env::var("AA_PROXY_CREDENTIAL_ACTION") {
@@ -301,13 +322,17 @@ mod tests {
     }
 
     #[test]
-    fn from_env_skip_upstream_tls_verify_true() {
+    fn from_env_skip_upstream_tls_verify_honoured_in_debug_only() {
+        // AAASM-3131: the request is honoured only in debug builds. In a
+        // release build the env var is ignored and the flag stays `false`,
+        // so a deployed production binary cannot disable upstream TLS
+        // verification via a stray env var.
         let _lock = ENV_LOCK.lock().unwrap();
         clear_env_vars();
         std::env::set_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1");
 
         let cfg = ProxyConfig::from_env().unwrap();
-        assert!(cfg.skip_upstream_tls_verify);
+        assert_eq!(cfg.skip_upstream_tls_verify, cfg!(debug_assertions));
     }
 
     #[test]

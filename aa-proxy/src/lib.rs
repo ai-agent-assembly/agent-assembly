@@ -38,6 +38,17 @@ pub async fn run(
     config: ProxyConfig,
     event_tx: tokio::sync::broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
 ) -> anyhow::Result<()> {
+    // AAASM-3131: shout if upstream TLS verification is disabled. This is a
+    // debug-only test affordance (the env var is ignored in release builds);
+    // the banner makes an accidentally-enabled run impossible to miss in logs.
+    if config.skip_upstream_tls_verify {
+        tracing::warn!(
+            "⚠️  AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY is ACTIVE — upstream TLS certificate \
+             verification is DISABLED. This is for integration tests only and must NEVER \
+             be used against real upstreams."
+        );
+    }
+
     let ca = tls::CaStore::load_or_create(&config.ca_dir).await?;
 
     #[cfg(target_os = "macos")]
