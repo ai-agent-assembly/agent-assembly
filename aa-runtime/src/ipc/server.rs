@@ -641,6 +641,7 @@ mod tests {
             broadcast_capacity: 64,
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
+            gateway_fail_closed: true,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);
@@ -734,6 +735,7 @@ mod tests {
             broadcast_capacity: 64,
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
+            gateway_fail_closed: true,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);
@@ -834,6 +836,7 @@ mod tests {
             broadcast_capacity: 64,
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
+            gateway_fail_closed: true,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);

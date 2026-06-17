@@ -40,6 +40,10 @@ pub struct PipelineConfig {
     pub agent_id: String,
     /// Runtime scan/redact enforcement config — derived from `RuntimeConfig`.
     pub enforcement: enforcement::EnforcementConfig,
+    /// Deny a policy check when the gateway is configured but unreachable,
+    /// instead of falling back to permissive local evaluation (AAASM-3110).
+    /// Copied from [`RuntimeConfig::gateway_fail_closed`]; defaults to `true`.
+    pub gateway_fail_closed: bool,
 }
 
 impl PipelineConfig {
@@ -52,6 +56,7 @@ impl PipelineConfig {
             broadcast_capacity: c.pipeline_broadcast_capacity,
             agent_id: c.agent_id.clone(),
             enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
+            gateway_fail_closed: c.gateway_fail_closed,
         }
     }
 }
@@ -129,6 +134,7 @@ pub async fn run(
                             &approval_queue,
                             &response_router,
                             &gateway_client,
+                            config.gateway_fail_closed,
                             &broadcast_tx,
                             &seq,
                         )
@@ -247,8 +253,14 @@ async fn send_ipc_response(connection_id: u64, response: IpcResponse, router: &R
 /// Evaluate a [`IpcFrame::PolicyQuery`] against the loaded policy and respond.
 ///
 /// When `gateway_client` is `Some`, the request is forwarded to the governance
-/// gateway over gRPC. If the gateway call fails, the function falls back to
-/// local [`PolicyRules`] evaluation with a warning log.
+/// gateway over gRPC. The gateway is the authoritative decision point.
+///
+/// **Fail-closed (AAASM-3110):** when the gateway is configured but the call
+/// fails (unreachable / timeout / transport error) and `fail_closed` is set,
+/// the check is **denied** rather than silently falling back to permissive
+/// local evaluation. Allow-on-fallback is only used when the gateway is not
+/// configured at all, or when `fail_closed` is `false` (observe / disabled
+/// posture).
 ///
 /// Local decision priority (first match wins):
 /// 1. `requires_approval_actions` → `PENDING` + submit to [`ApprovalQueue`]; spawn a task to
@@ -263,11 +275,12 @@ async fn handle_policy_query(
     approval_queue: &Arc<ApprovalQueue>,
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
+    fail_closed: bool,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
 ) {
     // ── Gateway forwarding path ─────────────────────────────────────────
-    if try_gateway_forward(
+    match try_gateway_forward(
         connection_id,
         &req,
         gateway_client,
@@ -277,7 +290,30 @@ async fn handle_policy_query(
     )
     .await
     {
-        return;
+        // Gateway answered (allow/deny/approval) — response already sent.
+        GatewayOutcome::Handled => return,
+        // Gateway configured but unreachable: fail closed in enforce posture
+        // instead of leaking through to a permissive local default (AAASM-3110).
+        GatewayOutcome::Failed if fail_closed => {
+            tracing::warn!(
+                connection_id,
+                "gateway unreachable and fail-closed enabled — denying action"
+            );
+            send_ipc_response(
+                connection_id,
+                IpcResponse::PolicyResponse(CheckActionResponse {
+                    decision: Decision::Deny as i32,
+                    reason: "gateway unreachable; denied by fail-closed policy".to_string(),
+                    ..Default::default()
+                }),
+                response_router,
+            )
+            .await;
+            return;
+        }
+        // No gateway configured, or observe/disabled posture — fall through to
+        // local evaluation.
+        GatewayOutcome::NoClient | GatewayOutcome::Failed => {}
     }
 
     // ── Local evaluation path ───────────────────────────────────────────
@@ -335,10 +371,23 @@ async fn handle_policy_query(
     .await;
 }
 
+/// Outcome of attempting to forward a policy check to the gateway.
+///
+/// The caller ([`handle_policy_query`]) distinguishes these so it can fail
+/// **closed** when a configured gateway is unreachable, rather than treating
+/// every non-`Handled` outcome as "fall back and allow" (AAASM-3110).
+enum GatewayOutcome {
+    /// The gateway answered and a response was already sent to the SDK.
+    Handled,
+    /// No gateway client is configured — pure local-evaluation mode.
+    NoClient,
+    /// A gateway client is configured but the RPC failed (unreachable, timeout,
+    /// transport error). The caller decides allow-fallback vs fail-closed deny.
+    Failed,
+}
+
 /// Forward the request to the governance gateway over gRPC when a client is
-/// configured. Returns `true` when the request was fully handled (a response
-/// was sent); `false` when there is no client or the call failed, signalling
-/// the caller to fall back to local [`PolicyRules`] evaluation.
+/// configured. See [`GatewayOutcome`] for how the caller interprets the result.
 async fn try_gateway_forward(
     connection_id: u64,
     req: &aa_proto::assembly::policy::v1::CheckActionRequest,
@@ -346,9 +395,9 @@ async fn try_gateway_forward(
     response_router: &ResponseRouter,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
-) -> bool {
+) -> GatewayOutcome {
     let Some(client) = gateway_client else {
-        return false;
+        return GatewayOutcome::NoClient;
     };
     let mut guard = client.lock().await;
     match guard.check_action(req.clone()).await {
@@ -362,15 +411,15 @@ async fn try_gateway_forward(
                 emit_gateway_violation(req, &resp, connection_id, broadcast_tx, sequence_counter);
             }
             send_ipc_response(connection_id, IpcResponse::PolicyResponse(resp), response_router).await;
-            true
+            GatewayOutcome::Handled
         }
         Err(e) => {
             tracing::warn!(
                 connection_id,
                 error = %e,
-                "gateway call failed — falling back to local policy evaluation"
+                "gateway call failed"
             );
-            false
+            GatewayOutcome::Failed
         }
     }
 }
@@ -719,6 +768,7 @@ mod tests {
             nats_config_path: None,
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
             enforcement_max_field_bytes: enforcement::DEFAULT_MAX_FIELD_BYTES,
+            gateway_fail_closed: true,
         };
 
         let pipeline_config = PipelineConfig::from_runtime_config(&runtime_config);
@@ -745,6 +795,7 @@ mod tests {
             broadcast_capacity: 512,
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
+            gateway_fail_closed: true,
         };
 
         let cloned = pipeline_config.clone();
@@ -764,6 +815,7 @@ mod tests {
             broadcast_capacity: 1_024,
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
+            gateway_fail_closed: true,
         }
     }
 
@@ -1377,6 +1429,110 @@ mod tests {
 
         if let IpcResponse::PolicyResponse(r) = resp {
             assert_eq!(r.decision, Decision::Deny as i32);
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3110: when a gateway is configured but unreachable and the runtime
+    /// is in the fail-closed (enforce) posture, a policy check must be DENIED —
+    /// never silently allowed by the permissive local default.
+    #[tokio::test]
+    async fn gateway_unreachable_fail_closed_responds_deny() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000); // gateway_fail_closed = true
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+
+        // Lazy client to a port that never listens → check_action fails.
+        let gateway = Arc::new(Mutex::new(crate::gateway_client::GatewayClient::connect_lazy(
+            "http://127.0.0.1:1",
+        )));
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            Some(gateway),
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "gateway unreachable in fail-closed posture must deny"
+            );
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3110: in the observe/disabled posture (`gateway_fail_closed = false`)
+    /// a gateway-unreachable check falls back to permissive local evaluation,
+    /// which allows when no local rule matches.
+    #[tokio::test]
+    async fn gateway_unreachable_fail_open_falls_back_to_local_allow() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let mut config = test_config(100, 10_000);
+        config.gateway_fail_closed = false;
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+
+        let gateway = Arc::new(Mutex::new(crate::gateway_client::GatewayClient::connect_lazy(
+            "http://127.0.0.1:1",
+        )));
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            Some(gateway),
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Allow as i32,
+                "fail-open posture should fall back to local allow"
+            );
         } else {
             panic!("expected PolicyResponse, got {resp:?}");
         }
