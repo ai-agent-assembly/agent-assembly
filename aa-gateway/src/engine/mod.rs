@@ -897,12 +897,25 @@ impl PolicyEngine {
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
+            if credential_action == CredentialAction::AlertAndRedact {
+                // AAASM-3137: emit the alert AND redact — the operator is
+                // notified, but the raw secret is still removed before forward.
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_and_redact: alert emission pending AAASM-1545"
+                );
+            }
             if credential_action == CredentialAction::AlertOnly {
                 // Forward the unmodified payload upstream; alert side-effect emission
                 // is wired by sibling subtask AAASM-1545.
+                //
+                // SECURITY (AAASM-3137): this is the ONLY path that forwards the
+                // raw secret. It is a documented, deliberate audit-only downgrade;
+                // `alert_and_redact` is the safe alternative when an alert is
+                // wanted without leaking the credential.
                 tracing::warn!(
                     finding_count = all_findings.len(),
-                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                    "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
                 );
                 (None, all_findings)
             } else {
@@ -1032,14 +1045,18 @@ impl PolicyEngine {
         let mut all_findings = scan.findings;
         collect_cascade_custom_findings(&cascade, text, &mut all_findings);
 
-        // Most-restrictive-wins across the cascade: Block > RedactOnly > AlertOnly.
-        // Docs without a `data` section don't vote — RedactOnly remains the default.
+        // Most-restrictive-wins across the cascade ranked by how well each mode
+        // protects the secret: Block > RedactOnly > AlertAndRedact > AlertOnly.
+        // AlertOnly ranks lowest because it is the only mode that forwards the
+        // raw secret (AAASM-3137). Docs without a `data` section don't vote —
+        // RedactOnly remains the default.
         let credential_action = cascade
             .iter()
             .filter_map(|d| d.data.as_ref().map(|dp| dp.credential_action))
             .max_by_key(|a| match a {
-                CredentialAction::Block => 2,
-                CredentialAction::RedactOnly => 1,
+                CredentialAction::Block => 3,
+                CredentialAction::RedactOnly => 2,
+                CredentialAction::AlertAndRedact => 1,
                 CredentialAction::AlertOnly => 0,
             })
             .unwrap_or_default();
@@ -1064,10 +1081,18 @@ impl PolicyEngine {
                 finding_count = all_findings.len(),
                 "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
             );
-            if credential_action == CredentialAction::AlertOnly {
+            if credential_action == CredentialAction::AlertAndRedact {
+                // AAASM-3137: alert AND redact — notify but never leak the secret.
                 tracing::warn!(
                     finding_count = all_findings.len(),
-                    "credential_action=alert_only: alert emission pending AAASM-1545"
+                    "credential_action=alert_and_redact: alert emission pending AAASM-1545"
+                );
+            }
+            if credential_action == CredentialAction::AlertOnly {
+                // SECURITY (AAASM-3137): the only path that forwards the raw secret.
+                tracing::warn!(
+                    finding_count = all_findings.len(),
+                    "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
                 );
                 (None, all_findings)
             } else {
@@ -1773,6 +1798,31 @@ mod tests {
         assert!(!result.credential_findings.is_empty());
         // Alert-only mode forwards the payload unmodified — no redacted form is set.
         assert!(result.redacted_payload.is_none());
+    }
+
+    #[test]
+    fn data_pattern_redacts_when_credential_action_is_alert_and_redact() {
+        // AAASM-3137: alert_and_redact must still redact the payload — the raw
+        // secret must NOT be forwarded even though an alert is raised.
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![r"password=\w+".to_string()],
+            credential_action: CredentialAction::AlertAndRedact,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "password=secret");
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(!result.credential_findings.is_empty());
+        // A redacted form IS set, and the raw secret is gone.
+        let redacted = result
+            .redacted_payload
+            .expect("alert_and_redact must produce a redacted payload");
+        assert!(
+            !redacted.contains("secret"),
+            "raw secret leaked in alert_and_redact mode"
+        );
     }
 
     #[test]

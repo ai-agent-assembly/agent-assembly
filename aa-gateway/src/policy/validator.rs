@@ -345,10 +345,15 @@ impl PolicyValidator {
             None | Some("redact_only") => CredentialAction::RedactOnly,
             Some("block") => CredentialAction::Block,
             Some("alert_only") => CredentialAction::AlertOnly,
+            // AAASM-3137: safe alerting mode — alert AND redact on forward.
+            Some("alert_and_redact") => CredentialAction::AlertAndRedact,
             Some(other) => {
                 errors.push(ValidationError::new(
                     "data.credential_action",
-                    format!("must be 'block', 'redact_only', or 'alert_only', got '{}'", other),
+                    format!(
+                        "must be 'block', 'redact_only', 'alert_only', or 'alert_and_redact', got '{}'",
+                        other
+                    ),
                 ));
                 CredentialAction::RedactOnly
             }
@@ -648,6 +653,14 @@ mod tests {
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         let dp = out.document.data.unwrap();
         assert_eq!(dp.credential_action, CredentialAction::AlertOnly);
+    }
+
+    #[test]
+    fn data_credential_action_alert_and_redact_parses() {
+        let yaml = "data:\n  credential_action: alert_and_redact\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let dp = out.document.data.unwrap();
+        assert_eq!(dp.credential_action, CredentialAction::AlertAndRedact);
     }
 
     #[test]

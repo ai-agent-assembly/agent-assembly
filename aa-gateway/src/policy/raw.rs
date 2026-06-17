@@ -70,7 +70,8 @@ pub struct RawDataPolicy {
     /// Regex patterns for PII / credential detection.
     pub sensitive_patterns: Option<Vec<String>>,
     /// Action taken on a finding: `"block"`, `"redact_only"` (default),
-    /// or `"alert_only"`. Validated into a [`crate::policy::document::CredentialAction`].
+    /// `"alert_only"`, or `"alert_and_redact"`. Validated into a
+    /// [`crate::policy::document::CredentialAction`].
     pub credential_action: Option<String>,
     /// Unknown keys captured for warning emission.
     #[serde(flatten)]
