@@ -784,3 +784,65 @@ impl ProxyServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn server_with(denied_hosts: Vec<String>, allowlist: Vec<String>) -> Arc<ProxyServer> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let mut config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            denied_hosts,
+            network_allowlist: allowlist,
+            skip_upstream_tls_verify: false,
+            credential_action: crate::config::CredentialAction::default(),
+            upstream_override: None,
+            gateway_endpoint: None,
+        };
+        config.bind_addr = ([127, 0, 0, 1], 0).into();
+        let (tx, _rx) = broadcast::channel(8);
+        ProxyServer::new(config, ca, tx)
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_blocks_metadata_ip_literal() {
+        // SSRF: the cloud metadata endpoint as an IP literal must be denied
+        // even with an empty allowlist (which is otherwise allow-all).
+        let server = server_with(vec![], vec![]).await;
+        assert_eq!(
+            server.connect_deny_reason("169.254.169.254"),
+            Some("ssrf: blocked address range")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_blocks_loopback_and_rfc1918_literals() {
+        let server = server_with(vec![], vec![]).await;
+        assert!(server.connect_deny_reason("127.0.0.1").is_some());
+        assert!(server.connect_deny_reason("10.0.0.5").is_some());
+        assert!(server.connect_deny_reason("192.168.1.1").is_some());
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_ssrf_check_precedes_allowlist() {
+        // Even if an operator allowlists the literal, the SSRF guard wins —
+        // a hostname allowlist must never be a way to reach internal space.
+        let server = server_with(vec![], vec!["169.254.169.254".to_string()]).await;
+        assert_eq!(
+            server.connect_deny_reason("169.254.169.254"),
+            Some("ssrf: blocked address range")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_allows_public_host() {
+        let server = server_with(vec![], vec![]).await;
+        assert_eq!(server.connect_deny_reason("api.openai.com"), None);
+        assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
+    }
+}
