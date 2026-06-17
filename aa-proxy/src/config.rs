@@ -105,6 +105,18 @@ pub struct ProxyConfig {
     ///
     /// Env: `AA_PROXY_GATEWAY_ENDPOINT` — e.g. `http://127.0.0.1:50051`.
     pub gateway_endpoint: Option<String>,
+
+    /// When `true`, the AAASM-3130 SSRF guard permits CONNECT targets that
+    /// resolve to private / loopback / link-local address ranges. Intended for
+    /// integration tests **only** — they stand up an in-process mock upstream
+    /// on `127.0.0.1`, which the SSRF guard would (correctly) refuse to dial in
+    /// production.
+    ///
+    /// There is **no env var** for this knob: [`ProxyConfig::from_env`] always
+    /// leaves it `false`, so a deployed binary can never be coaxed into
+    /// reaching internal address space. The guard's protection is unchanged in
+    /// every non-test build.
+    pub allow_private_connect_targets: bool,
 }
 
 impl ProxyConfig {
@@ -198,6 +210,8 @@ impl ProxyConfig {
             credential_action,
             upstream_override: None,
             gateway_endpoint,
+            // No env var: production binaries can never relax the SSRF guard.
+            allow_private_connect_targets: false,
         })
     }
 }
