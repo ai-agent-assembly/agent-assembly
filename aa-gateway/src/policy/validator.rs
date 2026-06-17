@@ -817,6 +817,16 @@ mod tests {
         assert_eq!(ah.timezone, "Asia/Taipei");
     }
 
+    #[test]
+    fn schedule_invalid_timezone_is_an_error() {
+        // AAASM-3133: a bogus IANA timezone must be rejected at load time, not
+        // silently accepted (and later fall back to UTC at evaluation).
+        let yaml =
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n    timezone: \"Mars/Phobos\"\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "invalid timezone must be a validation error");
+    }
+
     // ── Capabilities validation ─────────────────────────────────────────────
 
     #[test]

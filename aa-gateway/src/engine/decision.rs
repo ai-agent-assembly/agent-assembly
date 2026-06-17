@@ -466,4 +466,39 @@ mod tests {
         let doc = minimal_doc(None);
         assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
     }
+
+    // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────
+
+    fn doc_with_schedule(tz: &str, start: &str, end: &str) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.schedule = Some(crate::policy::document::SchedulePolicy {
+            active_hours: Some(crate::policy::document::ActiveHours {
+                start: start.into(),
+                end: end.into(),
+                timezone: tz.into(),
+            }),
+        });
+        doc
+    }
+
+    #[test]
+    fn stage_schedule_invalid_timezone_fails_closed() {
+        // AAASM-3133: an unparseable tz must DENY, not silently fall back to UTC
+        // and risk evaluating the active-hours window in the wrong zone.
+        let doc = doc_with_schedule("Mars/Phobos", "00:00", "23:59");
+        let d = stage_schedule(&doc).expect("deny");
+        match d {
+            PolicyDecision::Deny { reason, .. } => {
+                assert!(reason.contains("invalid schedule timezone"), "got: {reason}");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stage_schedule_valid_timezone_full_day_window_allows() {
+        // A valid tz with an all-day window must not deny on the tz check.
+        let doc = doc_with_schedule("UTC", "00:00", "23:59");
+        assert_eq!(stage_schedule(&doc), None);
+    }
 }
