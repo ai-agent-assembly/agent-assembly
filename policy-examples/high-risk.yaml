@@ -1,47 +1,51 @@
+# high-risk.yaml — section-based PolicyDocument: strict / high-risk agent
+#
+# Strict policy for high-risk AI agents. Most tools are denied; only
+# read-only file access is permitted, and that is rate limited. Network
+# egress is restricted to a tight allowlist, the daily budget is minimal,
+# sensitive data is blocked on detection, and the agent may only run during
+# business hours. Pending approvals expire quickly so nothing lingers
+# unattended.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
   name: high-risk-full-block
-  description: >
-    Strict policy for high-risk AI agents. All actions are blocked by
-    default. Permitted actions require mandatory review, full audit trail,
-    and automatic quarantine on anomaly detection.
-
+  version: "1.0.0"
 spec:
-  tier: high
+  # Approval requests expire after one minute — fail fast for high-risk work.
+  approval_timeout_secs: 60
 
-  rules:
-    - id: block-all-by-default
-      description: Deny every action not explicitly permitted below.
-      match:
-        actions: ["*"]
-      effect: deny
-      audit: true
+  network:
+    allowlist:
+      - api.openai.com
+      - api.anthropic.com
 
-    - id: permit-readonly-with-review
-      description: Allow read-only actions only after mandatory review sign-off.
-      match:
-        actions:
-          - "fs:read"
-          - "db:read"
-          - "api:get"
-      effect: require_approval
-      approval:
-        timeout_seconds: 60
-        approvers: ["security-team", "ops-team"]
-        min_approvals: 2
-      audit: true
+  tools:
+    web_search:
+      allow: false
+    code_interpreter:
+      allow: false
+    file_read:
+      allow: true
+      limit_per_hour: 10
+    file_write:
+      allow: false
+    shell:
+      allow: false
 
-  anomaly:
-    on_detect: quarantine
-    quarantine_duration_seconds: 3600
+  data:
+    sensitive_patterns:
+      - "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"
+      - "sk-[A-Za-z0-9]{32,}"
+      - "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"
+    credential_action: block
 
-  notifications:
-    on_block: true
-    on_allow: true
-    on_anomaly: true
-    channels:
-      - type: slack
-        target: "#ai-governance-alerts"
-      - type: pagerduty
-        severity: critical
+  budget:
+    daily_limit_usd: 1.00
+    action_on_exceed: deny
+
+  schedule:
+    active_hours:
+      start: "09:00"
+      end: "17:00"
+      timezone: Asia/Taipei
