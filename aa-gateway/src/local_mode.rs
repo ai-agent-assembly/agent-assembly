@@ -611,6 +611,45 @@ mod tests {
         );
     }
 
+    /// AAASM-3354: the local-mode router serves `/api/v1/health` with a
+    /// 200 + `application/json` body (wire-compatible with
+    /// `aa_api::routes::health::HealthResponse`) so the REST surface is
+    /// reachable in local mode instead of returning a blanket 404. The
+    /// route is mounted regardless of whether a storage backend is wired.
+    #[tokio::test]
+    async fn router_serves_api_v1_health_with_json() {
+        let cfg = healthz_only_config();
+        let app = router(&cfg, None);
+        let request = Request::builder()
+            .uri("/api/v1/health")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            ctype.starts_with("application/json"),
+            "expected application/json, got {ctype}"
+        );
+
+        let bytes = to_bytes(response.into_body(), 8 * 1024).await.expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        assert_eq!(body["status"], "ok", "status label");
+        assert_eq!(body["api_version"], "v1", "api version");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"), "crate version");
+        assert!(
+            body["uptime_secs"].is_u64(),
+            "uptime_secs must be present and a u64; got {body}",
+        );
+    }
+
     /// AAASM-1591 / Epic 18 S-J: when a storage backend is wired into
     /// the local-mode router, `GET /api/v1/admin/status` returns the
     /// documented storage block (backend=sqlite, health=ok, row counts,
