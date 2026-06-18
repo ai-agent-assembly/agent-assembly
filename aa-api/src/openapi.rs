@@ -57,6 +57,7 @@ use crate::routes::{
         (name = "audit", description = "Audit log aggregations — violation heatmaps and lineage analytics"),
         (name = "admin", description = "Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)"),
         (name = "dispatch", description = "Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)"),
+        (name = "tools", description = "Auto-discovered AI dev tools on the gateway host"),
     ),
     paths(
         crate::routes::health::health,
