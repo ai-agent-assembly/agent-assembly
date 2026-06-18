@@ -439,9 +439,52 @@ fn eval_clause_safe(
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
-    // Context-backed numeric fields share identical null-safe numeric semantics.
-    // `team.parallel_agents` delegates to the same registry query as
-    // `team.active_agents` by design.
+    // Each `eval_*` helper owns one field group and returns `Some(verdict)` when
+    // it recognises `field`, or `None` to fall through to the next group. The
+    // final string-field path is the catch-all. This dispatch chain preserves
+    // the original evaluation order and per-group null-safety contracts exactly.
+    if let Some(v) = eval_numeric_ctx_field(field, op, literal, policy_ctx) {
+        return v;
+    }
+    if let Some(v) = eval_child_tool_field(field, op, literal, policy_ctx) {
+        return v;
+    }
+    if let Some(v) = eval_tool_result_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_tool_arg_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_risk_tier_field(field, op, literal, policy_ctx) {
+        return v;
+    }
+    if let Some(v) = eval_agent_identity_field(field, op, literal, policy_ctx) {
+        return v;
+    }
+    if let Some(v) = eval_topology_flag_field(field, op, literal, policy_ctx) {
+        return v;
+    }
+    if let Some(v) = eval_send_message_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_governance_level_field(field, op, literal, agent_level) {
+        return v;
+    }
+
+    eval_string_field(field, op, literal, action)
+}
+
+/// Context-backed numeric fields (`agent.depth`, `team.active_agents`,
+/// `team.parallel_agents`, `team.budget_remaining`, `agent.age`,
+/// `agent.children_count`). All share identical null-safe numeric semantics.
+/// `team.parallel_agents` delegates to the same registry query as
+/// `team.active_agents` by design. Returns `None` for any other field.
+fn eval_numeric_ctx_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> Option<bool> {
     let numeric_ctx_value: Option<f64> = match field {
         FieldRef::AgentDepth => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d as f64),
         FieldRef::TeamActiveAgents | FieldRef::TeamParallelAgents => {
@@ -450,165 +493,211 @@ fn eval_clause_safe(
         FieldRef::TeamBudgetRemaining => policy_ctx.and_then(|c| c.team_budget_remaining()),
         FieldRef::AgentAge => policy_ctx.and_then(|c| c.agent_age_secs()).map(|a| a as f64),
         FieldRef::AgentChildrenCount => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n as f64),
-        _ => None,
+        _ => return None,
     };
-    if matches!(
-        field,
-        FieldRef::AgentDepth
-            | FieldRef::TeamActiveAgents
-            | FieldRef::TeamParallelAgents
-            | FieldRef::TeamBudgetRemaining
-            | FieldRef::AgentAge
-            | FieldRef::AgentChildrenCount
-    ) {
-        return match numeric_ctx_value {
-            Some(lhs) => compare_numeric(lhs, op, literal),
-            None => false,
-        };
-    }
+    Some(match numeric_ctx_value {
+        Some(lhs) => compare_numeric(lhs, op, literal),
+        None => false,
+    })
+}
 
-    // child.tool — string comparison against the union of tool_names across all
-    // direct children of the current agent. Returns false when context is absent.
-    if let FieldRef::ChildTool = field {
-        let tools = match policy_ctx {
-            Some(c) => c.child_tools(),
-            None => return false,
-        };
-        let rhs = match literal {
-            LiteralVal::Str(s) => s.as_str(),
-            _ => return false,
-        };
-        return match op {
-            OpKind::Eq => tools.iter().any(|t| t == rhs),
-            OpKind::Ne => tools.iter().all(|t| t != rhs),
-            OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
-            OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
-            _ => false,
-        };
-    }
-
-    // `tool_result.<key>` — JSON-pointer walk into the ToolResult's `result`
-    // payload, and the bare `tool_result` shorthand for matching the whole
-    // serialised body. Mirrors `args.<key>`'s null-safety contract: non-
-    // `ToolResult` actions, unparseable result JSON, and unresolved pointers
-    // all surface as no-match. The bare `tool_result` arm only accepts
-    // `contains` / `starts_with` against a string literal.
-    if matches!(field, FieldRef::ToolResult(_) | FieldRef::ToolResultWhole) {
-        let result_str = match action {
-            GovernanceAction::ToolResult { result, .. } => result.as_str(),
-            _ => return false,
-        };
-        if let FieldRef::ToolResultWhole = field {
-            return eval_whole_body(result_str, op, literal);
-        }
-        let FieldRef::ToolResult(pointer) = field else {
-            unreachable!()
-        };
-        return eval_json_pointer(result_str, pointer, op, literal);
-    }
-
-    // `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
-    // Null-safe at every step (see `eval_json_pointer`).
-    if let FieldRef::ToolArg(pointer) = field {
-        let args_str = match action {
-            GovernanceAction::ToolCall { args, .. } => args.as_str(),
-            _ => return false,
-        };
-        return eval_json_pointer(args_str, pointer, op, literal);
-    }
-
-    // Risk-tier fields — ordinal comparison against a Tier literal. Null-safe
-    // when context/registry lookup is absent (or the agent has no parent/child).
-    let tier_ctx_value = match field {
-        FieldRef::AgentRiskTier => Some(policy_ctx.and_then(|c| c.agent_risk_tier())),
-        FieldRef::ParentRiskTier => Some(policy_ctx.and_then(|c| c.parent_risk_tier())),
-        FieldRef::ChildRiskTier => Some(policy_ctx.and_then(|c| c.child_risk_tier())),
-        _ => None,
+/// `child.tool` — string comparison against the union of tool names across all
+/// direct children of the current agent. `false` when context is absent.
+fn eval_child_tool_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> Option<bool> {
+    let FieldRef::ChildTool = field else {
+        return None;
     };
-    if let Some(tier) = tier_ctx_value {
-        let (Some(lhs), LiteralVal::Tier(rhs)) = (tier, literal) else {
-            return false;
-        };
-        return compare_ord(lhs, *rhs, op);
-    }
-
-    // agent.parent_agent_id / agent.team_id — string comparison against an agent identity field.
-    // Returns false when the field resolves to None (null-safe no-match).
-    if matches!(field, FieldRef::AgentParentId | FieldRef::AgentTeamId) {
-        let val = match field {
-            FieldRef::AgentParentId => policy_ctx.and_then(|c| c.agent_parent_id()),
-            FieldRef::AgentTeamId => policy_ctx.and_then(|c| c.agent_team_id()),
-            _ => unreachable!(),
-        };
-        let id = match val {
-            Some(v) => v,
-            None => return false,
-        };
-        // In/NotIn don't apply to these identity fields (preserves prior `_ => false`).
-        return match op {
-            OpKind::In | OpKind::NotIn => false,
-            _ => compare_string(&id, op, literal),
-        };
-    }
-
-    // agent.is_root / agent.is_leaf — boolean (0/1) topology flags.
-    // is_root fires when depth == 0; is_leaf fires when children_count == 0.
-    // Only Eq/Ne against numeric 1 or 0 are meaningful; other ops return false.
-    if matches!(field, FieldRef::AgentIsRoot | FieldRef::AgentIsLeaf) {
-        let flag: Option<bool> = match field {
-            FieldRef::AgentIsRoot => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d == 0),
-            FieldRef::AgentIsLeaf => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n == 0),
-            _ => unreachable!(),
-        };
-        let lhs = match flag {
-            Some(true) => 1.0_f64,
-            Some(false) => 0.0_f64,
-            None => return false,
-        };
-        let rhs = match numeric_literal(literal) {
-            Some(r) => r,
-            None => return false,
-        };
-        return match op {
-            OpKind::Eq => lhs == rhs,
-            OpKind::Ne => lhs != rhs,
-            _ => false,
-        };
-    }
-
-    // SendMessage routing fields — string comparison against a per-action id.
-    // Returns false when the action is not SendMessage or the field is None.
-    let message_field_value = match field {
-        FieldRef::SourceTeamId => Some(send_message_field(action, MsgField::SourceTeam)),
-        FieldRef::TargetTeamId => Some(send_message_field(action, MsgField::TargetTeam)),
-        FieldRef::TargetChannelId => Some(send_message_field(action, MsgField::Channel)),
-        _ => None,
+    let tools = match policy_ctx {
+        Some(c) => c.child_tools(),
+        None => return Some(false),
     };
-    if let Some(value) = message_field_value {
-        return match value {
-            Some(id) => compare_string(&id, op, literal),
-            None => false,
-        };
-    }
+    let rhs = match literal {
+        LiteralVal::Str(s) => s.as_str(),
+        _ => return Some(false),
+    };
+    Some(match op {
+        OpKind::Eq => tools.iter().any(|t| t == rhs),
+        OpKind::Ne => tools.iter().all(|t| t != rhs),
+        OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
+        OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
+        _ => false,
+    })
+}
 
-    // governance_level is the only field whose value type is not a string;
-    // route it through an Ord-based comparison and return early.
-    if let FieldRef::GovernanceLevel = field {
-        let rhs = match literal {
-            LiteralVal::Level(l) => *l,
-            // Mismatched literal kind (e.g. `governance_level == "L2"`) cannot
-            // match — treat as no-fire rather than fail-safe approval, since
-            // the validator should have rejected it before evaluation.
-            _ => return false,
-        };
-        let lhs = match agent_level {
-            Some(l) => l,
-            // No agent level supplied → cannot compare; treat as no-match.
-            None => return false,
-        };
-        return compare_ord(lhs, rhs, op);
+/// `tool_result.<key>` — JSON-pointer walk into the ToolResult's `result`
+/// payload, and the bare `tool_result` shorthand for matching the whole
+/// serialised body. Mirrors `args.<key>`'s null-safety contract: non-
+/// `ToolResult` actions, unparseable result JSON, and unresolved pointers
+/// all surface as no-match. The bare `tool_result` arm only accepts
+/// `contains` / `starts_with` against a string literal.
+fn eval_tool_result_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+) -> Option<bool> {
+    if !matches!(field, FieldRef::ToolResult(_) | FieldRef::ToolResultWhole) {
+        return None;
     }
+    let result_str = match action {
+        GovernanceAction::ToolResult { result, .. } => result.as_str(),
+        _ => return Some(false),
+    };
+    if let FieldRef::ToolResultWhole = field {
+        return Some(eval_whole_body(result_str, op, literal));
+    }
+    let FieldRef::ToolResult(pointer) = field else {
+        unreachable!()
+    };
+    Some(eval_json_pointer(result_str, pointer, op, literal))
+}
 
+/// `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
+/// Null-safe at every step (see `eval_json_pointer`).
+fn eval_tool_arg_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+) -> Option<bool> {
+    let FieldRef::ToolArg(pointer) = field else {
+        return None;
+    };
+    let args_str = match action {
+        GovernanceAction::ToolCall { args, .. } => args.as_str(),
+        _ => return Some(false),
+    };
+    Some(eval_json_pointer(args_str, pointer, op, literal))
+}
+
+/// Risk-tier fields (`agent.risk_tier`, `parent.risk_tier`, `child.risk_tier`)
+/// — ordinal comparison against a Tier literal. Null-safe when context/registry
+/// lookup is absent (or the agent has no parent/child).
+fn eval_risk_tier_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> Option<bool> {
+    let tier = match field {
+        FieldRef::AgentRiskTier => policy_ctx.and_then(|c| c.agent_risk_tier()),
+        FieldRef::ParentRiskTier => policy_ctx.and_then(|c| c.parent_risk_tier()),
+        FieldRef::ChildRiskTier => policy_ctx.and_then(|c| c.child_risk_tier()),
+        _ => return None,
+    };
+    let (Some(lhs), LiteralVal::Tier(rhs)) = (tier, literal) else {
+        return Some(false);
+    };
+    Some(compare_ord(lhs, *rhs, op))
+}
+
+/// `agent.parent_agent_id` / `agent.team_id` — string comparison against an
+/// agent identity field. `false` when the field resolves to `None`.
+fn eval_agent_identity_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> Option<bool> {
+    let val = match field {
+        FieldRef::AgentParentId => policy_ctx.and_then(|c| c.agent_parent_id()),
+        FieldRef::AgentTeamId => policy_ctx.and_then(|c| c.agent_team_id()),
+        _ => return None,
+    };
+    let id = match val {
+        Some(v) => v,
+        None => return Some(false),
+    };
+    // In/NotIn don't apply to these identity fields (preserves prior `_ => false`).
+    Some(match op {
+        OpKind::In | OpKind::NotIn => false,
+        _ => compare_string(&id, op, literal),
+    })
+}
+
+/// `agent.is_root` / `agent.is_leaf` — boolean (0/1) topology flags. is_root
+/// fires when depth == 0; is_leaf fires when children_count == 0. Only Eq/Ne
+/// against numeric 1 or 0 are meaningful; other ops return false.
+fn eval_topology_flag_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> Option<bool> {
+    let flag: Option<bool> = match field {
+        FieldRef::AgentIsRoot => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d == 0),
+        FieldRef::AgentIsLeaf => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n == 0),
+        _ => return None,
+    };
+    let lhs = match flag {
+        Some(true) => 1.0_f64,
+        Some(false) => 0.0_f64,
+        None => return Some(false),
+    };
+    let rhs = match numeric_literal(literal) {
+        Some(r) => r,
+        None => return Some(false),
+    };
+    Some(match op {
+        OpKind::Eq => lhs == rhs,
+        OpKind::Ne => lhs != rhs,
+        _ => false,
+    })
+}
+
+/// SendMessage routing fields (`source_team_id`, `target_team_id`,
+/// `target_channel_id`) — string comparison against a per-action id. `false`
+/// when the action is not SendMessage or the field is `None`.
+fn eval_send_message_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+) -> Option<bool> {
+    let value = match field {
+        FieldRef::SourceTeamId => send_message_field(action, MsgField::SourceTeam),
+        FieldRef::TargetTeamId => send_message_field(action, MsgField::TargetTeam),
+        FieldRef::TargetChannelId => send_message_field(action, MsgField::Channel),
+        _ => return None,
+    };
+    Some(match value {
+        Some(id) => compare_string(&id, op, literal),
+        None => false,
+    })
+}
+
+/// `governance_level` — the only field whose value type is not a string; routed
+/// through an Ord-based comparison. Mismatched literal kinds and an absent agent
+/// level both surface as no-match (the validator rejects malformed literals
+/// before evaluation, so a non-`Level` literal here is treated as no-fire).
+fn eval_governance_level_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    agent_level: Option<GovernanceLevel>,
+) -> Option<bool> {
+    let FieldRef::GovernanceLevel = field else {
+        return None;
+    };
+    let rhs = match literal {
+        LiteralVal::Level(l) => *l,
+        _ => return Some(false),
+    };
+    let lhs = match agent_level {
+        Some(l) => l,
+        None => return Some(false),
+    };
+    Some(compare_ord(lhs, rhs, op))
+}
+
+/// Catch-all for generic string-valued fields (`tool`, `path`, `url`, `method`,
+/// `command`). Resolves the field's value via [`field_value`] and applies `op`.
+fn eval_string_field(field: &FieldRef, op: &OpKind, literal: &LiteralVal, action: &GovernanceAction) -> bool {
     let lhs = field_value(field, action);
 
     match op {
