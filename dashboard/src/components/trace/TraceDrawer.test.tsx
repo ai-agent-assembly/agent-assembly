@@ -146,6 +146,54 @@ describe('TraceDrawer', () => {
     expect(screen.getByTestId('trace-view-session')).toHaveTextContent('sess-b')
   })
 
+  it('Tab on the last focusable wraps focus back to the first (focus trap)', async () => {
+    const user = userEvent.setup()
+    render(<Harness openers={[{ agentId: 'a', sessionId: 's', label: 'open' }]} />)
+
+    await user.click(screen.getByText('open'))
+    await findTraceView()
+
+    const closeBtn = screen.getByTestId('trace-drawer-close')
+    const stubAction = screen.getByTestId('stub-action')
+    // The stub action is the last focusable inside the drawer.
+    stubAction.focus()
+    expect(stubAction).toHaveFocus()
+    await user.tab()
+    // Tab from the last focusable wraps to the first (the close button).
+    expect(closeBtn).toHaveFocus()
+  })
+
+  it('Shift+Tab on the first focusable wraps focus to the last (focus trap)', async () => {
+    const user = userEvent.setup()
+    render(<Harness openers={[{ agentId: 'a', sessionId: 's', label: 'open' }]} />)
+
+    await user.click(screen.getByText('open'))
+    await findTraceView()
+
+    const closeBtn = screen.getByTestId('trace-drawer-close')
+    const stubAction = screen.getByTestId('stub-action')
+    closeBtn.focus()
+    expect(closeBtn).toHaveFocus()
+    await user.tab({ shift: true })
+    // Shift+Tab from the first focusable wraps to the last.
+    expect(stubAction).toHaveFocus()
+  })
+
+  it('Tab in the middle of the focus order does not wrap', async () => {
+    const user = userEvent.setup()
+    render(<Harness openers={[{ agentId: 'a', sessionId: 's', label: 'open' }]} />)
+
+    await user.click(screen.getByText('open'))
+    await findTraceView()
+
+    const closeBtn = screen.getByTestId('trace-drawer-close')
+    const stubAction = screen.getByTestId('stub-action')
+    closeBtn.focus()
+    await user.tab()
+    // Plain Tab from the first focusable advances to the next, not wrap.
+    expect(stubAction).toHaveFocus()
+  })
+
   it('throws when useTraceDrawer is used outside the provider', () => {
     // Silence the React error boundary console output for this expected failure.
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
