@@ -1043,42 +1043,19 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
 
         // Skip list literals: [...] — contents are string values, not field names
         if ch == '[' {
-            chars.next();
-            loop {
-                match chars.next() {
-                    Some(']') | None => break,
-                    _ => {}
-                }
-            }
+            skip_list_literal(&mut chars);
             continue;
         }
 
         // Skip quoted string literals
         if ch == '"' {
-            chars.next();
-            loop {
-                match chars.next() {
-                    Some('"') | None => break,
-                    Some('\\') => {
-                        chars.next();
-                    }
-                    _ => {}
-                }
-            }
+            skip_quoted_string(&mut chars);
             continue;
         }
 
         // Collect word token (letters, digits, underscore, hyphen, dot)
-        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
-            let mut word = String::new();
-            while let Some(&c) = chars.peek() {
-                if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
-                    word.push(c);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
+        if is_word_char(ch) {
+            let word = take_word(&mut chars);
             // Skip combinators, boolean keywords, and numeric literals
             if SKIP_WORDS.contains(&word.as_str()) || word.parse::<f64>().is_ok() {
                 continue;
@@ -1091,6 +1068,53 @@ pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
     }
 
     names
+}
+
+/// Characters that may appear in a field-reference word: letters, digits,
+/// underscore, hyphen, and dot (for `args.<key>` / `tool_result.<key>`).
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
+}
+
+/// Consume the opening `[` and everything up to and including the closing `]`
+/// (or end of input). List contents are string values, not field names.
+fn skip_list_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    chars.next(); // opening '['
+    while let Some(c) = chars.next() {
+        if c == ']' {
+            break;
+        }
+    }
+}
+
+/// Consume the opening `"` and everything up to and including the closing `"`
+/// (or end of input), honouring `\`-escaped characters.
+fn skip_quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    chars.next(); // opening '"'
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect a contiguous run of [`is_word_char`] characters into a `String`,
+/// leaving the iterator positioned on the first non-word character.
+fn take_word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if is_word_char(c) {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word
 }
 
 /// Return the closest entry in `KNOWN_VARIABLES` to `name` when the edit
@@ -1154,35 +1178,42 @@ pub(crate) fn validate_governance_levels(expr: &str) -> Result<(), String> {
     let mut chars = expr.chars().peekable();
     while let Some(&ch) = chars.peek() {
         if ch == 'L' {
-            // Collect the identifier-like word starting with 'L'.
-            let mut word = String::new();
-            while let Some(&c) = chars.peek() {
-                if c.is_alphanumeric() || c == '_' {
-                    word.push(c);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            // Only reject `L<digit>+` shapes — these are clearly intended as
-            // level literals. Anything else (`Logger`, `Limit`, …) is left
-            // for the runtime tokenizer to handle.
-            let rest = &word[1..];
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                match word.as_str() {
-                    "L0" | "L1" | "L2" | "L3" => {}
-                    _ => {
-                        return Err(format!(
-                            "unknown governance level: {word}; valid values: L0, L1, L2, L3"
-                        ));
-                    }
-                }
-            }
+            let word = take_identifier(&mut chars);
+            validate_level_word(&word)?;
             continue;
         }
         chars.next();
     }
     Ok(())
+}
+
+/// Collect a contiguous run of identifier characters (alphanumeric or `_`) into
+/// a `String`, leaving the iterator on the first non-identifier character.
+fn take_identifier(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word
+}
+
+/// Reject an `L<digit>+` word that is not one of the four valid governance
+/// levels. Only `L`-prefixed all-digit suffixes are treated as level literals;
+/// anything else (`Logger`, `Limit`, …) is left for the runtime tokenizer.
+fn validate_level_word(word: &str) -> Result<(), String> {
+    let rest = &word[1..];
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(());
+    }
+    match word {
+        "L0" | "L1" | "L2" | "L3" => Ok(()),
+        _ => Err(format!("unknown governance level: {word}; valid values: L0, L1, L2, L3")),
+    }
 }
 
 /// Evaluate a flat boolean expression against a [`GovernanceAction`] and the
