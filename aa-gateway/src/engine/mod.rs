@@ -712,41 +712,47 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> Option<EvaluationResult> {
+        // Stages 3-5 apply to ToolCall; stage 5b applies to SendMessage.
+        match action {
+            aa_core::GovernanceAction::ToolCall { name, .. } => {
+                self.eval_toolcall_stages(policy, ctx, name, action)
+            }
+            // Stage 5b — Approval condition for SendMessage (channel policy).
+            aa_core::GovernanceAction::SendMessage { .. } => {
+                self.eval_approval_condition(policy, policy.tools.get("message"), ctx, action)
+            }
+            _ => None,
+        }
+    }
+
+    /// Stages 3-5 for a `ToolCall`: per-tool allow/deny, rate limit, and the
+    /// `requires_approval_if` condition. Resolves the tool policy once for the
+    /// given `name`. Returns the first non-Allow decision, or `None`.
+    fn eval_toolcall_stages(
+        &self,
+        policy: &PolicyDocument,
+        ctx: &aa_core::AgentContext,
+        name: &str,
+        action: &aa_core::GovernanceAction,
+    ) -> Option<EvaluationResult> {
+        let tool_policy = policy.tools.get(name);
+
         // Stage 3 — Tool allow/deny.
-        if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-            if let Some(tp) = policy.tools.get(name) {
-                if !tp.allow {
-                    return Some(EvaluationResult::deny("tool denied by policy"));
-                }
+        if let Some(tp) = tool_policy {
+            if !tp.allow {
+                return Some(EvaluationResult::deny("tool denied by policy"));
             }
         }
 
         // Stage 4 — Tool rate limit.
-        if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-            if let Some(tp) = policy.tools.get(name) {
-                if let Some(limit) = tp.limit_per_hour {
-                    if !self.try_consume_rate(name, limit) {
-                        return Some(EvaluationResult::deny("rate limit exceeded"));
-                    }
-                }
+        if let Some(limit) = tool_policy.and_then(|tp| tp.limit_per_hour) {
+            if !self.try_consume_rate(name, limit) {
+                return Some(EvaluationResult::deny("rate limit exceeded"));
             }
         }
 
         // Stage 5 — Approval condition for ToolCall.
-        if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-            if let Some(result) = self.eval_approval_condition(policy, policy.tools.get(name), ctx, action) {
-                return Some(result);
-            }
-        }
-
-        // Stage 5b — Approval condition for SendMessage (channel policy).
-        if let aa_core::GovernanceAction::SendMessage { .. } = action {
-            if let Some(result) = self.eval_approval_condition(policy, policy.tools.get("message"), ctx, action) {
-                return Some(result);
-            }
-        }
-
-        None
+        self.eval_approval_condition(policy, tool_policy, ctx, action)
     }
 
     /// Evaluate a tool/channel policy's `requires_approval_if` expression for
