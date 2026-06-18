@@ -19,7 +19,7 @@ function makeDraft(patch: Partial<PolicyDraft> = {}): PolicyDraft {
   }
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return <ToastProvider>{children}</ToastProvider>
 }
 

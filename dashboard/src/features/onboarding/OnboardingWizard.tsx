@@ -30,7 +30,7 @@ export function OnboardingWizard({
   onFinish,
   onSkipAll,
   onPersist,
-}: OnboardingWizardProps) {
+}: Readonly<OnboardingWizardProps>) {
   const [current, setCurrent] = useState<StepId>(initialStep)
   const [state, setState] = useState<WizardState>(initialState)
 

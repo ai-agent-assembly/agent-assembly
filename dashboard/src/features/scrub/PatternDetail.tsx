@@ -11,7 +11,7 @@ export function PatternDetail({
   pattern,
   collapsed,
   onToggleCollapsed,
-}: PatternDetailProps) {
+}: Readonly<PatternDetailProps>) {
   return (
     <section
       className="scrub-detail"

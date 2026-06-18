@@ -18,7 +18,7 @@ function toggleVerb(current: VerbOption[], verb: VerbOption): VerbOption[] {
   return [...current, verb]
 }
 
-export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: RuleCardProps) {
+export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: Readonly<RuleCardProps>) {
   const isDeny = rule.action === 'deny'
 
   const handleActionChange = (next: ActionKind) => {

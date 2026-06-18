@@ -39,7 +39,7 @@ export function PolicyEditorOverlay({
   onClose,
   onDirtyChange,
   isSaving = false,
-}: PolicyEditorOverlayProps) {
+}: Readonly<PolicyEditorOverlayProps>) {
   const {
     draft,
     isDirty,

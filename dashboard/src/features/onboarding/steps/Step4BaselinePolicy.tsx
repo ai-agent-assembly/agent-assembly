@@ -8,7 +8,7 @@ export interface Step4BaselinePolicyProps {
   onChange: (preset: PolicyPresetId) => void
 }
 
-export function Step4BaselinePolicy({ state, onChange }: Step4BaselinePolicyProps) {
+export function Step4BaselinePolicy({ state, onChange }: Readonly<Step4BaselinePolicyProps>) {
   // Sensible default — the recommended preset is "read-only" per the hi-fi.
   useEffect(() => {
     if (!state.policyPreset) onChange('read-only')

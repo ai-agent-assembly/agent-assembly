@@ -23,7 +23,7 @@ const POLICY_B: Policy = {
 
 // Simple wrapper — the component portals into document.body so no router
 // or QueryClient is needed.
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return <>{children}</>
 }
 
