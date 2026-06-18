@@ -20,6 +20,20 @@ import {
 
 const PAGE_SIZE = 25
 
+/** Budget-burn percentage to its severity color token. */
+function burnColor(pct: number): string {
+  if (pct >= 90) return 'var(--status-danger-solid)'
+  if (pct >= 70) return 'var(--status-caution-solid)'
+  return 'var(--status-success-solid)'
+}
+
+/** Column sort state to its header indicator glyph. */
+function sortIndicator(sorted: false | 'asc' | 'desc'): string {
+  if (sorted === 'asc') return ' ↑'
+  if (sorted === 'desc') return ' ↓'
+  return ''
+}
+
 function SkeletonRows({ cols }: { cols: number }) {
   return (
     <>
@@ -45,12 +59,7 @@ function SkeletonRows({ cols }: { cols: number }) {
 
 function BurnCell({ pct }: { pct: number | null }) {
   if (pct == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>
-  const color =
-    pct >= 90
-      ? 'var(--status-danger-solid)'
-      : pct >= 70
-        ? 'var(--status-caution-solid)'
-        : 'var(--status-success-solid)'
+  const color = burnColor(pct)
   return (
     <span style={{ color, fontFamily: 'JetBrains Mono, monospace' }}>
       {pct.toFixed(1)}%
@@ -172,11 +181,7 @@ export function TeamsPage() {
                   onClick={header.column.getToggleSortingHandler()}
                 >
                   {flexRender(header.column.columnDef.header, header.getContext())}
-                  {header.column.getIsSorted() === 'asc'
-                    ? ' ↑'
-                    : header.column.getIsSorted() === 'desc'
-                      ? ' ↓'
-                      : ''}
+                  {sortIndicator(header.column.getIsSorted())}
                 </th>
               ))}
             </tr>

@@ -24,9 +24,10 @@ function mergeIncomingApproval(
 
 function buildWsUrl(): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
+  const scheme = globalThis.location.protocol === 'https:' ? 'wss' : 'ws'
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
-    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    : `${scheme}://${globalThis.location.host}`
   const token = localStorage.getItem('aa_token')
   const query = ['types=approval', token ? `token=${encodeURIComponent(token)}` : '']
     .filter(Boolean)

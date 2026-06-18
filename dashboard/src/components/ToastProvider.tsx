@@ -10,6 +10,12 @@ function removeToast(list: ToastMessage[], id: number): ToastMessage[] {
   return list.filter((t) => t.id !== id)
 }
 
+const TOAST_BACKGROUND: Record<ToastVariant, string> = {
+  success: 'var(--status-success-solid)',
+  error: 'var(--status-danger-solid)',
+  info: 'var(--status-info-solid)',
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
@@ -42,12 +48,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             style={{
               padding: '0.75rem 1rem',
               borderRadius: '0.375rem',
-              background:
-                t.variant === 'success'
-                  ? 'var(--status-success-solid)'
-                  : t.variant === 'error'
-                    ? 'var(--status-danger-solid)'
-                    : 'var(--status-info-solid)',
+              background: TOAST_BACKGROUND[t.variant],
               color: 'var(--toast-text)',
               fontSize: '0.875rem',
               maxWidth: '24rem',

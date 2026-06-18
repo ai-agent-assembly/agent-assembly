@@ -47,23 +47,23 @@ export function PolicyEffectivenessPanel() {
     return m
   }, [rules])
 
-  return (
-    <div className="policy-effectiveness-panel" data-testid="policy-effectiveness-panel">
-      <div className="policy-effectiveness-panel__header">
-        <h2 className="policy-effectiveness-panel__title">Policy Effectiveness</h2>
-      </div>
-
-      {isPending ? (
-        <div className="policy-effectiveness-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
-      ) : rules.length === 0 ? (
+  function renderBody() {
+    if (isPending) {
+      return <div className="policy-effectiveness-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
+    }
+    if (rules.length === 0) {
+      return (
         <div className="policy-effectiveness-panel__empty">
           <p>No policies are enabled for the selected filters.</p>
           <a href="/policy/builder">Go to Policy Builder</a>
         </div>
-      ) : (
-        <div className="policy-effectiveness-panel__scroll">
+      )
+    }
+    return (
+      <div className="policy-effectiveness-panel__scroll">
           <div
             className="policy-effectiveness-panel__grid"
             style={{
@@ -148,7 +148,16 @@ export function PolicyEffectivenessPanel() {
             </div>
           )}
         </div>
-      )}
+    )
+  }
+
+  return (
+    <div className="policy-effectiveness-panel" data-testid="policy-effectiveness-panel">
+      <div className="policy-effectiveness-panel__header">
+        <h2 className="policy-effectiveness-panel__title">Policy Effectiveness</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

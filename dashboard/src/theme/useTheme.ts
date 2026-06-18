@@ -19,9 +19,9 @@ export const THEME_STORAGE_KEY = 'aa-dashboard-theme'
 
 function prefersDark(): boolean {
   return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches
+    typeof globalThis !== 'undefined' &&
+    typeof globalThis.matchMedia === 'function' &&
+    globalThis.matchMedia('(prefers-color-scheme: dark)').matches
   )
 }
 
@@ -62,8 +62,8 @@ export function useTheme(): UseThemeResult {
 
   // Follow OS changes only while the user has NOT made an explicit choice.
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    if (typeof globalThis === 'undefined' || typeof globalThis.matchMedia !== 'function') return
+    const mq = globalThis.matchMedia('(prefers-color-scheme: dark)')
     const onChange = (e: MediaQueryListEvent) => {
       if (readStored() === null) setThemeState(e.matches ? 'dark' : 'light')
     }

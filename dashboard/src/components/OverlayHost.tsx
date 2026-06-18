@@ -53,11 +53,24 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
     dismiss()
   }
 
+  // Dismissal is driven by Escape via the document-level listener above; the
+  // backdrop key handler exists to satisfy the click/keyboard parity rule and
+  // mirrors the backdrop click for keyboard users who focus the backdrop.
+  const handleBackdropKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    const dismiss = onRequestClose ?? closeOverlay
+    dismiss()
+  }
+
   return createPortal(
     <div
       className="overlay-backdrop"
       data-testid={`overlay-${name}`}
+      role="presentation"
       onClick={handleBackdropClick}
+      onKeyDown={handleBackdropKeyDown}
     >
       <div className="overlay-container" role="dialog" aria-modal="true">
         {children}

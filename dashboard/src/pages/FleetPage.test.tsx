@@ -253,7 +253,7 @@ describe('FleetPage table interactions', () => {
 
     const row = await screen.findByTestId('agent-row')
     fireEvent.click(row)
-    await waitFor(() => expect(window.location.pathname + lastPath).toBeDefined())
+    await waitFor(() => expect(globalThis.location.pathname + lastPath).toBeDefined())
 
     // Use findByTestId on a body cell to bypass the row's onClick? Just verify the navigation
     // by checking that the row click reached the navigate hook via a route effect:

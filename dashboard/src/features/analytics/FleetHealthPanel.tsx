@@ -25,22 +25,22 @@ export function FleetHealthPanel() {
   const rawAgents = data?.agents
   const agents = useMemo(() => rawAgents ?? [], [rawAgents])
 
-  return (
-    <div className="fleet-health-panel" data-testid="fleet-health-panel">
-      <div className="fleet-health-panel__header">
-        <h2 className="fleet-health-panel__title">Fleet Health</h2>
-      </div>
-
-      {isPending ? (
-        <div className="fleet-health-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="fleet-health-panel__error">Failed to load fleet health data.</p>
-      ) : agents.length === 0 ? (
+  function renderBody() {
+    if (isPending) {
+      return <div className="fleet-health-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="fleet-health-panel__error">Failed to load fleet health data.</p>
+    }
+    if (agents.length === 0) {
+      return (
         <div className="fleet-health-panel__empty">
           <p>No agents reporting in this window.</p>
         </div>
-      ) : (
-        <ul className="fleet-health-panel__list" aria-label="Agent health">
+      )
+    }
+    return (
+      <ul className="fleet-health-panel__list" aria-label="Agent health">
           {agents.map(agent => {
             const score = currentScore(agent)
             return (
@@ -73,7 +73,16 @@ export function FleetHealthPanel() {
             )
           })}
         </ul>
-      )}
+    )
+  }
+
+  return (
+    <div className="fleet-health-panel" data-testid="fleet-health-panel">
+      <div className="fleet-health-panel__header">
+        <h2 className="fleet-health-panel__title">Fleet Health</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

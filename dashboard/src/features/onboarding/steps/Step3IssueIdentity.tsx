@@ -37,7 +37,7 @@ export function Step3IssueIdentity({ state, onIssued }: Step3IssueIdentityProps)
   const handleGenerate = () => {
     if (phase !== 'idle') return
     setPhase('spinning')
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       const identity: AgentIdentity = {
         did: `did:aa:${randHex(16)}`,
         alg: 'Ed25519',

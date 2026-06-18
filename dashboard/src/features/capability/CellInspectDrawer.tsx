@@ -49,13 +49,25 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
   const recentCalls = callsFor(sampleCalls, agent, verb)
 
   return (
-    <div className="cap-drawer-scrim" onClick={onClose} data-testid="cell-inspect-scrim">
+    <div
+      className="cap-drawer-scrim"
+      role="presentation"
+      onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onClose()
+      }}
+      data-testid="cell-inspect-scrim"
+    >
       <aside
         className="cap-drawer"
         role="dialog"
         aria-modal
         aria-label="capability cell inspect"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <header className="cap-drawer-head">
           <div>
@@ -94,7 +106,7 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
             <div className="cap-drawer-claimed">
               <div>
                 <div className="cap-drawer-mini-label">agent claims</div>
-                <div className="mono">{verb}({resource.id}/*)</div>
+                <div className="mono">{`${verb}(${resource.id}/*)`}</div>
                 <div className="cap-drawer-mini-note">declared in agent manifest</div>
               </div>
               <div>

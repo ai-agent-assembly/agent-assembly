@@ -63,6 +63,9 @@ export function AppShell() {
         className={`appshell__nav${navOpen ? ' appshell__nav--open' : ''}`}
         data-testid="appshell-nav"
         onClick={() => setNavOpen(false)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setNavOpen(false)
+        }}
       >
         <div className="appshell__nav-brand">Agent Assembly</div>
         {ROUTE_GROUPS.map((group) => (

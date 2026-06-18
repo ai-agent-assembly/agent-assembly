@@ -25,8 +25,8 @@ function renderAt(path: string) {
 
 describe('OnboardingPage', () => {
   beforeEach(() => {
-    window.localStorage.removeItem(ONBOARDING_COMPLETED_KEY)
-    window.localStorage.removeItem(ONBOARDING_SESSION_KEY)
+    globalThis.localStorage.removeItem(ONBOARDING_COMPLETED_KEY)
+    globalThis.localStorage.removeItem(ONBOARDING_SESSION_KEY)
   })
 
   it('renders the wizard when gateway is not yet configured', () => {
@@ -35,7 +35,7 @@ describe('OnboardingPage', () => {
   })
 
   it('redirects to / immediately when gateway is already configured', () => {
-    window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true')
+    globalThis.localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true')
     renderAt('/onboarding')
     expect(screen.queryByTestId('onboarding-wizard')).toBeNull()
     expect(screen.getByTestId('root-page')).toBeInTheDocument()
@@ -67,10 +67,10 @@ describe('OnboardingPage', () => {
     renderAt('/onboarding')
     // The wizard mounts and immediately persists its initial snapshot,
     // so the session key is present.
-    expect(window.localStorage.getItem(ONBOARDING_SESSION_KEY)).not.toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).not.toBe(null)
     fireEvent.click(screen.getByTestId('onboarding-skip-all'))
-    expect(window.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
-    expect(window.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
     expect(screen.getByTestId('root-page')).toBeInTheDocument()
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Onboarding skipped/i)
   })
@@ -93,8 +93,8 @@ describe('OnboardingPage', () => {
     })
     renderAt('/onboarding')
     fireEvent.click(screen.getByTestId('onboarding-continue'))
-    expect(window.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
-    expect(window.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Setup complete/i)
   })
 })
