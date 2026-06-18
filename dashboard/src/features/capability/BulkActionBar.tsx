@@ -19,7 +19,7 @@ export function BulkActionBar({ count, resources, verb, onApply, onClear }: Read
   if (count === 0 || resources.length === 0) return null
 
   return (
-    <div className="cap-bulk" role="region" aria-label="bulk override">
+    <section className="cap-bulk" aria-label="bulk override">
       <span className="cap-bulk-count">
         {count} agent{count === 1 ? '' : 's'} selected
       </span>
@@ -62,6 +62,6 @@ export function BulkActionBar({ count, resources, verb, onApply, onClear }: Read
       <button type="button" className="cap-bulk-btn" onClick={onClear}>
         Clear
       </button>
-    </div>
+    </section>
   )
 }
