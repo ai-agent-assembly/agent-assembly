@@ -1016,6 +1016,54 @@ impl PolicyServiceImpl {
         }
     }
 
+    /// AAASM-3353 — accrue the cost of a non-denied LLM call against the
+    /// agent's budget so daily / monthly limits actually fire.
+    ///
+    /// The live `CheckAction` handler previously only called `engine.evaluate`,
+    /// which *reads* accumulated spend (Stage 7) but never *records* it — so
+    /// `record_spend` had no caller outside tests and limits never triggered.
+    /// This closes the loop: after an Allow / Redact / Pending decision on an
+    /// `LLM_CALL`, the call is priced from the model name (provider inferred,
+    /// see [`crate::engine::PolicyEngine::llm_call_cost_usd`]) and accrued via
+    /// the existing `engine.record_spend` budget path. A subsequent call then
+    /// trips the Stage-7 budget check once the limit is exceeded.
+    ///
+    /// No-ops when:
+    /// * the action is not an `LLM_CALL`;
+    /// * the decision was a hard `Deny` (a denied call did not run, so it must
+    ///   not be charged);
+    /// * the model name is unrecognised (cost resolves to `0.0`).
+    fn maybe_accrue_llm_spend(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
+        use aa_proto::assembly::policy::v1::action_context::Action;
+
+        // A hard Deny means the call was blocked — do not accrue spend.
+        if response.decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+            return;
+        }
+
+        let Some(Action::LlmCall(lc)) = req.context.as_ref().and_then(|c| c.action.as_ref()) else {
+            return;
+        };
+
+        let input_tokens = lc.prompt_tokens.max(0) as u64;
+        // The pre-execution check has no completion yet, so output tokens are 0.
+        let cost = self.engine.llm_call_cost_usd(&lc.model, input_tokens, 0);
+        if cost <= 0.0 {
+            return;
+        }
+
+        // Rebuild the AgentContext for tenancy resolution. `record_spend` keys
+        // budget on the agent's *registered* owner (AAASM-3138) and only uses
+        // ctx tenancy as a fallback, so the governance_level override applied
+        // in `evaluate_one` is irrelevant here.
+        match convert::request_to_core(req) {
+            Ok((ctx, _action)) => self.engine.record_spend(&ctx, cost),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to rebuild ctx for LLM spend accrual");
+            }
+        }
+    }
+
     /// Compose the live-ops registry id and ingest if a registry is attached.
     ///
     /// Returns `Some(op_id)` when ingestion happened so the caller can drive
@@ -1158,6 +1206,9 @@ impl PolicyService for PolicyServiceImpl {
         // Suspend the agent if the engine signaled SuspendAgent.
         self.maybe_suspend_agent(&req, deny_action).await;
 
+        // AAASM-3353: accrue LLM-call cost so daily / monthly budget limits fire.
+        self.maybe_accrue_llm_spend(&req, &response);
+
         // Fire-and-forget audit entry — never blocks the response.
         self.record_audit(&req, &response, &eval, shadow_event.as_ref()).await;
 
@@ -1188,6 +1239,8 @@ impl PolicyService for PolicyServiceImpl {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
             self.maybe_suspend_agent(req, deny_action).await;
+            // AAASM-3353: accrue LLM-call cost so budget limits fire in batch mode too.
+            self.maybe_accrue_llm_spend(req, &resp);
             self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
         }
