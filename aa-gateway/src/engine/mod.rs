@@ -714,9 +714,7 @@ impl PolicyEngine {
     ) -> Option<EvaluationResult> {
         // Stages 3-5 apply to ToolCall; stage 5b applies to SendMessage.
         match action {
-            aa_core::GovernanceAction::ToolCall { name, .. } => {
-                self.eval_toolcall_stages(policy, ctx, name, action)
-            }
+            aa_core::GovernanceAction::ToolCall { name, .. } => self.eval_toolcall_stages(policy, ctx, name, action),
             // Stage 5b — Approval condition for SendMessage (channel policy).
             aa_core::GovernanceAction::SendMessage { .. } => {
                 self.eval_approval_condition(policy, policy.tools.get("message"), ctx, action)

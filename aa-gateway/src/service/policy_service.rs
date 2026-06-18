@@ -428,18 +428,16 @@ impl PolicyServiceImpl {
     ) {
         match routing_decision {
             Some(decision) => self.register_router_escalation(approval_id, decision).await,
-            None => self.register_legacy_escalation(approval_id, team_id, timeout_secs, timeout_override, role_override),
+            None => {
+                self.register_legacy_escalation(approval_id, team_id, timeout_secs, timeout_override, role_override)
+            }
         }
     }
 
     /// Router-driven escalation: register the in-memory scheduler (when a team
     /// and scheduler are present) and the DB scheduler (when present) using the
     /// decision's `escalation_role` and `escalate_at`. Failures are logged only.
-    async fn register_router_escalation(
-        &self,
-        approval_id: uuid::Uuid,
-        decision: &crate::approval::RoutingDecision,
-    ) {
+    async fn register_router_escalation(&self, approval_id: uuid::Uuid, decision: &crate::approval::RoutingDecision) {
         if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
             let now_secs = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -451,9 +449,7 @@ impl PolicyServiceImpl {
                 tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
             }
         }
-        if let (Some(ref db_scheduler), Some(ref team_id_val)) =
-            (&self.db_escalation_scheduler, &decision.team_id)
-        {
+        if let (Some(ref db_scheduler), Some(ref team_id_val)) = (&self.db_escalation_scheduler, &decision.team_id) {
             if let Err(e) = db_scheduler
                 .register(
                     approval_id,

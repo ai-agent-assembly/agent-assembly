@@ -559,12 +559,7 @@ fn eval_tool_result_field(
 
 /// `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
 /// Null-safe at every step (see `eval_json_pointer`).
-fn eval_tool_arg_field(
-    field: &FieldRef,
-    op: &OpKind,
-    literal: &LiteralVal,
-    action: &GovernanceAction,
-) -> Option<bool> {
+fn eval_tool_arg_field(field: &FieldRef, op: &OpKind, literal: &LiteralVal, action: &GovernanceAction) -> Option<bool> {
     let FieldRef::ToolArg(pointer) = field else {
         return None;
     };
@@ -911,14 +906,10 @@ fn compare_json_value(resolved: &serde_json::Value, op: &OpKind, literal: &Liter
         }
         // Substring ops require a JSON string and a string literal.
         (OpKind::Contains, _, LiteralVal::Str(lit)) => resolved.as_str().is_some_and(|v| v.contains(lit.as_str())),
-        (OpKind::StartsWith, _, LiteralVal::Str(lit)) => {
-            resolved.as_str().is_some_and(|v| v.starts_with(lit.as_str()))
-        }
+        (OpKind::StartsWith, _, LiteralVal::Str(lit)) => resolved.as_str().is_some_and(|v| v.starts_with(lit.as_str())),
         // Membership ops require a JSON string and a list literal.
         (OpKind::In, _, LiteralVal::StrList(list)) => resolved.as_str().is_some_and(|v| list.iter().any(|i| i == v)),
-        (OpKind::NotIn, _, LiteralVal::StrList(list)) => {
-            resolved.as_str().is_some_and(|v| list.iter().all(|i| i != v))
-        }
+        (OpKind::NotIn, _, LiteralVal::StrList(list)) => resolved.as_str().is_some_and(|v| list.iter().all(|i| i != v)),
         // Ordered numeric comparisons require a JSON number and a numeric literal.
         (OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte, _, LiteralVal::Num(rhs)) => {
             resolved.as_f64().is_some_and(|lhs| compare_ord(lhs, *rhs, op))
@@ -1212,7 +1203,9 @@ fn validate_level_word(word: &str) -> Result<(), String> {
     }
     match word {
         "L0" | "L1" | "L2" | "L3" => Ok(()),
-        _ => Err(format!("unknown governance level: {word}; valid values: L0, L1, L2, L3")),
+        _ => Err(format!(
+            "unknown governance level: {word}; valid values: L0, L1, L2, L3"
+        )),
     }
 }
 
