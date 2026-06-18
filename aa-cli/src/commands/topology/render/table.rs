@@ -157,3 +157,29 @@ pub fn render_stats_table(stats: &TopologyStats) {
         println!("{htable}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_color_maps_known_statuses() {
+        assert_eq!(status_color("active"), Color::Green);
+        assert_eq!(status_color("deregistered"), Color::Red);
+        // Matching is case-insensitive.
+        assert_eq!(status_color("ACTIVE"), Color::Green);
+    }
+
+    #[test]
+    fn status_color_treats_any_suspended_prefix_as_yellow() {
+        assert_eq!(status_color("suspended"), Color::Yellow);
+        // The `suspended:<reason>` form still resolves to yellow.
+        assert_eq!(status_color("suspended:manual"), Color::Yellow);
+    }
+
+    #[test]
+    fn status_color_falls_back_to_reset_for_unknown() {
+        assert_eq!(status_color("pending"), Color::Reset);
+        assert_eq!(status_color(""), Color::Reset);
+    }
+}
