@@ -13,7 +13,7 @@ function toggle<T>(list: readonly T[], item: T): readonly T[] {
   return list.includes(item) ? list.filter((v) => v !== item) : [...list, item]
 }
 
-export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
+export function AlertFilterBar({ value, onChange }: Readonly<AlertFilterBarProps>) {
   return (
     <div
       data-testid="alerts-filter-bar"

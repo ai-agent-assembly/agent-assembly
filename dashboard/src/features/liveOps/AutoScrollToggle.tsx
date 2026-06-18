@@ -27,7 +27,7 @@ export function AutoScrollToggle({
   onEnabledChange,
   pendingCount,
   onFlushPending,
-}: AutoScrollToggleProps) {
+}: Readonly<AutoScrollToggleProps>) {
   const inputId = useId()
   const showPending = !enabled && pendingCount > 0
 

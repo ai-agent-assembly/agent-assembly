@@ -9,7 +9,7 @@ export interface LockedFeatureCardProps {
   testId?: string
 }
 
-export function LockedFeatureCard({ title, body, cta, testId = 'locked-feature-card' }: LockedFeatureCardProps) {
+export function LockedFeatureCard({ title, body, cta, testId = 'locked-feature-card' }: Readonly<LockedFeatureCardProps>) {
   return (
     <div className="iam-locked-card" data-testid={testId} role="region" aria-label={title}>
       <div className="iam-locked-card__lock-badge" aria-hidden="true">🔒</div>

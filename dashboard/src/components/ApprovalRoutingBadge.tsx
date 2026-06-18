@@ -49,7 +49,7 @@ function formatHistoryTooltip(history: RoutingHistoryEntry[]): string {
     .join('\n')
 }
 
-export function ApprovalRoutingBadge({ routingStatus, tooltipOpen }: ApprovalRoutingBadgeProps) {
+export function ApprovalRoutingBadge({ routingStatus, tooltipOpen }: Readonly<ApprovalRoutingBadgeProps>) {
   const variant = resolveVariant(routingStatus.status)
   const label = formatLabel(routingStatus)
   const tooltipContent = formatHistoryTooltip(routingStatus.history)

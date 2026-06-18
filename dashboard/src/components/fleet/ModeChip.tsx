@@ -16,7 +16,7 @@ const GLYPH: Record<FleetMode, string> = {
  * `design/v1/fleet.jsx`. `enforce` uses the OK token, `shadow` uses
  * warn, `off` uses the neutral muted token.
  */
-export function ModeChip({ mode }: ModeChipProps) {
+export function ModeChip({ mode }: Readonly<ModeChipProps>) {
   return (
     <span className={`fleet-mode fleet-mode--${mode}`} data-testid="fleet-mode">
       <span aria-hidden="true">{GLYPH[mode]}</span>

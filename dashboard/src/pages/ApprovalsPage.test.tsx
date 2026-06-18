@@ -28,7 +28,7 @@ function mockMutation<D, V>(p: Partial<UseMutationResult<D, Error, V>>): UseMuta
   return p as unknown as UseMutationResult<D, Error, V>
 }
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>

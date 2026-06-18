@@ -22,7 +22,7 @@ const DURATIONS: readonly DurationOption[] = [
   { label: 'custom', value: null },
 ]
 
-export function SilenceAction({ alertId, silenced = false }: SilenceActionProps) {
+export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceActionProps>) {
   const [selected, setSelected] = useState<DurationOption>(DURATIONS[1])
   const [customMinutes, setCustomMinutes] = useState<string>('30')
   const [reason, setReason] = useState<string>('')

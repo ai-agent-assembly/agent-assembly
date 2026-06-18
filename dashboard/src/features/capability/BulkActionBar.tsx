@@ -12,7 +12,7 @@ export interface BulkActionBarProps {
 
 const DECISION_OPTIONS: Decision[] = ['allow', 'narrow', 'approval', 'deny']
 
-export function BulkActionBar({ count, resources, verb, onApply, onClear }: BulkActionBarProps) {
+export function BulkActionBar({ count, resources, verb, onApply, onClear }: Readonly<BulkActionBarProps>) {
   const [resourceId, setResourceId] = useState<string>(resources[0]?.id ?? '')
   const [decision, setDecision] = useState<Decision>('narrow')
 

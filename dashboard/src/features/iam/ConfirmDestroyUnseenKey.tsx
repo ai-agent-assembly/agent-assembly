@@ -9,7 +9,7 @@ export interface ConfirmDestroyUnseenKeyProps {
  * without the operator copying it. Shown when the operator attempts
  * to close the RevealOnceModal before pressing Copy.
  */
-export function ConfirmDestroyUnseenKey({ open, onKeepShowing, onDiscardSecret }: ConfirmDestroyUnseenKeyProps) {
+export function ConfirmDestroyUnseenKey({ open, onKeepShowing, onDiscardSecret }: Readonly<ConfirmDestroyUnseenKeyProps>) {
   if (!open) return null
   return (
     <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-destroy-unseen-key">

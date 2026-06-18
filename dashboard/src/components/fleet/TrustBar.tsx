@@ -17,7 +17,7 @@ function band(score: number): 'ok' | 'warn' | 'danger' {
  * A `null` score renders an em-dash so unwired analytics columns remain
  * visually inert.
  */
-export function TrustBar({ score }: TrustBarProps) {
+export function TrustBar({ score }: Readonly<TrustBarProps>) {
   if (score === null) {
     return (
       <span className="fleet-trust fleet-trust--empty" data-testid="fleet-trust">

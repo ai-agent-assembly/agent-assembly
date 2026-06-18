@@ -14,7 +14,7 @@ interface KpiCardProps {
 const DELTA_POSITIVE_COLOR = 'var(--trend-positive)'
 const DELTA_NEGATIVE_COLOR = 'var(--trend-negative)'
 
-export function KpiCard({ metric, label, value, delta, unit, isLoading, isError }: KpiCardProps) {
+export function KpiCard({ metric, label, value, delta, unit, isLoading, isError }: Readonly<KpiCardProps>) {
   return (
     <div className="kpi-card" data-testid={`kpi-${metric}`}>
       <span className="kpi-card__label">{label}</span>

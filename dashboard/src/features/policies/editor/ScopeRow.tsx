@@ -11,7 +11,7 @@ interface ScopeRowProps {
  * decorative — the API has no env field. Wiring them lives behind a future
  * backend extension.
  */
-export function ScopeRow({ scope, onScopeChange }: ScopeRowProps) {
+export function ScopeRow({ scope, onScopeChange }: Readonly<ScopeRowProps>) {
   return (
     <section className="editor__section" data-testid="editor-scope">
       <header className="editor__section-head">

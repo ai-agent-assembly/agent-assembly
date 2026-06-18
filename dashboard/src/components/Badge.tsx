@@ -8,7 +8,7 @@ interface BadgeProps {
   children: ReactNode
 }
 
-export function Badge({ variant, children }: BadgeProps) {
+export function Badge({ variant, children }: Readonly<BadgeProps>) {
   return (
     <span className={`badge badge--${variant}`}>
       {children}

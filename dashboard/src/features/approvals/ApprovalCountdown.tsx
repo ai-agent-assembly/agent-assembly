@@ -16,7 +16,7 @@ interface ApprovalCountdownProps {
   onExpire?: () => void
 }
 
-export function ApprovalCountdown({ expiresAt, onExpire }: ApprovalCountdownProps) {
+export function ApprovalCountdown({ expiresAt, onExpire }: Readonly<ApprovalCountdownProps>) {
   const [now, setNow] = useState(() => Date.now())
   const firedRef = useRef(false)
   const remainingMs = getRemainingMs(expiresAt, now)

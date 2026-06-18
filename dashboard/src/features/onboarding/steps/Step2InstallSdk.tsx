@@ -30,7 +30,7 @@ const VERIFIED_LINES: Line[] = [
   { kind: 'ok', text: '✓ verified · ready to enroll' },
 ]
 
-export function Step2InstallSdk({ state, onVerified }: Step2InstallSdkProps) {
+export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkProps>) {
   const [pkg, setPkg] = useState<PackageManager>('pip')
   const [copied, setCopied] = useState(false)
   const [phase, setPhase] = useState<Phase>(state.installVerified ? 'verified' : 'idle')

@@ -32,7 +32,7 @@ function callsFor(
   return sampleCalls.filter((c) => c.agent === agent.id && c.verb === verb).slice(0, 5)
 }
 
-export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: CellInspectDrawerProps) {
+export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Readonly<CellInspectDrawerProps>) {
   useEffect(() => {
     if (!cell) return
     const onKey = (e: KeyboardEvent) => {

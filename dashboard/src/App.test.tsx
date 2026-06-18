@@ -11,7 +11,7 @@ function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function AppRoutes({ initialPath = '/' }: { initialPath?: string }) {
+function AppRoutes({ initialPath = '/' }: Readonly<{ initialPath?: string }>) {
   return (
     <QueryClientProvider client={makeClient()}>
       <MemoryRouter initialEntries={[initialPath]}>

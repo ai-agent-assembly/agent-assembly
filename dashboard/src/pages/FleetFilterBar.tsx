@@ -8,7 +8,7 @@ interface FleetFilterBarProps {
 
 const STATUS_OPTIONS = ['all', 'active', 'idle', 'suspended', 'error'] as const
 
-export function FleetFilterBar({ filters, frameworks, onChange }: FleetFilterBarProps) {
+export function FleetFilterBar({ filters, frameworks, onChange }: Readonly<FleetFilterBarProps>) {
   const frameworkOpts = ['all', ...frameworks]
 
   return (

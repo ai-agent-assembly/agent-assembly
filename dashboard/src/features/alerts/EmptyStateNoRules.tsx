@@ -2,7 +2,7 @@ interface EmptyStateNoRulesProps {
   onCreateRule: () => void
 }
 
-export function EmptyStateNoRules({ onCreateRule }: EmptyStateNoRulesProps) {
+export function EmptyStateNoRules({ onCreateRule }: Readonly<EmptyStateNoRulesProps>) {
   return (
     <div
       data-testid="alerts-empty-no-rules"

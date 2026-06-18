@@ -16,7 +16,7 @@ vi.mock('../../pages/TraceViewPage', () => ({
   ),
 }))
 
-function Opener({ agentId, sessionId, label }: { agentId: string; sessionId: string; label: string }) {
+function Opener({ agentId, sessionId, label }: Readonly<{ agentId: string; sessionId: string; label: string }>) {
   const { open } = useTraceDrawer()
   return (
     <button type="button" onClick={() => open(agentId, sessionId)}>
@@ -25,7 +25,7 @@ function Opener({ agentId, sessionId, label }: { agentId: string; sessionId: str
   )
 }
 
-function Harness({ openers }: { openers: Array<{ agentId: string; sessionId: string; label: string }> }) {
+function Harness({ openers }: Readonly<{ openers: Array<{ agentId: string; sessionId: string; label: string }> }>) {
   return (
     <TraceDrawerProvider>
       {openers.map(o => (

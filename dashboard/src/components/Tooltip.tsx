@@ -8,7 +8,7 @@ interface TooltipProps {
   open?: boolean
 }
 
-export function Tooltip({ content, children, open = false }: TooltipProps) {
+export function Tooltip({ content, children, open = false }: Readonly<TooltipProps>) {
   const [hovered, setHovered] = useState(false)
   const visible = open || hovered
 

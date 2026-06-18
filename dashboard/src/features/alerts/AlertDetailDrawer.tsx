@@ -6,7 +6,7 @@ interface AlertDetailDrawerProps {
   children?: React.ReactNode
 }
 
-export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawerProps) {
+export function AlertDetailDrawer({ open, onClose, children }: Readonly<AlertDetailDrawerProps>) {
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {

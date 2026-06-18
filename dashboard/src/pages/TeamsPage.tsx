@@ -34,7 +34,7 @@ function sortIndicator(sorted: false | 'asc' | 'desc'): string {
   return ''
 }
 
-function SkeletonRows({ cols }: { cols: number }) {
+function SkeletonRows({ cols }: Readonly<{ cols: number }>) {
   return (
     <>
       {Array.from({ length: 5 }).map((_, i) => (
@@ -57,7 +57,7 @@ function SkeletonRows({ cols }: { cols: number }) {
   )
 }
 
-function BurnCell({ pct }: { pct: number | null }) {
+function BurnCell({ pct }: Readonly<{ pct: number | null }>) {
   if (pct == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>
   const color = burnColor(pct)
   return (

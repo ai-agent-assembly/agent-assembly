@@ -19,7 +19,7 @@ export function PayloadDiff({
   tokens,
   patterns,
   matchCounts,
-}: PayloadDiffProps) {
+}: Readonly<PayloadDiffProps>) {
   const matchCount = tokens.reduce(
     (n, t) => (t.kind === 'match' ? n + 1 : n),
     0,

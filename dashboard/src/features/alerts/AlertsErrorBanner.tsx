@@ -3,7 +3,7 @@ interface AlertsErrorBannerProps {
   onRetry: () => void
 }
 
-export function AlertsErrorBanner({ message, onRetry }: AlertsErrorBannerProps) {
+export function AlertsErrorBanner({ message, onRetry }: Readonly<AlertsErrorBannerProps>) {
   return (
     <div
       role="alert"

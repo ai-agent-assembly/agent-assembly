@@ -18,7 +18,7 @@ const SEVERITY_BG: Record<Severity, string> = {
   LOW: 'var(--severity-low)',
 }
 
-export function SeverityBadge({ severity }: { severity: Severity }) {
+export function SeverityBadge({ severity }: Readonly<{ severity: Severity }>) {
   return (
     <span
       data-testid={`severity-badge-${severity}`}

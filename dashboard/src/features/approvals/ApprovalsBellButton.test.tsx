@@ -11,7 +11,7 @@ function mockQuery<T>(p: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, E
   return p as unknown as UseQueryResult<T, Error>
 }
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>

@@ -47,7 +47,7 @@ function SkeletonRows() {
   )
 }
 
-function NumericCell({ value }: { value: number | null }) {
+function NumericCell({ value }: Readonly<{ value: number | null }>) {
   return (
     <span className="fleet-table__numeric">
       {value === null ? '—' : value}

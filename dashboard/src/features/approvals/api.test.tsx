@@ -53,7 +53,7 @@ function mockMutation<TData, TVariables>(
   return p as unknown as UseMutationResult<TData, Error, TVariables>
 }
 
-function Wrapper({ client, children }: { client: QueryClient; children: React.ReactNode }) {
+function Wrapper({ client, children }: Readonly<{ client: QueryClient; children: React.ReactNode }>) {
   return (
     <QueryClientProvider client={client}>
       <ToastProvider>

@@ -39,7 +39,7 @@ const headerStyle = {
  * Wired into AlertsPage in the same Story; rules state is fetched via
  * `useAlertRulesQuery` (same hook AlertsPage already uses).
  */
-export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertRulesTableProps) {
+export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: Readonly<AlertRulesTableProps>) {
   const rulesQuery = useAlertRulesQuery()
   const deleteMutation = useDeleteAlertRuleMutation()
   const { toast } = useToast()

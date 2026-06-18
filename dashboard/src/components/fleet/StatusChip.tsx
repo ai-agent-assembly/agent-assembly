@@ -24,7 +24,7 @@ function classify(status: string): FleetStatusKind | 'unknown' {
  * Renders the hi-fi glyph + label using the design-system colour tokens
  * (palette literals; design tokens land project-wide in AAASM-1048).
  */
-export function StatusChip({ status }: StatusChipProps) {
+export function StatusChip({ status }: Readonly<StatusChipProps>) {
   const kind = classify(status)
   const glyph = kind === 'unknown' ? '○' : GLYPH[kind]
   return (

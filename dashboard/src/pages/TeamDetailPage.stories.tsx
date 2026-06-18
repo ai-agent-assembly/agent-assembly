@@ -33,7 +33,7 @@ interface MockArgs {
   team: TeamTopology
 }
 
-function MockedTeamDetailPage({ team }: MockArgs) {
+function MockedTeamDetailPage({ team }: Readonly<MockArgs>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(['topology', 'team', team.team_id], team)
   client.setQueryData(['costs', 'summary'], COSTS)

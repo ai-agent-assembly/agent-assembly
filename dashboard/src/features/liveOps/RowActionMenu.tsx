@@ -27,7 +27,7 @@ export function RowActionMenu({
   onPause,
   onResume,
   onTerminate,
-}: RowActionMenuProps) {
+}: Readonly<RowActionMenuProps>) {
   const [open, setOpen] = useState(false)
   const [confirmingTerminate, setConfirmingTerminate] = useState(false)
   const menuId = useId()

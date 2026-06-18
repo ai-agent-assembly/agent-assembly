@@ -35,7 +35,7 @@ function FleetSkeleton() {
   )
 }
 
-export function LoadingState({ page = 'generic' }: LoadingStateProps) {
+export function LoadingState({ page = 'generic' }: Readonly<LoadingStateProps>) {
   return (
     <div className="state-page sk-pulse" role="status" aria-busy data-testid={`loading-state-${page}`}>
       <div className="sk-page-head">

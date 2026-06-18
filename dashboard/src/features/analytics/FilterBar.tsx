@@ -31,7 +31,7 @@ export function FilterBar({
   teams = [],
   isLoadingAgents = false,
   isLoadingTeams = false,
-}: FilterBarProps) {
+}: Readonly<FilterBarProps>) {
   const isCurrentlyCustom = isCustomRange(filters.range)
   const [showCustom, setShowCustom] = useState(isCurrentlyCustom)
   const [customStart, setCustomStart] = useState(

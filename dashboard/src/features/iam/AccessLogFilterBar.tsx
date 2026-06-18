@@ -42,7 +42,7 @@ export function AccessLogFilterBar({
   identities,
   value,
   onChange,
-}: AccessLogFilterBarProps) {
+}: Readonly<AccessLogFilterBarProps>) {
   const currentTimeKind = readTimeRangeKind(value.timeRange)
   const isCustom = value.timeRange?.kind === 'custom'
 

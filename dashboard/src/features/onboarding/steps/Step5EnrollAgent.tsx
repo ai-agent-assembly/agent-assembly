@@ -22,7 +22,7 @@ const COMPLETED_PINGS: Ping[] = [
   { id: 1, time: '14:02:11', action: 'phone-home (heartbeat)', tag: 'identity-verified' },
 ]
 
-export function Step5EnrollAgent({ state, onEnrolled }: Step5EnrollAgentProps) {
+export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgentProps>) {
   const [phase, setPhase] = useState<Phase>(state.enrolled ? 'live' : 'idle')
   const [pings, setPings] = useState<Ping[]>(state.enrolled ? COMPLETED_PINGS : [])
 

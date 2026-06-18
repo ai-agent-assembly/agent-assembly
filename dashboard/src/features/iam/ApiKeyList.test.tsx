@@ -12,7 +12,7 @@ import type { ApiKey } from './types'
 // the seeded 3-row fixture, so these tests render against the same shape
 // the gateway produces without needing to mock the openapi-fetch client.
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>

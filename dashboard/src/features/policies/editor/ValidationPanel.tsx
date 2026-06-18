@@ -16,7 +16,7 @@ const BADGE_GLYPH: Record<ValidationSeverity, string> = {
  * warnings) and per-issue rows. When no issues are present, shows a single
  * "policy is valid · ready to simulate" success row.
  */
-export function ValidationPanel({ issues }: ValidationPanelProps) {
+export function ValidationPanel({ issues }: Readonly<ValidationPanelProps>) {
   const { errors, warns } = countBySeverity(issues)
 
   return (

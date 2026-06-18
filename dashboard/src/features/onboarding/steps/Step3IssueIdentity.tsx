@@ -30,7 +30,7 @@ function formatFingerprint(): string {
   return groups.join(':').toUpperCase()
 }
 
-export function Step3IssueIdentity({ state, onIssued }: Step3IssueIdentityProps) {
+export function Step3IssueIdentity({ state, onIssued }: Readonly<Step3IssueIdentityProps>) {
   const [phase, setPhase] = useState<Phase>(state.identity ? 'done' : 'idle')
   const id = state.identity
 

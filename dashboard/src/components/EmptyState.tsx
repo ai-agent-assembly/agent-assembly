@@ -125,7 +125,7 @@ export interface EmptyStateProps {
   onSecondary?: () => void
 }
 
-export function EmptyState({ page = 'overview', onCta, onSecondary }: EmptyStateProps) {
+export function EmptyState({ page = 'overview', onCta, onSecondary }: Readonly<EmptyStateProps>) {
   const c = COPY[page] ?? COPY.overview
   return (
     <div className="state-page" role="status" data-testid={`empty-state-${page}`}>

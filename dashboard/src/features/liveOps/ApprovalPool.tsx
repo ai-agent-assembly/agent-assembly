@@ -15,7 +15,7 @@ interface ApprovalPoolProps {
  * Returns `null` when the pool is empty so the host zone stays
  * uncluttered (per ticket: no zero-state inside this component).
  */
-export function ApprovalPool({ ops }: ApprovalPoolProps) {
+export function ApprovalPool({ ops }: Readonly<ApprovalPoolProps>) {
   const pending = ops.filter((op) => op.status === 'pending')
   if (pending.length === 0) return null
 

@@ -16,11 +16,11 @@ function formatDate(value: string | null): string {
   return d.toISOString().slice(0, 16).replace('T', ' ')
 }
 
-function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
+function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: Readonly<{
   keyRecord: ApiKey
   onCancel: () => void
   onConfirm: () => void
-}) {
+}>) {
   return (
     <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-revoke-key">
       <div className="iam-dialog">
@@ -46,12 +46,12 @@ function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
   )
 }
 
-function ConfirmRotate({ keyRecord, onCancel, onConfirm, isPending }: {
+function ConfirmRotate({ keyRecord, onCancel, onConfirm, isPending }: Readonly<{
   keyRecord: ApiKey
   onCancel: () => void
   onConfirm: () => void
   isPending: boolean
-}) {
+}>) {
   return (
     <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-rotate-key">
       <div className="iam-dialog">

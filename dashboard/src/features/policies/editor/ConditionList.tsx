@@ -11,7 +11,7 @@ interface ConditionListProps {
  * doesn't model them, see AAASM-1281 scope decision). Each row is a select
  * pointing at the next preset; rows are separated by an "AND" label.
  */
-export function ConditionList({ value, onChange }: ConditionListProps) {
+export function ConditionList({ value, onChange }: Readonly<ConditionListProps>) {
   const handleChangeAt = (idx: number, next: ConditionPreset) => {
     onChange(value.map((c, i) => (i === idx ? next : c)))
   }

@@ -16,7 +16,7 @@ export function PatternsLibrary({
   onSelect,
   onToggle,
   matchCounts,
-}: PatternsLibraryProps) {
+}: Readonly<PatternsLibraryProps>) {
   const [search, setSearch] = useState('')
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()

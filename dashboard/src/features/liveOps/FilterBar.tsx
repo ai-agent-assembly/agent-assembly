@@ -46,7 +46,7 @@ export function FilterBar({
   agentOptions,
   teamOptions,
   opTypeOptions = DEFAULT_OP_TYPES,
-}: FilterBarProps) {
+}: Readonly<FilterBarProps>) {
   const agentId = useId()
   const teamId = useId()
   const opTypeId = useId()

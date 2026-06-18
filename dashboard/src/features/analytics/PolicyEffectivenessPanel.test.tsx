@@ -18,7 +18,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>

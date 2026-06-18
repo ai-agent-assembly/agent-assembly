@@ -47,7 +47,7 @@ export interface ErrorStateProps {
   onSecondary?: () => void
 }
 
-export function ErrorState({ kind = 'generic', onRetry, onSecondary }: ErrorStateProps) {
+export function ErrorState({ kind = 'generic', onRetry, onSecondary }: Readonly<ErrorStateProps>) {
   const c = COPY[kind] ?? COPY.generic
   return (
     <div className="state-page" role="alert" data-testid={`error-state-${kind}`}>

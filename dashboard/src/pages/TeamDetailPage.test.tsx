@@ -17,7 +17,7 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname + loc.search}</div>
 }
 
-function Wrapper({ initialEntries, children }: { initialEntries: string[]; children: React.ReactNode }) {
+function Wrapper({ initialEntries, children }: Readonly<{ initialEntries: string[]; children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>

@@ -13,7 +13,7 @@ function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children, path = '/', initialPath = '/' }: { children: React.ReactNode; path?: string; initialPath?: string }) {
+function Wrapper({ children, path = '/', initialPath = '/' }: Readonly<{ children: React.ReactNode; path?: string; initialPath?: string }>) {
   return (
     <QueryClientProvider client={makeClient()}>
       <ToastProvider>
