@@ -614,188 +614,216 @@ impl ProxyServer {
         let target = parts[1];
 
         if method.eq_ignore_ascii_case("CONNECT") {
-            // Consume remaining headers (we only need the request line for CONNECT).
-            let mut header_line = String::new();
-            loop {
-                header_line.clear();
-                reader.read_line(&mut header_line).await?;
-                if header_line.trim().is_empty() {
-                    break;
-                }
-            }
-
-            // Extract hostname (strip port) for deny check and certificate generation.
-            let host = target.split(':').next().unwrap_or(target);
-
-            // Egress policy: deny-list, then AAASM-1943 network allowlist.
-            // Both return 403 + emit a deny decision and end the connection.
-            if let Some(reason) = self.connect_deny_reason(host) {
-                tracing::info!(%host, "CONNECT denied: {reason}");
-                let mut stream = reader.into_inner();
-                stream
-                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                    .await?;
-                self.interceptor.emit_policy_decision(host, true).await;
-                return Ok(());
-            }
-
-            // Send 200 Connection Established to tell the client the tunnel is open.
-            let inner = reader.into_inner();
-            let mut stream = inner;
-            stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
-
-            tracing::debug!(host = target, "CONNECT tunnel established");
-
-            // Emit allow audit event for the accepted connection.
-            self.interceptor.emit_policy_decision(host, false).await;
-
-            // When llm_only is enabled, skip TLS MitM for non-LLM hosts and
-            // just tunnel the raw TCP bytes transparently.
-            if self.config.llm_only && detect_api(host) == LlmApiPattern::Unknown {
-                tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
-                // SSRF re-validation also covers the transparent tunnel — this
-                // path forwards raw bytes without MitM, so it is the most likely
-                // SSRF vector if the host resolves to an internal address.
-                let upstream = match self.config.upstream_override {
-                    Some(addr) => TcpStream::connect(addr).await?,
-                    None => self.connect_revalidated(target).await?,
-                };
-                let (mut cr, mut cw) = tokio::io::split(stream);
-                let (mut ur, mut uw) = tokio::io::split(upstream);
-                tokio::select! {
-                    r = tokio::io::copy(&mut cr, &mut uw) => { r?; }
-                    r = tokio::io::copy(&mut ur, &mut cw) => { r?; }
-                }
-                return Ok(());
-            }
-
-            // --- TLS MitM: act as TLS server to the client ---
-            let ck = self.certs.get_or_insert(host, &self.ca)?;
-            let cert = CertificateDer::from(ck.cert_der.clone());
-            let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
-            let server_config = ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(vec![cert], key)
-                .map_err(|e| ProxyError::Tls(e.to_string()))?;
-            let acceptor = TlsAcceptor::from(Arc::new(server_config));
-            let client_tls = acceptor
-                .accept(stream)
-                .await
-                .map_err(|e| ProxyError::Tls(e.to_string()))?;
-
-            tracing::debug!(%host, "TLS MitM (client side) handshake complete");
-
-            let pattern = detect_api(host);
-
-            // For LLM patterns, read the inbound HTTP request inside the
-            // tunnel so the credential scanner can run against the real
-            // body bytes before any byte reaches upstream. For non-LLM
-            // patterns we fall through to a raw bidirectional copy below.
-            if pattern != LlmApiPattern::Unknown {
-                return self.handle_llm_mitm(client_tls, host, target, pattern).await;
-            }
-
-            // Non-LLM pattern.
-            //
-            // When a gateway client is configured, attempt MCP detection
-            // on the inbound HTTPS request body: a JSON-RPC 2.0 `tools/call`
-            // envelope is dispatched to the gateway PolicyService and
-            // enforced on the wire (Deny → JSON-RPC error envelope, Allow →
-            // forward, Redact → forward unchanged until AAASM-1941 lands
-            // response-side rewriting). Non-MCP bodies fall through to a
-            // transparent forward of the bytes we've already read.
-            //
-            // When no gateway is configured, preserve the historical raw
-            // bidirectional copy (no body inspection at all).
-            if let Some(gateway) = self.gateway_client.get() {
-                self.handle_non_llm_with_gateway(client_tls, gateway, host, target)
-                    .await?;
-            } else {
-                let upstream_tls = self.dial_upstream_tls(host, target).await?;
-                let (mut client_read, mut client_write) = tokio::io::split(client_tls);
-                let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
-
-                let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-                let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-                tokio::select! {
-                    r = client_to_upstream => { r?; }
-                    r = upstream_to_client => { r?; }
-                }
-            }
-
-            Ok(())
+            self.handle_connect_tunnel(reader, target).await
         } else {
-            // Plain HTTP request forwarding.
-            tracing::debug!(method = method, target = target, "plain HTTP request");
+            self.handle_plain_http(reader, request_line, method, target).await
+        }
+    }
 
-            // Consume remaining request headers.
-            let mut headers = Vec::new();
-            let mut header_line = String::new();
-            loop {
-                header_line.clear();
-                reader.read_line(&mut header_line).await?;
-                if header_line.trim().is_empty() {
-                    break;
-                }
-                headers.push(header_line.clone());
+    /// Handle a `CONNECT` tunnel: enforce egress policy, open the tunnel, then
+    /// either raw-tunnel (llm_only non-LLM hosts) or perform TLS MitM and route
+    /// to the LLM / gateway / passthrough handler by detected API pattern.
+    async fn handle_connect_tunnel(
+        self: &Arc<Self>,
+        mut reader: BufReader<TcpStream>,
+        target: &str,
+    ) -> Result<(), ProxyError> {
+        // Consume remaining headers (we only need the request line for CONNECT).
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            reader.read_line(&mut header_line).await?;
+            if header_line.trim().is_empty() {
+                break;
             }
+        }
 
-            // Parse host from the target URL or Host header.
-            let host = if let Some(url_host) = target.strip_prefix("http://") {
-                url_host.split('/').next().unwrap_or(url_host)
-            } else {
-                headers
-                    .iter()
-                    .find_map(|h| {
-                        let lower = h.to_ascii_lowercase();
-                        lower
-                            .starts_with("host:")
-                            .then(|| h["host:".len()..].trim().to_string())
-                    })
-                    .unwrap_or_default()
-                    .leak()
-            };
+        // Extract hostname (strip port) for deny check and certificate generation.
+        let host = target.split(':').next().unwrap_or(target);
 
-            // Connect to upstream via plain TCP.
-            let upstream_addr = if host.contains(':') {
-                host.to_string()
-            } else {
-                format!("{host}:80")
-            };
-            // SSRF re-validation (AAASM-3140): the plain-HTTP forward path must
-            // route through the same resolved-IP denylist as the CONNECT/tunnel
-            // paths. Without this, a steered agent making a plain `http://`
-            // request could reach loopback / RFC-1918 / `169.254.169.254` after
-            // DNS resolution, bypassing the AAASM-3130 hardening.
-            let mut upstream = match self.config.upstream_override {
-                Some(addr) => TcpStream::connect(addr).await?,
-                None => self.connect_revalidated(&upstream_addr).await?,
-            };
+        // Egress policy: deny-list, then AAASM-1943 network allowlist.
+        // Both return 403 + emit a deny decision and end the connection.
+        if let Some(reason) = self.connect_deny_reason(host) {
+            tracing::info!(%host, "CONNECT denied: {reason}");
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            self.interceptor.emit_policy_decision(host, true).await;
+            return Ok(());
+        }
 
-            // Re-serialise and forward the original request.
-            upstream.write_all(request_line.as_bytes()).await?;
-            upstream.write_all(b"\r\n").await?;
-            for h in &headers {
-                upstream.write_all(h.as_bytes()).await?;
-            }
-            upstream.write_all(b"\r\n").await?;
+        // Send 200 Connection Established to tell the client the tunnel is open.
+        let mut stream = reader.into_inner();
+        stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
 
-            // Bidirectional copy between client and upstream.
-            let stream = reader.into_inner();
-            let (mut client_read, mut client_write) = tokio::io::split(stream);
-            let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+        tracing::debug!(host = target, "CONNECT tunnel established");
 
-            let c2u = tokio::io::copy(&mut client_read, &mut upstream_write);
-            let u2c = tokio::io::copy(&mut upstream_read, &mut client_write);
+        // Emit allow audit event for the accepted connection.
+        self.interceptor.emit_policy_decision(host, false).await;
+
+        // When llm_only is enabled, skip TLS MitM for non-LLM hosts and
+        // just tunnel the raw TCP bytes transparently.
+        if self.config.llm_only && detect_api(host) == LlmApiPattern::Unknown {
+            tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
+            return self.transparent_tunnel(stream, target).await;
+        }
+
+        // --- TLS MitM: act as TLS server to the client ---
+        let ck = self.certs.get_or_insert(host, &self.ca)?;
+        let cert = CertificateDer::from(ck.cert_der.clone());
+        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .map_err(|e| ProxyError::Tls(e.to_string()))?;
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let client_tls = acceptor
+            .accept(stream)
+            .await
+            .map_err(|e| ProxyError::Tls(e.to_string()))?;
+
+        tracing::debug!(%host, "TLS MitM (client side) handshake complete");
+
+        let pattern = detect_api(host);
+
+        // For LLM patterns, read the inbound HTTP request inside the
+        // tunnel so the credential scanner can run against the real
+        // body bytes before any byte reaches upstream. For non-LLM
+        // patterns we fall through to the gateway/passthrough handler.
+        if pattern != LlmApiPattern::Unknown {
+            return self.handle_llm_mitm(client_tls, host, target, pattern).await;
+        }
+
+        // Non-LLM pattern.
+        //
+        // When a gateway client is configured, attempt MCP detection
+        // on the inbound HTTPS request body: a JSON-RPC 2.0 `tools/call`
+        // envelope is dispatched to the gateway PolicyService and
+        // enforced on the wire (Deny → JSON-RPC error envelope, Allow →
+        // forward, Redact → forward unchanged until AAASM-1941 lands
+        // response-side rewriting). Non-MCP bodies fall through to a
+        // transparent forward of the bytes we've already read.
+        //
+        // When no gateway is configured, preserve the historical raw
+        // bidirectional copy (no body inspection at all).
+        if let Some(gateway) = self.gateway_client.get() {
+            self.handle_non_llm_with_gateway(client_tls, gateway, host, target)
+                .await?;
+        } else {
+            let upstream_tls = self.dial_upstream_tls(host, target).await?;
+            let (mut client_read, mut client_write) = tokio::io::split(client_tls);
+            let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+
+            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
+            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
 
             tokio::select! {
-                r = c2u => { r?; }
-                r = u2c => { r?; }
+                r = client_to_upstream => { r?; }
+                r = upstream_to_client => { r?; }
             }
-
-            Ok(())
         }
+
+        Ok(())
+    }
+
+    /// Raw bidirectional copy between an established client `stream` and the
+    /// re-validated upstream for `target`. Used by the llm_only transparent-
+    /// tunnel path, which forwards bytes without MitM. SSRF re-validation covers
+    /// this path too — it is the most likely SSRF vector when the host resolves
+    /// to an internal address.
+    async fn transparent_tunnel(self: &Arc<Self>, stream: TcpStream, target: &str) -> Result<(), ProxyError> {
+        let upstream = match self.config.upstream_override {
+            Some(addr) => TcpStream::connect(addr).await?,
+            None => self.connect_revalidated(target).await?,
+        };
+        let (mut cr, mut cw) = tokio::io::split(stream);
+        let (mut ur, mut uw) = tokio::io::split(upstream);
+        tokio::select! {
+            r = tokio::io::copy(&mut cr, &mut uw) => { r?; }
+            r = tokio::io::copy(&mut ur, &mut cw) => { r?; }
+        }
+        Ok(())
+    }
+
+    /// Forward a plain (non-CONNECT) HTTP request: parse the host from the
+    /// target/Host header, SSRF-revalidate the upstream (AAASM-3140), re-serialise
+    /// the request line + headers, then bidirectionally copy the bodies.
+    async fn handle_plain_http(
+        self: &Arc<Self>,
+        mut reader: BufReader<TcpStream>,
+        request_line: &str,
+        method: &str,
+        target: &str,
+    ) -> Result<(), ProxyError> {
+        tracing::debug!(method = method, target = target, "plain HTTP request");
+
+        // Consume remaining request headers.
+        let mut headers = Vec::new();
+        let mut header_line = String::new();
+        loop {
+            header_line.clear();
+            reader.read_line(&mut header_line).await?;
+            if header_line.trim().is_empty() {
+                break;
+            }
+            headers.push(header_line.clone());
+        }
+
+        // Parse host from the target URL or Host header.
+        let host = if let Some(url_host) = target.strip_prefix("http://") {
+            url_host.split('/').next().unwrap_or(url_host)
+        } else {
+            headers
+                .iter()
+                .find_map(|h| {
+                    let lower = h.to_ascii_lowercase();
+                    lower
+                        .starts_with("host:")
+                        .then(|| h["host:".len()..].trim().to_string())
+                })
+                .unwrap_or_default()
+                .leak()
+        };
+
+        // Connect to upstream via plain TCP.
+        let upstream_addr = if host.contains(':') {
+            host.to_string()
+        } else {
+            format!("{host}:80")
+        };
+        // SSRF re-validation (AAASM-3140): the plain-HTTP forward path must
+        // route through the same resolved-IP denylist as the CONNECT/tunnel
+        // paths. Without this, a steered agent making a plain `http://`
+        // request could reach loopback / RFC-1918 / `169.254.169.254` after
+        // DNS resolution, bypassing the AAASM-3130 hardening.
+        let mut upstream = match self.config.upstream_override {
+            Some(addr) => TcpStream::connect(addr).await?,
+            None => self.connect_revalidated(&upstream_addr).await?,
+        };
+
+        // Re-serialise and forward the original request.
+        upstream.write_all(request_line.as_bytes()).await?;
+        upstream.write_all(b"\r\n").await?;
+        for h in &headers {
+            upstream.write_all(h.as_bytes()).await?;
+        }
+        upstream.write_all(b"\r\n").await?;
+
+        // Bidirectional copy between client and upstream.
+        let stream = reader.into_inner();
+        let (mut client_read, mut client_write) = tokio::io::split(stream);
+        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
+
+        let c2u = tokio::io::copy(&mut client_read, &mut upstream_write);
+        let u2c = tokio::io::copy(&mut upstream_read, &mut client_write);
+
+        tokio::select! {
+            r = c2u => { r?; }
+            r = u2c => { r?; }
+        }
+
+        Ok(())
     }
 }
 

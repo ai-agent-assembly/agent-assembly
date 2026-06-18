@@ -165,26 +165,7 @@ async fn handle_key_event(
     }
     // If a confirm dialog is showing, intercept y/n/Esc.
     if let Some(dialog_action) = state.confirm_dialog {
-        match key.code {
-            KeyCode::Char('y') => {
-                if let Some(approval) = dialog_approval {
-                    match dialog_action {
-                        DialogAction::Approve => {
-                            let _ = approvals_client::approve_action(ctx, &approval.id, Some("approved via dashboard"))
-                                .await;
-                        }
-                        DialogAction::Reject => {
-                            let _ = approvals_client::reject_action(ctx, &approval.id, "rejected via dashboard").await;
-                        }
-                    }
-                }
-                state.confirm_dialog = None;
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                state.confirm_dialog = None;
-            }
-            _ => {}
-        }
+        handle_confirm_dialog_key(state, ctx, key, dialog_action, dialog_approval).await;
         return;
     }
 
@@ -206,6 +187,38 @@ async fn handle_key_event(
             state.show_policy = true;
         }
         InputAction::None => {}
+    }
+}
+
+/// Handle a key while the approve/reject confirm dialog is open. `y` commits the
+/// pending `dialog_action` over the API (when an approval is selected); `n`/`Esc`
+/// cancels. Any handled key clears the dialog; other keys are ignored.
+async fn handle_confirm_dialog_key(
+    state: &mut DashboardState,
+    ctx: &ResolvedContext,
+    key: crossterm::event::KeyEvent,
+    dialog_action: DialogAction,
+    dialog_approval: Option<&crate::commands::status::models::ApprovalResponse>,
+) {
+    match key.code {
+        KeyCode::Char('y') => {
+            if let Some(approval) = dialog_approval {
+                match dialog_action {
+                    DialogAction::Approve => {
+                        let _ =
+                            approvals_client::approve_action(ctx, &approval.id, Some("approved via dashboard")).await;
+                    }
+                    DialogAction::Reject => {
+                        let _ = approvals_client::reject_action(ctx, &approval.id, "rejected via dashboard").await;
+                    }
+                }
+            }
+            state.confirm_dialog = None;
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            state.confirm_dialog = None;
+        }
+        _ => {}
     }
 }
 

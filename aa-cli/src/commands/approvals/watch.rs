@@ -241,15 +241,8 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
         }
 
         // Check for new WebSocket messages (non-blocking).
-        match ws.next().now_or_never() {
-            Some(Some(Ok(Message::Text(text)))) => {
-                if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
-                    state.items.push(approval);
-                    state.dirty = true;
-                }
-            }
-            Some(Some(Ok(Message::Close(_)))) | Some(None) => break,
-            _ => {}
+        if poll_ws_message(&mut ws, &mut state) {
+            break;
         }
 
         if state.dirty {
@@ -260,6 +253,23 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
 
     terminal::disable_raw_mode().ok();
     println!();
+}
+
+/// Non-blocking poll of the WebSocket: append a newly-received approval to the
+/// interactive list (marking it dirty) and report whether the loop should break
+/// (server-side close or stream end). `false` when nothing actionable arrived.
+fn poll_ws_message(ws: &mut WsStream, state: &mut InteractiveState) -> bool {
+    match ws.next().now_or_never() {
+        Some(Some(Ok(Message::Text(text)))) => {
+            if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
+                state.items.push(approval);
+                state.dirty = true;
+            }
+            false
+        }
+        Some(Some(Ok(Message::Close(_)))) | Some(None) => true,
+        _ => false,
+    }
 }
 
 /// Drop the resolved approval `id` from the interactive list and clamp the
