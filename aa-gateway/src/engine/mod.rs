@@ -233,6 +233,17 @@ pub enum PolicyLoadError {
     History(crate::policy::history::PolicyHistoryError),
 }
 
+/// Stage 6 outcome for [`PolicyEngine::apply_credential_scan`]: either a
+/// hard-block deny (the `credential_action: block` short-circuit) or the
+/// redacted payload + findings to carry into the remaining stages.
+enum CredentialScanOutcome {
+    /// `credential_action: block` with at least one finding — deny outright,
+    /// the payload never reaches the LLM in any form.
+    Block(EvaluationResult),
+    /// Continue evaluation with this (redacted_payload, findings) pair.
+    Continue(Option<String>, Vec<aa_security::CredentialFinding>),
+}
+
 impl PolicyEngine {
     /// Load a policy from a YAML file, parse it, validate it, and start the filesystem watcher.
     ///
@@ -823,6 +834,67 @@ impl PolicyEngine {
         bucket.try_consume()
     }
 
+    /// Apply the shared Stage 6 credential decision over already-collected
+    /// `all_findings` for `text` under the resolved `credential_action`.
+    ///
+    /// Identical for the single-policy and cascade paths: `block` + findings →
+    /// deny; `alert_only` forwards the unredacted payload (the only path that
+    /// leaks the raw secret, AAASM-3137); every other mode redacts in-memory.
+    /// Findings are sorted by offset for deterministic output.
+    fn apply_credential_scan(
+        text: &str,
+        mut all_findings: Vec<aa_security::CredentialFinding>,
+        credential_action: CredentialAction,
+    ) -> CredentialScanOutcome {
+        // Hard-block path: short-circuit every downstream stage.
+        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+            all_findings.sort_by_key(|f| f.offset);
+            return CredentialScanOutcome::Block(EvaluationResult {
+                decision: aa_core::PolicyResult::Deny {
+                    reason: "credential detected".into(),
+                },
+                redacted_payload: None,
+                credential_findings: all_findings,
+                deny_action: None,
+            });
+        }
+
+        if all_findings.is_empty() {
+            return CredentialScanOutcome::Continue(None, vec![]);
+        }
+
+        // Sort by offset for deterministic redaction order.
+        all_findings.sort_by_key(|f| f.offset);
+        // TODO(AAASM-31): wrap in EnrichedEvent::DataLeak(DataLeakEvent { ... }) and
+        // send on the broadcast_tx once AAASM-31 adds the DataLeak variant to EnrichedEvent.
+        tracing::warn!(
+            finding_count = all_findings.len(),
+            "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
+        );
+        if credential_action == CredentialAction::AlertAndRedact {
+            // AAASM-3137: alert AND redact — notify but never leak the secret.
+            tracing::warn!(
+                finding_count = all_findings.len(),
+                "credential_action=alert_and_redact: alert emission pending AAASM-1545"
+            );
+        }
+        if credential_action == CredentialAction::AlertOnly {
+            // SECURITY (AAASM-3137): the ONLY path that forwards the raw secret.
+            // A documented, deliberate audit-only downgrade; alert side-effect
+            // emission is wired by sibling subtask AAASM-1545.
+            tracing::warn!(
+                finding_count = all_findings.len(),
+                "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
+            );
+            return CredentialScanOutcome::Continue(None, all_findings);
+        }
+        let merged = aa_security::ScanResult {
+            findings: all_findings.clone(),
+        };
+        let redacted = merged.redact(text);
+        CredentialScanOutcome::Continue(Some(redacted), all_findings)
+    }
+
     /// Single-policy evaluation path: used when no scoped policies are registered.
     ///
     /// This is the original 7-stage pipeline from before AAASM-220. When the
@@ -865,67 +937,11 @@ impl PolicyEngine {
 
         let credential_action = policy.data.as_ref().map(|d| d.credential_action).unwrap_or_default();
 
-        // Hard-block path: a finding with `credential_action: block` short-circuits
-        // every downstream stage so the payload never reaches the LLM in any form.
-        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
-            all_findings.sort_by_key(|f| f.offset);
-            return EvaluationResult {
-                decision: aa_core::PolicyResult::Deny {
-                    reason: "credential detected".into(),
-                },
-                redacted_payload: None,
-                credential_findings: all_findings,
-                deny_action: None,
+        let (redacted_payload, credential_findings) =
+            match Self::apply_credential_scan(text, all_findings, credential_action) {
+                CredentialScanOutcome::Block(result) => return result,
+                CredentialScanOutcome::Continue(payload, findings) => (payload, findings),
             };
-        }
-
-        let (redacted_payload, credential_findings) = if all_findings.is_empty() {
-            (None, vec![])
-        } else {
-            // Sort by offset for deterministic redaction order.
-            all_findings.sort_by_key(|f| f.offset);
-            // TODO(AAASM-31): wrap in EnrichedEvent::DataLeak(DataLeakEvent { ... }) and
-            // send on the broadcast_tx once AAASM-31 adds the DataLeak variant to EnrichedEvent.
-            // DataLeakEvent fields are available here:
-            //   agent_id:         ctx.agent_id
-            //   session_id:       ctx.session_id
-            //   timestamp_ns:     <now>
-            //   finding_count:    all_findings.len()
-            //   credential_kinds: all_findings.iter().map(|f| f.kind.as_str())
-            //   policy_name:      policy.version.as_deref().unwrap_or("unknown")
-            tracing::warn!(
-                finding_count = all_findings.len(),
-                "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
-            );
-            if credential_action == CredentialAction::AlertAndRedact {
-                // AAASM-3137: emit the alert AND redact — the operator is
-                // notified, but the raw secret is still removed before forward.
-                tracing::warn!(
-                    finding_count = all_findings.len(),
-                    "credential_action=alert_and_redact: alert emission pending AAASM-1545"
-                );
-            }
-            if credential_action == CredentialAction::AlertOnly {
-                // Forward the unmodified payload upstream; alert side-effect emission
-                // is wired by sibling subtask AAASM-1545.
-                //
-                // SECURITY (AAASM-3137): this is the ONLY path that forwards the
-                // raw secret. It is a documented, deliberate audit-only downgrade;
-                // `alert_and_redact` is the safe alternative when an alert is
-                // wanted without leaking the credential.
-                tracing::warn!(
-                    finding_count = all_findings.len(),
-                    "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
-                );
-                (None, all_findings)
-            } else {
-                let merged = aa_security::ScanResult {
-                    findings: all_findings.clone(),
-                };
-                let redacted = merged.redact(text);
-                (Some(redacted), all_findings)
-            }
-        };
 
         // Stage 7 — Budget check (monthly first, then daily).
         if let Some(bp) = &policy.budget {
@@ -1061,48 +1077,11 @@ impl PolicyEngine {
             })
             .unwrap_or_default();
 
-        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
-            all_findings.sort_by_key(|f| f.offset);
-            return EvaluationResult {
-                decision: aa_core::PolicyResult::Deny {
-                    reason: "credential detected".into(),
-                },
-                redacted_payload: None,
-                credential_findings: all_findings,
-                deny_action: None,
+        let (redacted_payload, credential_findings) =
+            match Self::apply_credential_scan(text, all_findings, credential_action) {
+                CredentialScanOutcome::Block(result) => return result,
+                CredentialScanOutcome::Continue(payload, findings) => (payload, findings),
             };
-        }
-
-        let (redacted_payload, credential_findings) = if all_findings.is_empty() {
-            (None, vec![])
-        } else {
-            all_findings.sort_by_key(|f| f.offset);
-            tracing::warn!(
-                finding_count = all_findings.len(),
-                "DataLeakEvent emission pending AAASM-31 EnrichedEvent::DataLeak variant"
-            );
-            if credential_action == CredentialAction::AlertAndRedact {
-                // AAASM-3137: alert AND redact — notify but never leak the secret.
-                tracing::warn!(
-                    finding_count = all_findings.len(),
-                    "credential_action=alert_and_redact: alert emission pending AAASM-1545"
-                );
-            }
-            if credential_action == CredentialAction::AlertOnly {
-                // SECURITY (AAASM-3137): the only path that forwards the raw secret.
-                tracing::warn!(
-                    finding_count = all_findings.len(),
-                    "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
-                );
-                (None, all_findings)
-            } else {
-                let merged = aa_security::ScanResult {
-                    findings: all_findings.clone(),
-                };
-                let redacted = merged.redact(text);
-                (Some(redacted), all_findings)
-            }
-        };
 
         // Stage 7 — Budget: check against all cascade docs' budget configs.
         // Take the most restrictive (lowest) limit across all policies.
