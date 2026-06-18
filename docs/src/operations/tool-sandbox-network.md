@@ -25,8 +25,8 @@ reads from the env var today, with policy-DSL → proxy-config sync
 tracked under the AAASM-1232 closeout matrix):
 
 ```yaml
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: prod-egress
   version: "1.0.0"
