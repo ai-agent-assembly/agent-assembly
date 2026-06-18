@@ -276,6 +276,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
+        std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
     }
 
     #[test]
@@ -290,6 +291,8 @@ mod tests {
         assert!(cfg.llm_only);
         assert!(cfg.denied_hosts.is_empty());
         assert!(!cfg.skip_upstream_tls_verify);
+        // AAASM-3357: MCP enforcement defaults to fail-closed.
+        assert!(!cfg.mcp_fail_open);
     }
 
     #[test]
@@ -458,5 +461,46 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert_eq!(cfg.gateway_endpoint, None);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_defaults_to_false() {
+        // AAASM-3357: an unreachable gateway must fail CLOSED unless the
+        // operator explicitly opts into fail-open.
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(!cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_reads_one() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "1");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_reads_true_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "TRUE");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_other_value_is_false() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "no");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(!cfg.mcp_fail_open);
     }
 }
