@@ -37,9 +37,26 @@ impl PolicyValidator {
         let mut errors: Vec<ValidationError> = Vec::new();
         let mut warnings: Vec<ValidationWarning> = Vec::new();
 
-        // Step 2 — collect top-level unknown keys
+        // Step 2 — collect top-level unknown keys.
+        //
+        // AAASM-3351: a top-level `rules:` key signals a rule-list /
+        // `GovernancePolicy`-style schema that the section-based engine does
+        // NOT honor. Previously this was treated as an unknown key (warning
+        // only), so the document validated into an empty allow-all policy —
+        // a fail-OPEN on a misformatted/legacy policy. Fail closed instead:
+        // refuse to load the document rather than silently allowing
+        // everything. (Full multi-schema support is a follow-up.)
         for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(key));
+            if key == "rules" {
+                errors.push(ValidationError::new(
+                    "rules",
+                    "unsupported rule-list policy schema (top-level 'rules:'); the gateway uses a \
+                     section-based schema (network/schedule/budget/data/tools/capabilities) and \
+                     refuses to load this document to avoid an allow-all fallback",
+                ));
+            } else {
+                warnings.push(ValidationWarning::unknown_key(key));
+            }
         }
 
         // Step 3 — validate each section
