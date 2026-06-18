@@ -487,3 +487,57 @@ describe('PoliciesPage — sandbox summary banner', () => {
     expect(banner).toHaveTextContent('block-secrets')
   })
 })
+
+describe('PoliciesPage — enable live enforcement dialog', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('opens the enable-live dialog from the banner and cancels it', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    expect(await screen.findByTestId('sandbox-enable-live-single')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('sandbox-enable-live-single')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('confirming creates the policy and closes the dialog', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    await screen.findByTestId('sandbox-enable-live-single')
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(screen.queryByTestId('sandbox-enable-live-single')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('surfaces an error toast when enabling live enforcement fails', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockRejectedValue(new Error('boom'))
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    await screen.findByTestId('sandbox-enable-live-single')
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled())
+    expect(
+      await screen.findByText(/Failed to enable live enforcement for observed-policy/),
+    ).toBeInTheDocument()
+  })
+})

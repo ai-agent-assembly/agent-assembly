@@ -7,6 +7,7 @@ import { FleetPage } from './FleetPage'
 import { AgentDetailPage } from './AgentDetailPage'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
+import * as agentsMutations from '../features/agents/mutations'
 import type { Agent, LogEntry } from '../features/agents/api'
 
 function makeClient() {
@@ -356,5 +357,123 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
     renderApp('/agents/abc123')
     await screen.findByTestId('agent-events')
     expect(screen.queryByTestId('agent-events-sandbox-bar')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentDetailPage — suspend / resume actions', () => {
+  type Outcome = 'success' | 'error'
+
+  function mockSuspendMutation(outcome: Outcome) {
+    const mutate = vi.fn((_vars: { id: string; reason: string }, opts?: {
+      onSuccess?: () => void
+      onError?: (e: Error) => void
+    }) => {
+      if (outcome === 'success') opts?.onSuccess?.()
+      else opts?.onError?.(new Error('gateway down'))
+    })
+    vi.spyOn(agentsMutations, 'useSuspendAgent').mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof agentsMutations.useSuspendAgent>,
+    )
+    return mutate
+  }
+
+  function mockResumeMutation(outcome: Outcome) {
+    const mutate = vi.fn((_vars: { id: string }, opts?: {
+      onSuccess?: () => void
+      onError?: (e: Error) => void
+    }) => {
+      if (outcome === 'success') opts?.onSuccess?.()
+      else opts?.onError?.(new Error('gateway down'))
+    })
+    vi.spyOn(agentsMutations, 'useResumeAgent').mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof agentsMutations.useResumeAgent>,
+    )
+    return mutate
+  }
+
+  function mockSuspendedAgent() {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+      mockQuery<Agent | undefined>({
+        data: { ...MOCK_AGENT, status: 'suspended' },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+      mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+    )
+    vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+      mockQuery<agentsApi.EffectivePermissions>({
+        data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
+      }),
+    )
+  }
+
+  it('opens the suspend dialog and toasts on a successful suspend', async () => {
+    mockHappyPath()
+    const mutate = mockSuspendMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    const input = await screen.findByTestId('suspend-dialog-input')
+    fireEvent.change(input, { target: { value: 'policy breach' } })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(mutate).toHaveBeenCalledWith(
+      { id: 'abc123', reason: 'policy breach' },
+      expect.any(Object),
+    )
+    expect(await screen.findByText(/Suspended alpha-agent/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('suspend-dialog')).not.toBeInTheDocument())
+  })
+
+  it('toasts an error and closes the dialog when suspend fails', async () => {
+    mockHappyPath()
+    mockSuspendMutation('error')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    fireEvent.change(await screen.findByTestId('suspend-dialog-input'), {
+      target: { value: 'policy breach' },
+    })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(await screen.findByText(/Failed to suspend alpha-agent: gateway down/)).toBeInTheDocument()
+  })
+
+  it('cancelling the suspend dialog closes it without calling the mutation', async () => {
+    mockHappyPath()
+    const mutate = mockSuspendMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    await screen.findByTestId('suspend-dialog')
+    fireEvent.click(screen.getByTestId('suspend-dialog-cancel'))
+
+    await waitFor(() => expect(screen.queryByTestId('suspend-dialog')).not.toBeInTheDocument())
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('resume toasts success for a suspended agent', async () => {
+    mockSuspendedAgent()
+    const mutate = mockResumeMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-resume'))
+    expect(mutate).toHaveBeenCalledWith({ id: 'abc123' }, expect.any(Object))
+    expect(await screen.findByText(/Resumed alpha-agent/)).toBeInTheDocument()
+  })
+
+  it('resume toasts an error when the mutation fails', async () => {
+    mockSuspendedAgent()
+    mockResumeMutation('error')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-resume'))
+    expect(await screen.findByText(/Failed to resume alpha-agent: gateway down/)).toBeInTheDocument()
   })
 })
