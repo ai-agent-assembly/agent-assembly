@@ -126,11 +126,11 @@ describe('PipelineCanvas — simulation loop', () => {
     getContextSpy = vi
       .spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockImplementation(() => makeCtxStub() as unknown as null)
-    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => {
       rafCallbacks.push(cb)
       return rafCallbacks.length
     })
-    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {})
   })
 
   afterEach(() => {

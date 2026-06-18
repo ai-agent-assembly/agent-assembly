@@ -98,7 +98,7 @@ function buildWsUrl(): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
-    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    : `${globalThis.location.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location.host}`
   const token =
     typeof localStorage !== 'undefined' ? localStorage.getItem('aa_token') : null
   const query = [

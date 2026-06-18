@@ -43,7 +43,7 @@ export function Step2InstallSdk({ state, onVerified }: Step2InstallSdkProps) {
       // ignore clipboard failure (older browsers / no permission)
     }
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 1400)
+    globalThis.setTimeout(() => setCopied(false), 1400)
   }
 
   const handleRun = () => {
@@ -54,7 +54,7 @@ export function Step2InstallSdk({ state, onVerified }: Step2InstallSdkProps) {
       { kind: 'cmd', text: 'aa-cli verify' },
       { kind: 'out', text: 'connecting to runtime…' },
     ])
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       setLines(VERIFIED_LINES)
       setPhase('verified')
       onVerified()

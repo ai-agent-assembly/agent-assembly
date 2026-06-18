@@ -29,7 +29,7 @@ export function Step5EnrollAgent({ state, onEnrolled }: Step5EnrollAgentProps) {
   const handleStart = () => {
     if (phase !== 'idle') return
     setPhase('listening')
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       setPhase('live')
       setPings(COMPLETED_PINGS)
       onEnrolled()

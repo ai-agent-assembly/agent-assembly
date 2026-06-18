@@ -34,7 +34,7 @@ function isWizardState(value: unknown): value is WizardState {
  * shape change).
  */
 export function loadWizardSession(
-  storage: Storage = window.localStorage,
+  storage: Storage = globalThis.localStorage,
 ): WizardSession | null {
   try {
     const raw = storage.getItem(ONBOARDING_SESSION_KEY)
@@ -51,7 +51,7 @@ export function loadWizardSession(
 
 export function saveWizardSession(
   session: WizardSession,
-  storage: Storage = window.localStorage,
+  storage: Storage = globalThis.localStorage,
 ): void {
   try {
     storage.setItem(ONBOARDING_SESSION_KEY, JSON.stringify(session))
@@ -60,7 +60,7 @@ export function saveWizardSession(
   }
 }
 
-export function clearWizardSession(storage: Storage = window.localStorage): void {
+export function clearWizardSession(storage: Storage = globalThis.localStorage): void {
   try {
     storage.removeItem(ONBOARDING_SESSION_KEY)
   } catch {
@@ -73,7 +73,7 @@ export function clearWizardSession(storage: Storage = window.localStorage): void
  * step 1 with EMPTY_STATE when no session is persisted.
  */
 export function resolveInitialSession(
-  storage: Storage = window.localStorage,
+  storage: Storage = globalThis.localStorage,
 ): WizardSession {
   return (
     loadWizardSession(storage) ?? {
