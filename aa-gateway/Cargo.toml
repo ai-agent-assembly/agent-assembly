@@ -24,7 +24,7 @@ hex          = { workspace = true }
 notify       = { version = "8", features = [] }
 chrono       = { workspace = true, features = ["clock", "serde"] }
 chrono-tz    = { workspace = true, features = ["serde"] }
-cron         = "0.16"
+cron         = "0.17"
 rust_decimal = { workspace = true, features = ["serde-str"] }
 thiserror    = { workspace = true }
 dirs         = { workspace = true }
