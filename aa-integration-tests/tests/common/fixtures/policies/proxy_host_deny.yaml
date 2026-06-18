@@ -1,10 +1,13 @@
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: proxy-host-deny
   version: "0.1.0"
 spec:
-  # Host-level deny enforcement is configured via the AA_PROXY_DENIED_HOSTS
-  # environment variable, not from this policy YAML. This fixture documents the
-  # policy intent for Layer 2 MitM host blocking (AAASM-1517).
-  rules: []
+  # AAASM-3351: migrated off the legacy rule-list (`spec.rules:`) schema, which
+  # the validator now rejects (fail-closed). A minimal section-based spec is the
+  # allow-by-default equivalent this fixture intends.
+  # Host-level deny enforcement is configured via AA_PROXY_DENIED_HOSTS,
+  # not from this policy YAML (Layer 2 MitM host blocking, AAASM-1517).
+  budget:
+    daily_limit_usd: 1000.0

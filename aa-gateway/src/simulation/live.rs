@@ -65,16 +65,10 @@ mod tests {
     use crate::PolicyEngine;
 
     fn make_live_sim(duration: Duration) -> LiveSimulation {
-        let policy_yaml = r#"
-            tier: low
-            rules:
-              - id: allow-all
-                description: Allow everything
-                match:
-                  actions: ["*"]
-                effect: allow
-                audit: true
-        "#;
+        // AAASM-3351: a minimal valid section-based document allows by default
+        // (no section restricts any action). Previously this fixture used the
+        // unsupported top-level `rules:` schema, now rejected by the validator.
+        let policy_yaml = "version: \"1.0\"\n";
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(policy_yaml.as_bytes()).unwrap();
         tmp.flush().unwrap();

@@ -37,9 +37,26 @@ impl PolicyValidator {
         let mut errors: Vec<ValidationError> = Vec::new();
         let mut warnings: Vec<ValidationWarning> = Vec::new();
 
-        // Step 2 — collect top-level unknown keys
+        // Step 2 — collect top-level unknown keys.
+        //
+        // AAASM-3351: a top-level `rules:` key signals a rule-list /
+        // `GovernancePolicy`-style schema that the section-based engine does
+        // NOT honor. Previously this was treated as an unknown key (warning
+        // only), so the document validated into an empty allow-all policy —
+        // a fail-OPEN on a misformatted/legacy policy. Fail closed instead:
+        // refuse to load the document rather than silently allowing
+        // everything. (Full multi-schema support is a follow-up.)
         for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(key));
+            if key == "rules" {
+                errors.push(ValidationError::new(
+                    "rules",
+                    "unsupported rule-list policy schema (top-level 'rules:'); the gateway uses a \
+                     section-based schema (network/schedule/budget/data/tools/capabilities) and \
+                     refuses to load this document to avoid an allow-all fallback",
+                ));
+            } else {
+                warnings.push(ValidationWarning::unknown_key(key));
+            }
         }
 
         // Step 3 — validate each section
@@ -522,6 +539,23 @@ mod tests {
         let yaml = "risk_tier: high\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.warnings.iter().any(|w| w.field == "risk_tier"));
+    }
+
+    #[test]
+    fn rule_list_schema_is_a_validation_error_not_an_allow_all_warning() {
+        // AAASM-3351: a rule-list / GovernancePolicy-style document (top-level
+        // `rules:`) is not honored by the section-based engine. It must fail
+        // closed with a hard validation error, NOT validate into an empty
+        // allow-all policy with only a warning.
+        let yaml = "rules:\n  - id: deny-all\n    action: deny\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "rule-list schema must be rejected, not allow-all");
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "rules"),
+            "expected a hard error on the 'rules' field, got: {:?}",
+            errs,
+        );
     }
 
     #[test]

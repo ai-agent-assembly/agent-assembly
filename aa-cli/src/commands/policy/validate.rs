@@ -58,14 +58,8 @@ kind: Policy
 metadata:
   name: test-policy
 spec:
-  tier: low
-  rules:
-    - id: allow-all
-      description: Allow all
-      match:
-        actions: ["*"]
-      effect: allow
-      audit: true"#
+  budget:
+    daily_limit_usd: 100.0"#
         )
         .unwrap();
 

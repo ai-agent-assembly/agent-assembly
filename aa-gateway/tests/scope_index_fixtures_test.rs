@@ -94,17 +94,28 @@ fn tool_scoped_fixture_lands_in_matching_tool_bucket() {
 }
 
 /// Backward-compat: a YAML fixture from before F92 (no `scope:` field, in
-/// the envelope format used by `policy-examples/`) must validate cleanly
-/// and land under `PolicyScope::Global` when registered with the engine.
+/// the envelope format) must validate cleanly and land under
+/// `PolicyScope::Global` when registered with the engine.
+///
+/// AAASM-3351: this previously read `policy-examples/high-risk.yaml`, but that
+/// example uses the unsupported top-level `rules:` (rule-list) schema, which
+/// the validator now rejects (fail-closed) instead of silently loading as an
+/// empty allow-all policy. The test's intent — envelope format + missing
+/// `scope:` defaults to Global — is preserved here with an inline
+/// section-based envelope fixture.
 #[test]
 fn pre_f92_fixture_without_scope_field_lands_in_global() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .join("policy-examples/high-risk.yaml");
-    let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let doc = PolicyValidator::from_yaml(&yaml)
-        .unwrap_or_else(|errs| panic!("validate {}: {errs:?}", path.display()))
+    let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: pre-f92-no-scope
+spec:
+  budget:
+    daily_limit_usd: 10.0
+"#;
+    let doc = PolicyValidator::from_yaml(yaml)
+        .unwrap_or_else(|errs| panic!("validate inline pre-F92 fixture: {errs:?}"))
         .document;
     assert_eq!(doc.scope, PolicyScope::Global, "missing scope: must default to Global");
 

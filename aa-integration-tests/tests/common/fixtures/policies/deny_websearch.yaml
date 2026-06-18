@@ -1,11 +1,11 @@
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: cli-it-deny-websearch
   version: "0.1.0"
 spec:
-  rules:
-    - id: deny-websearch
-      match:
-        tool: WebSearch
-      action: deny
+  # AAASM-3351: migrated off the legacy rule-list schema to the section-based
+  # tool-deny equivalent (WebSearch denied).
+  tools:
+    WebSearch:
+      allow: false

@@ -308,7 +308,8 @@ metadata:
   name: rbac-test-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
     let resp = reqwest::Client::new()
@@ -681,7 +682,8 @@ metadata:
   name: rbac-test-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 #[tokio::test]
