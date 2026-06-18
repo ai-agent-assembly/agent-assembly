@@ -74,17 +74,14 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     let allowed_types = params.event_types();
     let agent_filter = params.agent_id.clone();
 
-    // Replay buffered events if `since` was provided.
+    // Replay buffered events if `since` was provided. A send failure during
+    // replay means the client is gone — abandon the connection.
     if let Some(since_id) = params.since {
-        let events = state.replay_buffer.events_since(since_id);
-        let replay_sender = sender.clone();
-        for event in events {
-            if !matches_filter(&event, &allowed_types, agent_filter.as_deref()) {
-                continue;
-            }
-            if send_event(&replay_sender, &event).await.is_err() {
-                return;
-            }
+        if replay_buffered_events(&state, &sender, since_id, &allowed_types, agent_filter.as_deref())
+            .await
+            .is_err()
+        {
+            return;
         }
     }
 
@@ -453,6 +450,25 @@ fn detail_op_fields(
         Detail::Violation(d) => (Some(d.blocked_action.clone()), nonzero_latency(d.latency_ms)),
         Detail::Approval(_) => (None, None),
     }
+}
+
+/// Replay buffered events with id > `since_id`, applying the client's type and
+/// agent filters. Returns `Err(())` if a send fails (the client is gone) so the
+/// caller can abandon the connection; `Ok(())` when all matching events are sent.
+async fn replay_buffered_events(
+    state: &AppState,
+    sender: &std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>,
+    since_id: u64,
+    allowed_types: &[EventType],
+    agent_filter: Option<&str>,
+) -> Result<(), ()> {
+    for event in state.replay_buffer.events_since(since_id) {
+        if !matches_filter(&event, allowed_types, agent_filter) {
+            continue;
+        }
+        send_event(sender, &event).await?;
+    }
+    Ok(())
 }
 
 /// Serialise a governance event and send it as a WebSocket text frame.
