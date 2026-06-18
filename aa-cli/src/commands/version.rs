@@ -8,11 +8,16 @@ use serde::{Deserialize, Serialize};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
-/// Subset of the gateway health response used for version extraction.
+/// Subset of the gateway `/healthz` response used for version extraction.
+///
+/// The gateway liveness endpoint reports `version` but does not carry a
+/// separate `api_version` field, so it is optional here and falls back to
+/// the served REST API major version.
 #[derive(Debug, Deserialize)]
 struct HealthInfo {
     version: String,
-    api_version: String,
+    #[serde(default)]
+    api_version: Option<String>,
 }
 
 /// A single row in the version output.
@@ -34,7 +39,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let (gateway_row, api_row) = rt.block_on(async {
         let client = reqwest::Client::new();
-        let url = format!("{}/api/v1/health", ctx.api_url);
+        let url = format!("{}/healthz", ctx.api_url);
 
         let mut req = client.get(&url);
         if let Some(ref key) = ctx.api_key {
@@ -51,7 +56,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
                     },
                     VersionRow {
                         component: "api".to_string(),
-                        version: info.api_version,
+                        version: info.api_version.unwrap_or_else(|| "v1".to_string()),
                         status: "reachable".to_string(),
                     },
                 ),
@@ -106,6 +111,8 @@ pub fn run(ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
         },
     }
 
+    // `version` degrades gracefully: an unreachable gateway/api is reported as
+    // "unreachable" rows but still exits 0, per the documented contract.
     ExitCode::SUCCESS
 }
 
@@ -177,6 +184,16 @@ mod tests {
         assert_eq!(arr[1]["version"], "0.3.2");
         assert_eq!(arr[2]["component"], "api");
         assert_eq!(arr[2]["version"], "v1");
+    }
+
+    #[test]
+    fn health_info_parses_healthz_body_without_api_version() {
+        // The gateway `/healthz` body carries `version` but no
+        // `api_version`; deserialization must succeed and leave it absent.
+        let body = r#"{"mode":"local","version":"0.0.1","storage":"memory","uptime_secs":3}"#;
+        let info: HealthInfo = serde_json::from_str(body).expect("healthz body must parse");
+        assert_eq!(info.version, "0.0.1");
+        assert_eq!(info.api_version, None);
     }
 
     #[test]
