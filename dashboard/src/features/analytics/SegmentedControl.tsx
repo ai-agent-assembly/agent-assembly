@@ -15,7 +15,7 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   testIdPrefix,
-}: SegmentedControlProps<T>) {
+}: Readonly<SegmentedControlProps<T>>) {
   return (
     <div className="segmented-control" role="group">
       {options.map(opt => (
