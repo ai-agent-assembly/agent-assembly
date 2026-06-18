@@ -76,13 +76,20 @@ async fn setup_audit(
     agent_id: &str,
     session_id: &str,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
-) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32]), Box<dyn std::error::Error>> {
+) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32], u64), Box<dyn std::error::Error>> {
     let audit_dir = default_audit_dir();
 
-    // Read the last hash from the existing JSONL file (if any) so the hash
-    // chain is maintained across process restarts.
+    // Read the last hash AND seq from the existing JSONL file (if any) so both
+    // the hash chain and the monotonic sequence counter are maintained across
+    // process restarts. AAASM-3356: recovering only the hash (not the seq) made
+    // the seq counter restart at 0 and emit duplicate sequence numbers.
     let audit_path = audit_file_path(&audit_dir, agent_id, session_id);
     let initial_hash = AuditWriter::read_last_hash(&audit_path).await?.unwrap_or([0u8; 32]);
+    // `initial_seq` is the *next* seq to emit: last persisted seq + 1, or 0 for
+    // a fresh chain.
+    let initial_seq = AuditWriter::read_last_seq(&audit_path)
+        .await?
+        .map_or(0, |last| last + 1);
 
     let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<AuditEntry>(4096);
     let audit_drops = Arc::new(AtomicU64::new(0));
@@ -93,7 +100,7 @@ async fn setup_audit(
     }
     tokio::spawn(writer.run());
 
-    Ok((audit_tx, audit_drops, initial_hash))
+    Ok((audit_tx, audit_drops, initial_hash, initial_seq))
 }
 
 /// Load persisted budget state from `~/.aa/budget.json`, construct a
@@ -378,7 +385,7 @@ pub async fn serve_tcp(
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
+    let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
@@ -394,6 +401,7 @@ pub async fn serve_tcp(
         Arc::clone(&audit_drops),
         initial_hash,
     )
+    .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
@@ -455,7 +463,7 @@ pub async fn serve_uds(
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
+    let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
@@ -471,6 +479,7 @@ pub async fn serve_uds(
         Arc::clone(&audit_drops),
         initial_hash,
     )
+    .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone());
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
