@@ -38,7 +38,7 @@ function validate(req: UpdateRetentionPolicyRequest): FormErrors {
     const url = (req.archive_url ?? '').trim()
     if (!url) {
       errors.archive_url = 'archive_url is required when cold_action is "archive"'
-    } else if (!/^s3:\/\//.test(url) && !/^gs:\/\//.test(url)) {
+    } else if (!url.startsWith('s3://') && !url.startsWith('gs://')) {
       errors.archive_url = 'archive_url must start with s3:// or gs://'
     }
   }

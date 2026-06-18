@@ -32,8 +32,7 @@ export function ScrubPage() {
       <header className="scrub-page-head">
         <div>
           <h1 className="scrub-page-title">
-            Secret Scrubbing
-            <span className="scrub-page-subtitle">
+            Secret Scrubbing<span className="scrub-page-subtitle">
               · L3 · network-layer sanitization
             </span>
           </h1>

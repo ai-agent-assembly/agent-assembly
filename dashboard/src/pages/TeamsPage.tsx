@@ -34,13 +34,16 @@ function sortIndicator(sorted: false | 'asc' | 'desc'): string {
   return ''
 }
 
+const TEAM_SKELETON_ROW_KEYS = Array.from({ length: 5 }, (_, i) => `team-skeleton-row-${i}`)
+
 function SkeletonRows({ cols }: Readonly<{ cols: number }>) {
+  const cellKeys = Array.from({ length: cols }, (_, j) => `team-skeleton-cell-${j}`)
   return (
     <>
-      {Array.from({ length: 5 }).map((_, i) => (
-        <tr key={i} data-testid="team-row-skeleton">
-          {Array.from({ length: cols }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
+      {TEAM_SKELETON_ROW_KEYS.map((rowKey) => (
+        <tr key={rowKey} data-testid="team-row-skeleton">
+          {cellKeys.map((cellKey) => (
+            <td key={cellKey} style={{ padding: '0.5rem' }}>
               <span
                 style={{
                   display: 'block',

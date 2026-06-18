@@ -14,7 +14,7 @@
  * that returns `undefined` in tests): the `.catch` handler is only attached
  * when the value is actually a promise, otherwise the value is discarded.
  */
-export function ignorePromise(promise: Promise<unknown> | unknown): void {
+export function ignorePromise(promise: unknown): void {
   if (promise instanceof Promise) {
     // Attach a no-op handler so an unexpected rejection cannot surface as an
     // unhandled-rejection warning. Intentionally swallows — callers use this

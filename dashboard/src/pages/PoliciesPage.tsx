@@ -160,7 +160,7 @@ interface PoliciesTabsProps {
  */
 function PoliciesTabs({ filter, counts, onSelect }: PoliciesTabsProps) {
   return (
-    <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
+    <div className="policies-tabs" role="tablist" aria-label="Filter policies">
       {FILTER_TABS.map((tab) => {
         const active = filter === tab.id
         const warnCount = tab.id === 'proposed' && counts.proposed > 0
@@ -191,7 +191,7 @@ function PoliciesTabs({ filter, counts, onSelect }: PoliciesTabsProps) {
           </button>
         )
       })}
-    </nav>
+    </div>
   )
 }
 
@@ -366,8 +366,9 @@ export function PoliciesPage() {
   const activePolicies = useMemo(() => all.filter((p) => p.active), [all])
   const proposedPolicies = useMemo(() => all.filter((p) => !p.active), [all])
 
-  const filtered =
-    filter === 'active' ? activePolicies : filter === 'proposed' ? proposedPolicies : all
+  let filtered = all
+  if (filter === 'active') filtered = activePolicies
+  else if (filter === 'proposed') filtered = proposedPolicies
 
   const counts: Record<FilterTab, number> = {
     all: all.length,

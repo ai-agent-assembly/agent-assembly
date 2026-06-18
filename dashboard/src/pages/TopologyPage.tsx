@@ -7,6 +7,8 @@ import { useTraceDrawer } from '../components/trace/useTraceDrawer'
 import type { TopologyNode } from '../features/topology/types'
 import './TopologyPage.css'
 
+const TOPOLOGY_SKELETON_KEYS = Array.from({ length: 4 }, (_, i) => `topology-skeleton-${i}`)
+
 /**
  * Topology page shell — header, D3 force graph (AAASM-1335), and
  * node-detail panel (AAASM-1337) docked on the right when a node is
@@ -34,8 +36,7 @@ export function TopologyPage() {
     <main className="topology-page" data-testid="topology-view">
       <header className="topology-page__head" data-testid="topology-header">
         <h1 className="topology-page__title">
-          Topology
-          <span className="topology-page__meta" data-testid="topology-meta">
+          Topology<span className="topology-page__meta" data-testid="topology-meta">
             · {agentCount} agent{agentCount === 1 ? '' : 's'} · {teamCount} team{teamCount === 1 ? '' : 's'}
           </span>
         </h1>
@@ -43,8 +44,8 @@ export function TopologyPage() {
 
       {isLoading && (
         <div data-testid="topology-loading" className="topology-page__loading">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} data-testid="topology-row-skeleton" className="topology-page__skeleton" />
+          {TOPOLOGY_SKELETON_KEYS.map((key) => (
+            <div key={key} data-testid="topology-row-skeleton" className="topology-page__skeleton" />
           ))}
         </div>
       )}

@@ -90,7 +90,7 @@ export function ViolationHeatmapPage() {
       {status === "success" && (
         <>
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
-            {data.nodes.length} agent{data.nodes.length !== 1 ? "s" : ""} with violations ·
+            {data.nodes.length} agent{data.nodes.length === 1 ? "" : "s"} with violations ·
             window {data.window_secs}s · generated {data.generated_at}
           </p>
           {data.nodes.length === 0 ? (

@@ -343,7 +343,7 @@ export function AgentDetailPage() {
 
             <IdentityStrip agent={agent} />
 
-            <nav className="ad-tabs" data-testid="agent-detail-tabs" role="tablist" aria-label="Agent detail sections">
+            <div className="ad-tabs" data-testid="agent-detail-tabs" role="tablist" aria-label="Agent detail sections">
               {TABS.map((t) => (
                 <button
                   key={t.id}
@@ -357,7 +357,7 @@ export function AgentDetailPage() {
                   {t.label}
                 </button>
               ))}
-            </nav>
+            </div>
 
             <div className="ad-body" data-testid="agent-detail-body">
               {tab === 'overview' && (
@@ -394,7 +394,7 @@ export function AgentDetailPage() {
                             checked={sandboxOnly}
                             onChange={(e) => setSandboxOnly(e.target.checked)}
                             data-testid="agent-events-sandbox-toggle"
-                          />
+                          />{' '}
                           Sandbox events only
                         </label>
                       </div>

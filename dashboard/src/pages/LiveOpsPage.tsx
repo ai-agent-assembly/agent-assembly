@@ -68,7 +68,7 @@ export function LiveOpsPage() {
     for (const op of ops) {
       const intent = overrides.get(op.id)
       if (intent && matchesIntent(op.status, intent)) {
-        if (!pruned) pruned = new Map(overrides)
+        pruned ??= new Map(overrides)
         pruned.delete(op.id)
       }
     }
@@ -109,10 +109,10 @@ export function LiveOpsPage() {
   )
 
   function handleAutoScrollChange(next: boolean) {
-    if (!next) {
-      setFrozenIds(new Set(ops.map((o) => o.id)))
-    } else {
+    if (next) {
       setFrozenIds(null)
+    } else {
+      setFrozenIds(new Set(ops.map((o) => o.id)))
     }
     setAutoScroll(next)
   }
@@ -144,6 +144,31 @@ export function LiveOpsPage() {
     () => Math.max(0.5, Math.min(5, ops.length / 15)),
     [ops.length],
   )
+
+  let streamBody
+  if (status === 'error') {
+    streamBody = (
+      <ErrorState
+        title="Connection lost"
+        description="Lost the connection to the gateway event stream after several attempts."
+        onRetry={reconnect}
+        retryLabel="Reconnect"
+      />
+    )
+  } else if (status === 'connected' && ops.length === 0) {
+    streamBody = <EmptyState page="live" />
+  } else {
+    streamBody = filteredOps.map((op) => (
+      <OperationRow
+        key={op.id}
+        op={op}
+        override={liveOverrides.get(op.id)}
+        onPause={() => runAction(op.id, 'pausing', pauseOp)}
+        onResume={() => runAction(op.id, 'resuming', resumeOp)}
+        onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
+      />
+    ))
+  }
 
   return (
     <main className="live-page" data-testid="live-ops-page">
@@ -189,36 +214,16 @@ export function LiveOpsPage() {
             teamOptions={teamOptions}
           />
           {status === 'reconnecting' && (
-            <div
+            <output
               className="live-page__reconnecting"
               data-testid="live-ops-reconnecting"
-              role="status"
+              style={{ display: 'block' }}
             >
               Reconnecting…
-            </div>
+            </output>
           )}
           <div className="live-page__pane-body live-page__pane-body--stream">
-            {status === 'error' ? (
-              <ErrorState
-                title="Connection lost"
-                description="Lost the connection to the gateway event stream after several attempts."
-                onRetry={reconnect}
-                retryLabel="Reconnect"
-              />
-            ) : status === 'connected' && ops.length === 0 ? (
-              <EmptyState page="live" />
-            ) : (
-              filteredOps.map((op) => (
-                <OperationRow
-                  key={op.id}
-                  op={op}
-                  override={liveOverrides.get(op.id)}
-                  onPause={() => runAction(op.id, 'pausing', pauseOp)}
-                  onResume={() => runAction(op.id, 'resuming', resumeOp)}
-                  onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
-                />
-              ))
-            )}
+            {streamBody}
           </div>
         </section>
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, type ReactNode } from 'react'
+import { useState, useCallback, useMemo, type ReactNode } from 'react'
 import { ToastContext, type ToastVariant, type ToastMessage } from './ToastContext'
 
 let _nextId = 0
@@ -25,8 +25,10 @@ export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
     setTimeout(() => setToasts((prev) => removeToast(prev, id)), TOAST_TTL_MS)
   }, [])
 
+  const value = useMemo(() => ({ toast }), [toast])
+
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div
         style={{

@@ -12,6 +12,8 @@ import { downloadTraceJson } from '../features/trace/export'
 import type { TraceEvent } from '../features/trace/types'
 import './TraceViewPage.css'
 
+const TRACE_SKELETON_KEYS = Array.from({ length: 4 }, (_, i) => `trace-skeleton-${i}`)
+
 function applyFilter(events: readonly TraceEvent[], filter: SeverityFilter): TraceEvent[] {
   return events.filter(event => {
     const key = event.severity ?? 'neutral'
@@ -53,9 +55,9 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
 
       {isLoading && (
         <div data-testid="trace-loading" style={{ marginTop: '1rem' }}>
-          {Array.from({ length: 4 }).map((_, i) => (
+          {TRACE_SKELETON_KEYS.map((key) => (
             <div
-              key={i}
+              key={key}
               data-testid="trace-row-skeleton"
               style={{
                 background: 'var(--paper-3)',
@@ -75,7 +77,7 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
         </div>
       )}
 
-      {!isLoading && !isError && data && data.length === 0 && (
+      {!isLoading && !isError && data?.length === 0 && (
         <EmptyState
           title="No events recorded for this session"
           description="The agent ran but produced no governed actions in this session."

@@ -231,9 +231,8 @@ export function TeamDetailPage() {
         </div>
       )}
 
-      {teamQuery.isLoading ? (
-        <p data-testid="team-detail-loading">Loading…</p>
-      ) : teamQuery.data ? (
+      {teamQuery.isLoading && <p data-testid="team-detail-loading">Loading…</p>}
+      {!teamQuery.isLoading && teamQuery.data && (
         <>
           <header data-testid="team-detail-header" style={{ marginBottom: '1rem' }}>
             <h1 style={{ marginBottom: '0.25rem' }}>{teamQuery.data.team_id}</h1>
@@ -273,7 +272,7 @@ export function TeamDetailPage() {
             </table>
           )}
         </>
-      ) : null}
+      )}
     </main>
   )
 }
