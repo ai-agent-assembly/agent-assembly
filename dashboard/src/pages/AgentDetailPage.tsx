@@ -19,6 +19,20 @@ const SubtreeBurnChart = lazy(() =>
 )
 import './AgentDetailDrawer.css'
 
+/** Trust score (0-100) to its gauge color token. */
+function trustTone(score: number): string {
+  if (score >= 80) return 'var(--ok)'
+  if (score >= 60) return 'var(--warn)'
+  return 'var(--danger)'
+}
+
+/** Trust score (0-100) to its human-readable standing summary. */
+function trustSummary(score: number): string {
+  if (score < 50) return 'low — needs review'
+  if (score < 75) return 'moderate'
+  return 'good standing'
+}
+
 function TrustGauge({ score }: { score: number | null }) {
   if (score === null) {
     return (
@@ -28,7 +42,7 @@ function TrustGauge({ score }: { score: number | null }) {
     )
   }
   const clamped = Math.max(0, Math.min(100, score))
-  const tone = clamped >= 80 ? 'var(--ok)' : clamped >= 60 ? 'var(--warn)' : 'var(--danger)'
+  const tone = trustTone(clamped)
   const dash = (clamped / 100) * 125.6
   return (
     <div className="ad-identity__trust">
@@ -47,7 +61,7 @@ function TrustGauge({ score }: { score: number | null }) {
       <div className="ad-identity__trust-meta">
         <p className="ad-identity__label">trust score</p>
         <span className="ad-identity__trust-summary">
-          {clamped < 50 ? 'low — needs review' : clamped < 75 ? 'moderate' : 'good standing'}
+          {trustSummary(clamped)}
         </span>
       </div>
     </div>
