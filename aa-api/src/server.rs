@@ -33,6 +33,29 @@ pub fn build_app(state: AppState) -> Router {
     apply_middleware(app)
 }
 
+/// Serve the full `/api/v1/*` REST surface from an in-memory, single-process
+/// `AppState` (AAASM-3360).
+///
+/// This is the shipped entrypoint that makes the entire REST surface reachable
+/// without the operator hand-wiring ~30 subsystems: it builds an
+/// [`AppState::local_in_memory`], constructs an [`ApiConfig`] bound to `addr`
+/// with auth disabled, and delegates to [`run_server`]. The process blocks
+/// until a shutdown signal (SIGTERM/SIGINT) arrives.
+///
+/// All routes registered by [`routes::v1_router`] are served. Because auth is
+/// off, protected routes (e.g. `/api/v1/agents`, `/api/v1/policies`) respond
+/// without a bearer credential. See [`AppState::local_in_memory`] for the
+/// documented limitations of the in-memory wiring (audit pipeline + retention
+/// engine respond 503; alert rules never fire).
+pub async fn serve_local(addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    let state = AppState::local_in_memory()?;
+    let config = ApiConfig {
+        bind_addr: addr,
+        auth: (*state.auth_config).clone(),
+    };
+    run_server(config, state).await
+}
+
 /// Start the HTTP server and block until shutdown.
 ///
 /// After receiving a shutdown signal the server drains in-flight requests.

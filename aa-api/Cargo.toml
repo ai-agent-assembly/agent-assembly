@@ -43,6 +43,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 chrono = { workspace = true, features = ["serde"] }
+chrono-tz = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 moka = { workspace = true, features = ["future"] }
@@ -54,7 +55,6 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 axum-test = "20"
-chrono-tz = { workspace = true }
 futures = { workspace = true }
 hmac = { workspace = true }
 httpmock = "0.8"
