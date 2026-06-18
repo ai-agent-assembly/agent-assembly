@@ -1054,6 +1054,21 @@ agent:
     }
 
     #[test]
+    fn default_retention_schedule_is_a_valid_six_field_cron() {
+        // The gateway validates `schedule` with the `cron` crate, which
+        // requires the 6-field (seconds-leading) form. A 5-field default
+        // is rejected at startup and silently disables retention, so the
+        // default must always parse as 6 whitespace-separated fields.
+        let schedule = RetentionConfig::default().schedule;
+        assert_eq!(
+            schedule.split_whitespace().count(),
+            6,
+            "default retention schedule {schedule:?} must be a 6-field cron",
+        );
+        assert_eq!(schedule, "0 0 3 * * *");
+    }
+
+    #[test]
     fn apply_env_overrides_storage_matrix() {
         let mut cfg = GatewayConfig::default();
         cfg.apply_env_overrides_with(env(&[
