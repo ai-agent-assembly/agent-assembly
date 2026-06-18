@@ -178,4 +178,153 @@ mod tests {
             "single entry must produce exactly one trailing newline: {on_disk}",
         );
     }
+
+    /// Build a minimal clean entry (no findings, no redaction) for tests that
+    /// care about framing rather than redaction.
+    fn clean_entry(host: &str, decision: ProxyAuditDecision) -> ProxyAuditEntry {
+        ProxyAuditEntry {
+            ts_ms: 1_700_000_000_000,
+            agent_id: None,
+            host: host.into(),
+            method: "GET".into(),
+            path: "/".into(),
+            decision,
+            credential_findings: vec![],
+            redacted_body: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_appends_one_jsonl_line_per_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+
+        for host in ["a.example", "b.example", "c.example"] {
+            tx.send(clean_entry(host, ProxyAuditDecision::Forwarded)).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = on_disk.lines().collect();
+        assert_eq!(lines.len(), 3, "three entries → three lines");
+        // Every line is independently valid JSON.
+        for line in &lines {
+            serde_json::from_str::<ProxyAuditEntry>(line).expect("each line is a valid entry");
+        }
+        assert!(on_disk.contains("a.example") && on_disk.contains("c.example"));
+    }
+
+    #[tokio::test]
+    async fn writer_appends_to_existing_file_across_two_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+
+        // First run writes one line, then the writer is dropped (file closed).
+        {
+            let (tx, rx) = mpsc::channel(4);
+            let writer = JsonlWriter::new(&path, rx).await.unwrap();
+            let handle = tokio::spawn(writer.run());
+            tx.send(clean_entry("first.example", ProxyAuditDecision::Blocked))
+                .await
+                .unwrap();
+            drop(tx);
+            handle.await.unwrap();
+        }
+
+        // Second run opens the same path in append mode; the first line survives.
+        {
+            let (tx, rx) = mpsc::channel(4);
+            let writer = JsonlWriter::new(&path, rx).await.unwrap();
+            let handle = tokio::spawn(writer.run());
+            tx.send(clean_entry("second.example", ProxyAuditDecision::Forwarded))
+                .await
+                .unwrap();
+            drop(tx);
+            handle.await.unwrap();
+        }
+
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(on_disk.lines().count(), 2, "append mode preserves prior content");
+        assert!(on_disk.contains("first.example"));
+        assert!(on_disk.contains("second.example"));
+    }
+
+    #[tokio::test]
+    async fn writer_with_no_entries_produces_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (tx, rx) = mpsc::channel(1);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        // Drop the sender immediately: the loop exits without writing anything.
+        drop(tx);
+        handle.await.unwrap();
+
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(on_disk.is_empty(), "no entries → empty file");
+    }
+
+    #[tokio::test]
+    async fn writer_exposes_its_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (_tx, rx) = mpsc::channel(1);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        assert_eq!(writer.path(), path.as_path());
+    }
+
+    #[tokio::test]
+    async fn writer_new_errors_when_parent_dir_missing() {
+        // `new` documents that parent dirs must already exist; opening under a
+        // non-existent directory therefore surfaces an I/O error.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("does/not/exist/audit.jsonl");
+        let (_tx, rx) = mpsc::channel(1);
+        // `JsonlWriter` is not `Debug`, so match the Result rather than using
+        // `expect_err`, which requires `T: Debug`.
+        match JsonlWriter::new(&path, rx).await {
+            Ok(_) => panic!("opening under a missing parent dir must fail"),
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+        }
+    }
+
+    #[test]
+    fn decision_serializes_to_snake_case() {
+        let cases = [
+            (ProxyAuditDecision::Forwarded, "\"forwarded\""),
+            (ProxyAuditDecision::ForwardedRedacted, "\"forwarded_redacted\""),
+            (ProxyAuditDecision::Blocked, "\"blocked\""),
+        ];
+        for (decision, expected) in cases {
+            assert_eq!(serde_json::to_string(&decision).unwrap(), expected);
+            // Round-trips back to the same variant.
+            let back: ProxyAuditDecision = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, decision);
+        }
+    }
+
+    #[test]
+    fn entry_round_trips_through_json_preserving_fields() {
+        let entry = ProxyAuditEntry {
+            ts_ms: 42,
+            agent_id: Some("agent-x".into()),
+            host: "api.example".into(),
+            method: "POST".into(),
+            path: "/v1/do".into(),
+            decision: ProxyAuditDecision::ForwardedRedacted,
+            credential_findings: vec![],
+            redacted_body: Some("clean body".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: ProxyAuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ts_ms, 42);
+        assert_eq!(back.agent_id.as_deref(), Some("agent-x"));
+        assert_eq!(back.host, "api.example");
+        assert_eq!(back.decision, ProxyAuditDecision::ForwardedRedacted);
+        assert_eq!(back.redacted_body.as_deref(), Some("clean body"));
+    }
 }
