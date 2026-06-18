@@ -128,7 +128,7 @@ export interface EmptyStateProps {
 export function EmptyState({ page = 'overview', onCta, onSecondary }: Readonly<EmptyStateProps>) {
   const c = COPY[page] ?? COPY.overview
   return (
-    <div className="state-page" role="status" data-testid={`empty-state-${page}`}>
+    <output className="state-page" data-testid={`empty-state-${page}`}>
       <div className="state-block">
         <div className="state-icon" aria-hidden>
           {c.icon}
@@ -151,6 +151,6 @@ export function EmptyState({ page = 'overview', onCta, onSecondary }: Readonly<E
           </div>
         )}
       </div>
-    </div>
+    </output>
   )
 }

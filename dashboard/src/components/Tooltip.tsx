@@ -17,6 +17,8 @@ export function Tooltip({ content, children, open = false }: Readonly<TooltipPro
       className="tooltip-wrapper"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
     >
       {children}
       {visible && (

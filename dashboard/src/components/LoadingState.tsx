@@ -6,12 +6,14 @@ export interface LoadingStateProps {
   page?: LoadingStatePage
 }
 
+const MATRIX_CELL_KEYS = Array.from({ length: 9 * 7 }, (_, i) => `sk-matrix-cell-${i}`)
+const FLEET_ROW_KEYS = Array.from({ length: 8 }, (_, i) => `sk-fleet-row-${i}`)
+
 function MatrixSkeleton() {
-  const cells = Array.from({ length: 9 * 7 })
   return (
     <div className="sk-matrix">
-      {cells.map((_, i) => (
-        <div key={i} className="sk-matrix-cell">
+      {MATRIX_CELL_KEYS.map((key) => (
+        <div key={key} className="sk-matrix-cell">
           <span className="sk sk-line" style={{ width: '60%' }} />
         </div>
       ))}
@@ -22,8 +24,8 @@ function MatrixSkeleton() {
 function FleetSkeleton() {
   return (
     <div className="sk-table">
-      {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="sk-table-row">
+      {FLEET_ROW_KEYS.map((key) => (
+        <div key={key} className="sk-table-row">
           <span className="sk sk-line" style={{ width: '80%' }} />
           <span className="sk sk-line" style={{ width: 60 }} />
           <span className="sk sk-line" style={{ width: 80 }} />
@@ -37,7 +39,7 @@ function FleetSkeleton() {
 
 export function LoadingState({ page = 'generic' }: Readonly<LoadingStateProps>) {
   return (
-    <div className="state-page sk-pulse" role="status" aria-busy data-testid={`loading-state-${page}`}>
+    <output className="state-page sk-pulse" aria-busy data-testid={`loading-state-${page}`}>
       <div className="sk-page-head">
         <div>
           <span className="sk sk-line" />
@@ -59,6 +61,6 @@ export function LoadingState({ page = 'generic' }: Readonly<LoadingStateProps>) 
           <span className="sk sk-block" style={{ width: '100%' }} />
         </div>
       )}
-    </div>
+    </output>
   )
 }

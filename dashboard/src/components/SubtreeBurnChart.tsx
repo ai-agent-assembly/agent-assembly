@@ -151,10 +151,10 @@ function transform(data: SubtreeBurn | undefined): {
   const sortedChildIds = Array.from(childIds).sort((a, b) => a.localeCompare(b))
 
   const rows: ChartRow[] = (data?.points ?? []).map((point) => {
-    const row: ChartRow = { date: point.date, total: parseFloat(point.total_usd) || 0 }
+    const row: ChartRow = { date: point.date, total: Number.parseFloat(point.total_usd) || 0 }
     for (const cid of sortedChildIds) {
       const match = point.per_child.find((c) => c.child_agent_id === cid)
-      row[cid] = match ? parseFloat(match.spent_usd) || 0 : 0
+      row[cid] = match ? Number.parseFloat(match.spent_usd) || 0 : 0
     }
     return row
   })
