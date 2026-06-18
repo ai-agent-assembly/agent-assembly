@@ -95,13 +95,22 @@ impl AnomalyDetector {
         if allowlist.is_empty() {
             return None;
         }
-        let host = url
+        let host_port = url
             .split_once("://")
             .map(|x| x.1)
             .unwrap_or(url)
             .split('/')
             .next()
             .unwrap_or("");
+        // AAASM-3367: `convert.rs` builds the URL as `proto://host:port`, so the
+        // authority extracted above still carries the `:port` suffix. Allowlist
+        // entries are bare hosts, so comparing `host:port` against them always
+        // failed. Strip a trailing numeric `:port` before the allowlist compare,
+        // mirroring the engine network stage (AAASM-3350, `engine/decision.rs`).
+        let host = match host_port.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host_port,
+        };
         if allowlist.iter().any(|entry| entry == host) {
             return None;
         }
