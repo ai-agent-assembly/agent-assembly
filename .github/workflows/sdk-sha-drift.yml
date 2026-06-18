@@ -23,7 +23,7 @@ jobs:
         id: check
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
         run: bash .ci/check-sdk-sha-consistency.sh "${GITHUB_WORKSPACE}/sdk-sha-report.md"
       - name: Open or update the drift issue
         if: steps.check.outcome == 'failure'
