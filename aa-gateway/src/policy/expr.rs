@@ -899,51 +899,32 @@ fn send_message_field(action: &GovernanceAction, which: MsgField) -> Option<Stri
 /// numeric ops a JSON number, `in`/`not_in` a JSON string against a list.
 /// Mismatched types are no-match (`false`).
 fn compare_json_value(resolved: &serde_json::Value, op: &OpKind, literal: &LiteralVal) -> bool {
-    match op {
-        OpKind::Eq | OpKind::Ne => match (resolved, literal) {
-            (serde_json::Value::String(s), LiteralVal::Str(lit)) => {
-                if matches!(op, OpKind::Eq) {
-                    s == lit
-                } else {
-                    s != lit
-                }
-            }
-            (serde_json::Value::Number(n), LiteralVal::Num(lit)) => match n.as_f64() {
-                Some(v) => {
-                    if matches!(op, OpKind::Eq) {
-                        (v - *lit).abs() < f64::EPSILON
-                    } else {
-                        (v - *lit).abs() >= f64::EPSILON
-                    }
-                }
-                None => false,
-            },
-            _ => false,
-        },
-        OpKind::Contains | OpKind::StartsWith => match (resolved.as_str(), literal) {
-            (Some(value), LiteralVal::Str(lit)) => {
-                if matches!(op, OpKind::Contains) {
-                    value.contains(lit.as_str())
-                } else {
-                    value.starts_with(lit.as_str())
-                }
-            }
-            _ => false,
-        },
-        OpKind::In | OpKind::NotIn => match (resolved.as_str(), literal) {
-            (Some(value), LiteralVal::StrList(list)) => {
-                if matches!(op, OpKind::In) {
-                    list.iter().any(|item| item == value)
-                } else {
-                    list.iter().all(|item| item != value)
-                }
-            }
-            _ => false,
-        },
-        OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => match (resolved.as_f64(), literal) {
-            (Some(lhs), LiteralVal::Num(rhs)) => compare_ord(lhs, *rhs, op),
-            _ => false,
-        },
+    match (op, resolved, literal) {
+        // Equality is type-strict: string-vs-string or number-vs-number only.
+        (OpKind::Eq, serde_json::Value::String(s), LiteralVal::Str(lit)) => s == lit,
+        (OpKind::Ne, serde_json::Value::String(s), LiteralVal::Str(lit)) => s != lit,
+        (OpKind::Eq, serde_json::Value::Number(n), LiteralVal::Num(lit)) => {
+            n.as_f64().is_some_and(|v| (v - *lit).abs() < f64::EPSILON)
+        }
+        (OpKind::Ne, serde_json::Value::Number(n), LiteralVal::Num(lit)) => {
+            n.as_f64().is_some_and(|v| (v - *lit).abs() >= f64::EPSILON)
+        }
+        // Substring ops require a JSON string and a string literal.
+        (OpKind::Contains, _, LiteralVal::Str(lit)) => resolved.as_str().is_some_and(|v| v.contains(lit.as_str())),
+        (OpKind::StartsWith, _, LiteralVal::Str(lit)) => {
+            resolved.as_str().is_some_and(|v| v.starts_with(lit.as_str()))
+        }
+        // Membership ops require a JSON string and a list literal.
+        (OpKind::In, _, LiteralVal::StrList(list)) => resolved.as_str().is_some_and(|v| list.iter().any(|i| i == v)),
+        (OpKind::NotIn, _, LiteralVal::StrList(list)) => {
+            resolved.as_str().is_some_and(|v| list.iter().all(|i| i != v))
+        }
+        // Ordered numeric comparisons require a JSON number and a numeric literal.
+        (OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte, _, LiteralVal::Num(rhs)) => {
+            resolved.as_f64().is_some_and(|lhs| compare_ord(lhs, *rhs, op))
+        }
+        // Mismatched value/literal types are no-match.
+        _ => false,
     }
 }
 
