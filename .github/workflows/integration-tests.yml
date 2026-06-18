@@ -54,22 +54,22 @@ jobs:
 
     steps:
       - name: Checkout agent-assembly
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout sibling python-sdk
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ai-agent-assembly/python-sdk
           path: python-sdk
 
       - name: Checkout sibling go-sdk
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ai-agent-assembly/go-sdk
           path: go-sdk
 
       - name: Checkout sibling node-sdk
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
