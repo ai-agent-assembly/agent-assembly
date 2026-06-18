@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 
 use crate::dashboard_server::{dashboard_router, find_dashboard_dist};
 use crate::routes::admin_status::{admin_status, AdminStatusState};
+use crate::routes::api_health::{api_health, ApiHealthState};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{SqliteBackend, SqliteConfig, StorageBackend, StorageError};
 
@@ -264,6 +265,16 @@ pub(crate) fn router_with_resolved_dist(
 ) -> Router {
     let state = HealthzState::new("local", "sqlite");
     let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
+    // AAASM-3354: serve the REST surface's liveness probe at /api/v1/health
+    // so `curl http://127.0.0.1:7391/api/v1/health` returns JSON, not a 404,
+    // in local mode. The full `aa-api` router cannot be nested here — `aa-api`
+    // depends on `aa-gateway` (circular) and requires the heavyweight
+    // `aa_api::AppState` local mode does not construct — so this is the
+    // smallest viable wiring; remaining `/api/v1/*` data routes are a
+    // documented follow-up (see the AAASM-3354 PR body).
+    app = app
+        .route("/api/v1/health", get(api_health))
+        .layer(Extension(ApiHealthState::new()));
     if let Some(backend) = storage {
         let admin_state = AdminStatusState::new(
             "local",
