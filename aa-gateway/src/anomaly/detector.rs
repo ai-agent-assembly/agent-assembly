@@ -392,6 +392,24 @@ mod tests {
     }
 
     #[test]
+    fn unknown_connection_allowlisted_host_with_port_is_in_allowlist() {
+        // AAASM-3367: the gateway builds URLs as `proto://host:port`. A bare
+        // allowlist entry must still match when the URL carries a numeric port.
+        let detector = default_detector();
+        let id = agent(4);
+        let allowlist = vec!["api.openai.com".to_string()];
+
+        assert!(detector
+            .check_unknown_connection(id, "https://api.openai.com:443/v1", &allowlist)
+            .is_none());
+
+        // A non-allowlisted host (also with a port) is still flagged.
+        let result = detector.check_unknown_connection(id, "https://evil.com:8443/data", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+    }
+
+    #[test]
     fn unknown_connection_not_detected_when_allowlist_empty() {
         let detector = default_detector();
         let id = agent(5);
