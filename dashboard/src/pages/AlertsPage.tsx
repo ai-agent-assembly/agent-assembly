@@ -85,6 +85,11 @@ export function AlertsPage() {
   const noAlertsInWindow =
     !alertsQuery.isLoading && !alertsQuery.isError && rows.length === 0 && !noRulesConfigured
 
+  const alertsPlural = rows.length === 1 ? '' : 's'
+  const alertsCountLabel = alertsQuery.isLoading
+    ? 'Loading…'
+    : `${rows.length} alert${alertsPlural}`
+
   let alertsBody
   if (noRulesConfigured) {
     alertsBody = <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
@@ -192,9 +197,7 @@ export function AlertsPage() {
             data-testid="alerts-count"
             style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}
           >
-            {alertsQuery.isLoading
-              ? 'Loading…'
-              : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
+            {alertsCountLabel}
           </div>
 
           {alertsBody}
