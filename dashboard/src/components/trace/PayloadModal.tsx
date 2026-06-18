@@ -18,7 +18,7 @@ function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): R
       const trailing = rawValue.trimEnd().endsWith(',') ? ',' : ''
       const sentinel = `"<redacted: ${key}>"`
       return (
-        <span key={i} data-testid="redacted-field" className="payload-modal__redacted">
+        <span key={`${i}:${line}`} data-testid="redacted-field" className="payload-modal__redacted">
           {indent}&quot;{key}&quot;:{' '}
           <Tooltip content="Redacted by policy">
             <span className="payload-modal__lock" aria-label={`${key} is redacted by policy`}>🔒</span>
@@ -29,7 +29,7 @@ function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): R
       )
     }
     return (
-      <span key={i}>
+      <span key={`${i}:${line}`}>
         {line}
         {'\n'}
       </span>

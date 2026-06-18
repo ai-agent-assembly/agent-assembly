@@ -98,7 +98,7 @@ describe('TeamDetailPage', () => {
 
   it('renders empty-members message when team has no members', async () => {
     mockTeam({ data: EMPTY_TEAM })
-    mockCosts(undefined)
+    mockCosts()
     mockLineage('x')
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-beta']}>{children}</Wrapper> })
     await waitFor(() => expect(screen.getByTestId('team-members-empty')).toBeInTheDocument())

@@ -42,9 +42,9 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
   if (!open) return null
 
   const target =
-    typeof document !== 'undefined'
-      ? document.querySelector(`[data-overlay="${name}"]`)
-      : null
+    typeof document === 'undefined'
+      ? null
+      : document.querySelector(`[data-overlay="${name}"]`)
   if (!target) return null
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {

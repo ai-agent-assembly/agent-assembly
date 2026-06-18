@@ -42,7 +42,7 @@ export function getInitialTheme(): Theme {
 /** Apply a theme to the document root (idempotent). */
 export function applyTheme(theme: Theme): void {
   if (typeof document !== 'undefined') {
-    document.documentElement.setAttribute('data-theme', theme)
+    document.documentElement.dataset.theme = theme
   }
 }
 
