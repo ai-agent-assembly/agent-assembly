@@ -690,13 +690,23 @@ impl PolicyEngine {
         if np.allowlist.is_empty() {
             return None;
         }
-        let host = url
+        let host_port = url
             .split_once("://")
             .map(|x| x.1)
             .unwrap_or("")
             .split('/')
             .next()
             .unwrap_or("");
+        // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
+        // authority extracted above still carries the `:port` suffix. Allowlist
+        // entries are bare hosts (`api.openai.com`), so comparing `host:port`
+        // against them always failed and every allowlisted host was denied on
+        // the live `evaluate`/`eval_network_stage` path. Strip a trailing
+        // numeric `:port` before the allowlist compare (mirrors `decision.rs`).
+        let host = match host_port.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host_port,
+        };
         if !np.allowlist.iter().any(|entry| entry == host) {
             return Some(EvaluationResult::deny("host not in network allowlist"));
         }
@@ -1637,6 +1647,38 @@ mod tests {
         let ctx = make_ctx();
         let action = network_req("https://api.openai.com/v1");
         assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn network_allows_listed_host_with_port() {
+        // AAASM-3350: `convert.rs` emits `proto://host:port`, so the live
+        // `evaluate`/`eval_network_stage` path must strip the `:port` before the
+        // bare-host allowlist compare. An allowlisted host with a port must Allow.
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://api.openai.com:443/v1");
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn network_denies_unlisted_host_with_port() {
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://evil.attacker.net:8443/x");
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            }
+        );
     }
 
     #[test]
