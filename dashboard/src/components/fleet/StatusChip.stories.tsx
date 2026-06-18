@@ -11,4 +11,4 @@ type Story = StoryObj<typeof StatusChip>
 
 export const Active: Story = { args: { status: 'active' } }
 export const Suspended: Story = { args: { status: 'suspended' } }
-export const Error: Story = { args: { status: 'error' } }
+export const ErrorState: Story = { name: 'Error', args: { status: 'error' } }
