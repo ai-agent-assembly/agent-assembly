@@ -253,11 +253,17 @@ async fn combined_pipeline_sustains_target_throughput() {
     );
 
     // ---- Wait for every event to land, then measure the end-to-end rate ----
-    // The deadline scales with the volume so a larger run is not cut short: at
-    // worst the consumer drains at a fraction of the target, so allow ample
-    // headroom beyond the AC window.
+    // This is a *safety timeout* for the drain, not a correctness bound: the
+    // all-land assertion below still requires every event to persist. It only
+    // exists so a hung consumer fails fast instead of blocking forever, so it
+    // must be generous. This test runs only in the Coverage job under llvm-cov,
+    // whose 2-5x instrumentation overhead drops the end-to-end drain to ~7k/s
+    // (vs the uninstrumented target). So scale the deadline off a low ~4k/s
+    // floor (not the 10k/s the consumer hits uninstrumented) plus a fixed
+    // headroom buffer; at 3M events this yields ~870s, well above the observed
+    // ~407s instrumented drain. Widening this does NOT weaken correctness.
     let pool = sqlx::PgPool::connect(&pg_url).await.expect("assert pool");
-    let drain_deadline = Duration::from_secs((events / 10_000).max(TARGET_SECONDS) + 60);
+    let drain_deadline = Duration::from_secs((events / 4_000).max(TARGET_SECONDS) + 120);
     let landed = wait_for_count(&pool, events as i64, drain_deadline).await;
     let end_to_end_elapsed = run_start.elapsed();
 
