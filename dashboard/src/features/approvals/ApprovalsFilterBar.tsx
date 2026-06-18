@@ -35,7 +35,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<Appro
       }}
     >
       <label>
-        Agent
+        <span>Agent</span>
         <select
           data-testid="filter-agent"
           value={filter.agent}
@@ -48,7 +48,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<Appro
       </label>
 
       <label>
-        Team
+        <span>Team</span>
         <select
           data-testid="filter-team"
           value={filter.team}
@@ -61,7 +61,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<Appro
       </label>
 
       <label>
-        Action
+        <span>Action</span>
         <select
           data-testid="filter-action"
           value={filter.action}
@@ -74,7 +74,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<Appro
       </label>
 
       <label>
-        Urgency
+        <span>Urgency</span>
         <select
           data-testid="filter-urgency"
           value={filter.urgency}
