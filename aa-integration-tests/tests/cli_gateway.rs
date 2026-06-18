@@ -33,9 +33,10 @@ use tempfile::TempDir;
 
 const MINIMAL_POLICY: &str = "\
 apiVersion: agent-assembly.dev/v1alpha1\n\
-kind: GovernancePolicy\n\
+kind: Policy\n\
 spec:\n\
-  rules: []\n";
+  budget:\n\
+    daily_limit_usd: 1000.0\n";
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")

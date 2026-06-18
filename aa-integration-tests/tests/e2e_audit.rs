@@ -289,7 +289,7 @@ async fn audit_chain_survives_gateway_restart() -> anyhow::Result<()> {
     let policy_path = policy_tmp.path().join("policy.yaml");
     std::fs::write(
         &policy_path,
-        "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  rules: []\n",
+        "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  budget:\n    daily_limit_usd: 1000.0\n",
     )?;
 
     // ── Seed: 3 valid chained audit entries on disk. ────────────────

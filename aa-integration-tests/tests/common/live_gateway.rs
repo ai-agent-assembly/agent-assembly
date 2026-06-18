@@ -46,7 +46,7 @@ impl LiveGateway {
         let policy_path = policy_tmp.path().join("policy.yaml");
         std::fs::write(
             &policy_path,
-            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  rules: []\n",
+            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  budget:\n    daily_limit_usd: 1000.0\n",
         )
         .context("writing minimal policy YAML")?;
 

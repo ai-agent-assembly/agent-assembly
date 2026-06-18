@@ -835,7 +835,8 @@ metadata:
   name: topology-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -964,7 +965,8 @@ metadata:
   name: auth-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -1103,7 +1105,8 @@ metadata:
   name: auth-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -1243,7 +1246,8 @@ metadata:
   name: budget-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
