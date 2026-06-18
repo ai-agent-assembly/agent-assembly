@@ -4,12 +4,12 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AutoScrollToggle } from './AutoScrollToggle'
 
-function StaticHarness(props: {
+function StaticHarness(props: Readonly<{
   enabled: boolean
   pendingCount: number
   onEnabledChange?: (v: boolean) => void
   onFlushPending?: () => void
-}) {
+}>) {
   return (
     <AutoScrollToggle
       enabled={props.enabled}
@@ -23,10 +23,10 @@ function StaticHarness(props: {
 function ControlledHarness({
   initialEnabled,
   initialPending,
-}: {
+}: Readonly<{
   initialEnabled: boolean
   initialPending: number
-}) {
+}>) {
   const [enabled, setEnabled] = useState(initialEnabled)
   const [pending, setPending] = useState(initialPending)
   return (

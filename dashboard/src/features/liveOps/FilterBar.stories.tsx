@@ -15,7 +15,7 @@ const TEAMS: FilterOption[] = [
   { id: 'data', label: 'Data' },
 ]
 
-function Interactive({ initial }: { initial: LiveOpsFilters }) {
+function Interactive({ initial }: Readonly<{ initial: LiveOpsFilters }>) {
   const [filters, setFilters] = useState<LiveOpsFilters>(initial)
   return (
     <FilterBar

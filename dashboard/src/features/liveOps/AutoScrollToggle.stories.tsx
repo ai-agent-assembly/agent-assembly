@@ -5,10 +5,10 @@ import { AutoScrollToggle } from './AutoScrollToggle'
 function Interactive({
   initialEnabled,
   initialPending,
-}: {
+}: Readonly<{
   initialEnabled: boolean
   initialPending: number
-}) {
+}>) {
   const [enabled, setEnabled] = useState(initialEnabled)
   const [pending, setPending] = useState(initialPending)
   return (

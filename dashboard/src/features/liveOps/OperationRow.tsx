@@ -62,7 +62,7 @@ export function OperationRow({
   onPause,
   onResume,
   onTerminate,
-}: OperationRowProps) {
+}: Readonly<OperationRowProps>) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const treeId = useId()
   const canExpand = (op.callStack?.length ?? 0) > 0
@@ -125,7 +125,7 @@ export function OperationRow({
   )
 }
 
-function CallStackTree({ id, nodes }: { id: string; nodes: CallStackNode[] }) {
+function CallStackTree({ id, nodes }: Readonly<{ id: string; nodes: CallStackNode[] }>) {
   return (
     <ul
       id={id}
@@ -140,7 +140,7 @@ function CallStackTree({ id, nodes }: { id: string; nodes: CallStackNode[] }) {
   )
 }
 
-function CallStackTreeNode({ node }: { node: CallStackNode }) {
+function CallStackTreeNode({ node }: Readonly<{ node: CallStackNode }>) {
   return (
     <li className="op-row__tree-node" role="treeitem">
       <div className="op-row__tree-row">

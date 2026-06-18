@@ -167,7 +167,7 @@ export function PipelineCanvas({
   paused = false,
   intensity = 2,
   onCounters,
-}: PipelineCanvasProps) {
+}: Readonly<PipelineCanvasProps>) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const pausedRef = useRef(paused)
   const intensityRef = useRef(intensity)
