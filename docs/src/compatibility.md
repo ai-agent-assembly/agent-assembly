@@ -74,6 +74,8 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | v0.0.1-alpha.2 | v0.0.1-alpha.2 (PyPI `0.0.1a2`) ✓ | v0.0.1-alpha.2 ✓ | v0.0.1-alpha.2 ✓ | protocol/v1 |
 | v0.0.1-alpha.3 | v0.0.1-alpha.3 (PyPI `0.0.1a3`) ✓ | v0.0.1-alpha.3 ✓ | v0.0.1-alpha.3 ✓ | protocol/v1 |
 | v0.0.1 | v0.0.1 ✓ | v0.0.1 ✓ | v0.0.1 ✓ | protocol/v1 |
+| v0.0.1-beta.1 | v0.0.1-beta.1 (PyPI `0.0.1b1`) ✓ | v0.0.1-beta.1 ✓ | v0.0.1-beta.1 ✓ | protocol/v1 |
+| v0.0.1-beta.2 | v0.0.1-beta.2 (PyPI `0.0.1b2`) ✓ | v0.0.1-beta.2 ✓ | v0.0.1-beta.2 ✓ | protocol/v1 |
 
 **Legend:**
 - ✓ Compatible — fully supported
@@ -89,6 +91,9 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | Python SDK (`aa-ffi-python`) v0.0.1 | aa-runtime v0.0.1 |
 | Node.js SDK (`aa-ffi-node`) v0.0.1 | aa-runtime v0.0.1 |
 | Go SDK (`aa-ffi-go`) v0.0.1 | aa-runtime v0.0.1 |
+| Python SDK (`aa-ffi-python`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
+| Node.js SDK (`aa-ffi-node`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
+| Go SDK (`aa-ffi-go`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
 
 ---
 
@@ -102,6 +107,8 @@ A runtime version may support multiple protocol versions to allow SDK upgrades w
 | v0.0.1-alpha.2 | protocol/v1 |
 | v0.0.1-alpha.3 | protocol/v1 |
 | v0.0.1 | protocol/v1 |
+| v0.0.1-beta.1 | protocol/v1 |
+| v0.0.1-beta.2 | protocol/v1 |
 
 ---
 
