@@ -35,7 +35,7 @@ interface PolicyEditorOverlayContainerProps {
 function PolicyEditorOverlayContainer({
   dirtyRef,
   onRequestClose,
-}: PolicyEditorOverlayContainerProps) {
+}: Readonly<PolicyEditorOverlayContainerProps>) {
   const { props, closeOverlay } = useOverlay('policy-editor')
   const overlayProps = props as unknown as PolicyEditorOverlayProps
   const { toast } = useToast()
@@ -101,7 +101,7 @@ function PolicySkeletonRow() {
   )
 }
 
-function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
+function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => void }>) {
   const proposed = !policy.active
   return (
     <li>

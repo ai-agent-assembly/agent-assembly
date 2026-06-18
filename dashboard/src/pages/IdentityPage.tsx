@@ -6,7 +6,7 @@ import { AccessLogPanel } from '../features/iam/AccessLogPanel'
 import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
-function TabPlaceholder({ tab }: { tab: IamTabKey }) {
+function TabPlaceholder({ tab }: Readonly<{ tab: IamTabKey }>) {
   return (
     <section className="iam-tab-panel" data-testid={`iam-panel-${tab}`}>
       <h2>{IAM_TAB_LABELS[tab]}</h2>
@@ -17,7 +17,7 @@ function TabPlaceholder({ tab }: { tab: IamTabKey }) {
   )
 }
 
-function ActiveTabContent({ tab }: { tab: IamTabKey }) {
+function ActiveTabContent({ tab }: Readonly<{ tab: IamTabKey }>) {
   if (tab === 'members') return <MembersPanel />
   if (tab === 'services') return <ServiceIdentitiesPanel />
   if (tab === 'roles') return <RolesPermissionsPanel />

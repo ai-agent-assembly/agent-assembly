@@ -36,7 +36,7 @@ interface MockArgs {
   teamCount: number
 }
 
-function MockedTeamsPage({ teamCount }: MockArgs) {
+function MockedTeamsPage({ teamCount }: Readonly<MockArgs>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(['topology', 'overview'], makeOverview(teamCount))
   client.setQueryData(['costs', 'summary'], makeCosts(teamCount))

@@ -19,7 +19,7 @@ const STATUS_COLOR: Record<string, string> = {
   deregistered: 'var(--text-muted)',
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status }: Readonly<{ status: string }>) {
   const color = STATUS_COLOR[status] ?? 'var(--text-muted)'
   return (
     <span
@@ -39,7 +39,7 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
-function ShortId({ id }: { id: string }) {
+function ShortId({ id }: Readonly<{ id: string }>) {
   return (
     <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8125rem' }}>
       {id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id}
@@ -47,7 +47,7 @@ function ShortId({ id }: { id: string }) {
   )
 }
 
-function OpenInTopologyButton({ agentId }: { agentId: string }) {
+function OpenInTopologyButton({ agentId }: Readonly<{ agentId: string }>) {
   const lineage = useAgentLineageQuery(agentId)
   const navigate = useNavigate()
   const rootId = lineage.data?.ancestors?.[0]?.id ?? agentId
@@ -63,7 +63,7 @@ function OpenInTopologyButton({ agentId }: { agentId: string }) {
   )
 }
 
-function MemberRow({ member }: { member: AgentNode }) {
+function MemberRow({ member }: Readonly<{ member: AgentNode }>) {
   return (
     <tr data-testid="team-member-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
       <td style={{ padding: '0.5rem' }}>
@@ -92,7 +92,7 @@ interface ConfirmDialogProps {
   busy: boolean
 }
 
-function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }: ConfirmDialogProps) {
+function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }: Readonly<ConfirmDialogProps>) {
   return (
     <div
       data-testid="confirm-dialog"
@@ -122,7 +122,7 @@ interface ActionBarProps {
   onError: (msg: string) => void
 }
 
-function ActionBar({ team, onError }: ActionBarProps) {
+function ActionBar({ team, onError }: Readonly<ActionBarProps>) {
   const canManage = useCanManageTeam()
   const suspend = useSuspendTeam()
   const resume = useResumeTeam()

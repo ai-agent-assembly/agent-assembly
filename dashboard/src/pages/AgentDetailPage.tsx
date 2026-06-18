@@ -33,7 +33,7 @@ function trustSummary(score: number): string {
   return 'good standing'
 }
 
-function TrustGauge({ score }: { score: number | null }) {
+function TrustGauge({ score }: Readonly<{ score: number | null }>) {
   if (score === null) {
     return (
       <div className="ad-identity__trust">
@@ -68,7 +68,7 @@ function TrustGauge({ score }: { score: number | null }) {
   )
 }
 
-function IdentityStrip({ agent }: { agent: Agent }) {
+function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
   const fleetAgent = useMemo(() => toFleetAgent(agent), [agent])
   const ownerSlug = fleetAgent.owner ?? 'agent-assembly'
 
@@ -133,7 +133,7 @@ const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'config',     label: 'Config' },
 ]
 
-function TabEmpty({ title, body }: { title: string; body: string }) {
+function TabEmpty({ title, body }: Readonly<{ title: string; body: string }>) {
   return (
     <div className="ad-tab-empty" data-testid={`ad-tab-empty-${title.toLowerCase()}`}>
       <p className="ad-tab-empty__title">{title}</p>
@@ -149,7 +149,7 @@ interface MiniBarProps {
   tone: 'ok' | 'warn' | 'deny' | 'info'
 }
 
-function MiniBar({ label, value, max, tone }: MiniBarProps) {
+function MiniBar({ label, value, max, tone }: Readonly<MiniBarProps>) {
   const pct = max === 0 ? 0 : Math.min(100, Math.max(0, (value / max) * 100))
   return (
     <div className="ad-minibar" data-testid={`ad-minibar-${tone}`}>
@@ -169,7 +169,7 @@ interface PostureSummaryProps {
   agent: Agent
 }
 
-function PostureSummary({ agent }: PostureSummaryProps) {
+function PostureSummary({ agent }: Readonly<PostureSummaryProps>) {
   // The dashboard has not yet wired a per-decision breakdown endpoint
   // (cf. AAASM-1280 capability matrix). Until that lands, the panel
   // derives an approximate decisions-this-session view from the two

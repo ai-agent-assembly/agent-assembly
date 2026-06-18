@@ -35,7 +35,7 @@ interface RejectDialogProps {
   onCancel: () => void
 }
 
-function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
+function RejectDialog({ count, onConfirm, onCancel }: Readonly<RejectDialogProps>) {
   const [reason, setReason] = useState('')
   return (
     <div
@@ -95,12 +95,12 @@ function TabBar({
   pendingCount,
   decidedCount,
   onChange,
-}: {
+}: Readonly<{
   active: 'pending' | 'decided'
   pendingCount: number
   decidedCount: number
   onChange: (t: 'pending' | 'decided') => void
-}) {
+}>) {
   function tabStyle(t: 'pending' | 'decided') {
     return {
       padding: '0.5rem 1rem',
