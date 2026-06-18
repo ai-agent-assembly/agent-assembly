@@ -542,6 +542,23 @@ mod tests {
     }
 
     #[test]
+    fn rule_list_schema_is_a_validation_error_not_an_allow_all_warning() {
+        // AAASM-3351: a rule-list / GovernancePolicy-style document (top-level
+        // `rules:`) is not honored by the section-based engine. It must fail
+        // closed with a hard validation error, NOT validate into an empty
+        // allow-all policy with only a warning.
+        let yaml = "rules:\n  - id: deny-all\n    action: deny\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "rule-list schema must be rejected, not allow-all");
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "rules"),
+            "expected a hard error on the 'rules' field, got: {:?}",
+            errs,
+        );
+    }
+
+    #[test]
     fn network_unknown_key_produces_warning() {
         let yaml = "network:\n  allowlist:\n    - api.openai.com\n  blocklist:\n    - \"*\"\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
