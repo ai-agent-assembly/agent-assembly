@@ -119,13 +119,22 @@ fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Op
         return None;
     };
     let np = doc.network.as_ref()?;
-    let host = url
+    let host_port = url
         .split_once("://")
         .map(|x| x.1)
         .unwrap_or("")
         .split('/')
         .next()
         .unwrap_or("");
+    // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
+    // authority extracted above still carries the `:port` suffix. Allowlist
+    // entries are bare hosts (`api.openai.com`, `*.openai.com`), so comparing
+    // `host:port` against them always failed and every allowlisted host was
+    // denied. Strip a trailing numeric `:port` before the allowlist compare.
+    let host = match host_port.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host_port,
+    };
     // An empty allowlist denies all egress (fail-closed); `is_host_allowed_*`
     // treats an empty list as allow-all, so guard it explicitly here.
     let allowed = !np.allowlist.is_empty() && aa_core::policy::is_host_allowed_by_egress_allowlist(host, &np.allowlist);
