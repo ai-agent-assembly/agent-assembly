@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Approval } from './api'
 import { expireApproval } from './useExpiredApprovals'
@@ -43,6 +43,46 @@ export function useApprovalsStream(): { connected: boolean } {
   const wsRef = useRef<WebSocket | null>(null)
   const deadRef = useRef(false)
 
+  // Hoisted out of the WebSocket `onmessage` handler to keep the effect's
+  // callback nesting shallow.
+  const handleMessage = useCallback(
+    (evt: MessageEvent) => {
+      try {
+        const event = JSON.parse(evt.data as string) as GovernanceEvent
+        if (event.event_type !== 'approval') return
+        const payload = event.payload as ApprovalPayload
+
+        // AAASM-1453 expired event — move the matching row out of the
+        // active list into the Expired section. The dispatcher silently
+        // no-ops when the id isn't in the active cache (stale event).
+        if (payload.status === 'expired') {
+          expireApproval(queryClient, payload.request_id)
+          return
+        }
+
+        const incoming: Approval = {
+          id: payload.request_id,
+          agent_id: event.agent_id,
+          action: payload.action,
+          reason: payload.condition_triggered,
+          status: 'pending',
+          created_at: event.timestamp,
+          // WS `expires_at` is unix seconds; the REST shape uses RFC 3339,
+          // so convert to ISO 8601 for consistency with the cached list view.
+          expires_at: new Date(payload.expires_at * 1000).toISOString(),
+          routing_status: null,
+          team_id: null,
+        }
+        queryClient.setQueryData<Approval[]>(['approvals'], (prev) =>
+          mergeIncomingApproval(prev, incoming),
+        )
+      } catch {
+        // Ignore malformed frames
+      }
+    },
+    [queryClient],
+  )
+
   useEffect(() => {
     deadRef.current = false
 
@@ -57,40 +97,7 @@ export function useApprovalsStream(): { connected: boolean } {
         backoffRef.current = 250
       }
 
-      ws.onmessage = (evt) => {
-        try {
-          const event = JSON.parse(evt.data as string) as GovernanceEvent
-          if (event.event_type !== 'approval') return
-          const payload = event.payload as ApprovalPayload
-
-          // AAASM-1453 expired event — move the matching row out of the
-          // active list into the Expired section. The dispatcher silently
-          // no-ops when the id isn't in the active cache (stale event).
-          if (payload.status === 'expired') {
-            expireApproval(queryClient, payload.request_id)
-            return
-          }
-
-          const incoming: Approval = {
-            id: payload.request_id,
-            agent_id: event.agent_id,
-            action: payload.action,
-            reason: payload.condition_triggered,
-            status: 'pending',
-            created_at: event.timestamp,
-            // WS `expires_at` is unix seconds; the REST shape uses RFC 3339,
-            // so convert to ISO 8601 for consistency with the cached list view.
-            expires_at: new Date(payload.expires_at * 1000).toISOString(),
-            routing_status: null,
-            team_id: null,
-          }
-          queryClient.setQueryData<Approval[]>(['approvals'], (prev) =>
-            mergeIncomingApproval(prev, incoming),
-          )
-        } catch {
-          // Ignore malformed frames
-        }
-      }
+      ws.onmessage = handleMessage
 
       ws.onclose = () => {
         setConnected(false)
@@ -110,7 +117,7 @@ export function useApprovalsStream(): { connected: boolean } {
       if (timerRef.current) clearTimeout(timerRef.current)
       wsRef.current?.close()
     }
-  }, [queryClient])
+  }, [handleMessage])
 
   return { connected }
 }
