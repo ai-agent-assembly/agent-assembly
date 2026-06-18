@@ -1071,7 +1071,7 @@ fn is_word_char(c: char) -> bool {
 /// (or end of input). List contents are string values, not field names.
 fn skip_list_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     chars.next(); // opening '['
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         if c == ']' {
             break;
         }
