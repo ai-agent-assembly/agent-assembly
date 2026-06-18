@@ -41,8 +41,8 @@ envelope level:
 
 ```yaml
 # CORRECT — scope inside spec
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: org-acme-deny-bash
 spec:
@@ -52,8 +52,8 @@ spec:
       allow: false
 
 # WRONG — scope at envelope level is SILENTLY IGNORED
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: org-acme-deny-bash
 scope: org:acme         # ← will be ignored; document defaults to Global

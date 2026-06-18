@@ -26,66 +26,77 @@ Every shadow event carries the full decision context: which rule matched (`shado
 ## Quick start — 5 steps
 
 ```bash
-# 1. Author a policy in observe mode (zero risk to running agents)
+# 1. Author a policy (the section-based schema the gateway loads)
 cat > coding-team-sandbox.yaml << 'EOF'
-name: coding-team-sandbox
-enforcement_mode: observe       # ← the one new field
-
-rules:
-  - action: deny
-    match:
-      tool_name: bash
-      command_pattern: "rm -rf"
-  - action: redact
-    match:
-      output_contains_pattern: "(AKIA|ghp_)[A-Za-z0-9]+"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: coding-team-sandbox
+spec:
+  # Block destructive shell tooling.
+  tools:
+    bash:
+      allow: false
+  # Detect leaked AWS / GitHub credentials and redact them.
+  data:
+    credential_action: redact_only
+    sensitive_patterns:
+      - "(AKIA|ghp_)[A-Za-z0-9]+"
 EOF
 
 # 2. Apply the policy
 aasm policy apply --file coding-team-sandbox.yaml
 
-# 3. Run an agent under observe-mode governance
+# 3. Run an agent under observe-mode governance (posture is a runtime flag,
+#    not a policy-document field — see "Policy configuration" below)
 aasm run --observe claude --workspace .
 
 # 4. After a few days, review what would have been blocked
 aasm audit list --dry-run-only --since 7d
 
-# 5. Confident the policy is right? Flip to live enforcement.
-sed -i 's/enforcement_mode: observe/enforcement_mode: enforce/' coding-team-sandbox.yaml
-aasm policy apply --file coding-team-sandbox.yaml
+# 5. Confident the policy is right? Drop --observe to enforce for real.
+aasm run claude --workspace .
 ```
 
 ---
 
 ## Policy configuration
 
-`enforcement_mode` is a top-level optional field on the policy document:
+The **policy document** describes *what* the rules are using the section-based
+schema (`network` / `tools` / `data` / `budget` / `schedule` / `capabilities`).
+It does **not** carry the enforcement posture — observe vs enforce is a
+**per-agent runtime setting**, so the same policy can run in observe mode for
+one agent and live `enforce` for the rest.
 
 ```yaml
-name: my-policy
-enforcement_mode: observe       # "enforce" (default) | "observe" | "disabled"
-
-rules: [ ... ]
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: my-policy
+spec:
+  tools:
+    bash:
+      allow: false
+  data:
+    credential_action: redact_only
+    sensitive_patterns:
+      - "(AKIA|ghp_)[A-Za-z0-9]+"
 ```
 
-When the field is **omitted**, the policy defaults to `enforce` — the pre-feature behaviour. Existing on-disk policies upgrade transparently.
+The enforcement posture is chosen where the agent is launched or registered:
 
-Per-agent overrides via `agent_overrides` are also supported, so you can run a single experimental agent in observe mode while the rest of the team stays in live `enforce`:
-
-```yaml
-name: coding-team-policy
-enforcement_mode: enforce
-
-agent_overrides:
-  - agent_glob: "experimental-*"
-    enforcement_mode: observe
-```
+- **CLI** — `aasm run --observe <tool>` (or `--enforcement-mode observe`) for the
+  duration of that session.
+- **SDK** — pass `enforcement_mode="observe"` (Python / Go) or
+  `enforcementMode: "observe"` (Node.js) at `initAssembly` / agent registration.
 
 Resolution order (highest priority first):
 
-1. **Per-agent override** — `agent_overrides` block in the policy YAML, or `enforcement_mode` on the agent's `RegisterAgent` RPC payload.
-2. **Policy document default** — the top-level `enforcement_mode` field.
-3. **Server-wide default** — `enforce`.
+1. **Per-agent override** — `enforcement_mode` on the agent's `RegisterAgent` RPC payload (set via the CLI flag or SDK option above).
+2. **Server-wide default** — `enforce`.
+
+When no override is supplied, the gateway applies its server-side `enforce`
+default — the pre-feature behaviour.
 
 ---
 
@@ -252,16 +263,14 @@ Once you've reviewed the shadow events and tuned the policy:
      | jq 'group_by(.shadow_decision) | map({decision: .[0].shadow_decision, count: length})'
    ```
 2. **Adjust the policy** — tighten matchers that fired too eagerly, relax ones that blocked legitimate work.
-3. **Re-apply in observe mode** for another short window to confirm the tuned policy behaves as expected.
-4. **Flip to enforce**:
-   ```yaml
-   enforcement_mode: enforce
-   ```
+3. **Re-apply and re-run in observe mode** for another short window to confirm the tuned policy behaves as expected.
+4. **Flip to enforce** — drop the observe flag where the agent is launched:
    ```bash
-   aasm policy apply --file my-policy.yaml
+   # was: aasm run --observe claude --workspace .
+   aasm run claude --workspace .
    ```
 
-The cutover is instantaneous from the next `CheckAction` call onward — no agent restart required. Already-in-flight actions evaluated before the swap keep their original posture.
+The cutover takes effect from the agent's next registration onward — the policy document itself is unchanged. Already-in-flight actions evaluated under the observe session keep their original posture.
 
 ---
 
@@ -274,12 +283,11 @@ No measurable difference. The rule pipeline runs identically; the only added wor
 No. The `redact` decision in observe mode forwards the **unredacted** payload to the agent (that's the whole point — "what would have happened if we'd enforced"). The shadow audit event records that a redact rule matched, but neither the would-be redacted version nor the raw payload is persisted as a separate artefact. The audit pipeline's existing PII-scanner pass still applies before any event is written.
 
 **Can I set observe mode per-agent without changing the policy?**
-Yes — three ways:
+Yes — the posture is always per-agent, never baked into the policy document:
 1. CLI: `aasm run --observe <tool>` for the duration of that session.
 2. SDK: pass `enforcement_mode="observe"` (Python / Go) or `enforcementMode: "observe"` (Node.js) at `initAssembly`.
-3. Policy YAML: `agent_overrides` block targeting an `agent_glob`.
 
-The per-agent override always wins over the policy document's default.
+The per-agent posture always wins over the server-wide `enforce` default.
 
 **What happens to an agent that's mid-action when I flip from observe to enforce?**
 The action that's already through `CheckAction` keeps its observe-mode disposition (allowed). The very next `CheckAction` call sees the new posture and starts enforcing. There's no in-flight rollback.
