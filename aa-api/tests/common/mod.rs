@@ -55,16 +55,22 @@ pub fn test_state_with_auth(mode: AuthMode, entries: &[ApiKeyEntry], rpm: u32) -
     let policy_dir = std::env::temp_dir().join(format!("aa-api-test-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir).unwrap();
     let policy_path = policy_dir.join("test-policy.yaml");
+    // AAASM-3351: the validator now fails closed on the legacy rule-list
+    // schema (top-level `spec.rules:` / `kind: GovernancePolicy`), so use a
+    // minimal valid section-based envelope. These tests only need a loadable
+    // PolicyEngine, not specific rules, so an empty section spec preserves
+    // intent (allow-by-default).
     std::fs::write(
         &policy_path,
         r#"
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: test-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 100.0
 "#,
     )
     .unwrap();

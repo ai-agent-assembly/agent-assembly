@@ -13,7 +13,8 @@ metadata:
   name: test-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 const ENVELOPE_POLICY_WITH_TOOLS: &str = r#"

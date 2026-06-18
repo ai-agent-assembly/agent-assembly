@@ -19,7 +19,8 @@ metadata:
   name: rbac-test-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 /// Build an authenticated POST /api/v1/policies request.
