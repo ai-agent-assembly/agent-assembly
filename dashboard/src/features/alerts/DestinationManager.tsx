@@ -127,6 +127,12 @@ export function DestinationManager({ open, onClose }: DestinationManagerProps) {
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onClose()
+      }}
     >
       <div
         style={{

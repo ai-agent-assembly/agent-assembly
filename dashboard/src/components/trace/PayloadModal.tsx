@@ -108,7 +108,14 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     <div
       className="payload-modal-scrim"
       data-testid="payload-modal-scrim"
+      role="presentation"
       onClick={onClose}
+      onKeyDown={e => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onClose()
+      }}
     >
       <div
         ref={dialogRef}
