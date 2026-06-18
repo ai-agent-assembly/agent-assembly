@@ -119,13 +119,22 @@ fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Op
         return None;
     };
     let np = doc.network.as_ref()?;
-    let host = url
+    let host_port = url
         .split_once("://")
         .map(|x| x.1)
         .unwrap_or("")
         .split('/')
         .next()
         .unwrap_or("");
+    // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
+    // authority extracted above still carries the `:port` suffix. Allowlist
+    // entries are bare hosts (`api.openai.com`, `*.openai.com`), so comparing
+    // `host:port` against them always failed and every allowlisted host was
+    // denied. Strip a trailing numeric `:port` before the allowlist compare.
+    let host = match host_port.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host_port,
+    };
     // An empty allowlist denies all egress (fail-closed); `is_host_allowed_*`
     // treats an empty list as allow-all, so guard it explicitly here.
     let allowed = !np.allowlist.is_empty() && aa_core::policy::is_host_allowed_by_egress_allowlist(host, &np.allowlist);
@@ -465,6 +474,29 @@ mod tests {
     fn stage_network_no_network_section_is_noop() {
         let doc = minimal_doc(None);
         assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
+    }
+
+    #[test]
+    fn stage_network_allowlisted_host_with_port_allows() {
+        // AAASM-3350: the gateway builds URLs as `proto://host:port`. A bare
+        // allowlist entry must still match once the port is stripped.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_host_with_port_allows() {
+        // AAASM-3350: port stripping must also let wildcard entries match.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_non_allowlisted_host_with_port_denies() {
+        // AAASM-3350: stripping the port must not let a non-allowlisted host through.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net:8443/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
     }
 
     // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────
