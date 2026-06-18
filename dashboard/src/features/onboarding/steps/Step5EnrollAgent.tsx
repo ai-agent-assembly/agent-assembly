@@ -92,12 +92,12 @@ export function Step5EnrollAgent({ state, onEnrolled }: Step5EnrollAgentProps) {
       <div className="onb-enroll-pings" data-testid="onboarding-enroll-pings">
         {pings.length === 0 && phase === 'idle' && (
           <div className="onb-enroll-pings-empty">
-            // no calls yet — run your agent to phone home
+            {'// no calls yet — run your agent to phone home'}
           </div>
         )}
         {pings.length === 0 && phase === 'listening' && (
           <div className="onb-enroll-pings-empty">
-            // awaiting first authenticated call…
+            {'// awaiting first authenticated call…'}
           </div>
         )}
         {pings.map((p) => (
