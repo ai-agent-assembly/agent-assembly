@@ -801,6 +801,14 @@ impl PolicyServiceImpl {
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
+        // AAASM-3376 — the session_id stored on the entry is SHA256(trace_id)[:16],
+        // which is one-way: the raw trace_id and the per-action span_id are lost
+        // once the entry is persisted. Carry both in the payload JSON so they
+        // survive to the JSONL log / DB and let `/api/v1/traces/{trace_id}`
+        // reconstruct spans. (A first-class column on `AuditEntry` is the proto /
+        // core-type follow-up — see PR body.)
+        let trace_id_str: Option<&str> = (!req.trace_id.is_empty()).then_some(req.trace_id.as_str());
+        let span_id_str: Option<&str> = (!req.span_id.is_empty()).then_some(req.span_id.as_str());
         let payload = match shadow {
             Some(s) => serde_json::json!({
                 "action_type": req.action_type,
@@ -813,6 +821,8 @@ impl PolicyServiceImpl {
                 "shadow_reason": &s.reason,
                 "caller_agent_id": caller_agent_id_str,
                 "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
             }),
             None => serde_json::json!({
                 "action_type": req.action_type,
@@ -822,6 +832,8 @@ impl PolicyServiceImpl {
                 "latency_us": response.decision_latency_us,
                 "caller_agent_id": caller_agent_id_str,
                 "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
             }),
         }
         .to_string();
@@ -844,7 +856,15 @@ impl PolicyServiceImpl {
             .map(|reg_lineage| Lineage {
                 org_id: reg_lineage.org_id,
                 team_id: reg_lineage.team_id,
-                ..Lineage::default()
+                // AAASM-3377 — carry the full delegation lineage now sourced by
+                // `AgentRegistry::lineage()` so a child agent's audit entry no
+                // longer drops root / parent / depth / delegation_reason /
+                // spawned_by_tool.
+                root_agent_id: reg_lineage.root_agent_id.map(AgentId::from_bytes),
+                parent_agent_id: reg_lineage.parent_agent_id.map(AgentId::from_bytes),
+                depth: reg_lineage.depth,
+                delegation_reason: reg_lineage.delegation_reason,
+                spawned_by_tool: reg_lineage.spawned_by_tool,
             })
             .unwrap_or_default();
 

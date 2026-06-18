@@ -3,9 +3,12 @@
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 
+use aa_gateway::AuditReader;
+
 use crate::error::ProblemDetail;
-use crate::models::trace::TraceResponse;
+use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::state::AppState;
+use crate::trace_store::SessionTrace;
 
 /// `GET /api/v1/traces/:session_id` — full trace for one agent session.
 ///
@@ -29,6 +32,17 @@ pub async fn get_trace(
         .get_trace(&session_id)
         .map_err(|e| ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(e.to_string()))?;
 
+    // AAASM-3376 — the in-memory `TraceStore` is only populated by live span
+    // recording; fall back to reconstructing the trace from the persisted audit
+    // log (JSONL) so a session's spans are queryable across restarts and even
+    // when no in-process recorder was wired. The CheckAction audit pipeline now
+    // carries `trace_id` / `span_id` in the entry payload (see
+    // `aa-gateway::service::policy_service::record_audit`).
+    let trace = match trace {
+        Some(t) => Some(t),
+        None => build_trace_from_audit(&state.audit_reader, &session_id).await,
+    };
+
     match trace {
         Some(session_trace) => Ok((
             StatusCode::OK,
@@ -43,4 +57,56 @@ pub async fn get_trace(
                 .with_detail(format!("Session not found: {session_id}")))
         }
     }
+}
+
+/// Reconstruct a [`SessionTrace`] from persisted audit entries.
+///
+/// AAASM-3376 — scans the audit log for entries whose hex-encoded `session_id`
+/// matches `session_id_hex`, mapping each governance event to a [`TraceSpan`].
+/// The `span_id` and `trace_id` are read from the entry payload (deposited by
+/// the CheckAction audit pipeline); when absent the entry's `seq` is used as a
+/// stable fallback span identifier. Returns `None` when no audit entry matches.
+async fn build_trace_from_audit(reader: &AuditReader, session_id_hex: &str) -> Option<SessionTrace> {
+    // Pull a generous window of recent entries; the reader returns newest-first.
+    let (entries, _total) = reader.list(10_000, 0, None, None, None).await.ok()?;
+
+    let mut agent_id = String::new();
+    let mut spans: Vec<TraceSpan> = Vec::new();
+
+    for entry in &entries {
+        if hex::encode(entry.session_id().as_bytes()) != session_id_hex {
+            continue;
+        }
+        if agent_id.is_empty() {
+            agent_id = hex::encode(entry.agent_id().as_bytes());
+        }
+
+        let payload: serde_json::Value = serde_json::from_str(entry.payload()).unwrap_or(serde_json::Value::Null);
+        let span_id = payload
+            .get("span_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| entry.seq().to_string());
+        let decision = payload.get("decision").and_then(|v| v.as_i64()).map(|d| d.to_string());
+
+        let ts_secs = (entry.timestamp_ns() / 1_000_000_000) as i64;
+        let ts_nanos = (entry.timestamp_ns() % 1_000_000_000) as u32;
+        let start_time = chrono::DateTime::from_timestamp(ts_secs, ts_nanos).unwrap_or_default();
+
+        spans.push(TraceSpan {
+            span_id,
+            parent_span_id: None,
+            operation: entry.event_type().as_str().to_string(),
+            decision,
+            start_time,
+            end_time: None,
+        });
+    }
+
+    if spans.is_empty() {
+        return None;
+    }
+
+    spans.sort_by_key(|s| s.start_time);
+    Some(SessionTrace { agent_id, spans })
 }
