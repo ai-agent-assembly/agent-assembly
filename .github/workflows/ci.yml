@@ -1196,6 +1196,26 @@ jobs:
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage
+      # AAASM-3197: symmetric backfill for the TypeScript side. When
+      # `dashboard-test` was skipped or failed on a push (Rust-only change),
+      # pull `dashboard/coverage/lcov.info` from the last successful master run
+      # so the full-snapshot scan does not wipe dashboard coverage to 0.
+      - name: Backfill TypeScript coverage (LCOV) from last successful master run
+        if: ${{ github.event_name == 'push' && needs.dashboard-test.result != 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --workflow ci.yml --branch master \
+            --status success --limit 1 --json databaseId \
+            --jq '.[0].databaseId')"
+          if [ -z "$run_id" ]; then
+            echo "::warning::No prior successful master CI run found; scanning without backfilled TypeScript LCOV."
+            exit 0
+          fi
+          echo "Backfilling dashboard-coverage-lcov from master run ${run_id}."
+          gh run download "$run_id" --name dashboard-coverage-lcov --dir dashboard/coverage \
+            || echo "::warning::dashboard-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
       # ---- Scan -------------------------------------------------------------
       - name: Cache SonarCloud analysis state
         uses: actions/cache@v5
