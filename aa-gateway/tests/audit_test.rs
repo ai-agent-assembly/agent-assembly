@@ -162,3 +162,37 @@ async fn read_last_hash_returns_none_for_missing_file() {
     let hash = AuditWriter::read_last_hash(&path).await.unwrap();
     assert_eq!(hash, None);
 }
+
+// AAASM-3356: the service must recover the last seq across restarts so the
+// monotonic sequence counter does not restart at 0 (which would emit duplicate
+// sequence numbers in the WORM log).
+#[tokio::test]
+async fn read_last_seq_returns_last_entry_seq() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel(64);
+    let writer = AuditWriter::new(dir.path().to_path_buf(), "agent-s", "sess-s", rx)
+        .await
+        .unwrap();
+
+    tokio::spawn(writer.run());
+
+    // Chain of 5 entries → seqs 0..=4, so the last seq is 4.
+    let entries = make_chain(5);
+    for entry in &entries {
+        tx.send(entry.clone()).await.unwrap();
+    }
+    drop(tx);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let path = dir.path().join("agent-s-sess-s.jsonl");
+    let seq = AuditWriter::read_last_seq(&path).await.unwrap();
+    assert_eq!(seq, Some(4));
+}
+
+#[tokio::test]
+async fn read_last_seq_returns_none_for_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nonexistent.jsonl");
+    let seq = AuditWriter::read_last_seq(&path).await.unwrap();
+    assert_eq!(seq, None);
+}
