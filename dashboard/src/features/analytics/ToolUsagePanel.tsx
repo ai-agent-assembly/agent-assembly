@@ -20,22 +20,22 @@ export function ToolUsagePanel() {
   const tools = useMemo(() => rawTools ?? [], [rawTools])
   const sortedTools = useMemo(() => sortToolsByCallsDesc(tools), [tools])
 
-  return (
-    <div className="tool-usage-panel" data-testid="tool-usage-panel">
-      <div className="tool-usage-panel__header">
-        <h2 className="tool-usage-panel__title">Tool Usage</h2>
-      </div>
-
-      {isPending ? (
-        <div className="tool-usage-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="tool-usage-panel__error">Failed to load tool usage data.</p>
-      ) : tools.length === 0 ? (
+  function renderBody() {
+    if (isPending) {
+      return <div className="tool-usage-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="tool-usage-panel__error">Failed to load tool usage data.</p>
+    }
+    if (tools.length === 0) {
+      return (
         <div className="tool-usage-panel__empty">
           <p>No tool calls in the selected window.</p>
         </div>
-      ) : (
-        <>
+      )
+    }
+    return (
+      <>
           {/* Hidden anchors for testing — recharts SVG is invisible at 0-width in jsdom */}
           {sortedTools.map((tool, idx) => (
             <span
@@ -81,7 +81,16 @@ export function ToolUsagePanel() {
           </BarChart>
         </ResponsiveContainer>
         </>
-      )}
+    )
+  }
+
+  return (
+    <div className="tool-usage-panel" data-testid="tool-usage-panel">
+      <div className="tool-usage-panel__header">
+        <h2 className="tool-usage-panel__title">Tool Usage</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

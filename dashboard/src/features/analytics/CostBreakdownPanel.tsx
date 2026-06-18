@@ -70,29 +70,23 @@ export function CostBreakdownPanel() {
     [segments, hidden],
   )
 
-  return (
-    <div className="cost-breakdown-panel" data-testid="cost-breakdown-panel">
-      <div className="cost-breakdown-panel__header">
-        <h2 className="cost-breakdown-panel__title">Cost Breakdown</h2>
-        <SegmentedControl
-          options={GROUP_BY_OPTIONS}
-          value={groupBy}
-          onChange={setGroupBy}
-          testIdPrefix="cost-breakdown-toggle"
-        />
-      </div>
-
-      {isPending ? (
-        <div className="cost-breakdown-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="cost-breakdown-panel__error">Failed to load cost data.</p>
-      ) : buckets.length === 0 ? (
+  function renderBody() {
+    if (isPending) {
+      return <div className="cost-breakdown-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="cost-breakdown-panel__error">Failed to load cost data.</p>
+    }
+    if (buckets.length === 0) {
+      return (
         <div className="cost-breakdown-panel__empty">
           <p>No cost data for the selected filters.</p>
           <a href="/docs/analytics#no-data">Why am I seeing nothing?</a>
         </div>
-      ) : (
-        <>
+      )
+    }
+    return (
+      <>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={chartData} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--surface-card-border)" vertical={false} />
@@ -151,7 +145,22 @@ export function CostBreakdownPanel() {
             })}
           </ul>
         </>
-      )}
+    )
+  }
+
+  return (
+    <div className="cost-breakdown-panel" data-testid="cost-breakdown-panel">
+      <div className="cost-breakdown-panel__header">
+        <h2 className="cost-breakdown-panel__title">Cost Breakdown</h2>
+        <SegmentedControl
+          options={GROUP_BY_OPTIONS}
+          value={groupBy}
+          onChange={setGroupBy}
+          testIdPrefix="cost-breakdown-toggle"
+        />
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

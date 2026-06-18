@@ -39,18 +39,18 @@ export function ApprovalAnalyticsPanel() {
 
   const donutData = useMemo(() => (data ? buildDonutData(data) : []), [data])
 
-  return (
-    <div className="approval-analytics-panel" data-testid="approval-analytics-panel">
-      <div className="approval-analytics-panel__header">
-        <h2 className="approval-analytics-panel__title">Approval Analytics</h2>
-      </div>
-
-      {isPending ? (
-        <div className="approval-analytics-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="approval-analytics-panel__error">Failed to load approval data.</p>
-      ) : !data ? null : (
-        <div className="approval-analytics-panel__body">
+  function renderBody() {
+    if (isPending) {
+      return <div className="approval-analytics-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="approval-analytics-panel__error">Failed to load approval data.</p>
+    }
+    if (!data) {
+      return null
+    }
+    return (
+      <div className="approval-analytics-panel__body">
           <div className="approval-analytics-panel__stats">
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
@@ -108,7 +108,16 @@ export function ApprovalAnalyticsPanel() {
             </ul>
           </div>
         </div>
-      )}
+    )
+  }
+
+  return (
+    <div className="approval-analytics-panel" data-testid="approval-analytics-panel">
+      <div className="approval-analytics-panel__header">
+        <h2 className="approval-analytics-panel__title">Approval Analytics</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }
