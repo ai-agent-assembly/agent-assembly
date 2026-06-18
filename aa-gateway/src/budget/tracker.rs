@@ -343,6 +343,15 @@ impl BudgetTracker {
         self.monthly_limit_usd
     }
 
+    /// Borrow the tracker's [`PricingTable`].
+    ///
+    /// AAASM-3353 — lets the service layer price an LLM call from the same
+    /// table the tracker uses for `record_usage`, so spend accrual and the
+    /// in-tracker cost lookup never diverge.
+    pub fn pricing(&self) -> &PricingTable {
+        &self.pricing
+    }
+
     /// Returns `true` if the agent has met or exceeded the given daily limit.
     ///
     /// Automatically resets spend to zero when the stored date is before today

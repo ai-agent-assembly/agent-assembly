@@ -1175,6 +1175,28 @@ impl PolicyEngine {
         }
     }
 
+    /// Price a completed LLM call in USD using the budget pricing table.
+    ///
+    /// AAASM-3353 — the live `CheckAction` proto carries only the model name
+    /// string and a prompt-token estimate (no provider, no output tokens).
+    /// The `(Provider, Model)` pair is inferred from the model name via
+    /// [`crate::budget::types::Model::infer_from_name`]; output tokens are
+    /// treated as `0` because the pre-execution check has no completion yet.
+    ///
+    /// Returns `0.0` for an unrecognised model (no spend accrued) so an
+    /// unknown name never silently charges against a wrong price.
+    pub fn llm_call_cost_usd(&self, model_name: &str, input_tokens: u64, output_tokens: u64) -> f64 {
+        let Some((provider, model)) = crate::budget::types::Model::infer_from_name(model_name) else {
+            return 0.0;
+        };
+        use rust_decimal::prelude::ToPrimitive;
+        self.budget
+            .pricing()
+            .cost_usd(provider, model, input_tokens, output_tokens)
+            .to_f64()
+            .unwrap_or(0.0)
+    }
+
     /// Resolve the budget tenancy (`team_id`, `org_id`) for `ctx` from the
     /// authoritative agent registry, falling back to the client-supplied
     /// `ctx` values only when no registry is attached or the agent is not
