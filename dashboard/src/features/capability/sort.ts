@@ -34,8 +34,8 @@ export function sortAgents(
   if (!ids.includes(sort.resourceId)) return agents
   const factor = sort.direction === 'asc' ? 1 : -1
   return [...agents].sort((a, b) => {
-    const da = (a.caps[sort.resourceId as string]?.[verb] ?? 'na') as Decision
-    const db = (b.caps[sort.resourceId as string]?.[verb] ?? 'na') as Decision
+    const da = a.caps[sort.resourceId as string]?.[verb] ?? 'na'
+    const db = b.caps[sort.resourceId as string]?.[verb] ?? 'na'
     return factor * (DECISION_WEIGHT[da] - DECISION_WEIGHT[db])
   })
 }

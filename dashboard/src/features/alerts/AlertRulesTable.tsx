@@ -64,6 +64,11 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: Readon
     })
   }
 
+  const pluralSuffix = rules.length === 1 ? '' : 's'
+  const ruleCountLabel = isLoading
+    ? 'Loading rules…'
+    : `${rules.length} alert rule${pluralSuffix} configured`
+
   return (
     <section data-testid="alert-rules-tab">
       <div
@@ -77,9 +82,7 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: Readon
         }}
       >
         <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-          {isLoading
-            ? 'Loading rules…'
-            : `${rules.length} alert rule${rules.length === 1 ? '' : 's'} configured`}
+          {ruleCountLabel}
         </p>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button

@@ -90,7 +90,7 @@ export function AlertFilterBar({ value, onChange }: Readonly<AlertFilterBarProps
       <label
         style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
-        Agent
+        <span>Agent</span>
         <input
           data-testid="alerts-filter-agent"
           type="search"
@@ -110,7 +110,7 @@ export function AlertFilterBar({ value, onChange }: Readonly<AlertFilterBarProps
       <label
         style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
-        Range
+        <span>Range</span>
         <select
           data-testid="alerts-filter-range"
           value={value.timeRange}

@@ -24,6 +24,31 @@ function formatDate(iso: string): string {
   return DATE_FMT.format(new Date(iso))
 }
 
+interface HeatmapCellProps {
+  ruleId: string
+  ruleName: string
+  date: string
+  day: PolicyDay
+  onEnter: (rule: { id: string; name: string }, day: PolicyDay, target: HTMLElement) => void
+  onLeave: () => void
+}
+
+function HeatmapCell({ ruleId, ruleName, date, day, onEnter, onLeave }: Readonly<HeatmapCellProps>) {
+  const ratio = computeRatio(day)
+  return (
+    <div
+      className="policy-effectiveness-panel__cell"
+      style={{ background: ratioToColor(ratio) }}
+      data-testid={`policy-heatmap-cell-${ruleId}-${date}`}
+      data-ratio={ratio.toFixed(4)}
+      role="gridcell"
+      aria-label={`${ruleName} ${date}: ${day.blocks} blocks, ${day.warns} warns, ${day.passes} passes`}
+      onMouseEnter={(e) => onEnter({ id: ruleId, name: ruleName }, day, e.currentTarget)}
+      onMouseLeave={onLeave}
+    />
+  )
+}
+
 export function PolicyEffectivenessPanel() {
   const { filters } = useAnalyticsFilters()
   const { data, isPending, isError } = usePolicyEffectivenessQuery(filters)
@@ -46,6 +71,17 @@ export function PolicyEffectivenessPanel() {
     }
     return m
   }, [rules])
+
+  function showCellTooltip(
+    rule: { id: string; name: string },
+    day: PolicyDay,
+    target: HTMLElement,
+  ) {
+    const rect = target.getBoundingClientRect()
+    setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
+  }
+
+  const hideCellTooltip = () => setTooltip(null)
 
   function renderBody() {
     if (isPending) {
@@ -106,22 +142,15 @@ export function PolicyEffectivenessPanel() {
                     warns: 0,
                     passes: 0,
                   }
-                  const ratio = computeRatio(day)
-                  const bg = ratioToColor(ratio)
                   return (
-                    <div
+                    <HeatmapCell
                       key={`cell-${rule.id}-${date}`}
-                      className="policy-effectiveness-panel__cell"
-                      style={{ background: bg }}
-                      data-testid={`policy-heatmap-cell-${rule.id}-${date}`}
-                      data-ratio={ratio.toFixed(4)}
-                      role="gridcell"
-                      aria-label={`${rule.name} ${date}: ${day.blocks} blocks, ${day.warns} warns, ${day.passes} passes`}
-                      onMouseEnter={e => {
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                        setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
-                      }}
-                      onMouseLeave={() => setTooltip(null)}
+                      ruleId={rule.id}
+                      ruleName={rule.name}
+                      date={date}
+                      day={day}
+                      onEnter={showCellTooltip}
+                      onLeave={hideCellTooltip}
                     />
                   )
                 })}

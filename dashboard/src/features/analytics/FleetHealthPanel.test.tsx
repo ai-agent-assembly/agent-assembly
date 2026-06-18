@@ -41,7 +41,7 @@ function mockFetch(agents: AgentHealth[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ agents }),
-  } as Response)
+  })
 }
 
 // ── FleetHealthPanel integration tests ───────────────────────────────────────
@@ -68,7 +68,7 @@ describe('FleetHealthPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<FleetHealthPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load fleet health data/)).toBeInTheDocument()
   })

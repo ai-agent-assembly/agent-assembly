@@ -30,7 +30,7 @@ function mockFetch(rules: PolicyRule[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ rules }),
-  } as Response)
+  })
 }
 
 // 2-rule × 7-day fixture
@@ -150,7 +150,7 @@ describe('PolicyEffectivenessPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load policy data/)).toBeInTheDocument()
   })

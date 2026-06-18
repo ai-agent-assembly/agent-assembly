@@ -25,10 +25,20 @@ export function PayloadDiff({
     0,
   )
 
+  // Stable per-token keys derived from the running character offset within the
+  // payload, so React reconciliation does not rely on the array index. Built
+  // with reduce so no variable is reassigned during render.
+  const tokenKeys = tokens.reduce<{ keys: string[]; offset: number }>(
+    (acc, t) => {
+      acc.keys.push(`${acc.offset}-${t.kind}`)
+      return { keys: acc.keys, offset: acc.offset + t.text.length }
+    },
+    { keys: [], offset: 0 },
+  ).keys
+
   return (
-    <div
+    <section
       className="scrub-diff"
-      role="region"
       aria-label="payload diff"
       data-testid="scrub-diff"
     >
@@ -65,10 +75,10 @@ export function PayloadDiff({
             <pre className="scrub-diff-pre" data-testid="scrub-diff-preview-raw">
               {tokens.map((t, i) =>
                 t.kind === 'plain' ? (
-                  <span key={i}>{t.text}</span>
+                  <span key={tokenKeys[i]}>{t.text}</span>
                 ) : (
                   <span
-                    key={i}
+                    key={tokenKeys[i]}
                     className="scrub-diff-match"
                     title={`${t.pattern.name} · ${t.pattern.id}`}
                     data-testid={`scrub-diff-match-${i}`}
@@ -85,10 +95,10 @@ export function PayloadDiff({
           <pre className="scrub-diff-pre" data-testid="scrub-diff-preview-scrubbed">
             {tokens.map((t, i) =>
               t.kind === 'plain' ? (
-                <span key={i}>{t.text}</span>
+                <span key={tokenKeys[i]}>{t.text}</span>
               ) : (
                 <span
-                  key={i}
+                  key={tokenKeys[i]}
                   className="scrub-diff-redacted"
                   title={`replaced by ${t.pattern.id}`}
                   data-testid={`scrub-diff-redacted-${i}`}
@@ -132,6 +142,6 @@ export function PayloadDiff({
           </div>
         </div>
       </div>
-    </div>
+    </section>
   )
 }

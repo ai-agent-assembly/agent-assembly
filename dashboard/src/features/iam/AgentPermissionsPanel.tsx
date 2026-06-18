@@ -60,7 +60,7 @@ export function AgentPermissionsPanel({ agent, onClose }: Readonly<AgentPermissi
         </div>
       )}
 
-      {grouped && !isLoading && data && data.effective.length === 0 && (
+      {grouped && !isLoading && data?.effective.length === 0 && (
         <div className="iam-agent-perm-panel__empty" data-testid="agent-permissions-empty">
           This agent has no effective permissions.
         </div>

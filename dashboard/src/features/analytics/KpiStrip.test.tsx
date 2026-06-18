@@ -24,7 +24,7 @@ function mockFetchKpi(metric: KpiMetric, value: number, delta: number) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ metric, value, delta }),
-  } as Response)
+  })
 }
 
 // ── KpiCard unit tests ───────────────────────────────────────────────────────

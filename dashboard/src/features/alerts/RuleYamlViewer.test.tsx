@@ -13,7 +13,7 @@ vi.mock('@monaco-editor/react', () => ({
       data-testid="monaco-editor-mock"
       data-language={props.language as string}
       data-theme={props.theme as string}
-      data-height={String(props.height as number | string)}
+      data-height={String(props.height)}
       data-options={JSON.stringify(props.options)}
     >
       {(props.value as string) ?? ''}
@@ -55,7 +55,7 @@ describe('RuleYamlViewer', () => {
     expect(editor).toHaveAttribute('data-theme', 'vs-dark')
     expect(editor).toHaveAttribute('data-height', '200')
 
-    const options = JSON.parse(editor.getAttribute('data-options') ?? '{}') as Record<string, unknown>
+    const options = JSON.parse(editor.dataset.options ?? '{}') as Record<string, unknown>
     // Read-only contract — locked in to prevent any future regression that
     // would let an alert-rule snapshot get edited from the drawer.
     expect(options.readOnly).toBe(true)

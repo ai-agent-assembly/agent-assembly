@@ -44,7 +44,7 @@ export const PATTERNS: ScrubPattern[] = [
   {
     id: 'JWT',
     name: 'JWT bearer',
-    regex: 'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
+    regex: String.raw`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`,
     example: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIi…',
     replace: '[REDACTED:JWT]',
     severity: 'high',
@@ -74,7 +74,7 @@ export const PATTERNS: ScrubPattern[] = [
   {
     id: 'CC_NUMBER',
     name: 'Credit card',
-    regex: '[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}[\\s-]?[0-9]{4}',
+    regex: String.raw`[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}[\s-]?[0-9]{4}`,
     example: '4111 1111 1111 1111',
     replace: '[REDACTED:CC]',
     severity: 'critical',
@@ -95,7 +95,7 @@ export const PATTERNS: ScrubPattern[] = [
     id: 'PRIVATE_KEY',
     name: 'PEM private key',
     regex: '-----BEGIN [A-Z ]+PRIVATE KEY-----',
-    example: '-----BEGIN RSA PRIVATE KEY-----\\nMIIE…',
+    example: String.raw`-----BEGIN RSA PRIVATE KEY-----\nMIIE…`,
     replace: '[REDACTED:PEM]',
     severity: 'critical',
     hits24h: 1,
@@ -104,7 +104,7 @@ export const PATTERNS: ScrubPattern[] = [
   {
     id: 'INTERNAL_URL',
     name: 'Internal URL',
-    regex: 'https?://[^/]*\\.acme\\.internal',
+    regex: String.raw`https?://[^/]*\.acme\.internal`,
     example: 'https://billing.acme.internal/api',
     replace: '[REDACTED:INT_URL]',
     severity: 'medium',
@@ -114,7 +114,7 @@ export const PATTERNS: ScrubPattern[] = [
   {
     id: 'PHONE',
     name: 'Phone (E.164)',
-    regex: '\\+?[0-9]{10,15}',
+    regex: String.raw`\+?[0-9]{10,15}`,
     example: '+886912345678',
     replace: '[REDACTED:PHONE]',
     severity: 'low',

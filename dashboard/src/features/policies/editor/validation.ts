@@ -80,14 +80,14 @@ export function validate(draft: PolicyDraft): ValidationIssue[] {
     for (const verb of rule.verb) {
       const key = `${rule.resource}:${verb}`
       const prior = seen.get(key)
-      if (prior !== undefined) {
+      if (prior === undefined) {
+        seen.set(key, idx)
+      } else {
         issues.push({
           severity: 'warn',
           rule: `R${idx + 1}`,
           message: `Duplicates R${prior + 1} on ${key} — first matching rule wins.`,
         })
-      } else {
-        seen.set(key, idx)
       }
     }
   })

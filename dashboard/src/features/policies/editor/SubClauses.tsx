@@ -279,12 +279,12 @@ export function SubClauses({ rule, onChange }: Readonly<SubClausesProps>) {
         />
       ) : null}
 
-      {action !== 'allow' ? (
+      {action === 'allow' ? null : (
         <ExceptionsSubClause
           values={rule.exceptions ?? []}
           onChange={(exceptions) => onChange({ exceptions })}
         />
-      ) : null}
+      )}
     </>
   )
 }

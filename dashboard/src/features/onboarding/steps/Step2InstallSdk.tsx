@@ -61,6 +61,11 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
     }, 600)
   }
 
+  let verifyButtonLabel: string
+  if (phase === 'idle') verifyButtonLabel = '▸ run aa-cli verify'
+  else if (phase === 'running') verifyButtonLabel = 'verifying…'
+  else verifyButtonLabel = '↻ re-run'
+
   return (
     <section data-testid="onboarding-step-install">
       <h2 className="onb-body-title">Install the SDK.</h2>
@@ -107,11 +112,7 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
           onClick={handleRun}
           disabled={phase === 'running'}
         >
-          {phase === 'idle'
-            ? '▸ run aa-cli verify'
-            : phase === 'running'
-              ? 'verifying…'
-              : '↻ re-run'}
+          {verifyButtonLabel}
         </button>
       </div>
 
@@ -121,8 +122,8 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
             # run verify above to check the SDK reaches the control-plane
           </div>
         ) : (
-          lines.map((l, i) => (
-            <div key={i} className="onb-term-line">
+          lines.map((l) => (
+            <div key={`${l.kind}-${l.text}`} className="onb-term-line">
               {l.kind === 'prompt' && <span className="onb-term-prompt">{l.text}</span>}
               {l.kind === 'cmd' && <span className="onb-term-cmd">{l.text}</span>}
               {l.kind === 'out' && <span className="onb-term-out">{l.text}</span>}

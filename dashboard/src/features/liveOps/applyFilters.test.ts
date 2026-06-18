@@ -99,7 +99,7 @@ describe('applyFilters', () => {
   })
 
   it('skips a filter when its value is the empty string', () => {
-    expect(applyFilters(OPS, { agent: '' as unknown as string }).map((o) => o.id))
+    expect(applyFilters(OPS, { agent: '' }).map((o) => o.id))
       .toEqual(['op-1', 'op-2', 'op-3', 'op-4'])
   })
 

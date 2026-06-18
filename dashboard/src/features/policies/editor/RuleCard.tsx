@@ -80,16 +80,16 @@ export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: Reado
         <div className="editor__verb-group" role="group" aria-label="verbs">
           {VERB_OPTS.map((verb) => {
             const active = rule.verb.includes(verb)
+            const dangerSuffix = isDeny ? ' editor__verb--danger' : ''
+            const verbClassName = active
+              ? `editor__verb editor__verb--active${dangerSuffix}`
+              : 'editor__verb'
             return (
               <button
                 key={verb}
                 type="button"
                 aria-pressed={active}
-                className={
-                  active
-                    ? `editor__verb editor__verb--active${isDeny ? ' editor__verb--danger' : ''}`
-                    : 'editor__verb'
-                }
+                className={verbClassName}
                 data-testid={`editor-rule-${index}-verb-${verb}`}
                 onClick={() => onChange({ verb: toggleVerb(rule.verb, verb) })}
               >

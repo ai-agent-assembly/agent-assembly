@@ -206,7 +206,7 @@ export function useAccessLogQuery(
   filter: AccessLogFilter,
 ): UseQueryResult<AccessLogEvent[]> {
   return useQuery({
-    queryKey: iamQueryKeys.accessLog(filter as object),
+    queryKey: iamQueryKeys.accessLog(filter),
     queryFn: () => fetchAccessLog(filter),
   })
 }

@@ -103,13 +103,16 @@ const columns = [
   }),
 ]
 
+const SKELETON_ROW_KEYS = ['sk-r0', 'sk-r1', 'sk-r2', 'sk-r3', 'sk-r4']
+
 function SkeletonRows({ columnCount }: Readonly<{ columnCount: number }>) {
+  const cellKeys = Array.from({ length: columnCount }, (_, j) => `sk-c${j}`)
   return (
     <>
-      {Array.from({ length: 5 }).map((_, i) => (
-        <tr key={i} data-testid="alert-row-skeleton" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
-          {Array.from({ length: columnCount }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
+      {SKELETON_ROW_KEYS.map((rowKey, i) => (
+        <tr key={rowKey} data-testid="alert-row-skeleton" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
+          {cellKeys.map((cellKey) => (
+            <td key={cellKey} style={{ padding: '0.5rem' }}>
               <span
                 style={{
                   display: 'block',
@@ -151,7 +154,12 @@ export function AlertList({ rows, onSelect, loading = false }: Readonly<AlertLis
       <thead>
         {table.getHeaderGroups().map((hg) => (
           <tr key={hg.id}>
-            {hg.headers.map((header) => (
+            {hg.headers.map((header) => {
+              const sorted = header.column.getIsSorted()
+              let sortIndicator = ''
+              if (sorted === 'asc') sortIndicator = ' ↑'
+              else if (sorted === 'desc') sortIndicator = ' ↓'
+              return (
               <th
                 key={header.id}
                 onClick={header.column.getToggleSortingHandler()}
@@ -169,13 +177,10 @@ export function AlertList({ rows, onSelect, loading = false }: Readonly<AlertLis
                 data-testid={`alerts-th-${header.column.id}`}
               >
                 {flexRender(header.column.columnDef.header, header.getContext())}
-                {header.column.getIsSorted() === 'asc'
-                  ? ' ↑'
-                  : header.column.getIsSorted() === 'desc'
-                    ? ' ↓'
-                    : ''}
+                {sortIndicator}
               </th>
-            ))}
+              )
+            })}
           </tr>
         ))}
       </thead>

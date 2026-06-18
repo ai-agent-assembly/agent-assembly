@@ -89,11 +89,14 @@ export function PolicyEditorOverlay({
     setViewMode('form')
   }
 
-  const footerStatus = isDirty
-    ? `${draft.rules.length} rule(s) modified · run simulate to preview impact`
-    : draft.status === 'proposed'
-      ? 'Draft — never deployed'
-      : `Active · ${draft.rules.length} rule(s)`
+  let footerStatus: string
+  if (isDirty) {
+    footerStatus = `${draft.rules.length} rule(s) modified · run simulate to preview impact`
+  } else if (draft.status === 'proposed') {
+    footerStatus = 'Draft — never deployed'
+  } else {
+    footerStatus = `Active · ${draft.rules.length} rule(s)`
+  }
 
   return (
     <div className="editor" data-testid="policy-editor-overlay">

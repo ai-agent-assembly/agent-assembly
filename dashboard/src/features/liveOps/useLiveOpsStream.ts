@@ -58,7 +58,7 @@ function mergeOp(
     const idx = prev.findIndex((p) => p.id === op.id)
     if (idx >= 0) {
       const merged: LiveOperation = {
-        ...prev[idx]!,
+        ...prev[idx],
         status: op.status,
         startedAt: op.startedAt,
         agent: op.agent,
@@ -101,7 +101,7 @@ function buildWsUrl(): string {
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
     : `${scheme}://${globalThis.location.host}`
   const token =
-    typeof localStorage !== 'undefined' ? localStorage.getItem('aa_token') : null
+    typeof localStorage === 'undefined' ? null : localStorage.getItem('aa_token')
   const query = [
     'types=violation,ops_change',
     token ? `token=${encodeURIComponent(token)}` : '',
@@ -221,6 +221,22 @@ export function useLiveOpsStream({
     setReconnectTick((v) => v + 1)
   }, [])
 
+  // Hoisted out of the WebSocket `onmessage` handler to keep the effect's
+  // callback nesting shallow (mapEvent + mergeOp already isolate the logic).
+  const handleMessage = useCallback(
+    (evt: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(evt.data as string) as GovernanceEvent
+        const op = mapEvent(parsed)
+        if (!op) return
+        setOps((prev) => mergeOp(prev, parsed, op, maxOps))
+      } catch {
+        // Malformed frame — drop silently.
+      }
+    },
+    [maxOps],
+  )
+
   useEffect(() => {
     deadRef.current = false
 
@@ -239,16 +255,7 @@ export function useLiveOpsStream({
         setStatus('connected')
       }
 
-      ws.onmessage = (evt) => {
-        try {
-          const parsed = JSON.parse(evt.data as string) as GovernanceEvent
-          const op = mapEvent(parsed)
-          if (!op) return
-          setOps((prev) => mergeOp(prev, parsed, op, maxOps))
-        } catch {
-          // Malformed frame — drop silently.
-        }
-      }
+      ws.onmessage = handleMessage
 
       ws.onclose = () => {
         if (deadRef.current) return
@@ -280,7 +287,7 @@ export function useLiveOpsStream({
   }, [
     reconnectTick,
     WS,
-    maxOps,
+    handleMessage,
     initialBackoffMs,
     maxBackoffMs,
     maxReconnectAttempts,

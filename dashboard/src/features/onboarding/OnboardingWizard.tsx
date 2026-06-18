@@ -56,14 +56,9 @@ export function OnboardingWizard({
     if (next) setCurrent(next)
   }
 
-  const handleSkipStep = () => {
-    if (final) {
-      onFinish(state)
-      return
-    }
-    const next = nextStep(current)
-    if (next) setCurrent(next)
-  }
+  // Skipping a step has the same effect as continuing: advance to the next
+  // step (or finish on the final step). Aliased to avoid duplicated logic.
+  const handleSkipStep = handleContinue
 
   const handleBack = () => {
     const prev = prevStep(current)

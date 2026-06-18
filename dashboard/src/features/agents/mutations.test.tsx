@@ -48,7 +48,7 @@ describe('useSuspendAgent', () => {
   })
 
   it('surfaces gateway errors to the caller', async () => {
-    post.mockResolvedValue({ error: { message: 'bad request' } } as unknown as FetchErr)
+    post.mockResolvedValue({ error: { message: 'bad request' } })
     const { result } = renderHook(() => useSuspendAgent(), makeWrapper())
     result.current.mutate({ id: 'a', reason: 'noop' })
     await waitFor(() => expect(result.current.isError).toBe(true))
@@ -88,7 +88,7 @@ describe('useResumeAgent', () => {
   })
 
   it('surfaces gateway errors', async () => {
-    post.mockResolvedValue({ error: { message: 'gone' } } as unknown as FetchErr)
+    post.mockResolvedValue({ error: { message: 'gone' } })
     const { result } = renderHook(() => useResumeAgent(), makeWrapper())
     result.current.mutate({ id: 'a' })
     await waitFor(() => expect(result.current.isError).toBe(true))

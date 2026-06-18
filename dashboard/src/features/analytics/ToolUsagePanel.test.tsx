@@ -41,7 +41,7 @@ function mockFetch(tools: ToolStat[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ tools }),
-  } as Response)
+  })
 }
 
 // ── toolUsageUtils unit tests ─────────────────────────────────────────────────
@@ -102,7 +102,7 @@ describe('ToolUsagePanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ToolUsagePanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load tool usage data/)).toBeInTheDocument()
   })

@@ -6,19 +6,19 @@ import {
   type TimeRangePreset,
 } from './types'
 
-const SEVERITY_VALUES: readonly Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
-const STATUS_VALUES: readonly AlertStatus[] = ['FIRING', 'RESOLVED', 'SUPPRESSED']
-const RANGE_VALUES: readonly TimeRangePreset[] = ['24h', '7d', '30d', 'custom']
+const SEVERITY_VALUES: ReadonlySet<Severity> = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
+const STATUS_VALUES: ReadonlySet<AlertStatus> = new Set(['FIRING', 'RESOLVED', 'SUPPRESSED'])
+const RANGE_VALUES: ReadonlySet<TimeRangePreset> = new Set(['24h', '7d', '30d', 'custom'])
 
 export function filtersFromSearchParams(sp: URLSearchParams): AlertFilters {
   const severities = sp.getAll('severity').filter((v): v is Severity =>
-    SEVERITY_VALUES.includes(v as Severity),
+    SEVERITY_VALUES.has(v as Severity),
   )
   const statuses = sp.getAll('status').filter((v): v is AlertStatus =>
-    STATUS_VALUES.includes(v as AlertStatus),
+    STATUS_VALUES.has(v as AlertStatus),
   )
   const rawRange = sp.get('range') ?? DEFAULT_ALERT_FILTERS.timeRange
-  const timeRange: TimeRangePreset = RANGE_VALUES.includes(rawRange as TimeRangePreset)
+  const timeRange: TimeRangePreset = RANGE_VALUES.has(rawRange as TimeRangePreset)
     ? (rawRange as TimeRangePreset)
     : DEFAULT_ALERT_FILTERS.timeRange
   return {
