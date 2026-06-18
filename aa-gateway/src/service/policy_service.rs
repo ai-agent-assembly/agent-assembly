@@ -212,6 +212,20 @@ impl PolicyServiceImpl {
         self
     }
 
+    /// Seed the audit `seq` counter so sequence numbers continue monotonically
+    /// across process restarts (AAASM-3356).
+    ///
+    /// `initial_seq` should be the *next* sequence number to emit — i.e.
+    /// `last_persisted_seq + 1`, obtained from
+    /// [`AuditWriter::read_last_seq`](crate::audit::AuditWriter::read_last_seq).
+    /// Without this, the counter restarts at `0` and produces duplicate `seq`
+    /// values after a restart, breaking the WORM log's per-entry uniqueness.
+    /// Mirrors the `initial_hash` recovery already done for the hash chain.
+    pub fn with_initial_seq(self, initial_seq: u64) -> Self {
+        self.seq.store(initial_seq, Ordering::Relaxed);
+        self
+    }
+
     /// Attach a broadcast sender for secret-detection alerts (AAASM-1545).
     ///
     /// When present, the service publishes a [`SecretAlert`] each time a
