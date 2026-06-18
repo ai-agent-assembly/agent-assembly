@@ -825,6 +825,15 @@ impl AgentRegistry {
                 .team_id
                 .clone()
                 .or_else(|| record.metadata.get("team_id").cloned()),
+            // AAASM-3377 — propagate the full delegation lineage (mirroring the
+            // first-class fields the TopologyService already reads) so the
+            // CheckAction audit entry carries root / parent / depth /
+            // delegation_reason / spawned_by_tool instead of dropping them.
+            root_agent_id: record.root_agent_id,
+            parent_agent_id: record.parent_key,
+            depth: Some(record.depth),
+            delegation_reason: record.delegation_reason.clone(),
+            spawned_by_tool: record.spawned_by_tool.clone(),
         })
     }
 
