@@ -18,7 +18,7 @@ type ToolsList = Vec<ToolInfoSchema>;
 /// entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
 #[allow(dead_code)] // fields are only used by utoipa's macro for OpenAPI schema generation
 #[derive(ToSchema)]
-struct ToolInfoSchema {
+pub struct ToolInfoSchema {
     kind: String,
     version: Option<String>,
     install_path: String,

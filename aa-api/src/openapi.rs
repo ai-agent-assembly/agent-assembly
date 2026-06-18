@@ -20,7 +20,7 @@ use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
     admin, agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, dispatch, edges, iam,
-    logs, ops, policies, topology, traces,
+    logs, ops, policies, tools, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -102,8 +102,10 @@ use crate::routes::{
         topology::get_lineage,
         topology::get_stats,
         edges::report_edge,
+        edges::list_topology_edges,
         edges::list_agent_edges,
         edges::get_agent_graph,
+        tools::list_tools,
         ops::list_ops,
         ops::register_op,
         ops::pause_op,
@@ -192,6 +194,8 @@ use crate::routes::{
         edges::EdgeListResponse,
         edges::GraphNode,
         edges::GraphResponse,
+        edges::TopologyEdgeListResponse,
+        tools::ToolInfoSchema,
         ops::OpActionAck,
         ops::RegisterOpRequest,
         crate::ops::OpRecord,
