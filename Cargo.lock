@@ -386,6 +386,7 @@ dependencies = [
  "aa-security",
  "anyhow",
  "bytes",
+ "clap",
  "criterion",
  "dirs",
  "hyper",
