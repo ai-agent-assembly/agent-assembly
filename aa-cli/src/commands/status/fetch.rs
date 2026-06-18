@@ -23,7 +23,19 @@ use super::models::{
 /// exception of `database_url`, which is run through [`redact_database_url`]
 /// before being assigned to `database_url_redacted`. The raw wire value never
 /// reaches the display layer.
-pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzResponse>) -> DeploymentOverview {
+///
+/// When `healthz` is `None` but `api_health` is `Some`, the configured
+/// `--api-url` is a REST API that does not mount the gateway-only `/healthz`
+/// probe (`GET /api/v1/health` succeeded). The overview is still marked
+/// `health = "ok"` — populated from the REST health body — rather than
+/// contradictorily reporting `unreachable` next to a healthy runtime API.
+/// `mode` / `storage_backend` are `"unknown"` because the REST health body
+/// does not carry them.
+pub fn build_deployment_overview(
+    gateway_url: &str,
+    healthz: Option<HealthzResponse>,
+    api_health: Option<&HealthResponse>,
+) -> DeploymentOverview {
     match healthz {
         Some(h) => DeploymentOverview {
             mode: h.mode,
@@ -35,15 +47,27 @@ pub fn build_deployment_overview(gateway_url: &str, healthz: Option<HealthzRespo
             uptime_secs: h.uptime_secs,
             health: "ok".to_string(),
         },
-        None => DeploymentOverview {
-            mode: "unknown".to_string(),
-            gateway_url: gateway_url.to_string(),
-            storage_backend: "unknown".to_string(),
-            storage_path: None,
-            database_url_redacted: None,
-            version: String::new(),
-            uptime_secs: 0,
-            health: "unreachable".to_string(),
+        None => match api_health {
+            Some(h) => DeploymentOverview {
+                mode: "unknown".to_string(),
+                gateway_url: gateway_url.to_string(),
+                storage_backend: "unknown".to_string(),
+                storage_path: None,
+                database_url_redacted: None,
+                version: h.version.clone(),
+                uptime_secs: h.uptime_secs,
+                health: "ok".to_string(),
+            },
+            None => DeploymentOverview {
+                mode: "unknown".to_string(),
+                gateway_url: gateway_url.to_string(),
+                storage_backend: "unknown".to_string(),
+                storage_path: None,
+                database_url_redacted: None,
+                version: String::new(),
+                uptime_secs: 0,
+                health: "unreachable".to_string(),
+            },
         },
     }
 }
@@ -120,7 +144,8 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         client.get_costs(),
     );
 
-    let runtime = build_runtime_health(health_result.ok());
+    let api_health = health_result.ok();
+    let runtime = build_runtime_health(api_health.clone());
     let agents = build_agent_rows(agents_result.unwrap_or_default());
     let approvals = build_approvals_summary(&approvals_result.unwrap_or_default());
     let budget = match costs_result {
@@ -135,7 +160,7 @@ pub async fn fetch_all(client: &StatusClient) -> StatusSnapshot {
         },
     };
 
-    let deployment = build_deployment_overview(client.base_url(), healthz_result.ok());
+    let deployment = build_deployment_overview(client.base_url(), healthz_result.ok(), api_health.as_ref());
 
     // AAASM-1591: surface the admin/status storage block when the
     // gateway exposes it. A 404 / decode error from an older gateway
@@ -231,8 +256,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_deployment_overview_marks_health_unreachable_when_healthz_absent() {
-        let overview = build_deployment_overview("http://localhost:7391", None);
+    fn build_deployment_overview_marks_health_unreachable_when_both_probes_absent() {
+        let overview = build_deployment_overview("http://localhost:7391", None, None);
         assert_eq!(overview.gateway_url, "http://localhost:7391");
         assert_eq!(overview.health, "unreachable");
         assert_eq!(overview.mode, "unknown");
@@ -241,6 +266,27 @@ mod tests {
         assert!(overview.database_url_redacted.is_none());
         assert_eq!(overview.uptime_secs, 0);
         assert!(overview.version.is_empty());
+    }
+
+    #[test]
+    fn build_deployment_overview_is_ok_from_api_health_when_healthz_absent() {
+        // AAASM-3374: a reachable REST `--api-url` (no gateway `/healthz`)
+        // must report `health = "ok"`, not contradict the runtime API row.
+        let api_health = HealthResponse {
+            status: "ok".to_string(),
+            version: "0.0.1".to_string(),
+            uptime_secs: 42,
+            active_connections: 1,
+            pipeline_lag_ms: 0,
+        };
+        let overview = build_deployment_overview("http://127.0.0.1:8080", None, Some(&api_health));
+        assert_eq!(overview.health, "ok");
+        assert_eq!(overview.gateway_url, "http://127.0.0.1:8080");
+        assert_eq!(overview.version, "0.0.1");
+        assert_eq!(overview.uptime_secs, 42);
+        // Fields not carried by the REST health body stay unknown.
+        assert_eq!(overview.mode, "unknown");
+        assert_eq!(overview.storage_backend, "unknown");
     }
 
     #[test]
@@ -253,7 +299,7 @@ mod tests {
             storage_path: None,
             database_url: Some("postgresql://aasm:secret@aasm-db:5432/aasm".to_string()),
         };
-        let overview = build_deployment_overview("https://cp.company.internal:7391", Some(healthz));
+        let overview = build_deployment_overview("https://cp.company.internal:7391", Some(healthz), None);
         assert_eq!(overview.mode, "remote");
         assert_eq!(overview.storage_backend, "postgres");
         assert!(overview.storage_path.is_none());
@@ -274,7 +320,7 @@ mod tests {
             storage_path: Some("~/.aasm/local.db".to_string()),
             database_url: None,
         };
-        let overview = build_deployment_overview("http://localhost:7391", Some(healthz));
+        let overview = build_deployment_overview("http://localhost:7391", Some(healthz), None);
         assert_eq!(overview.mode, "local");
         assert_eq!(overview.gateway_url, "http://localhost:7391");
         assert_eq!(overview.storage_backend, "sqlite");
@@ -289,6 +335,7 @@ mod tests {
     fn build_runtime_health_reachable() {
         let resp = Some(HealthResponse {
             status: "ok".to_string(),
+            version: "0.0.1".to_string(),
             uptime_secs: 120,
             active_connections: 3,
             pipeline_lag_ms: 5,

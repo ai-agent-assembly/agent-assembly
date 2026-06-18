@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
-/// Subset of the gateway `/healthz` response used for version extraction.
+/// Subset of the configured REST API `/api/v1/health` response used for
+/// version extraction.
 ///
-/// The gateway liveness endpoint reports `version` but does not carry a
-/// separate `api_version` field, so it is optional here and falls back to
-/// the served REST API major version.
+/// The REST API health endpoint reports both `version` and `api_version`.
+/// `api_version` stays optional so the same struct also parses a gateway
+/// `/healthz` body (which omits it), falling back to the served REST API
+/// major version.
 #[derive(Debug, Deserialize)]
 struct HealthInfo {
     version: String,
@@ -39,7 +41,11 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let (gateway_row, api_row) = rt.block_on(async {
         let client = reqwest::Client::new();
-        let url = format!("{}/healthz", ctx.api_url);
+        // Probe the configured `--api-url`'s own health endpoint. The REST
+        // API serves `GET /api/v1/health` (carrying `version`/`api_version`);
+        // the gateway-daemon-only `/healthz` is NOT mounted by the REST API,
+        // so probing it reported a reachable api-url as "unreachable".
+        let url = format!("{}/api/v1/health", ctx.api_url);
 
         let mut req = client.get(&url);
         if let Some(ref key) = ctx.api_key {
@@ -187,9 +193,19 @@ mod tests {
     }
 
     #[test]
+    fn health_info_parses_api_health_body_with_api_version() {
+        // The configured REST API `/api/v1/health` body carries both
+        // `version` and `api_version`; deserialization must capture both.
+        let body = r#"{"status":"ok","version":"0.0.1","api_version":"v1","uptime_secs":3,"active_connections":0,"pipeline_lag_ms":0,"checks":{}}"#;
+        let info: HealthInfo = serde_json::from_str(body).expect("api health body must parse");
+        assert_eq!(info.version, "0.0.1");
+        assert_eq!(info.api_version.as_deref(), Some("v1"));
+    }
+
+    #[test]
     fn health_info_parses_healthz_body_without_api_version() {
-        // The gateway `/healthz` body carries `version` but no
-        // `api_version`; deserialization must succeed and leave it absent.
+        // A gateway `/healthz` body still parses (api_version absent) so a
+        // gateway-targeted `--api-url` continues to work via fallback.
         let body = r#"{"mode":"local","version":"0.0.1","storage":"memory","uptime_secs":3}"#;
         let info: HealthInfo = serde_json::from_str(body).expect("healthz body must parse");
         assert_eq!(info.version, "0.0.1");

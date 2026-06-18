@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 pub struct HealthResponse {
     /// Liveness status string, always `"ok"` when the service is running.
     pub status: String,
+    /// Service version (semver from Cargo.toml). Backs the deployment-overview
+    /// `Version` line when the configured `--api-url` is a REST API that does
+    /// not expose the gateway-only `/healthz` probe.
+    #[serde(default)]
+    pub version: String,
     /// Server uptime in seconds since startup.
     #[serde(default)]
     pub uptime_secs: u64,
