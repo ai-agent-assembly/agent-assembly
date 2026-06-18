@@ -1134,6 +1134,13 @@ jobs:
   # — either coverage producer may be skipped (path-gated), so the Rust steps run
   # only when `coverage` succeeded and the TS download only when `dashboard-test`
   # succeeded. Runs in the pull_request context so PR decoration works (AAASM-2542).
+  #
+  # AAASM-3197: SonarCloud treats every master-branch analysis as a FULL snapshot
+  # that REPLACES the project's coverage. A push that touches only one side (e.g.
+  # dashboard-only → `coverage` skipped) would otherwise publish a partial report
+  # that wipes the other side's coverage to 0. On pushes, whichever producer was
+  # skipped/failed is backfilled from the last successful master run so the
+  # snapshot is always complete. PR analysis (new-code-only) is left unchanged.
   sonar:
     name: SonarCloud analysis
     needs: [changes, coverage, dashboard-test]
