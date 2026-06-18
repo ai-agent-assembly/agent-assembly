@@ -28,14 +28,14 @@ function formatLabel(routingStatus: RoutingStatusInfo): string {
     return 'Routed to Org Admin'
   }
   if (status.startsWith('escalated_to_')) {
-    const role = status.slice('escalated_to_'.length).replace(/_/g, ' ')
+    const role = status.slice('escalated_to_'.length).replaceAll('_', ' ')
     return `Escalated to ${role} (timed out)`
   }
   if (status.startsWith('escalated:')) {
-    const role = status.slice('escalated:'.length).replace(/_/g, ' ')
+    const role = status.slice('escalated:'.length).replaceAll('_', ' ')
     return `Escalated to ${role} (timed out)`
   }
-  return status.replace(/_/g, ' ')
+  return status.replaceAll('_', ' ')
 }
 
 function formatHistoryTooltip(history: RoutingHistoryEntry[]): string {

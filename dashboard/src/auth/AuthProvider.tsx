@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { AuthContext } from './AuthContext'
 
 export function AuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -6,7 +6,7 @@ export function AuthProvider({ children }: Readonly<{ children: React.ReactNode 
     () => localStorage.getItem('aa_token'),
   )
 
-  async function login(apiKey: string): Promise<void> {
+  const login = useCallback(async (apiKey: string): Promise<void> => {
     const base = import.meta.env.VITE_API_BASE_URL ?? ''
     const res = await fetch(`${base}/api/v1/auth/token`, {
       method: 'POST',
@@ -22,15 +22,17 @@ export function AuthProvider({ children }: Readonly<{ children: React.ReactNode 
     const data = (await res.json()) as { token: string }
     localStorage.setItem('aa_token', data.token)
     setToken(data.token)
-  }
+  }, [])
 
-  function logout() {
+  const logout = useCallback(() => {
     localStorage.removeItem('aa_token')
     setToken(null)
-  }
+  }, [])
+
+  const value = useMemo(() => ({ token, login, logout }), [token, login, logout])
 
   return (
-    <AuthContext.Provider value={{ token, login, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   )

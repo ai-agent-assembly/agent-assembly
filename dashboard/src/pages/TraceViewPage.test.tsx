@@ -248,8 +248,8 @@ describe('TraceViewPage', () => {
     URL.createObjectURL = vi.fn((blob: Blob) => {
       blob.text().then(text => { capturedBlobText = text })
       return 'blob:fake'
-    }) as unknown as typeof URL.createObjectURL
-    URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL
+    })
+    URL.revokeObjectURL = vi.fn()
 
     const originalCreateElement = document.createElement.bind(document)
     vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {

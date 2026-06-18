@@ -70,10 +70,11 @@ export function TopologyGraph({
 }: TopologyGraphProps) {
   // Stable identity key — restart the sim only when the *set* of node/edge
   // ids changes, not on every parent re-render.
-  const identityKey = useMemo(
-    () => `${nodes.map(n => n.id).join(',')}|${edges.map(e => `${e.source}->${e.target}`).join(',')}`,
-    [nodes, edges],
-  )
+  const identityKey = useMemo(() => {
+    const nodeIds = nodes.map(n => n.id).join(',')
+    const edgeIds = edges.map(e => `${e.source}->${e.target}`).join(',')
+    return `${nodeIds}|${edgeIds}`
+  }, [nodes, edges])
 
   // Per-team layout: centers laid out left-to-right, top-to-bottom in a
   // grid based on team count, plus aggregated spend/limit/member count.
@@ -87,7 +88,9 @@ export function TopologyGraph({
       byTeam.set(n.team, entry)
     }
     const teams = [...byTeam.keys()]
-    const cols = teams.length <= 2 ? teams.length : teams.length <= 6 ? 3 : 4
+    let cols = 4
+    if (teams.length <= 2) cols = teams.length
+    else if (teams.length <= 6) cols = 3
     const rows = Math.max(1, Math.ceil(teams.length / cols))
     const cellW = width / Math.max(1, cols)
     const cellH = height / rows

@@ -44,9 +44,9 @@ const TEAM: TeamTopology = {
   ],
 }
 
-function mockTeam(result: Partial<TeamTopologyResult> = { data: TEAM }) {
+function mockTeam(result?: Partial<TeamTopologyResult>) {
   vi.spyOn(teamsApi, 'useTeamTopologyQuery').mockReturnValue({
-    data: undefined, notFound: false, isLoading: false, isError: false, ...result,
+    data: undefined, notFound: false, isLoading: false, isError: false, ...(result ?? { data: TEAM }),
   })
 }
 

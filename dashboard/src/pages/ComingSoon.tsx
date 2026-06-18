@@ -8,7 +8,7 @@ import { Link, useLocation } from 'react-router-dom'
  */
 export function ComingSoon({ name }: Readonly<{ name?: string }>) {
   const location = useLocation()
-  const fromPath = location.pathname.replace(/^\//, '').replace(/-/g, ' ')
+  const fromPath = location.pathname.replace(/^\//, '').replaceAll('-', ' ')
   const heading = name ?? (fromPath || 'this page')
 
   return (

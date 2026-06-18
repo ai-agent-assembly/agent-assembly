@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useTopologyNodeRecentEvents } from '../../features/topology/api'
 import type { TopologyNode } from '../../features/topology/types'
+import { bucketForRatio } from './budgetThreshold'
 import './NodeDetailPanel.css'
 
 const RECENT_EVENT_LIMIT = 5
@@ -125,9 +126,7 @@ export function NodeDetailPanel({ node, onClose, onViewTrace }: NodeDetailPanelP
           <div
             className="node-detail-panel__progress-fill"
             style={{ width: `${Math.round(ratio * 100)}%` }}
-            data-ratio-bucket={
-              ratio < 0.8 ? 'ok' : ratio < 0.95 ? 'warn' : 'danger'
-            }
+            data-ratio-bucket={bucketForRatio(ratio)}
           />
         </div>
       </section>

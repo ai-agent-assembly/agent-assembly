@@ -10,7 +10,7 @@ import { api } from './client'
 const MOCK_LATENCY_MS = 120
 
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
+  return structuredClone(value)
 }
 
 function delay(ms: number): Promise<void> {

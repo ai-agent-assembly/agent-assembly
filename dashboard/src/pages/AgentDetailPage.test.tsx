@@ -90,6 +90,28 @@ function mockHappyPath() {
   )
 }
 
+function mockSuspendedAgent() {
+  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+    mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+    mockQuery<Agent | undefined>({
+      data: { ...MOCK_AGENT, status: 'suspended' },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+    mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+  )
+  vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+    mockQuery<agentsApi.EffectivePermissions>({
+      data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
+    }),
+  )
+}
+
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('AgentDetailPage deep link', () => {
@@ -389,28 +411,6 @@ describe('AgentDetailPage — suspend / resume actions', () => {
       { mutate, isPending: false } as unknown as ReturnType<typeof agentsMutations.useResumeAgent>,
     )
     return mutate
-  }
-
-  function mockSuspendedAgent() {
-    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
-      mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
-      mockQuery<Agent | undefined>({
-        data: { ...MOCK_AGENT, status: 'suspended' },
-        isLoading: false,
-        isError: false,
-        refetch: vi.fn(),
-      }),
-    )
-    vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
-      mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
-    )
-    vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
-      mockQuery<agentsApi.EffectivePermissions>({
-        data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
-      }),
-    )
   }
 
   it('opens the suspend dialog and toasts on a successful suspend', async () => {

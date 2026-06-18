@@ -142,11 +142,11 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Readonly<Props>) {
       >
         {/* Links */}
         <g transform="translate(40,40)">
-          {links.map((link, i) => {
+          {links.map((link) => {
             if (link.source.data.agent_id === "__root__") return null;
             return (
               <line
-                key={i}
+                key={`${link.source.data.agent_id}->${link.target.data.agent_id}`}
                 x1={link.source.x}
                 y1={link.source.y}
                 x2={link.target.x}

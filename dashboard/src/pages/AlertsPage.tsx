@@ -14,14 +14,13 @@ import { EmptyStateNoRules } from '../features/alerts/EmptyStateNoRules'
 import { EmptyStateNoAlerts } from '../features/alerts/EmptyStateNoAlerts'
 import { AlertsErrorBanner } from '../features/alerts/AlertsErrorBanner'
 import { useAlertRulesQuery, useAlertsQuery } from '../features/alerts/api'
-import type { AlertRule } from '../features/alerts/types'
 import { useAlertsStream } from '../features/alerts/useAlertsStream'
 import { applyFire, applyResolve, applySilence } from '../features/alerts/alertsStreamSync'
 import {
   filtersFromSearchParams,
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
-import type { Alert, AlertFilters } from '../features/alerts/types'
+import type { Alert, AlertFilters, AlertRule } from '../features/alerts/types'
 
 function partitionByTab(rows: readonly Alert[], tab: AlertsTab): readonly Alert[] {
   if (tab === 'incidents') return rows.filter((r) => r.status === 'RESOLVED')
@@ -86,6 +85,21 @@ export function AlertsPage() {
   const noAlertsInWindow =
     !alertsQuery.isLoading && !alertsQuery.isError && rows.length === 0 && !noRulesConfigured
 
+  let alertsBody
+  if (noRulesConfigured) {
+    alertsBody = <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
+  } else if (noAlertsInWindow) {
+    alertsBody = <EmptyStateNoAlerts />
+  } else {
+    alertsBody = (
+      <AlertList
+        rows={rows}
+        onSelect={setSelectedAlertId}
+        loading={alertsQuery.isLoading && rows.length === 0}
+      />
+    )
+  }
+
   return (
     <main style={{ padding: '1.5rem' }}>
       <header
@@ -131,10 +145,10 @@ export function AlertsPage() {
       </header>
 
       {streamStatus !== 'open' && (
-        <div
+        <output
           data-testid="alerts-stream-banner"
-          role="status"
           style={{
+            display: 'block',
             marginBottom: '0.75rem',
             padding: '6px 10px',
             background: 'var(--badge-amber-bg)',
@@ -146,7 +160,7 @@ export function AlertsPage() {
           {streamStatus === 'connecting'
             ? 'Connecting to live alerts stream…'
             : 'Live alerts stream disconnected — reconnecting.'}
-        </div>
+        </output>
       )}
 
       <AlertsTabs value={tab} onChange={setTab} />
@@ -183,17 +197,7 @@ export function AlertsPage() {
               : `${rows.length} alert${rows.length === 1 ? '' : 's'}`}
           </div>
 
-          {noRulesConfigured ? (
-            <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
-          ) : noAlertsInWindow ? (
-            <EmptyStateNoAlerts />
-          ) : (
-            <AlertList
-              rows={rows}
-              onSelect={setSelectedAlertId}
-              loading={alertsQuery.isLoading && rows.length === 0}
-            />
-          )}
+          {alertsBody}
         </>
       )}
 

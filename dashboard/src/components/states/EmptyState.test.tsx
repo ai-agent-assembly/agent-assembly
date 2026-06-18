@@ -27,8 +27,8 @@ describe('EmptyState', () => {
     expect(screen.queryByTestId('empty-icon')).not.toBeInTheDocument()
   })
 
-  it('marks the surface with role="status" for assistive tech', () => {
+  it('exposes the surface with the status role for assistive tech', () => {
     render(<EmptyState title="No results" />)
-    expect(screen.getByTestId('empty-state')).toHaveAttribute('role', 'status')
+    expect(screen.getByRole('status')).toBe(screen.getByTestId('empty-state'))
   })
 })

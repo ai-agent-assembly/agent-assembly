@@ -80,7 +80,7 @@ function mockSandboxSummary(
 ) {
   const base = { data: EMPTY_SUMMARY, isLoading: false, isError: false }
   return vi.spyOn(auditApi, 'useSandboxSummaryQuery').mockReturnValue(
-    mockQuery<SandboxSummaryResponse>(Object.assign({}, base, partial) as Partial<
+    mockQuery<SandboxSummaryResponse>({ ...base, ...partial } as Partial<
       UseQueryResult<SandboxSummaryResponse, Error>
     >),
   )

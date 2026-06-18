@@ -35,13 +35,7 @@ describe('createApiCapabilityClient', () => {
     const stub = stubMatrix()
     const getSpy = vi
       .spyOn(api, 'GET')
-      // openapi-fetch's GET signature is complex; the runtime contract is `{ data, error }`,
-      // and the test only depends on that runtime shape — so we narrow the cast at the
-      // call site rather than reconstructing the full overload type here.
-      // openapi-fetch's per-path generic return types are awkward to satisfy
-      // from a Vitest spy; the runtime contract is `{ data, error }` and that
-      // is what the factory consumes, so the mock-side narrow uses `unknown`.
-      .mockResolvedValue({ data: stub, error: undefined } as unknown as never)
+      .mockResolvedValue({ data: stub, error: undefined })
 
     const client = createApiCapabilityClient()
     const matrix = await client.getMatrix()
@@ -55,7 +49,7 @@ describe('createApiCapabilityClient', () => {
     const stubUpdated: OverrideResponse = { updated: stubMatrix().agents }
     const postSpy = vi
       .spyOn(api, 'POST')
-      .mockResolvedValue({ data: stubUpdated, error: undefined } as unknown as never)
+      .mockResolvedValue({ data: stubUpdated, error: undefined })
 
     const client = createApiCapabilityClient()
     const res = await client.applyOverride({
@@ -81,7 +75,7 @@ describe('createApiCapabilityClient', () => {
     vi.spyOn(api, 'POST').mockResolvedValue({
       data: undefined,
       error: { status: 403, detail: 'policy mutation denied' },
-    } as unknown as never)
+    })
 
     const client = createApiCapabilityClient()
     await expect(
@@ -98,7 +92,7 @@ describe('createApiCapabilityClient', () => {
     vi.spyOn(api, 'GET').mockResolvedValue({
       data: undefined,
       error: { status: 500, detail: 'internal error' },
-    } as unknown as never)
+    })
 
     const client = createApiCapabilityClient()
     await expect(client.getMatrix()).rejects.toThrow(/capability matrix fetch failed/)

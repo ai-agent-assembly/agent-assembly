@@ -13,10 +13,14 @@
 
 export type BudgetThresholdBucket = 'ok' | 'warn' | 'danger'
 
-export function bucketForBudget(spent: number, limit: number): BudgetThresholdBucket {
-  if (limit <= 0) return 'ok'
-  const ratio = spent / limit
+/** Map a precomputed burn ratio (spent/limit) to its threshold bucket. */
+export function bucketForRatio(ratio: number): BudgetThresholdBucket {
   if (ratio < 0.8) return 'ok'
   if (ratio < 0.95) return 'warn'
   return 'danger'
+}
+
+export function bucketForBudget(spent: number, limit: number): BudgetThresholdBucket {
+  if (limit <= 0) return 'ok'
+  return bucketForRatio(spent / limit)
 }
