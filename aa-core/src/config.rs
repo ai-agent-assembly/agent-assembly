@@ -216,8 +216,8 @@ pub enum ColdAction {
 /// Defaults align with the SOC 2 / ISO 27001 reference window from the
 /// Epic 18 spec: 30 days fully indexed (hot), 90 days
 /// compressed-but-queryable (warm), then `cold_action` decides. The
-/// `schedule` is a UTC cron expression — default `0 3 * * *` runs the
-/// retention sweep at 03:00 UTC daily.
+/// `schedule` is a 6-field UTC cron expression — default `0 0 3 * * *`
+/// runs the retention sweep at 03:00 UTC daily.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -245,7 +245,7 @@ impl Default for RetentionConfig {
             warm_days: 90,
             cold_action: ColdAction::Drop,
             archive_url: None,
-            schedule: String::from("0 3 * * *"),
+            schedule: String::from("0 0 3 * * *"),
             dry_run: false,
         }
     }
@@ -1049,8 +1049,23 @@ agent:
         assert_eq!(s.retention.warm_days, 90);
         assert_eq!(s.retention.cold_action, ColdAction::Drop);
         assert!(s.retention.archive_url.is_none());
-        assert_eq!(s.retention.schedule, "0 3 * * *");
+        assert_eq!(s.retention.schedule, "0 0 3 * * *");
         assert!(!s.retention.dry_run);
+    }
+
+    #[test]
+    fn default_retention_schedule_is_a_valid_six_field_cron() {
+        // The gateway validates `schedule` with the `cron` crate, which
+        // requires the 6-field (seconds-leading) form. A 5-field default
+        // is rejected at startup and silently disables retention, so the
+        // default must always parse as 6 whitespace-separated fields.
+        let schedule = RetentionConfig::default().schedule;
+        assert_eq!(
+            schedule.split_whitespace().count(),
+            6,
+            "default retention schedule {schedule:?} must be a 6-field cron",
+        );
+        assert_eq!(schedule, "0 0 3 * * *");
     }
 
     #[test]
