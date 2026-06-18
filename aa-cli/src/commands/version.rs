@@ -29,7 +29,11 @@ struct VersionRow {
 }
 
 /// Build version rows by probing the gateway health endpoint.
-fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
+///
+/// Returns the rows plus a `reachable` flag that is `true` only when the
+/// gateway/api health probe succeeded. Callers use the flag to set a
+/// non-zero process exit code so the documented CI contract is honored.
+fn build_rows(ctx: &ResolvedContext) -> (Vec<VersionRow>, bool) {
     let cli_row = VersionRow {
         component: "cli".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -37,7 +41,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
     };
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let (gateway_row, api_row) = rt.block_on(async {
+    let (gateway_row, api_row, reachable) = rt.block_on(async {
         let client = reqwest::Client::new();
         let url = format!("{}/healthz", ctx.api_url);
 
@@ -59,14 +63,21 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
                         version: info.api_version.unwrap_or_else(|| "v1".to_string()),
                         status: "reachable".to_string(),
                     },
+                    true,
                 ),
-                Err(_) => unreachable_rows(),
+                Err(_) => {
+                    let (gw, api) = unreachable_rows();
+                    (gw, api, false)
+                }
             },
-            _ => unreachable_rows(),
+            _ => {
+                let (gw, api) = unreachable_rows();
+                (gw, api, false)
+            }
         }
     });
 
-    vec![cli_row, gateway_row, api_row]
+    (vec![cli_row, gateway_row, api_row], reachable)
 }
 
 /// Produce gateway and api rows for the unreachable case.
@@ -97,7 +108,7 @@ fn render_table(rows: &[VersionRow]) {
 
 /// Run the `aasm version` command.
 pub fn run(ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
-    let rows = build_rows(ctx);
+    let (rows, reachable) = build_rows(ctx);
 
     match output {
         OutputFormat::Table => render_table(&rows),
@@ -111,7 +122,19 @@ pub fn run(ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
         },
     }
 
-    ExitCode::SUCCESS
+    exit_code_for(reachable)
+}
+
+/// Map gateway/api reachability to a process exit code.
+///
+/// Honors the CI contract: exit non-zero when the gateway/api is
+/// unreachable, mirroring the data commands which already exit 1.
+fn exit_code_for(reachable: bool) -> ExitCode {
+    if reachable {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(test)]
