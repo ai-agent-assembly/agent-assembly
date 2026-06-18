@@ -1134,11 +1134,24 @@ jobs:
   # — either coverage producer may be skipped (path-gated), so the Rust steps run
   # only when `coverage` succeeded and the TS download only when `dashboard-test`
   # succeeded. Runs in the pull_request context so PR decoration works (AAASM-2542).
+  #
+  # AAASM-3197: SonarCloud treats every master-branch analysis as a FULL snapshot
+  # that REPLACES the project's coverage. A push that touches only one side (e.g.
+  # dashboard-only → `coverage` skipped) would otherwise publish a partial report
+  # that wipes the other side's coverage to 0. On pushes, whichever producer was
+  # skipped/failed is backfilled from the last successful master run so the
+  # snapshot is always complete. PR analysis (new-code-only) is left unchanged.
   sonar:
     name: SonarCloud analysis
     needs: [changes, coverage, dashboard-test]
     if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage')) }}
     runs-on: ubuntu-latest
+    # AAASM-3197: actions:read lets `gh run download` pull the last successful
+    # master LCOV when a coverage producer was skipped this run (see fallback
+    # steps below). contents:read mirrors the workflow default for checkout.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1162,6 +1175,27 @@ jobs:
         with:
           name: rust-coverage-lcov
           path: .
+      # AAASM-3197: master-branch analysis is a FULL snapshot — a partial report
+      # wipes the other side's coverage to 0. When the `coverage` job was skipped
+      # or failed on a push (non-Rust change), backfill `lcov.info` from the most
+      # recent successful master CI run so the snapshot stays complete. PR runs are
+      # new-code-decorated and intentionally left untouched.
+      - name: Backfill Rust coverage (LCOV) from last successful master run
+        if: ${{ github.event_name == 'push' && needs.coverage.result != 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --workflow ci.yml --branch master \
+            --status success --limit 1 --json databaseId \
+            --jq '.[0].databaseId')"
+          if [ -z "$run_id" ]; then
+            echo "::warning::No prior successful master CI run found; scanning without backfilled Rust LCOV."
+            exit 0
+          fi
+          echo "Backfilling rust-coverage-lcov from master run ${run_id}."
+          gh run download "$run_id" --name rust-coverage-lcov --dir . \
+            || echo "::warning::rust-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
       # ---- TypeScript coverage (only when the dashboard side ran) ------------
       - name: Download TypeScript coverage (LCOV) from the Dashboard test job
         if: needs.dashboard-test.result == 'success'
@@ -1169,6 +1203,26 @@ jobs:
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage
+      # AAASM-3197: symmetric backfill for the TypeScript side. When
+      # `dashboard-test` was skipped or failed on a push (Rust-only change),
+      # pull `dashboard/coverage/lcov.info` from the last successful master run
+      # so the full-snapshot scan does not wipe dashboard coverage to 0.
+      - name: Backfill TypeScript coverage (LCOV) from last successful master run
+        if: ${{ github.event_name == 'push' && needs.dashboard-test.result != 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --workflow ci.yml --branch master \
+            --status success --limit 1 --json databaseId \
+            --jq '.[0].databaseId')"
+          if [ -z "$run_id" ]; then
+            echo "::warning::No prior successful master CI run found; scanning without backfilled TypeScript LCOV."
+            exit 0
+          fi
+          echo "Backfilling dashboard-coverage-lcov from master run ${run_id}."
+          gh run download "$run_id" --name dashboard-coverage-lcov --dir dashboard/coverage \
+            || echo "::warning::dashboard-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
       # ---- Scan -------------------------------------------------------------
       - name: Cache SonarCloud analysis state
         uses: actions/cache@v5
