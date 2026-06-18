@@ -6,7 +6,7 @@ interface ExpiredApprovalsSectionProps {
   rows: Approval[]
 }
 
-export function ExpiredApprovalsSection({ rows }: ExpiredApprovalsSectionProps) {
+export function ExpiredApprovalsSection({ rows }: Readonly<ExpiredApprovalsSectionProps>) {
   const [expanded, setExpanded] = useState(false)
 
   if (rows.length === 0) return null

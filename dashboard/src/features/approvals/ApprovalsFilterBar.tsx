@@ -15,7 +15,7 @@ const SELECT_STYLE = {
   fontSize: '0.875rem',
 } as const
 
-export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilterBarProps) {
+export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<ApprovalsFilterBarProps>) {
   function update<K extends keyof ApprovalsFilter>(key: K, value: ApprovalsFilter[K]) {
     onChange({ ...filter, [key]: value })
   }

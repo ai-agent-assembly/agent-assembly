@@ -19,7 +19,7 @@ const LABEL_STYLE = {
   fontWeight: 500,
 } as const
 
-export function ApprovalDetailRow({ approval, colSpan }: ApprovalDetailRowProps) {
+export function ApprovalDetailRow({ approval, colSpan }: Readonly<ApprovalDetailRowProps>) {
   return (
     <tr data-testid="approval-detail-row">
       <td
