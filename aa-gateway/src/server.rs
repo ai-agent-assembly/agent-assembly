@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tonic::transport::Server;
 
+use crate::anomaly::{AnomalyConfig, AnomalyDetector, AnomalyEvent};
 use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
@@ -180,6 +181,31 @@ fn maybe_spawn_window_flush(tracker: Arc<BudgetTracker>) -> Option<tokio::task::
             Some(start_window_flush_task(tracker, flush_interval))
         }
     }
+}
+
+/// Construct the live anomaly-detection hook for the gateway serve path
+/// (AAASM-3378).
+///
+/// The `aa-gateway::anomaly` engine was fully implemented and unit-tested but
+/// had **zero production callers** — the serve path never attached it, so the
+/// shipped gateway ran with anomaly detection OFF and no `AnomalyEvent` could
+/// ever fire on live traffic. This builds an [`AnomalyDetector`] with the
+/// default config plus the broadcast channel it publishes detections on, so
+/// `serve_tcp` / `serve_uds` can opt the live service in via
+/// [`PolicyServiceImpl::with_anomaly_detection`].
+///
+/// The returned [`broadcast::Receiver`] is retained by the caller so the
+/// channel is not immediately closed (the detector's `send` would otherwise
+/// always error with no subscribers); future work can route it to alert sinks.
+fn setup_anomaly() -> (
+    Arc<AnomalyDetector>,
+    broadcast::Sender<AnomalyEvent>,
+    broadcast::Receiver<AnomalyEvent>,
+) {
+    let detector = Arc::new(AnomalyDetector::new(AnomalyConfig::default()));
+    let (event_tx, event_rx) = broadcast::channel::<AnomalyEvent>(256);
+    tracing::info!("anomaly detection enabled on the gateway serve path");
+    (detector, event_tx, event_rx)
 }
 
 /// Spawn the [`EscalationScheduler`] background task and return the `Arc<EscalationScheduler>`.
@@ -392,6 +418,9 @@ pub async fn serve_tcp(
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
+    // AAASM-3378: enable the live anomaly detector on the shipped serve path.
+    let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
+
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
         Arc::clone(&registry),
@@ -402,7 +431,8 @@ pub async fn serve_tcp(
         initial_hash,
     )
     .with_initial_seq(initial_seq)
-    .with_db_scheduler(db_scheduler.clone());
+    .with_db_scheduler(db_scheduler.clone())
+    .with_anomaly_detection(anomaly_detector, anomaly_tx);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
@@ -471,6 +501,9 @@ pub async fn serve_uds(
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
 
+    // AAASM-3378: enable the live anomaly detector on the shipped serve path.
+    let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
+
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
         Arc::clone(&registry),
@@ -481,7 +514,8 @@ pub async fn serve_uds(
         initial_hash,
     )
     .with_initial_seq(initial_seq)
-    .with_db_scheduler(db_scheduler.clone());
+    .with_db_scheduler(db_scheduler.clone())
+    .with_anomaly_detection(anomaly_detector, anomaly_tx);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
