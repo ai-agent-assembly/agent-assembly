@@ -1916,7 +1916,69 @@ paths:
                 $ref: '#/components/schemas/PolicyResponse'
         '404':
           description: No active policy loaded
+  /api/v1/tools:
+    get:
+      tags:
+      - tools
+      summary: List all auto-discovered AI dev tools on the gateway host.
+      description: |-
+        Runs all registered [`DevToolAdapter`][aa_core::DevToolAdapter]
+        implementations concurrently and returns the subset that are installed.
+        If no tools are detected, an empty array is returned (not an error).
+      operationId: list_tools
+      responses:
+        '200':
+          description: Discovered tools
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ToolInfoSchema'
   /api/v1/topology/edges:
+    get:
+      tags:
+      - topology
+      summary: List all topology edges, optionally filtered by team.
+      description: |-
+        Iterates every known edge type and collects up to `limit` edges total
+        (default 500, max 1 000). When `team_id` is provided, only edges where
+        the source **or** target agent belongs to that team are returned.
+      operationId: list_topology_edges
+      parameters:
+      - name: team_id
+        in: query
+        description: Return only edges where at least one endpoint belongs to this team.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+        example: team-alpha
+      - name: limit
+        in: query
+        description: Maximum number of edges to return. Defaults to 500, capped at 1000.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+        example: 500
+      responses:
+        '200':
+          description: Edge list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyEdgeListResponse'
+        '500':
+          description: Store error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
     post:
       tags:
       - topology
@@ -5264,6 +5326,51 @@ components:
         token:
           type: string
           description: The issued JWT token string.
+    ToolInfoSchema:
+      type: object
+      description: |-
+        Schema wrapper so utoipa can derive the OpenAPI schema for [`DevToolInfo`].
+
+        The real handler returns `Vec<DevToolInfo>` directly; this wrapper is only
+        referenced by utoipa's `#[utoipa::path]` macro so it can generate a schema
+        entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
+      required:
+      - kind
+      - install_path
+      - governance_level
+      - supports_mcp
+      - supports_managed_settings
+      properties:
+        governance_level:
+          type: string
+        install_path:
+          type: string
+        kind:
+          type: string
+        supports_managed_settings:
+          type: boolean
+        supports_mcp:
+          type: boolean
+        version:
+          type:
+          - string
+          - 'null'
+    TopologyEdgeListResponse:
+      type: object
+      description: All edges in the topology graph, optionally filtered by team membership.
+      required:
+      - edges
+      - count
+      properties:
+        count:
+          type: integer
+          description: Total number of edges returned.
+          minimum: 0
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeResponse'
+          description: Matching edges, sorted newest-first within each edge type.
     TopologyOverview:
       type: object
       description: |-
@@ -5778,3 +5885,5 @@ tags:
   description: Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)
 - name: dispatch
   description: Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)
+- name: tools
+  description: Auto-discovered AI dev tools on the gateway host

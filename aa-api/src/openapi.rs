@@ -20,7 +20,7 @@ use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
     admin, agents, alert_rules, alerts, approvals, audit, auth, capability, costs, destinations, dispatch, edges, iam,
-    logs, ops, policies, topology, traces,
+    logs, ops, policies, tools, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -57,6 +57,7 @@ use crate::routes::{
         (name = "audit", description = "Audit log aggregations — violation heatmaps and lineage analytics"),
         (name = "admin", description = "Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)"),
         (name = "dispatch", description = "Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)"),
+        (name = "tools", description = "Auto-discovered AI dev tools on the gateway host"),
     ),
     paths(
         crate::routes::health::health,
@@ -102,8 +103,10 @@ use crate::routes::{
         topology::get_lineage,
         topology::get_stats,
         edges::report_edge,
+        edges::list_topology_edges,
         edges::list_agent_edges,
         edges::get_agent_graph,
+        tools::list_tools,
         ops::list_ops,
         ops::register_op,
         ops::pause_op,
@@ -192,6 +195,8 @@ use crate::routes::{
         edges::EdgeListResponse,
         edges::GraphNode,
         edges::GraphResponse,
+        edges::TopologyEdgeListResponse,
+        tools::ToolInfoSchema,
         ops::OpActionAck,
         ops::RegisterOpRequest,
         crate::ops::OpRecord,

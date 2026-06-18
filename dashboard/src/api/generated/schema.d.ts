@@ -1080,6 +1080,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List all auto-discovered AI dev tools on the gateway host.
+         * @description Runs all registered [`DevToolAdapter`][aa_core::DevToolAdapter]
+         *     implementations concurrently and returns the subset that are installed.
+         *     If no tools are detected, an empty array is returned (not an error).
+         */
+        get: operations["list_tools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topology/edges": {
         parameters: {
             query?: never;
@@ -1087,7 +1109,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List all topology edges, optionally filtered by team.
+         * @description Iterates every known edge type and collects up to `limit` edges total
+         *     (default 500, max 1 000). When `team_id` is provided, only edges where
+         *     the source **or** target agent belongs to that team are returned.
+         */
+        get: operations["list_topology_edges"];
         put?: never;
         /**
          * Record a new directed topology edge.
@@ -3091,6 +3119,28 @@ export interface components {
             scopes: components["schemas"]["Scope"][];
             /** @description The issued JWT token string. */
             token: string;
+        };
+        /**
+         * @description Schema wrapper so utoipa can derive the OpenAPI schema for [`DevToolInfo`].
+         *
+         *     The real handler returns `Vec<DevToolInfo>` directly; this wrapper is only
+         *     referenced by utoipa's `#[utoipa::path]` macro so it can generate a schema
+         *     entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
+         */
+        ToolInfoSchema: {
+            governance_level: string;
+            install_path: string;
+            kind: string;
+            supports_managed_settings: boolean;
+            supports_mcp: boolean;
+            version?: string | null;
+        };
+        /** @description All edges in the topology graph, optionally filtered by team membership. */
+        TopologyEdgeListResponse: {
+            /** @description Total number of edges returned. */
+            count: number;
+            /** @description Matching edges, sorted newest-first within each edge type. */
+            edges: components["schemas"]["EdgeResponse"][];
         };
         /**
          * @description Overview of the entire agent topology across all teams.
@@ -5421,6 +5471,66 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    list_tools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discovered tools */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolInfoSchema"][];
+                };
+            };
+        };
+    };
+    list_topology_edges: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Return only edges where at least one endpoint belongs to this team.
+                 * @example team-alpha
+                 */
+                team_id?: string | null;
+                /**
+                 * @description Maximum number of edges to return. Defaults to 500, capped at 1000.
+                 * @example 500
+                 */
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Edge list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyEdgeListResponse"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
