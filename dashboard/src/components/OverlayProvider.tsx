@@ -5,7 +5,7 @@ const INITIAL_STATES: Record<OverlayName, OverlayState> = Object.fromEntries(
   OVERLAY_NAMES.map((n) => [n, { open: false, props: {} }]),
 ) as Record<OverlayName, OverlayState>
 
-export function OverlayProvider({ children }: { children: ReactNode }) {
+export function OverlayProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [states, setStates] = useState<Record<OverlayName, OverlayState>>(INITIAL_STATES)
 
   const openOverlay = useCallback(

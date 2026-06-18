@@ -13,7 +13,7 @@ export function ErrorState({
   description,
   onRetry,
   retryLabel = 'Retry',
-}: ErrorStateProps) {
+}: Readonly<ErrorStateProps>) {
   return (
     <div className="state state--error" role="alert" data-testid="error-state">
       <h2 className="state__title">{title}</h2>

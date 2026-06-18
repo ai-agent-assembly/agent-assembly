@@ -33,7 +33,7 @@ interface DrawerProps {
  * scrim was rendered in-tree). On the server / pre-mount, falls back to
  * in-tree rendering to avoid SSR mismatches.
  */
-export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
+export function Drawer({ open, onClose, children, ariaLabel }: Readonly<DrawerProps>) {
   const onCloseRef = useRef(onClose)
   useEffect(() => {
     onCloseRef.current = onClose

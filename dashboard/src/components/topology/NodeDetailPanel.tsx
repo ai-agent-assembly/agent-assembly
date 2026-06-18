@@ -206,7 +206,7 @@ export function NodeDetailPanel({ node, onClose, onViewTrace }: NodeDetailPanelP
   )
 }
 
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
+function Field({ label, value }: Readonly<{ label: string; value: React.ReactNode }>) {
   return (
     <div className="node-detail-panel__field">
       <span className="node-detail-panel__field-label">{label}</span>

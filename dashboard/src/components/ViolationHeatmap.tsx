@@ -52,7 +52,7 @@ const NODE_R = 18;
 const WIDTH = 900;
 const HEIGHT = 560;
 
-export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
+export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Readonly<Props>) {
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;

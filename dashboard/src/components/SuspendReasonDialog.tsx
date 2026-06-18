@@ -24,7 +24,7 @@ export function SuspendReasonDialog({
   pending = false,
   onConfirm,
   onCancel,
-}: SuspendReasonDialogProps) {
+}: Readonly<SuspendReasonDialogProps>) {
   const [reason, setReason] = useState('')
   const [touched, setTouched] = useState(false)
   const trimmed = reason.trim()

@@ -37,7 +37,7 @@ type ChartRow = {
   [childId: string]: string | number
 }
 
-export function SubtreeBurnChart({ agentId }: { agentId: string }) {
+export function SubtreeBurnChart({ agentId }: Readonly<{ agentId: string }>) {
   const [period, setPeriod] = useState<BurnPeriod>('7d')
   const { data, isLoading, isError, refetch } = useAgentSubtreeBurnQuery(agentId, period)
 

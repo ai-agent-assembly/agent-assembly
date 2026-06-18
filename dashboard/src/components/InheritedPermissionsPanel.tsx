@@ -44,7 +44,7 @@ interface PermissionRow {
   readonly deniedByAncestor: PermissionSource | null
 }
 
-export function InheritedPermissionsPanel({ agentId }: { agentId: string }) {
+export function InheritedPermissionsPanel({ agentId }: Readonly<{ agentId: string }>) {
   const { data, isLoading, isError, refetch } = useAgentCapabilitiesQuery(agentId)
 
   const rows = useMemo<PermissionRow[]>(() => (data ? buildRows(data) : []), [data])

@@ -8,7 +8,7 @@ interface EmptyStateProps {
   icon?: ReactNode
 }
 
-export function EmptyState({ title, description, action, icon }: EmptyStateProps) {
+export function EmptyState({ title, description, action, icon }: Readonly<EmptyStateProps>) {
   return (
     <div className="state state--empty" role="status" data-testid="empty-state">
       {icon ? <div className="state__icon">{icon}</div> : null}

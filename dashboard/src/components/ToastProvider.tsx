@@ -16,7 +16,7 @@ const TOAST_BACKGROUND: Record<ToastVariant, string> = {
   info: 'var(--status-info-solid)',
 }
 
-export function ToastProvider({ children }: { children: ReactNode }) {
+export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
   const toast = useCallback((message: string, variant: ToastVariant = 'info') => {
