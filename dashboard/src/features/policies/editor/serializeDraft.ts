@@ -146,7 +146,7 @@ export function serializeDraft(draft: PolicyDraft): string {
       version: draft.version,
     },
     spec: {
-      rules: draft.rules.map(serializeRule),
+      rules: draft.rules.map((rule, idx) => serializeRule(rule, idx)),
     },
   }
   return YAML.stringify(policy, { lineWidth: 0, indent: 2 })
