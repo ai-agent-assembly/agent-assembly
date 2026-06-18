@@ -8,11 +8,16 @@ use serde::{Deserialize, Serialize};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
-/// Subset of the gateway health response used for version extraction.
+/// Subset of the gateway `/healthz` response used for version extraction.
+///
+/// The gateway liveness endpoint reports `version` but does not carry a
+/// separate `api_version` field, so it is optional here and falls back to
+/// the served REST API major version.
 #[derive(Debug, Deserialize)]
 struct HealthInfo {
     version: String,
-    api_version: String,
+    #[serde(default)]
+    api_version: Option<String>,
 }
 
 /// A single row in the version output.
@@ -34,7 +39,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let (gateway_row, api_row) = rt.block_on(async {
         let client = reqwest::Client::new();
-        let url = format!("{}/api/v1/health", ctx.api_url);
+        let url = format!("{}/healthz", ctx.api_url);
 
         let mut req = client.get(&url);
         if let Some(ref key) = ctx.api_key {
@@ -51,7 +56,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
                     },
                     VersionRow {
                         component: "api".to_string(),
-                        version: info.api_version,
+                        version: info.api_version.unwrap_or_else(|| "v1".to_string()),
                         status: "reachable".to_string(),
                     },
                 ),
