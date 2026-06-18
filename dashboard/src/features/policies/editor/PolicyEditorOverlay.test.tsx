@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { PolicyEditorOverlay } from './PolicyEditorOverlay'
 import { ToastProvider } from '../../../components/ToastProvider'
@@ -203,5 +204,125 @@ describe('PolicyEditorOverlay — footer', () => {
     await user.click(screen.getByTestId('editor-revert-btn'))
     expect(screen.queryByTestId('editor-revert-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('editor-scope-input')).toHaveValue('global')
+  })
+
+  it('Save does not fire onSave while isSaving and shows the saving label', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={onSave}
+        onClose={() => {}}
+        isSaving
+      />,
+      { wrapper: Wrapper },
+    )
+    const saveBtn = screen.getByTestId('editor-save-btn')
+    expect(saveBtn).toBeDisabled()
+    expect(saveBtn).toHaveTextContent('Saving…')
+    await user.click(saveBtn)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
+  it('Simulate shows a "coming soon" info toast when validation is clean', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    expect(await screen.findByText(/Simulate impact: coming soon/)).toBeInTheDocument()
+  })
+
+  it('Simulate warns to fix validation errors when they exist', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Remove the only verb to force a validation error.
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    expect(
+      await screen.findByText(/Fix validation errors before simulating/),
+    ).toBeInTheDocument()
+  })
+
+  it('DSL toggle shows a "coming soon" toast and stays on the form view', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-view-dsl'))
+    expect(await screen.findByText(/Raw DSL view: coming soon/)).toBeInTheDocument()
+    expect(screen.getByTestId('editor-view-form')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+  })
+
+  it('publishes onDirtyChange(true) when the draft becomes dirty', async () => {
+    const user = userEvent.setup()
+    const onDirtyChange = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Initial effect publishes the starting (clean) state.
+    expect(onDirtyChange).toHaveBeenCalledWith(false)
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    await waitFor(() => expect(onDirtyChange).toHaveBeenCalledWith(true))
+  })
+
+  it('clears the dirty flag on unmount', () => {
+    const onDirtyChange = vi.fn()
+    const { unmount } = render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+      { wrapper: Wrapper },
+    )
+    onDirtyChange.mockClear()
+    unmount()
+    expect(onDirtyChange).toHaveBeenCalledWith(false)
+  })
+
+  it('duplicates a rule card via the rule duplicate button', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({ rules: [defaultRule()] })}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    expect(screen.queryByTestId('editor-rule-1')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('editor-rule-0-duplicate'))
+    expect(screen.getByTestId('editor-rule-1')).toBeInTheDocument()
   })
 })
