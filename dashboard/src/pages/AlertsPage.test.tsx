@@ -73,7 +73,9 @@ describe('AlertsPage', () => {
   })
 
   it('shows the loading count while alerts are loading', () => {
-    setup({ alerts: q({ data: undefined, isLoading: true, isError: false }) })
+    setup({
+      alerts: q<readonly Alert[]>({ data: undefined, isLoading: true, isError: false }),
+    })
     expect(screen.getByTestId('alerts-count')).toHaveTextContent('Loading…')
   })
 
@@ -93,7 +95,7 @@ describe('AlertsPage', () => {
 
   it('renders the alerts error banner when the alerts query fails', () => {
     setup({
-      alerts: q({
+      alerts: q<readonly Alert[]>({
         data: undefined,
         isLoading: false,
         isError: true,
