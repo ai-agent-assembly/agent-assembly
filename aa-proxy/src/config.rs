@@ -106,6 +106,25 @@ pub struct ProxyConfig {
     /// Env: `AA_PROXY_GATEWAY_ENDPOINT` — e.g. `http://127.0.0.1:50051`.
     pub gateway_endpoint: Option<String>,
 
+    /// AAASM-3357 — what to do when MCP enforcement is configured (a
+    /// [`Self::gateway_endpoint`] is set) but the gateway is unreachable,
+    /// either at startup or on a per-call `CheckAction` RPC.
+    ///
+    /// MCP enforcement is a governance path: silently forwarding when the
+    /// authority is down is a fail-open security hole. The default is
+    /// therefore **fail-closed** (`false`) — an MCP `tools/call` is denied
+    /// with a JSON-RPC error envelope when the gateway cannot be reached.
+    ///
+    /// Operators who explicitly prefer availability over enforcement can set
+    /// this to `true` to restore the historical soft-degradation behaviour
+    /// (forward without enforcement).
+    ///
+    /// This knob only affects MCP `tools/call` enforcement. Non-MCP traffic
+    /// is unaffected and continues to flow.
+    ///
+    /// Env: `AA_PROXY_MCP_FAIL_OPEN` — `1`/`true` to fail open; default `false`.
+    pub mcp_fail_open: bool,
+
     /// When `true`, the AAASM-3130 SSRF guard permits CONNECT targets that
     /// resolve to private / loopback / link-local address ranges. Intended for
     /// integration tests **only** — they stand up an in-process mock upstream
@@ -199,6 +218,13 @@ impl ProxyConfig {
             _ => None,
         };
 
+        // AAASM-3357: default fail-closed. Only an explicit truthy value
+        // opts into the historical fail-open soft-degradation behaviour.
+        let mcp_fail_open = match std::env::var("AA_PROXY_MCP_FAIL_OPEN") {
+            Ok(val) => val == "1" || val.to_lowercase() == "true",
+            Err(_) => false,
+        };
+
         Ok(Self {
             bind_addr,
             ca_dir,
@@ -210,6 +236,7 @@ impl ProxyConfig {
             credential_action,
             upstream_override: None,
             gateway_endpoint,
+            mcp_fail_open,
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
         })
@@ -249,6 +276,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
+        std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
     }
 
     #[test]
@@ -263,6 +291,8 @@ mod tests {
         assert!(cfg.llm_only);
         assert!(cfg.denied_hosts.is_empty());
         assert!(!cfg.skip_upstream_tls_verify);
+        // AAASM-3357: MCP enforcement defaults to fail-closed.
+        assert!(!cfg.mcp_fail_open);
     }
 
     #[test]
@@ -431,5 +461,46 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert_eq!(cfg.gateway_endpoint, None);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_defaults_to_false() {
+        // AAASM-3357: an unreachable gateway must fail CLOSED unless the
+        // operator explicitly opts into fail-open.
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(!cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_reads_one() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "1");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_reads_true_case_insensitive() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "TRUE");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mcp_fail_open);
+    }
+
+    #[test]
+    fn from_env_mcp_fail_open_other_value_is_false() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MCP_FAIL_OPEN", "no");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(!cfg.mcp_fail_open);
     }
 }
