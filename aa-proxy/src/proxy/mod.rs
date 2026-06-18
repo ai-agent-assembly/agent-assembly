@@ -145,24 +145,39 @@ impl ProxyServer {
     /// This future runs until the process is killed or an unrecoverable error
     /// occurs. It is called from [`crate::run`].
     pub async fn run(self: &Arc<Self>) -> Result<(), ProxyError> {
-        // Best-effort connect to the gateway when an endpoint is configured.
-        // A connection failure here is logged but does not fail startup —
-        // MCP enforcement simply stays disabled and the proxy continues to
-        // serve the credential-scanner path. This matches `aa-runtime`'s
-        // policy that a missing gateway is a soft degradation, not a fatal
-        // error.
+        // Connect to the gateway when an endpoint is configured.
+        //
+        // AAASM-3357: MCP enforcement is a governance path. When an endpoint is
+        // configured the operator has asked the proxy to enforce — so a failed
+        // connection must NOT silently degrade to fail-open. The default is
+        // fail-closed: refuse to start so the operator notices the gateway is
+        // down rather than letting denied MCP `tools/call`s through unchecked.
+        // Operators who explicitly accept availability over enforcement can set
+        // `AA_PROXY_MCP_FAIL_OPEN=1` to restore the historical soft degradation.
         if let Some(endpoint) = &self.config.gateway_endpoint {
             match GatewayClient::connect(endpoint).await {
                 Ok(client) => {
                     let _ = self.gateway_client.set(Arc::new(Mutex::new(client)));
                     tracing::info!(%endpoint, "connected to aa-gateway PolicyService for MCP enforcement");
                 }
-                Err(e) => {
+                Err(e) if self.config.mcp_fail_open => {
                     tracing::warn!(
                         %endpoint,
                         error = %e,
-                        "failed to connect to aa-gateway; MCP enforcement disabled",
+                        "failed to connect to aa-gateway; MCP enforcement disabled (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                     );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        %endpoint,
+                        error = %e,
+                        "failed to connect to aa-gateway; MCP enforcement is configured but the gateway is unreachable. \
+                         Refusing to start (fail-closed). Fix the gateway, or set AA_PROXY_MCP_FAIL_OPEN=1 to start anyway \
+                         and forward MCP traffic WITHOUT enforcement.",
+                    );
+                    return Err(ProxyError::Config(format!(
+                        "aa-gateway unreachable at {endpoint}: {e} (fail-closed; set AA_PROXY_MCP_FAIL_OPEN=1 to override)"
+                    )));
                 }
             }
         }
@@ -348,59 +363,87 @@ impl ProxyServer {
         // call AND its serialised args bytes forward so the response-side
         // path below can re-use both for audit emission (args go into
         // `ToolCallDetail.args_json`).
-        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> =
-            if let Some(call) = parse_mcp_request(&req.body) {
-                let target_url = format!("https://{host}{path}", path = req.target);
-                // Serialise args once and reuse across the audit emissions on
-                // both the request-side (Allow/Deny) and the response-side
-                // (post-redact) paths.
-                let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
-                match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-                    Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
-                        tracing::info!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
-                        );
-                        self.interceptor
-                            .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
-                            .await;
-                        Some((call, args_bytes))
-                    }
-                    Ok(McpDecision::Deny { reason }) => {
-                        tracing::info!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            %reason,
-                            "MCP call denied by gateway, returning JSON-RPC error envelope",
-                        );
-                        self.interceptor
-                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
-                            .await;
-                        let body = build_jsonrpc_error_response(-32000, &reason);
-                        let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(),
-                            body,
-                        );
-                        let mut client_tls = client_reader.into_inner();
-                        client_tls.write_all(resp.as_bytes()).await?;
-                        let _ = client_tls.shutdown().await;
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            error = %e,
-                            "gateway CheckAction failed, forwarding without enforcement",
-                        );
-                        None
-                    }
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = if let Some(call) =
+            parse_mcp_request(&req.body)
+        {
+            let target_url = format!("https://{host}{path}", path = req.target);
+            // Serialise args once and reuse across the audit emissions on
+            // both the request-side (Allow/Deny) and the response-side
+            // (post-redact) paths.
+            let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
+            match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+                Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+                    tracing::info!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
+                        .await;
+                    Some((call, args_bytes))
                 }
-            } else {
-                None
-            };
+                Ok(McpDecision::Deny { reason }) => {
+                    tracing::info!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        %reason,
+                        "MCP call denied by gateway, returning JSON-RPC error envelope",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
+                        .await;
+                    let body = build_jsonrpc_error_response(-32000, &reason);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let mut client_tls = client_reader.into_inner();
+                    client_tls.write_all(resp.as_bytes()).await?;
+                    let _ = client_tls.shutdown().await;
+                    return Ok(());
+                }
+                Err(e) if self.config.mcp_fail_open => {
+                    tracing::warn!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        error = %e,
+                        "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                    );
+                    None
+                }
+                Err(e) => {
+                    // AAASM-3357: fail-closed — a governance check that
+                    // cannot reach its authority must not pass through. Deny
+                    // the MCP call with a JSON-RPC error envelope, mirroring
+                    // an explicit gateway Deny.
+                    let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
+                    tracing::error!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        error = %e,
+                        "gateway CheckAction failed; denying MCP call (fail-closed). \
+                         Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                        .await;
+                    let body = build_jsonrpc_error_response(-32000, reason);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body,
+                    );
+                    let mut client_tls = client_reader.into_inner();
+                    client_tls.write_all(resp.as_bytes()).await?;
+                    let _ = client_tls.shutdown().await;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
 
         // Forward the (consumed) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
@@ -817,6 +860,7 @@ mod tests {
             credential_action: crate::config::CredentialAction::default(),
             upstream_override: None,
             gateway_endpoint: None,
+            mcp_fail_open: false,
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
             allow_private_connect_targets: false,
         };
