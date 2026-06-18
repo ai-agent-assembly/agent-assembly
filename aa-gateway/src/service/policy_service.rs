@@ -426,53 +426,75 @@ impl PolicyServiceImpl {
         timeout_override: Option<u64>,
         role_override: Option<&String>,
     ) {
-        if let Some(decision) = routing_decision {
-            // Router-driven path: use the decision's escalation_role and escalate_at.
-            if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
-                let now_secs = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
-                let approvers = vec![decision.escalation_role.clone()];
-                if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
-                    tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
-                }
-            }
-            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
-                if let Some(ref team_id_val) = decision.team_id {
-                    if let Err(e) = db_scheduler
-                        .register(
-                            approval_id,
-                            team_id_val.clone(),
-                            decision.escalation_role.clone(),
-                            "TeamAdmin".to_string(),
-                            decision.escalate_at,
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
-                    }
-                }
-            }
-        } else if let (Some(ref tid), Some(ref scheduler)) = (team_id, &self.escalation_scheduler) {
-            // Legacy path: resolve escalation config from the RoutingConfigStore.
-            let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
-            let escalation_approvers = self
-                .routing_store
-                .as_ref()
-                .and_then(|store| store.get(tid))
-                .map(|cfg| {
-                    if let Some(role) = role_override {
-                        vec![role.clone()]
-                    } else {
-                        cfg.escalation_approvers.clone()
-                    }
-                })
-                .unwrap_or_default();
-            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
+        match routing_decision {
+            Some(decision) => self.register_router_escalation(approval_id, decision).await,
+            None => self.register_legacy_escalation(approval_id, team_id, timeout_secs, timeout_override, role_override),
+        }
+    }
+
+    /// Router-driven escalation: register the in-memory scheduler (when a team
+    /// and scheduler are present) and the DB scheduler (when present) using the
+    /// decision's `escalation_role` and `escalate_at`. Failures are logged only.
+    async fn register_router_escalation(
+        &self,
+        approval_id: uuid::Uuid,
+        decision: &crate::approval::RoutingDecision,
+    ) {
+        if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
+            let now_secs = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
+            let approvers = vec![decision.escalation_role.clone()];
+            if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
                 tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
             }
+        }
+        if let (Some(ref db_scheduler), Some(ref team_id_val)) =
+            (&self.db_escalation_scheduler, &decision.team_id)
+        {
+            if let Err(e) = db_scheduler
+                .register(
+                    approval_id,
+                    team_id_val.clone(),
+                    decision.escalation_role.clone(),
+                    "TeamAdmin".to_string(),
+                    decision.escalate_at,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
+            }
+        }
+    }
+
+    /// Legacy escalation: resolve escalation approvers and timeout from the
+    /// `RoutingConfigStore` (or `role_override`) and register the in-memory
+    /// scheduler. No-op without a team and scheduler. Failures are logged only.
+    fn register_legacy_escalation(
+        &self,
+        approval_id: uuid::Uuid,
+        team_id: &Option<String>,
+        timeout_secs: u32,
+        timeout_override: Option<u64>,
+        role_override: Option<&String>,
+    ) {
+        let (Some(tid), Some(scheduler)) = (team_id.as_ref(), self.escalation_scheduler.as_ref()) else {
+            return;
+        };
+        let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
+        let escalation_approvers = self
+            .routing_store
+            .as_ref()
+            .and_then(|store| store.get(tid))
+            .map(|cfg| match role_override {
+                Some(role) => vec![role.clone()],
+                None => cfg.escalation_approvers.clone(),
+            })
+            .unwrap_or_default();
+        if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
+            tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
         }
     }
 
