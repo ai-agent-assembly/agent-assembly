@@ -76,7 +76,7 @@ export function AlertRuleForm({
   onClose,
   initialValue,
   onSaved,
-}: AlertRuleFormProps) {
+}: Readonly<AlertRuleFormProps>) {
   const methods = useForm<RuleFormValues>({
     resolver: zodResolver(ruleFormSchema),
     defaultValues: defaultValues(initialValue),

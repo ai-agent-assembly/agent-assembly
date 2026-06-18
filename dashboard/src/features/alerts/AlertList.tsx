@@ -103,7 +103,7 @@ const columns = [
   }),
 ]
 
-function SkeletonRows({ columnCount }: { columnCount: number }) {
+function SkeletonRows({ columnCount }: Readonly<{ columnCount: number }>) {
   return (
     <>
       {Array.from({ length: 5 }).map((_, i) => (
@@ -127,7 +127,7 @@ function SkeletonRows({ columnCount }: { columnCount: number }) {
   )
 }
 
-export function AlertList({ rows, onSelect, loading = false }: AlertListProps) {
+export function AlertList({ rows, onSelect, loading = false }: Readonly<AlertListProps>) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'severity', desc: true },
   ])

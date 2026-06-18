@@ -6,7 +6,7 @@ const STATUS_STYLE: Record<AlertStatus, { bg: string; fg: string }> = {
   SUPPRESSED: { bg: 'var(--surface-card-border)', fg: 'var(--text-secondary)' },
 }
 
-export function StatusBadge({ status }: { status: AlertStatus }) {
+export function StatusBadge({ status }: Readonly<{ status: AlertStatus }>) {
   const { bg, fg } = STATUS_STYLE[status]
   return (
     <span

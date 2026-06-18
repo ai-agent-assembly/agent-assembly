@@ -41,7 +41,7 @@ function draftFromDestination(d: Destination): DraftForm {
   }
 }
 
-export function DestinationManager({ open, onClose }: DestinationManagerProps) {
+export function DestinationManager({ open, onClose }: Readonly<DestinationManagerProps>) {
   const { data, isLoading, isError, error } = useDestinationsQuery()
   const createMut = useCreateDestinationMutation()
   const updateMut = useUpdateDestinationMutation()

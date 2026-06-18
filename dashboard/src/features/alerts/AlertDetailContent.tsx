@@ -40,7 +40,7 @@ interface AlertDetailContentProps {
   alertId: string
 }
 
-export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
+export function AlertDetailContent({ alertId }: Readonly<AlertDetailContentProps>) {
   const { data, isLoading, isError, error } = useAlertQuery(alertId)
 
   if (isLoading) {

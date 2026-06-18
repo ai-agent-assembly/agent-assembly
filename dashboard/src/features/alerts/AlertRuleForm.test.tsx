@@ -77,7 +77,7 @@ const FIXTURE_RULE: AlertRule = {
   updatedAt: '2026-05-13T00:00:00Z',
 }
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>

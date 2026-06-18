@@ -23,7 +23,7 @@ interface RuleYamlViewerProps {
  * `<div>` is the only thing rendered synchronously; Monaco itself is
  * lazy-loaded inside a `<Suspense>` boundary.
  */
-export function RuleYamlViewer({ yaml }: RuleYamlViewerProps) {
+export function RuleYamlViewer({ yaml }: Readonly<RuleYamlViewerProps>) {
   return (
     <div
       data-testid="alert-detail-rule-yaml"
