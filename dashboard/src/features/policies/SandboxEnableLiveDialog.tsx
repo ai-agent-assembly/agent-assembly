@@ -60,22 +60,25 @@ export function SandboxEnableLiveDialog({
     void onConfirm(chosen, modified)
   }
 
-  const body =
-    observePolicies.length === 0 ? (
-      <p>No observe-mode policies to enforce.</p>
-    ) : observePolicies.length === 1 ? (
+  let body: React.ReactNode
+  if (observePolicies.length === 0) {
+    body = <p>No observe-mode policies to enforce.</p>
+  } else if (observePolicies.length === 1) {
+    body = (
       <p data-testid="sandbox-enable-live-single">
         This will switch <strong>{observePolicies[0].name}</strong> from observe mode to live
         enforcement. Decisions matched by this policy will start blocking immediately.
       </p>
-    ) : (
+    )
+  } else {
+    body = (
       <>
         <p>
           Pick the observe-mode policy to switch to live enforcement. Decisions matched by
           it will start blocking immediately.
         </p>
         <label style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-          Policy:&nbsp;
+          <span>Policy:&nbsp;</span>
           <select
             data-testid="sandbox-enable-live-picker"
             value={effectiveSelection}
@@ -91,6 +94,7 @@ export function SandboxEnableLiveDialog({
         </label>
       </>
     )
+  }
 
   return (
     <ConfirmDialog

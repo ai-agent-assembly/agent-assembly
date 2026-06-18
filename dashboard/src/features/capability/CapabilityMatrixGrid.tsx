@@ -78,15 +78,15 @@ export function CapabilityMatrixGrid({
         {resources.map((r) => {
           const sortable = Boolean(onSortChange)
           const active = sort?.resourceId === r.id && sort?.direction
+          let ariaSort: 'ascending' | 'descending' | 'none' = 'none'
+          if (active) ariaSort = sort?.direction === 'asc' ? 'ascending' : 'descending'
           return (
             <button
               key={r.id}
               type="button"
               className={`cap-mx-col-h cap-mx-col-h-btn${active ? ' is-sorted' : ''}`}
               role="columnheader"
-              aria-sort={
-                active ? (sort?.direction === 'asc' ? 'ascending' : 'descending') : 'none'
-              }
+              aria-sort={ariaSort}
               disabled={!sortable}
               onClick={sortable ? () => onSortChange?.(r.id) : undefined}
             >

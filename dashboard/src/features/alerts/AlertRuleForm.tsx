@@ -111,6 +111,11 @@ export function AlertRuleForm({
 
   if (!open) return null
 
+  let submitLabel: string
+  if (submitting) submitLabel = 'Saving…'
+  else if (initialValue) submitLabel = 'Save changes'
+  else submitLabel = 'Create rule'
+
   return (
     <div
       role="dialog"
@@ -222,7 +227,7 @@ export function AlertRuleForm({
                 data-testid="rule-enabled"
                 {...methods.register('enabled')}
               />
-              Enabled
+              <span>Enabled</span>
             </label>
 
             <footer
@@ -255,7 +260,7 @@ export function AlertRuleForm({
                   cursor: submitting ? 'wait' : 'pointer',
                 }}
               >
-                {submitting ? 'Saving…' : initialValue ? 'Save changes' : 'Create rule'}
+                {submitLabel}
               </button>
             </footer>
           </form>
