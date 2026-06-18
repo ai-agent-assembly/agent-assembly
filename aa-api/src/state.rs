@@ -25,7 +25,7 @@ use crate::alerts::rules::store::AlertRuleStore;
 use crate::alerts::silence_store::SilenceStore;
 use crate::alerts::AlertStore;
 use crate::auth::api_key::ApiKeyStore;
-use crate::auth::config::AuthConfig;
+use crate::auth::config::{AuthConfig, AuthMode};
 use crate::auth::jwt::{JwtSigner, JwtVerifier};
 use crate::auth::rate_limit::RateLimiter;
 use crate::destinations::store::DestinationStore;
@@ -132,4 +132,185 @@ pub struct AppState {
     /// secret-injection / forward-upstream path. (AAASM-2033 /
     /// F116 ST-W data-path follow-up.)
     pub tool_registry: ToolRegistry,
+}
+
+/// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
+/// cannot be constructed — currently only when the bundled minimal policy
+/// fails to materialise on disk or the policy engine refuses to load it.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalStateError {
+    /// Writing the bundled minimal policy to a temp file failed.
+    #[error("failed to write bootstrap policy at {path}: {source}", path = path.display())]
+    PolicyWrite {
+        /// The temp policy path we tried to write.
+        path: std::path::PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Loading the bundled minimal policy into a [`PolicyEngine`] failed.
+    #[error("failed to load bootstrap policy: {0}")]
+    PolicyLoad(String),
+}
+
+impl AppState {
+    /// Build a fully-wired `AppState` backed entirely by in-memory / default
+    /// implementations (AAASM-3360).
+    ///
+    /// This is the production seam that lets a single shipped entrypoint serve
+    /// the full `/api/v1/*` REST surface in local / single-process mode without
+    /// the operator wiring ~30 subsystems by hand. Every store is the same
+    /// in-memory implementation the gateway already uses for ephemeral state;
+    /// nothing here touches a remote database, NATS, or the network.
+    ///
+    /// Authentication is disabled ([`AuthMode::Off`]) so the protected
+    /// `/api/v1/*` routes are reachable without a bearer credential — this is a
+    /// local single-process developer surface, not a hardened deployment.
+    ///
+    /// Documented limitations of the in-memory wiring (callers / the PR body
+    /// should surface these):
+    /// * `audit_sender` is `None` — audit-emitting handlers (e.g. the SaaS
+    ///   webhook) respond 503; audit *reads* return an empty list.
+    /// * `retention_engine` is `None` — `/api/v1/admin/retention-policy`
+    ///   handlers respond 503 (no `storage` section in this mode).
+    /// * The alert-rule evaluator runs against a `NullMetricSource`, so rules
+    ///   never fire (same as the existing `run_server` wiring).
+    ///
+    /// The bootstrap policy is an empty section-based envelope (allow-by-default
+    /// with a daily budget limit) written to a per-process temp file because
+    /// [`PolicyEngine::load_from_file`] is the only public loader.
+    pub fn local_in_memory() -> Result<Self, LocalStateError> {
+        use std::sync::atomic::AtomicUsize;
+
+        // Unique temp paths per call so concurrent processes / tests do not
+        // collide on the bootstrap policy / history / audit directories.
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+
+        let policy_dir = std::env::temp_dir().join(format!("aa-api-local-policy-{pid}-{uniq}"));
+        std::fs::create_dir_all(&policy_dir).map_err(|source| LocalStateError::PolicyWrite {
+            path: policy_dir.clone(),
+            source,
+        })?;
+        let policy_path = policy_dir.join("local-policy.yaml");
+        std::fs::write(
+            &policy_path,
+            // Minimal valid section-based envelope. AAASM-3351 made the
+            // validator fail closed on the legacy rule-list schema, so this
+            // must use the `spec:` section form.
+            "apiVersion: agent-assembly/v1\n\
+             kind: Policy\n\
+             metadata:\n  \
+             name: local-policy\n  \
+             version: \"0.1.0\"\n\
+             spec:\n  \
+             budget:\n    \
+             daily_limit_usd: 100.0\n",
+        )
+        .map_err(|source| LocalStateError::PolicyWrite {
+            path: policy_path.clone(),
+            source,
+        })?;
+
+        let events = Arc::new(EventBroadcast::default());
+        let budget_alert_tx = events.budget_sender();
+        let policy_engine = Arc::new(
+            aa_gateway::engine::PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+                .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+                .with_invalidation_hub(aa_gateway::invalidation::InvalidationHub::new()),
+        );
+
+        let budget_tracker = Arc::new(BudgetTracker::new(
+            aa_gateway::budget::pricing::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+
+        let history_dir = std::env::temp_dir().join(format!("aa-api-local-history-{pid}-{uniq}"));
+        let policy_history = Arc::new(aa_gateway::policy::history::FsHistoryStore::new(
+            aa_gateway::policy::history::HistoryConfig {
+                history_dir,
+                max_versions: 50,
+            },
+        ));
+
+        let auth_config = Arc::new(AuthConfig {
+            mode: AuthMode::Off,
+            jwt_secret: None,
+            api_keys_path: std::path::PathBuf::from("/dev/null"),
+            rate_limit_rpm: 1000,
+        });
+        // AuthMode::Off bypasses the gate, so any JWT secret works for the
+        // signer/verifier (the token-issue route still needs them to exist).
+        const LOCAL_JWT_SECRET: &[u8] = b"aa-local-mode-jwt-secret-not-for-production-use!!";
+        let jwt_signer = Arc::new(JwtSigner::new(LOCAL_JWT_SECRET));
+        let jwt_verifier = Arc::new(JwtVerifier::new(LOCAL_JWT_SECRET));
+        // `load` on a non-existent path returns an empty store (infallible).
+        let key_store = Arc::new(
+            ApiKeyStore::load(std::path::Path::new("/nonexistent-aa-local-keys"))
+                .expect("loading a non-existent key file yields an empty store"),
+        );
+        let rate_limiter = Arc::new(RateLimiter::new(1000));
+
+        let audit_dir = std::env::temp_dir().join(format!("aa-api-local-audit-{pid}-{uniq}"));
+        std::fs::create_dir_all(&audit_dir).map_err(|source| LocalStateError::PolicyWrite {
+            path: audit_dir.clone(),
+            source,
+        })?;
+        let audit_reader = Arc::new(AuditReader::new(audit_dir));
+
+        Ok(AppState {
+            agent_registry: Arc::new(AgentRegistry::new()),
+            policy_engine,
+            budget_tracker,
+            approval_queue: ApprovalQueue::new(),
+            policy_history,
+            alert_store: Arc::new(crate::alerts::store::InMemoryAlertStore::new()),
+            silence_store: Arc::new(crate::alerts::silence_store::InMemorySilenceStore::new()),
+            events,
+            replay_buffer: ReplayBuffer::new(),
+            next_event_id: Arc::new(AtomicU64::new(0)),
+            auth_config,
+            key_store,
+            rate_limiter,
+            jwt_signer,
+            jwt_verifier,
+            trace_store: Arc::new(crate::trace_store::InMemoryTraceStore::new()),
+            audit_reader,
+            startup_time: Instant::now(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            edge_repo: Arc::new(aa_gateway::edges::InMemoryEdgeRepo::new()),
+            topology_overview_cache: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(1))
+                .build(),
+            topology_tree_cache: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            topology_team_cache: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            topology_lineage_cache: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            topology_stats_cache: moka::future::Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(10))
+                .build(),
+            capability_store: crate::routes::capability::CapabilityStore::new_seeded(),
+            iam_api_key_store: crate::routes::iam::seeded_iam_store(),
+            ops_registry: Arc::new(OpsRegistry::new()),
+            destination_store: Arc::new(crate::destinations::store::InMemoryDestinationStore::new(Arc::new(
+                crate::destinations::store::NoopRuleReferenceChecker,
+            ))),
+            audit_sender: None,
+            saas_secret_cache: Arc::new(crate::routes::devtools::secret_cache::SecretCache::new()),
+            alert_rule_store: Arc::new(crate::alerts::rules::store::InMemoryAlertRuleStore::new()),
+            destination_registry: Arc::new(DestinationRegistry::seeded()),
+            retention_engine: None,
+            secrets_store: Arc::new(aa_gateway::secrets::InMemorySecretsStore::new()),
+            tool_registry: ToolRegistry::new(),
+        })
+    }
 }
