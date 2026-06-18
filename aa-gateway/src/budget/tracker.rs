@@ -442,27 +442,30 @@ impl BudgetTracker {
         monthly_limit: Option<Decimal>,
         daily_limit: Option<Decimal>,
     ) -> bool {
-        if let Some(limit) = monthly_limit {
-            if let Some(state) = budgets.get(key) {
-                if let Some(monthly) = state.monthly_spent_usd {
-                    if self.check_limit_and_alert(agent_id, alert_team_id, monthly, limit)
-                        == BudgetStatus::LimitExceeded
-                    {
-                        return true;
-                    }
-                }
+        // Monthly takes precedence: only the recorded monthly spend (when set)
+        // participates, then today's spend against the daily limit.
+        let monthly_spent = monthly_limit
+            .zip(budgets.get(key).and_then(|s| s.monthly_spent_usd))
+            .map(|(limit, spent)| (spent, limit));
+        if let Some((spent, limit)) = monthly_spent {
+            if self.spend_exceeds(agent_id, alert_team_id, spent, limit) {
+                return true;
             }
         }
-        if let Some(limit) = daily_limit {
-            if let Some(state) = budgets.get(key) {
-                if self.check_limit_and_alert(agent_id, alert_team_id, state.spent_usd, limit)
-                    == BudgetStatus::LimitExceeded
-                {
-                    return true;
-                }
+        let daily = daily_limit.and_then(|limit| budgets.get(key).map(|s| (s.spent_usd, limit)));
+        if let Some((spent, limit)) = daily {
+            if self.spend_exceeds(agent_id, alert_team_id, spent, limit) {
+                return true;
             }
         }
         false
+    }
+
+    /// Run [`Self::check_limit_and_alert`] for one `(spent, limit)` pair and
+    /// report whether the limit is exceeded (emitting any threshold alert as a
+    /// side effect).
+    fn spend_exceeds(&self, agent_id: AgentId, alert_team_id: Option<&str>, spent: Decimal, limit: Decimal) -> bool {
+        self.check_limit_and_alert(agent_id, alert_team_id, spent, limit) == BudgetStatus::LimitExceeded
     }
 
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
