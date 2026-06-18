@@ -646,6 +646,7 @@ impl PolicyEngine {
         let ctx_lineage = crate::registry::Lineage {
             org_id: ctx.metadata.get("org_id").cloned(),
             team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
+            ..Default::default()
         };
         let lineage = if ctx_lineage.org_id.is_some() || ctx_lineage.team_id.is_some() {
             ctx_lineage
