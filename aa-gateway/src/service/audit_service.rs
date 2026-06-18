@@ -59,6 +59,22 @@ impl AuditServiceImpl {
         }
     }
 
+    /// Seed the audit `seq` counter so sequence numbers continue monotonically
+    /// across process restarts (AAASM-3363).
+    ///
+    /// `initial_seq` should be the *next* sequence number to emit — i.e.
+    /// `last_persisted_seq + 1`, obtained from
+    /// [`AuditWriter::read_last_seq`](crate::audit::AuditWriter::read_last_seq).
+    /// Without this, the counter restarts at `0` and produces duplicate `seq`
+    /// values after a restart, breaking the WORM log's per-entry uniqueness.
+    /// Mirrors the seq recovery already done for `PolicyServiceImpl` and the
+    /// `initial_hash` recovery for the hash chain.
+    #[must_use]
+    pub fn with_initial_seq(self, initial_seq: u64) -> Self {
+        self.seq.store(initial_seq, Ordering::Relaxed);
+        self
+    }
+
     /// Convert a proto `AuditEvent` into a core `AuditEntry` and send via try_send.
     ///
     /// Maintains the hash chain by reading and updating `last_hash`.

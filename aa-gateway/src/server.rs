@@ -403,7 +403,8 @@ pub async fn serve_tcp(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone());
-    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
+        .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
@@ -481,7 +482,8 @@ pub async fn serve_uds(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone());
-    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
+        .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
