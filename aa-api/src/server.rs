@@ -33,22 +33,27 @@ pub fn build_app(state: AppState) -> Router {
     apply_middleware(app)
 }
 
-/// Serve the full `/api/v1/*` REST surface from an in-memory, single-process
-/// `AppState` (AAASM-3360).
+/// Serve the full `/api/v1/*` REST surface from a hardened, single-process
+/// `AppState` (AAASM-3360 / AAASM-3369).
 ///
 /// This is the shipped entrypoint that makes the entire REST surface reachable
-/// without the operator hand-wiring ~30 subsystems: it builds an
-/// [`AppState::local_in_memory`], constructs an [`ApiConfig`] bound to `addr`
-/// with auth disabled, and delegates to [`run_server`]. The process blocks
-/// until a shutdown signal (SIGTERM/SIGINT) arrives.
+/// without the operator hand-wiring ~30 subsystems. It builds an
+/// [`AppState::local_hardened`] with the supplied [`LocalAuth`] posture,
+/// constructs an [`ApiConfig`] bound to `addr`, and delegates to [`run_server`].
+/// The process blocks until a shutdown signal (SIGTERM/SIGINT) arrives.
 ///
-/// All routes registered by [`routes::v1_router`] are served. Because auth is
-/// off, protected routes (e.g. `/api/v1/agents`, `/api/v1/policies`) respond
-/// without a bearer credential. See [`AppState::local_in_memory`] for the
-/// documented limitations of the in-memory wiring (audit pipeline + retention
-/// engine respond 503; alert rules never fire).
-pub async fn serve_local(addr: std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-    let state = AppState::local_in_memory()?;
+/// Unlike the original AAASM-3360 wiring, the protected routes require an API key
+/// by default ([`LocalAuth::ApiKey`]) and the audit / retention seams are backed
+/// by a local SQLite store, so `/api/v1/audit/*`, `/api/v1/logs/*` and
+/// `/api/v1/admin/retention*` return real data instead of 503. `/api/v1/health`
+/// stays public.
+///
+/// [`LocalAuth`]: crate::state::LocalAuth
+pub async fn serve_local(
+    addr: std::net::SocketAddr,
+    auth: crate::state::LocalAuth,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = AppState::local_hardened(auth).await?;
     let config = ApiConfig {
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
@@ -79,13 +84,15 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
         state.alert_store.clone(),
     );
 
-    // Spawn the MVP alert-rule evaluator (AAASM-1386). The NullMetricSource
-    // returns None for every metric, so the loop is a no-op against today's
-    // wiring — production-grade hooks for budget / anomaly / approval-age /
-    // policy-violation metrics are tracked as follow-ups in the Story.
+    // Spawn the MVP alert-rule evaluator (AAASM-1386). AAASM-3369 wires the
+    // real `BudgetMetricSource` (global daily spend vs. limit) so budget rules
+    // fire against live spend; anomaly / approval-age / policy-violation metrics
+    // still return None and stay follow-ups in the Story.
     let _rule_evaluator_handle = crate::alerts::rules::evaluator::spawn_rule_evaluator(
         state.alert_rule_store.clone(),
-        std::sync::Arc::new(crate::alerts::rules::evaluator::NullMetricSource),
+        std::sync::Arc::new(crate::alerts::rules::evaluator::BudgetMetricSource::new(
+            state.budget_tracker.clone(),
+        )),
         state.alert_store.clone(),
         std::time::Duration::from_secs(60),
     );
