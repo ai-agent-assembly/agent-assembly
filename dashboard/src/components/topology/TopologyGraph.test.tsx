@@ -113,7 +113,7 @@ describe('TopologyGraph', () => {
       render(<TopologyGraph nodes={TWO_TEAMS} edges={[]} />)
       const clusters = screen.getAllByTestId('team-cluster')
       expect(clusters).toHaveLength(2)
-      const teams = clusters.map(c => c.getAttribute('data-team')).sort()
+      const teams = clusters.map(c => c.dataset.team).sort()
       expect(teams).toEqual(['analytics', 'support'])
     })
 
@@ -122,8 +122,8 @@ describe('TopologyGraph', () => {
       const bars = screen.getAllByTestId('team-budget-bar')
       expect(bars).toHaveLength(2)
 
-      const support = bars.find(b => b.getAttribute('data-team') === 'support')!
-      const analytics = bars.find(b => b.getAttribute('data-team') === 'analytics')!
+      const support = bars.find(b => b.dataset.team === 'support')!
+      const analytics = bars.find(b => b.dataset.team === 'analytics')!
 
       // support: spent 1+2+4=7, limit 10+10+10=30 → 23% → ok
       expect(support).toHaveAttribute('data-threshold-bucket', 'ok')

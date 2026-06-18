@@ -18,7 +18,7 @@ function mockMatchMedia(matchesDark: boolean) {
 beforeEach(() => {
   vi.unstubAllGlobals()
   localStorage.clear()
-  document.documentElement.removeAttribute('data-theme')
+  delete document.documentElement.dataset.theme
 })
 
 describe('theme resolution', () => {
@@ -37,7 +37,7 @@ describe('theme resolution', () => {
 
   it('applyTheme sets data-theme on the document root', () => {
     applyTheme('dark')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
   })
 })
 
@@ -47,12 +47,12 @@ describe('useTheme', () => {
     const { result } = renderHook(() => useTheme())
 
     expect(result.current.theme).toBe('light')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expect(document.documentElement.dataset.theme).toBe('light')
 
     act(() => result.current.toggleTheme())
 
     expect(result.current.theme).toBe('dark')
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.dataset.theme).toBe('dark')
   })
 })

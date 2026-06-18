@@ -26,8 +26,8 @@
  */
 export class MockWebSocket {
   static instances: MockWebSocket[] = []
-  static OPEN = 1
-  static CLOSED = 3
+  static readonly OPEN = 1
+  static readonly CLOSED = 3
 
   readyState = 0
   url: string

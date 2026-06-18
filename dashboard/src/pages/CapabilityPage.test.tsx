@@ -83,7 +83,7 @@ describe('CapabilityPage', () => {
     await screen.findByText('Capability')
     const interactiveCell = screen
       .getAllByRole('gridcell')
-      .find((c) => c.getAttribute('data-decision') !== 'na')
+      .find((c) => c.dataset.decision !== 'na')
     expect(interactiveCell).toBeDefined()
     fireEvent.click(interactiveCell!)
     expect(
@@ -148,7 +148,7 @@ describe('CapabilityPage', () => {
     await screen.findByText('Capability')
     const cell = screen
       .getAllByRole('gridcell')
-      .find((c) => c.getAttribute('data-decision') !== 'na')!
+      .find((c) => c.dataset.decision !== 'na')!
     fireEvent.click(cell)
     await screen.findByRole('dialog', { name: 'capability cell inspect' })
     fireEvent.click(screen.getByLabelText('close drawer'))

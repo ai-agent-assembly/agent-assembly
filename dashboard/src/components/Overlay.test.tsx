@@ -87,7 +87,7 @@ describe('AppShell overlay mount points', () => {
     for (const name of OVERLAY_NAMES) {
       const mount = screen.getByTestId(`overlay-mount-${name}`)
       expect(mount).toBeInTheDocument()
-      expect(mount.getAttribute('data-overlay')).toBe(name)
+      expect(mount.dataset.overlay).toBe(name)
     }
     localStorage.clear()
   })

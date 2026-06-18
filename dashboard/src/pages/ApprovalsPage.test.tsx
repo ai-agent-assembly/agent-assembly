@@ -66,19 +66,19 @@ const MOCK_APPROVAL: Approval = {
 
 afterEach(() => { vi.restoreAllMocks() })
 
-describe('ApprovalsPage', () => {
-  function setupMocks(approvals: Approval[]) {
-    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
-      mockQuery<Approval[]>({ data: approvals, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    vi.spyOn(approvalsApi, 'useApproveAction').mockReturnValue(
-      mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
-    )
-    vi.spyOn(approvalsApi, 'useRejectAction').mockReturnValue(
-      mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
-    )
-  }
+function setupMocks(approvals: Approval[]) {
+  vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+    mockQuery<Approval[]>({ data: approvals, isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(approvalsApi, 'useApproveAction').mockReturnValue(
+    mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
+  )
+  vi.spyOn(approvalsApi, 'useRejectAction').mockReturnValue(
+    mockMutation({ mutateAsync: vi.fn().mockResolvedValue(MOCK_APPROVAL), isPending: false }),
+  )
+}
 
+describe('ApprovalsPage', () => {
   it('renders the page heading', async () => {
     setupMocks([])
     render(<ApprovalsPage />, { wrapper: Wrapper })
