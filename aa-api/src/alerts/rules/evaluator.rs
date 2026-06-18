@@ -37,6 +37,42 @@ impl MetricSource for NullMetricSource {
     }
 }
 
+/// Metric source backed by the live [`BudgetTracker`] (AAASM-3369).
+///
+/// Supplies a real `BudgetSpentPct` observation — the global daily spend as a
+/// percentage of the configured daily limit — so budget alert rules actually
+/// fire in the local single-process entrypoint instead of being a no-op against
+/// [`NullMetricSource`]. Non-budget metrics (anomaly / approval-age / violation)
+/// stay `None`; their sources remain follow-ups to AAASM-1386.
+pub struct BudgetMetricSource {
+    tracker: std::sync::Arc<aa_gateway::budget::tracker::BudgetTracker>,
+}
+
+impl BudgetMetricSource {
+    /// Build a metric source reading from `tracker`.
+    pub fn new(tracker: std::sync::Arc<aa_gateway::budget::tracker::BudgetTracker>) -> Self {
+        Self { tracker }
+    }
+}
+
+impl MetricSource for BudgetMetricSource {
+    fn current_value(&self, metric: RuleMetric) -> Option<f64> {
+        match metric {
+            RuleMetric::BudgetSpentPct => {
+                let limit = self.tracker.daily_limit_usd()?;
+                if limit.is_zero() {
+                    return None;
+                }
+                let spent = self.tracker.global_state().spent_usd;
+                let pct = (spent / limit) * rust_decimal::Decimal::from(100);
+                use rust_decimal::prelude::ToPrimitive;
+                pct.to_f64()
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Returns true when the current metric `value` satisfies the rule's
 /// `operator` ⟂ `threshold` condition.
 pub fn evaluate(rule: &AlertRule, value: f64) -> bool {
@@ -249,6 +285,49 @@ mod tests {
 
         let fired = evaluate_once(&rules, &FixedMetric(95.0), &alerts);
         assert_eq!(fired, 0);
+    }
+
+    #[test]
+    fn budget_metric_source_reports_spent_pct() {
+        use aa_core::identity::AgentId;
+        use aa_gateway::budget::tracker::BudgetTracker;
+        use aa_gateway::budget::PricingTable;
+        use rust_decimal::Decimal;
+
+        let tracker = std::sync::Arc::new(BudgetTracker::new(
+            PricingTable::default_table(),
+            Some(Decimal::from(100)),
+            None,
+            chrono_tz::UTC,
+        ));
+        let source = BudgetMetricSource::new(tracker.clone());
+
+        // No spend yet -> 0%.
+        assert_eq!(source.current_value(RuleMetric::BudgetSpentPct), Some(0.0));
+        // Non-budget metrics stay None.
+        assert_eq!(source.current_value(RuleMetric::AnomalyScore), None);
+
+        // Spend $40 of the $100 daily limit -> 40%.
+        tracker.record_raw_spend(AgentId::from_bytes([1u8; 16]), None, None, Decimal::from(40));
+        let pct = source
+            .current_value(RuleMetric::BudgetSpentPct)
+            .expect("budget metric must be present");
+        assert!((pct - 40.0).abs() < 1e-6, "expected 40%, got {pct}");
+    }
+
+    #[test]
+    fn budget_metric_source_none_without_limit() {
+        use aa_gateway::budget::tracker::BudgetTracker;
+        use aa_gateway::budget::PricingTable;
+
+        let tracker = std::sync::Arc::new(BudgetTracker::new(
+            PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let source = BudgetMetricSource::new(tracker);
+        assert_eq!(source.current_value(RuleMetric::BudgetSpentPct), None);
     }
 
     #[test]
