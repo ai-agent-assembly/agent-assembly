@@ -1,0 +1,45 @@
+name: SDK SHA drift detector
+
+# Nightly advisory check of the ADR 0003 cross-repo lockstep invariant: the three
+# language SDKs must pin the shared `agent-assembly` core crates to one consistent
+# git rev. On drift it opens (or updates) a tracking issue; it is non-blocking for
+# any product CI. Also runnable on demand via workflow_dispatch.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  detect:
+    name: SDK ↔ core SHA consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check SDK ↔ core SHA consistency
+        id: check
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .ci/check-sdk-sha-consistency.sh "${GITHUB_WORKSPACE}/sdk-sha-report.md"
+      - name: Open or update the drift issue
+        if: steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label sdk-sha-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file "${GITHUB_WORKSPACE}/sdk-sha-report.md"
+            echo "Updated existing drift issue #${existing}."
+          else
+            gh label create sdk-sha-drift --repo "$GITHUB_REPOSITORY" --color B60205 --description "SDK <-> core git-SHA pin drift (ADR 0003)" 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "SDK <-> core git-SHA drift detected" --label sdk-sha-drift --body-file "${GITHUB_WORKSPACE}/sdk-sha-report.md"
+          fi
+      - name: Surface drift as a failed run
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "SDK <-> core git-SHA drift detected — see the tracking issue."
+          exit 1
