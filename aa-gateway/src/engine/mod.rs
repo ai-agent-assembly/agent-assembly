@@ -690,13 +690,23 @@ impl PolicyEngine {
         if np.allowlist.is_empty() {
             return None;
         }
-        let host = url
+        let host_port = url
             .split_once("://")
             .map(|x| x.1)
             .unwrap_or("")
             .split('/')
             .next()
             .unwrap_or("");
+        // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
+        // authority extracted above still carries the `:port` suffix. Allowlist
+        // entries are bare hosts (`api.openai.com`), so comparing `host:port`
+        // against them always failed and every allowlisted host was denied on
+        // the live `evaluate`/`eval_network_stage` path. Strip a trailing
+        // numeric `:port` before the allowlist compare (mirrors `decision.rs`).
+        let host = match host_port.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host_port,
+        };
         if !np.allowlist.iter().any(|entry| entry == host) {
             return Some(EvaluationResult::deny("host not in network allowlist"));
         }
