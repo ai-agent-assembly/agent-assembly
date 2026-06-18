@@ -48,7 +48,7 @@ describe('ApprovalPool', () => {
     expect(screen.getByText(/3 ops awaiting/i)).toBeInTheDocument()
     const items = screen.getAllByTestId('approval-pool-item')
     expect(items).toHaveLength(3)
-    expect(items.map((el) => el.getAttribute('data-op-id'))).toEqual([
+    expect(items.map((el) => el.dataset.opId)).toEqual([
       'op-1',
       'op-2',
       'op-4',

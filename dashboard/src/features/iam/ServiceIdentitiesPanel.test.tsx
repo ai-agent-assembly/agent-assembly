@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -305,6 +305,3 @@ describe('ServiceIdentitiesPanel — rotate', () => {
     expect(screen.getByTestId('api-key-rotate-key-1')).toBeInTheDocument()
   })
 })
-
-// helper import kept after definitions to avoid hoisting hassles in tests
-import { within } from '@testing-library/react'

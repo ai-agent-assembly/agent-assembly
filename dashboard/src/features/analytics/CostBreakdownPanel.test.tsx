@@ -43,7 +43,7 @@ function mockFetch(buckets: CostBucket[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ buckets }),
-  } as Response)
+  })
 }
 
 const TWO_SEGMENT_BUCKETS: CostBucket[] = [
@@ -142,7 +142,7 @@ describe('CostBreakdownPanel', () => {
   })
 
   it('renders error message when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<CostBreakdownPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load cost data/)).toBeInTheDocument()
   })

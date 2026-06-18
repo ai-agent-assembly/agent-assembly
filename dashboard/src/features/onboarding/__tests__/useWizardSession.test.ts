@@ -9,7 +9,7 @@ import {
 import { EMPTY_STATE, type WizardState } from '../types'
 
 class MemoryStorage implements Storage {
-  private store = new Map<string, string>()
+  private readonly store = new Map<string, string>()
   get length() { return this.store.size }
   clear() { this.store.clear() }
   getItem(k: string) { return this.store.has(k) ? this.store.get(k)! : null }

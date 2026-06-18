@@ -41,7 +41,7 @@ function mockFetch(data: ApprovalAnalyticsResponse) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve(data),
-  } as Response)
+  })
 }
 
 // ── formatter unit tests ──────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ describe('ApprovalAnalyticsPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load approval data/)).toBeInTheDocument()
   })

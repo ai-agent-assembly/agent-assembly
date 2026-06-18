@@ -12,7 +12,7 @@ import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query'
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
 
 class MockWebSocket {
-  static instances: MockWebSocket[] = []
+  static readonly instances: MockWebSocket[] = []
   onopen: (() => void) | null = null
   onmessage: ((evt: { data: string }) => void) | null = null
   onclose: (() => void) | null = null
@@ -32,7 +32,7 @@ class MockWebSocket {
     /* intentionally empty: test WebSocket mock — outbound frames are ignored */
   }
 
-  static reset() { MockWebSocket.instances = [] }
+  static reset() { MockWebSocket.instances.length = 0 }
 }
 
 vi.stubGlobal('WebSocket', MockWebSocket)

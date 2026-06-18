@@ -33,6 +33,6 @@ describe('sortAgents', () => {
     // research-bot-04 still allows gmail/write, docs-summarizer denies it.
     // desc puts deny first.
     expect(sorted[0].caps.gmail.write).toBe('deny')
-    expect(sorted[sorted.length - 1].caps.gmail.write).toBe('allow')
+    expect(sorted.at(-1)!.caps.gmail.write).toBe('allow')
   })
 })

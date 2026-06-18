@@ -9,8 +9,6 @@ class MockResizeObserver {
   observe = observeSpy
   unobserve = vi.fn()
   disconnect = disconnectSpy
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_cb: ResizeObserverCallback) {}
 }
 
 beforeEach(() => {
@@ -114,9 +112,9 @@ describe('PipelineCanvas — simulation loop', () => {
   // Step the single live rAF callback with a given timestamp. The component
   // re-requests a frame on each call, so we always invoke the latest one.
   function step(ts: number) {
-    const cb = rafCallbacks[rafCallbacks.length - 1]
+    const cb = rafCallbacks.at(-1)
     act(() => {
-      cb(ts)
+      cb?.(ts)
     })
   }
 

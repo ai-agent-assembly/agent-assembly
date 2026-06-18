@@ -38,7 +38,7 @@ function mockFetchActionVolume(series: ActionVolumeSeries[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ series }),
-  } as Response)
+  })
 }
 
 const TWO_SERIES: ActionVolumeSeries[] = [
@@ -137,7 +137,7 @@ describe('ActionVolumePanel', () => {
   })
 
   it('renders error message when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ActionVolumePanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load action volume data/)).toBeInTheDocument()
   })

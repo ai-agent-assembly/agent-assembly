@@ -71,7 +71,7 @@ describe('CapabilityMatrixGrid', () => {
       />,
     )
     const cells = screen.getAllByRole('gridcell')
-    const writeCell = cells.find((c) => c.getAttribute('data-decision') === 'narrow')!
+    const writeCell = cells.find((c) => c.dataset.decision === 'narrow')!
     fireEvent.click(writeCell)
     expect(onCellClick).toHaveBeenCalledWith({
       agent: AGENTS[0],
@@ -93,7 +93,7 @@ describe('CapabilityMatrixGrid', () => {
     )
     const writeCell = screen
       .getAllByRole('gridcell')
-      .find((c) => c.getAttribute('data-decision') === 'narrow')!
+      .find((c) => c.dataset.decision === 'narrow')!
     fireEvent.keyDown(writeCell, { key: 'Enter' })
     fireEvent.keyDown(writeCell, { key: ' ' })
     expect(onCellClick).toHaveBeenCalledTimes(2)
@@ -111,7 +111,7 @@ describe('CapabilityMatrixGrid', () => {
     )
     const naCell = screen
       .getAllByRole('gridcell')
-      .find((c) => c.getAttribute('data-decision') === 'na')!
+      .find((c) => c.dataset.decision === 'na')!
     fireEvent.click(naCell)
     fireEvent.keyDown(naCell, { key: 'Enter' })
     expect(onCellClick).not.toHaveBeenCalled()
