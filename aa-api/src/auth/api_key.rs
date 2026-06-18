@@ -110,6 +110,18 @@ pub struct ApiKeyStore {
 }
 
 impl ApiKeyStore {
+    /// Build a store directly from in-memory entries.
+    ///
+    /// Used by the local single-process entrypoint (AAASM-3369), which seeds a
+    /// single admin key from the environment (or a generated one) without a
+    /// keys-on-disk file.
+    pub fn from_entries(entries: Vec<ApiKeyEntry>) -> Self {
+        Self {
+            entries,
+            revoked_ids: DashMap::new(),
+        }
+    }
+
     /// Load API key entries from a JSON file.
     ///
     /// Returns an empty store if the file does not exist.

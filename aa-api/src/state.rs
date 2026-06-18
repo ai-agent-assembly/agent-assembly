@@ -151,15 +151,67 @@ pub enum LocalStateError {
     /// Loading the bundled minimal policy into a [`PolicyEngine`] failed.
     #[error("failed to load bootstrap policy: {0}")]
     PolicyLoad(String),
+    /// Opening / migrating the local SQLite storage backend failed.
+    #[error("failed to open local storage backend: {0}")]
+    Storage(String),
+    /// Constructing the audit writer over the local audit directory failed.
+    #[error("failed to start local audit writer: {0}")]
+    Audit(String),
+}
+
+/// Resolved authentication posture for the local single-process entrypoint
+/// (AAASM-3369).
+///
+/// The shipped `aa-api-server` binary serves the *protected* `/api/v1/*` surface
+/// over the loopback interface. Defaulting to [`AuthMode::Off`] there shipped an
+/// unauthenticated admin surface; [`LocalAuth`] lets the binary require a real
+/// API key by default while keeping an explicit opt-out for throwaway local dev.
+#[derive(Debug, Clone)]
+pub enum LocalAuth {
+    /// Authentication is bypassed — every request is treated as admin. Only for
+    /// throwaway local dev; selected via `AASM_API_AUTH=off`.
+    Off,
+    /// Require an `Authorization: Bearer aa_…` API key. The single seeded key has
+    /// admin scope. The plaintext is surfaced to the operator on startup.
+    ApiKey {
+        /// The plaintext admin API key callers must present.
+        key: String,
+    },
+}
+
+impl LocalAuth {
+    /// Resolve the local auth posture from the environment.
+    ///
+    /// * `AASM_API_AUTH=off` → [`LocalAuth::Off`] (explicit opt-out).
+    /// * `AASM_API_KEY=aa_…` → [`LocalAuth::ApiKey`] using the supplied key.
+    /// * otherwise → [`LocalAuth::ApiKey`] with a freshly generated admin key.
+    ///
+    /// Returns the resolved posture and whether the key was generated (so the
+    /// caller can print it prominently on first boot).
+    pub fn from_env() -> (Self, bool) {
+        if matches!(std::env::var("AASM_API_AUTH").as_deref(), Ok("off") | Ok("OFF")) {
+            return (LocalAuth::Off, false);
+        }
+        match std::env::var("AASM_API_KEY") {
+            Ok(key) if !key.is_empty() => (LocalAuth::ApiKey { key }, false),
+            _ => {
+                let key = crate::auth::api_key::ApiKey::generate().as_str().to_string();
+                (LocalAuth::ApiKey { key }, true)
+            }
+        }
+    }
 }
 
 impl AppState {
     /// Build a fully-wired `AppState` backed entirely by in-memory / default
     /// implementations (AAASM-3360).
     ///
-    /// This is the production seam that lets a single shipped entrypoint serve
-    /// the full `/api/v1/*` REST surface in local / single-process mode without
-    /// the operator wiring ~30 subsystems by hand. Every store is the same
+    /// This is the unauthenticated base wiring. The shipped `aa-api-server`
+    /// entrypoint builds on it via [`local_hardened`](Self::local_hardened),
+    /// which adds API-key auth and SQLite-backed audit / retention. It lets a
+    /// single process serve the full `/api/v1/*` REST surface in local /
+    /// single-process mode without the operator wiring ~30 subsystems by hand.
+    /// Every store is the same
     /// in-memory implementation the gateway already uses for ephemeral state;
     /// nothing here touches a remote database, NATS, or the network.
     ///
@@ -312,5 +364,104 @@ impl AppState {
             secrets_store: Arc::new(aa_gateway::secrets::InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
         })
+    }
+
+    /// Build a hardened local `AppState` for the shipped `aa-api-server`
+    /// entrypoint (AAASM-3369).
+    ///
+    /// This is [`local_in_memory`](Self::local_in_memory) plus the wiring that
+    /// turns the documented 503 / no-op seams into real behaviour for a local
+    /// single-process deployment:
+    ///
+    /// * **Auth** — when `auth` is [`LocalAuth::ApiKey`], the protected
+    ///   `/api/v1/*` surface requires an `Authorization: Bearer aa_…` key
+    ///   ([`AuthMode::On`]); the single seeded key carries admin scope. With
+    ///   [`LocalAuth::Off`] it stays bypassed exactly like `local_in_memory`.
+    /// * **Audit + retention** — a SQLite [`StorageBackend`] is opened under a
+    ///   per-process temp directory. An [`AuditWriter`] is spawned in dual-sink
+    ///   mode (JSONL + SQLite) and its sender is threaded into `audit_sender`, so
+    ///   audit-emitting handlers persist instead of returning 503. A
+    ///   [`RetentionEngine`] over the same backend backs the
+    ///   `/api/v1/admin/retention-policy` handlers (get / put / run-once) instead
+    ///   of 503. The audit *reader* points at the same JSONL directory.
+    ///
+    /// The alert-rule evaluator metric source is still wired by `run_server`; see
+    /// [`crate::alerts::rules::evaluator::BudgetMetricSource`] for the real
+    /// budget-spent source this entrypoint installs.
+    pub async fn local_hardened(auth: LocalAuth) -> Result<Self, LocalStateError> {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut state = Self::local_in_memory()?;
+
+        // --- Auth: require an API key unless explicitly opted out. ---
+        match &auth {
+            LocalAuth::Off => { /* keep the AuthMode::Off wiring from local_in_memory */ }
+            LocalAuth::ApiKey { key } => {
+                let parsed = crate::auth::api_key::ApiKey::parse(key)
+                    .map_err(|e| LocalStateError::PolicyLoad(format!("invalid AASM_API_KEY: {e}")))?;
+                let key_hash = parsed
+                    .hash()
+                    .map_err(|e| LocalStateError::PolicyLoad(format!("failed to hash AASM_API_KEY: {e}")))?;
+                let entry = crate::auth::api_key::ApiKeyEntry {
+                    id: "local-admin".to_string(),
+                    key_hash,
+                    scopes: vec![
+                        crate::auth::scope::Scope::Read,
+                        crate::auth::scope::Scope::Write,
+                        crate::auth::scope::Scope::Admin,
+                    ],
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                    label: Some("local single-process admin key".to_string()),
+                    team_id: None,
+                    org_id: None,
+                };
+                state.auth_config = Arc::new(AuthConfig {
+                    mode: AuthMode::On,
+                    jwt_secret: state.auth_config.jwt_secret.clone(),
+                    api_keys_path: state.auth_config.api_keys_path.clone(),
+                    rate_limit_rpm: state.auth_config.rate_limit_rpm,
+                });
+                state.key_store = Arc::new(ApiKeyStore::from_entries(vec![entry]));
+            }
+        }
+
+        // --- Audit + retention: open a local SQLite backend and wire the
+        // dual-sink writer + retention engine over it. ---
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+        let storage_dir = std::env::temp_dir().join(format!("aa-api-local-storage-{pid}-{uniq}"));
+        std::fs::create_dir_all(&storage_dir).map_err(|source| LocalStateError::PolicyWrite {
+            path: storage_dir.clone(),
+            source,
+        })?;
+        let db_path = storage_dir.join("local.db");
+        let storage = aa_gateway::storage::open_sqlite_backend(&db_path)
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+
+        // Audit writer (dual-sink) over a dedicated JSONL directory; the reader
+        // points at the same directory so reads see what the writer persists.
+        let audit_jsonl_dir = storage_dir.join("audit");
+        let (audit_tx, audit_rx) = mpsc::channel::<AuditEntry>(4096);
+        let writer = aa_gateway::audit::AuditWriter::new(audit_jsonl_dir.clone(), "local", "local", audit_rx)
+            .await
+            .map_err(|e| LocalStateError::Audit(format!("{e}")))?
+            .with_storage(storage.clone());
+        tokio::spawn(writer.run());
+        state.audit_sender = Some(audit_tx);
+        state.audit_reader = Arc::new(AuditReader::new(audit_jsonl_dir));
+
+        // Retention engine over the same backend, using aa-core's validated
+        // default policy (daily 03:00 UTC). Constructed directly — the admin
+        // REST handlers drive run_once / hot_reload on demand, so the cron
+        // background loop is not required for the local entrypoint.
+        let retention_cfg = aa_gateway::storage::RetentionConfig::default();
+        state.retention_engine = Some(Arc::new(RetentionEngine::new(storage, retention_cfg)));
+
+        Ok(state)
     }
 }
