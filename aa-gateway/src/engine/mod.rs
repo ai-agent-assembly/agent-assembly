@@ -1650,6 +1650,38 @@ mod tests {
     }
 
     #[test]
+    fn network_allows_listed_host_with_port() {
+        // AAASM-3350: `convert.rs` emits `proto://host:port`, so the live
+        // `evaluate`/`eval_network_stage` path must strip the `:port` before the
+        // bare-host allowlist compare. An allowlisted host with a port must Allow.
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://api.openai.com:443/v1");
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn network_denies_unlisted_host_with_port() {
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://evil.attacker.net:8443/x");
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            }
+        );
+    }
+
+    #[test]
     fn tool_deny_blocks_call() {
         let mut doc = empty_doc();
         doc.tools.insert(
