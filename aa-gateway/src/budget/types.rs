@@ -2,72 +2,13 @@
 
 use chrono::Datelike;
 
-/// LLM provider identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    /// OpenAI (GPT-* models).
-    OpenAi,
-    /// Anthropic (Claude models).
-    Anthropic,
-    /// Cohere (Command models).
-    Cohere,
-}
-
-/// LLM model identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Model {
-    // OpenAI
-    Gpt4o,
-    Gpt4,
-    Gpt35Turbo,
-    // Anthropic
-    Claude3Opus,
-    Claude3Sonnet,
-    Claude3Haiku,
-    // Cohere
-    CommandRPlus,
-    CommandR,
-}
-
-impl Model {
-    /// Infer the `(Provider, Model)` pair from a free-form model name string.
-    ///
-    /// AAASM-3353 — the live `CheckAction` proto (`LlmCallContext`) carries only
-    /// the model name string; it does NOT carry a provider field. Rather than
-    /// change `proto/` (out of scope), the provider is inferred here from the
-    /// model name. The match is a case-insensitive substring test against the
-    /// known model families, ordered most-specific-first so that e.g.
-    /// `gpt-4o-2024-08-06` maps to `Gpt4o` (not `Gpt4`) and
-    /// `command-r-plus` maps to `CommandRPlus` (not `CommandR`).
-    ///
-    /// Returns `None` for an unrecognised model name — the caller treats an
-    /// unknown model as zero cost (no spend accrued) rather than guessing.
-    pub fn infer_from_name(name: &str) -> Option<(Provider, Self)> {
-        let n = name.to_ascii_lowercase();
-        // Most-specific patterns first; substrings of others must come earlier.
-        if n.contains("gpt-4o") || n.contains("gpt4o") {
-            Some((Provider::OpenAi, Model::Gpt4o))
-        } else if n.contains("gpt-3.5") || n.contains("gpt35") || n.contains("gpt-35") {
-            Some((Provider::OpenAi, Model::Gpt35Turbo))
-        } else if n.contains("gpt-4") || n.contains("gpt4") {
-            Some((Provider::OpenAi, Model::Gpt4))
-        } else if n.contains("opus") {
-            Some((Provider::Anthropic, Model::Claude3Opus))
-        } else if n.contains("sonnet") {
-            Some((Provider::Anthropic, Model::Claude3Sonnet))
-        } else if n.contains("haiku") {
-            Some((Provider::Anthropic, Model::Claude3Haiku))
-        } else if n.contains("command-r-plus") || n.contains("command-r+") {
-            Some((Provider::Cohere, Model::CommandRPlus))
-        } else if n.contains("command-r") {
-            Some((Provider::Cohere, Model::CommandR))
-        } else {
-            None
-        }
-    }
-}
+// The LLM `Provider`/`Model` enums and the model-name → `(Provider, Model)`
+// inference (`Model::infer_from_name`) were relocated to `aa-core::llm`
+// (AAASM-3362) so SDKs and other crates can reuse them without depending on
+// `aa-gateway`. They are re-exported here so existing `budget::types::{Provider,
+// Model}` call sites (pricing table, engine accrual) keep working unchanged.
+// Pricing tables remain in `aa-gateway` (see `super::pricing`).
+pub use aa_core::llm::{Model, Provider};
 
 /// Discriminates which budget window a limit or check applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -265,22 +206,6 @@ pub struct BudgetAlert {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn provider_variants_are_distinct() {
-        assert_eq!(Provider::OpenAi, Provider::OpenAi);
-        assert_ne!(Provider::OpenAi, Provider::Anthropic);
-        assert_ne!(Provider::OpenAi, Provider::Cohere);
-        assert_ne!(Provider::Anthropic, Provider::Cohere);
-    }
-
-    #[test]
-    fn model_variants_are_distinct() {
-        assert_eq!(Model::Gpt4o, Model::Gpt4o);
-        assert_ne!(Model::Gpt4o, Model::Gpt4);
-        assert_ne!(Model::Claude3Opus, Model::Claude3Haiku);
-        assert_ne!(Model::CommandRPlus, Model::CommandR);
-    }
 
     #[test]
     fn budget_status_within_budget_holds_values() {
