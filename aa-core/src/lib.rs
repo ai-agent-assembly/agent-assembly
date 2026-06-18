@@ -34,6 +34,8 @@ pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
+#[cfg(feature = "alloc")]
+pub mod llm;
 pub mod policy;
 pub mod risk_tier;
 #[cfg(feature = "std")]
@@ -58,6 +60,9 @@ pub use dev_tool::DevToolKind;
 pub use dev_tool::McpServerInfo;
 #[cfg(feature = "std")]
 pub use dev_tool::{AdapterError, DevToolAdapter, DevToolInfo};
+
+#[cfg(feature = "alloc")]
+pub use llm::{Model, Provider};
 
 #[cfg(feature = "alloc")]
 pub use policy::{ArgsJson, GovernanceAction, PolicyDocument, PolicyEvaluator, PolicyResult, PolicyRule};
