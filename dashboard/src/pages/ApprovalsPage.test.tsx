@@ -262,6 +262,50 @@ describe('ApprovalsPage — decision flows', () => {
     expect(await screen.findByText(/failed 1/)).toBeInTheDocument()
   })
 
+  it('restores rows and toasts an error when a bulk reject partially fails', async () => {
+    const rejectAsync = vi
+      .fn()
+      .mockResolvedValueOnce(FIRST)
+      .mockRejectedValueOnce(new Error('gateway down'))
+    mockHooks([FIRST, SECOND], undefined, rejectAsync)
+    const { Wrapper: SeededWrapper, client } = seededWrapper([FIRST, SECOND])
+    render(<ApprovalsPage />, { wrapper: SeededWrapper })
+    await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(2))
+
+    fireEvent.click(screen.getByTestId('select-all-checkbox'))
+    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId('bulk-reject-btn'))
+    fireEvent.change(await screen.findByTestId('reject-reason-input'), {
+      target: { value: 'policy violation' },
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reject-confirm-btn'))
+    })
+
+    await waitFor(() => {
+      const active = client.getQueryData<Approval[]>(['approvals']) ?? []
+      expect(active).toHaveLength(1)
+    })
+    expect(await screen.findByText(/failed 1/)).toBeInTheDocument()
+  })
+
+  it('retries the query from the generic error state', async () => {
+    const refetch = vi.fn()
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      mockQuery<Approval[]>({ data: undefined, isLoading: false, isError: true, refetch }),
+    )
+    vi.spyOn(approvalsApi, 'useApproveAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    vi.spyOn(approvalsApi, 'useRejectAction').mockReturnValue(
+      mockMutation({ mutateAsync: vi.fn(), isPending: false }),
+    )
+    render(<ApprovalsPage />, { wrapper: Wrapper })
+    const error = await screen.findByTestId('error-state-generic')
+    fireEvent.click(within(error).getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalled()
+  })
+
   it('cancelling the reject dialog leaves the rows untouched', async () => {
     mockHooks([FIRST])
     const { Wrapper: SeededWrapper } = seededWrapper([FIRST])
