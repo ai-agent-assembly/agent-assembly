@@ -8,12 +8,12 @@ export interface GenerateKeyDialogProps {
   isSubmitting?: boolean
 }
 
-export function GenerateKeyDialog(props: GenerateKeyDialogProps) {
+export function GenerateKeyDialog(props: Readonly<GenerateKeyDialogProps>) {
   if (!props.open) return null
   return <GenerateKeyDialogBody {...props} />
 }
 
-function GenerateKeyDialogBody({ onClose, onSubmit, isSubmitting }: GenerateKeyDialogProps) {
+function GenerateKeyDialogBody({ onClose, onSubmit, isSubmitting }: Readonly<GenerateKeyDialogProps>) {
   const [label, setLabel] = useState('')
   const [scopes, setScopes] = useState<ApiKeyScope[]>([])
   const [touched, setTouched] = useState(false)

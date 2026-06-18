@@ -9,7 +9,7 @@ const STATUS_CLASS: Record<AgentStatus, string> = {
   degraded: 'iam-agent-status--degraded',
 }
 
-function StatusChip({ status }: { status: AgentStatus }) {
+function StatusChip({ status }: Readonly<{ status: AgentStatus }>) {
   return <span className={`iam-agent-status ${STATUS_CLASS[status]}`}>{status}</span>
 }
 
@@ -25,7 +25,7 @@ export interface AgentRegistryListProps {
   onSelect: (agent: Agent) => void
 }
 
-export function AgentRegistryList({ selectedAgentId, onSelect }: AgentRegistryListProps) {
+export function AgentRegistryList({ selectedAgentId, onSelect }: Readonly<AgentRegistryListProps>) {
   const { data, isLoading, isError, refetch } = useAgentsQuery()
 
   if (isError) {

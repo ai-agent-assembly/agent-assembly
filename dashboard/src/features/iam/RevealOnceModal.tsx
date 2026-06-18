@@ -24,7 +24,7 @@ export function RevealOnceModal({
   onCopied,
   onClose,
   onAttemptCloseBeforeCopy,
-}: RevealOnceModalProps) {
+}: Readonly<RevealOnceModalProps>) {
   const { toast } = useToast()
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 

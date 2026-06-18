@@ -18,7 +18,7 @@ export function ConfirmRoleChangeModal({
   danger,
   onCancel,
   onConfirm,
-}: ConfirmRoleChangeModalProps) {
+}: Readonly<ConfirmRoleChangeModalProps>) {
   // AAASM-1400 — `danger` may be null for safe changes; the modal still
   // renders, just with a neutral confirmation message instead of the
   // danger-tinted warning. Only `open`, `member`, and `nextRole` gate

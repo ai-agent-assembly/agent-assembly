@@ -20,7 +20,7 @@ export function CapabilityFilterBar({
   totalAgents,
   visibleAgents,
   agents,
-}: CapabilityFilterBarProps) {
+}: Readonly<CapabilityFilterBarProps>) {
   const frameworks = uniqueSorted(agents.map((a) => a.framework))
   const owners = uniqueSorted(agents.map((a) => a.owner))
   const modes = uniqueSorted(agents.map((a) => a.mode))

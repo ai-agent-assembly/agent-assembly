@@ -21,7 +21,7 @@ export interface AgentPermissionsPanelProps {
   onClose: () => void
 }
 
-export function AgentPermissionsPanel({ agent, onClose }: AgentPermissionsPanelProps) {
+export function AgentPermissionsPanel({ agent, onClose }: Readonly<AgentPermissionsPanelProps>) {
   const { data, isLoading, isError } = useAgentPermissionsQuery(agent?.id ?? null)
 
   const grouped = useMemo(

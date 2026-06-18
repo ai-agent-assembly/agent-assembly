@@ -28,7 +28,7 @@ function formatTimestamp(value: string): string {
  * Pairs with `<ServiceIdentitiesPanel>`'s 2-column layout — list on the
  * left, this card on the right — mirroring `<RolesPermissionsPanel>`.
  */
-export function IdentityDetailCard({ identity, onClose }: IdentityDetailCardProps) {
+export function IdentityDetailCard({ identity, onClose }: Readonly<IdentityDetailCardProps>) {
   return (
     <aside
       className="iam-identity-detail-card"

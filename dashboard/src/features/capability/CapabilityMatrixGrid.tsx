@@ -38,7 +38,7 @@ export function CapabilityMatrixGrid({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
-}: CapabilityMatrixGridProps) {
+}: Readonly<CapabilityMatrixGridProps>) {
   const selectable = Boolean(selectedIds && onToggleSelect)
   const allSelected =
     selectable && agents.length > 0 && agents.every((a) => selectedIds?.has(a.id))
@@ -130,7 +130,7 @@ function RowGroup({
   onCellClick,
   selected,
   onToggleSelect,
-}: RowGroupProps) {
+}: Readonly<RowGroupProps>) {
   return (
     <>
       <div

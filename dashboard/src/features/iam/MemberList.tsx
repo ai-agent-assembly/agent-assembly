@@ -11,16 +11,16 @@ const ROLE_BADGE_TONE: Record<Role, string> = {
   Viewer: 'iam-role-badge--viewer',
 }
 
-function Avatar({ name }: { name: string }) {
+function Avatar({ name }: Readonly<{ name: string }>) {
   const initial = name.trim().charAt(0).toUpperCase() || '?'
   return <div className="iam-avatar" aria-hidden="true">{initial}</div>
 }
 
-function RoleBadge({ role }: { role: Role }) {
+function RoleBadge({ role }: Readonly<{ role: Role }>) {
   return <span className={`iam-role-badge ${ROLE_BADGE_TONE[role]}`}>{role}</span>
 }
 
-function StatusCell({ status }: { status: Member['status'] }) {
+function StatusCell({ status }: Readonly<{ status: Member['status'] }>) {
   return <span className={`iam-status iam-status--${status}`}>{status}</span>
 }
 

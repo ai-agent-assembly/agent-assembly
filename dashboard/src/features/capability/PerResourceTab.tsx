@@ -26,7 +26,7 @@ export function PerResourceTab({
   selectedResourceId,
   onSelectResource,
   onCellClick,
-}: PerResourceTabProps) {
+}: Readonly<PerResourceTabProps>) {
   const selected = useMemo(
     () => resources.find((r) => r.id === selectedResourceId) ?? resources[0],
     [resources, selectedResourceId],

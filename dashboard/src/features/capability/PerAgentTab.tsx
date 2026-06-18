@@ -18,7 +18,7 @@ export function PerAgentTab({
   selectedAgentId,
   onSelectAgent,
   onCellClick,
-}: PerAgentTabProps) {
+}: Readonly<PerAgentTabProps>) {
   const selected = useMemo(
     () => agents.find((a) => a.id === selectedAgentId) ?? agents[0],
     [agents, selectedAgentId],
