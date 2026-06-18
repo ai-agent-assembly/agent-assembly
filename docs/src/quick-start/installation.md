@@ -46,7 +46,7 @@ The installer honors these environment variables:
 
 ```sh
 # Install a specific release tag (default: latest)
-AASM_VERSION=v0.0.1-alpha.5 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-beta.2 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Install to a custom directory
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
@@ -96,7 +96,7 @@ publishes per-platform tarballs plus a `SHA256SUMS` file and a
 To install and verify by hand:
 
 ```sh
-VERSION=v0.0.1-alpha.5
+VERSION=v0.0.1-beta.2
 ASSET=aasm-aarch64-apple-darwin.tar.gz   # adjust for your platform
 BASE="https://github.com/ai-agent-assembly/agent-assembly/releases/download/${VERSION}"
 
@@ -147,7 +147,7 @@ Confirm the binary is on your `PATH` and runs:
 
 ```console
 $ aasm --version
-aasm 0.0.1-alpha.5
+aasm 0.0.1-beta.2
 ```
 
 A fuller report — the CLI version plus whether a gateway and API are reachable —
@@ -159,7 +159,7 @@ $ aasm version
 +-----------+---------------+-------------+
 | COMPONENT | VERSION       | STATUS      |
 +=========================================+
-| cli       | 0.0.1-alpha.5 | -           |
+| cli       | 0.0.1-beta.2  | -           |
 |-----------+---------------+-------------|
 | gateway   | -             | unreachable |
 |-----------+---------------+-------------|
