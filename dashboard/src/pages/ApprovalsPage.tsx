@@ -27,6 +27,12 @@ import './ApprovalsPage.css'
 
 const APPROVAL_ROW_COL_COUNT = 8
 
+const SKELETON_ROW_KEYS = Array.from({ length: 3 }, (_, i) => `approval-skeleton-row-${i}`)
+const SKELETON_CELL_KEYS = Array.from(
+  { length: APPROVAL_ROW_COL_COUNT },
+  (_, j) => `approval-skeleton-cell-${j}`,
+)
+
 // ── Reject dialog ─────────────────────────────────────────────────────────────
 
 interface RejectDialogProps {
@@ -53,8 +59,7 @@ function RejectDialog({ count, onConfirm, onCancel }: Readonly<RejectDialogProps
           Reject {count > 1 ? `${count} requests` : 'request'}
         </h2>
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.875rem' }}>
-          Reason (required)
-          <textarea
+          Reason (required)<textarea
             data-testid="reject-reason-input"
             rows={3}
             value={reason}
@@ -75,8 +80,8 @@ function RejectDialog({ count, onConfirm, onCancel }: Readonly<RejectDialogProps
             onClick={() => onConfirm(reason.trim())}
             style={{
               padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: 'none',
-              background: !reason.trim() ? 'var(--ink-4)' : 'var(--danger)',
-              color: 'var(--paper-2)', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
+              background: reason.trim() ? 'var(--danger)' : 'var(--ink-4)',
+              color: 'var(--paper-2)', cursor: reason.trim() ? 'pointer' : 'not-allowed',
               fontWeight: 600,
             }}
           >
@@ -181,7 +186,7 @@ export function ApprovalsPage() {
       queryClient.setQueryData<Approval[]>(['approvals'], (prev) => [...failedRows, ...(prev ?? [])])
       toast(`Approved ${succeededIds.length}, failed ${failedIds.length}.`, 'error')
     } else {
-      toast(`Approved ${succeededIds.length} request${succeededIds.length !== 1 ? 's' : ''}.`, 'success')
+      toast(`Approved ${succeededIds.length} request${succeededIds.length === 1 ? '' : 's'}.`, 'success')
     }
 
     const succeededRows = targets.filter((a) => succeededIds.includes(a.id))
@@ -205,7 +210,7 @@ export function ApprovalsPage() {
       queryClient.setQueryData<Approval[]>(['approvals'], (prev) => [...failedRows, ...(prev ?? [])])
       toast(`Rejected ${succeededIds.length}, failed ${failedIds.length}.`, 'error')
     } else {
-      toast(`Rejected ${succeededIds.length} request${succeededIds.length !== 1 ? 's' : ''}.`, 'success')
+      toast(`Rejected ${succeededIds.length} request${succeededIds.length === 1 ? '' : 's'}.`, 'success')
     }
 
     const succeededRows = targets.filter((a) => succeededIds.includes(a.id))
@@ -314,10 +319,10 @@ export function ApprovalsPage() {
               </thead>
               <tbody>
                 {isLoading
-                  ? Array.from({ length: 3 }).map((_, i) => (
-                    <tr key={i} data-testid="approval-row-skeleton">
-                      {Array.from({ length: 8 }).map((_, j) => (
-                        <td key={j} style={{ padding: '8px 12px' }}>
+                  ? SKELETON_ROW_KEYS.map((rowKey) => (
+                    <tr key={rowKey} data-testid="approval-row-skeleton">
+                      {SKELETON_CELL_KEYS.map((cellKey) => (
+                        <td key={cellKey} style={{ padding: '8px 12px' }}>
                           <span style={{ display: 'block', height: '0.875rem', background: 'var(--line)', borderRadius: '4px' }} />
                         </td>
                       ))}

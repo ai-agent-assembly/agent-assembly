@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
 import { ignorePromise } from '../lib/ignorePromise'
 import {
   useReactTable,
@@ -10,7 +10,6 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { useAgentsQuery } from '../features/agents/api'
 import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
 import {
@@ -31,13 +30,16 @@ import './FleetPage.css'
 
 const COLUMN_COUNT = 11
 
+const SKELETON_ROW_KEYS = Array.from({ length: 5 }, (_, i) => `skeleton-row-${i}`)
+const SKELETON_CELL_KEYS = Array.from({ length: COLUMN_COUNT }, (_, j) => `skeleton-cell-${j}`)
+
 function SkeletonRows() {
   return (
     <>
-      {Array.from({ length: 5 }).map((_, i) => (
-        <tr key={i} data-testid="agent-row-skeleton">
-          {Array.from({ length: COLUMN_COUNT }).map((_, j) => (
-            <td key={j} className="fleet-table__cell fleet-table__cell--skeleton">
+      {SKELETON_ROW_KEYS.map((rowKey) => (
+        <tr key={rowKey} data-testid="agent-row-skeleton">
+          {SKELETON_CELL_KEYS.map((cellKey) => (
+            <td key={cellKey} className="fleet-table__cell fleet-table__cell--skeleton">
               <span className="fleet-table__skeleton" />
             </td>
           ))}
@@ -50,9 +52,15 @@ function SkeletonRows() {
 function NumericCell({ value }: Readonly<{ value: number | null }>) {
   return (
     <span className="fleet-table__numeric">
-      {value === null ? '—' : value}
+      {value ?? '—'}
     </span>
   )
+}
+
+function sortIndicator(sorted: false | 'asc' | 'desc'): { glyph: string; label: string } {
+  if (sorted === 'asc') return { glyph: '▲', label: 'sorted ascending' }
+  if (sorted === 'desc') return { glyph: '▼', label: 'sorted descending' }
+  return { glyph: '↕', label: 'not sorted' }
 }
 
 const columnHelper = createColumnHelper<FleetAgent>()
@@ -338,8 +346,7 @@ export function FleetPage() {
       <header className="fleet-page__head" data-testid="fleet-page-head">
         <div className="fleet-page__heading">
           <h1 className="fleet-page__title">
-            Fleet
-            <span className="fleet-page__count" data-testid="fleet-page-count">
+            Fleet<span className="fleet-page__count" data-testid="fleet-page-count">
               · {filteredCount} of {totalAgents} agents
             </span>
           </h1>
@@ -357,7 +364,7 @@ export function FleetPage() {
         </div>
       </header>
 
-      <nav className="fleet-tabs" data-testid="fleet-tabs" role="tablist" aria-label="Fleet views">
+      <div className="fleet-tabs" data-testid="fleet-tabs" role="tablist" aria-label="Fleet views">
         <button
           type="button"
           role="tab"
@@ -366,8 +373,7 @@ export function FleetPage() {
           onClick={() => setView('agents')}
           data-testid="fleet-tab-agents"
         >
-          Agents
-          <span className="fleet-tabs__count">{filteredCount}</span>
+          Agents<span className="fleet-tabs__count">{filteredCount}</span>
         </button>
         <button
           type="button"
@@ -379,7 +385,7 @@ export function FleetPage() {
         >
           Active Sessions
         </button>
-      </nav>
+      </div>
 
       {view === 'sessions' && (
         <div className="fleet-empty" data-testid="fleet-sessions-empty">
@@ -472,18 +478,12 @@ export function FleetPage() {
                       {flexRender(header.column.columnDef.header, header.getContext())}
                       {header.column.getCanSort() && (() => {
                         const sorted = header.column.getIsSorted()
-                        const glyph = sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : '↕'
+                        const { glyph, label } = sortIndicator(sorted)
                         return (
                           <span
                             className={`fleet-table__sort${sorted ? '' : ' fleet-table__sort--inactive'}`}
                             data-testid={`fleet-sort-${header.column.id}`}
-                            aria-label={
-                              sorted === 'asc'
-                                ? 'sorted ascending'
-                                : sorted === 'desc'
-                                  ? 'sorted descending'
-                                  : 'not sorted'
-                            }
+                            aria-label={label}
                           >
                             {glyph}
                           </span>
