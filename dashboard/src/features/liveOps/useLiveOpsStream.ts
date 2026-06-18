@@ -96,9 +96,10 @@ export interface UseLiveOpsStreamResult {
 
 function buildWsUrl(): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
+  const scheme = globalThis.location.protocol === 'https:' ? 'wss' : 'ws'
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
-    : `${globalThis.location.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location.host}`
+    : `${scheme}://${globalThis.location.host}`
   const token =
     typeof localStorage !== 'undefined' ? localStorage.getItem('aa_token') : null
   const query = [
