@@ -23,6 +23,7 @@ use aa_security::Redaction;
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
 use crate::alerts::SecretAlert;
+use crate::anomaly::{AnomalyDetector, AnomalyEvent, AnomalyResponder};
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
@@ -34,6 +35,32 @@ use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
+
+/// Live anomaly-detection wiring for the `CheckAction` / `BatchCheck` flow
+/// (AAASM-3378).
+///
+/// The `aa-gateway::anomaly` engine was fully implemented and unit-tested but
+/// had zero non-test instantiations — it never ran against live traffic, so no
+/// `AnomalyEvent` could ever fire at runtime. This hook feeds every evaluated
+/// action through [`AnomalyDetector::detect`] and runs [`AnomalyResponder`] on
+/// any detection, broadcasting the resulting [`AnomalyEvent`] to subscribers.
+#[derive(Clone)]
+pub struct AnomalyHook {
+    detector: Arc<AnomalyDetector>,
+    event_tx: broadcast::Sender<AnomalyEvent>,
+}
+
+impl AnomalyHook {
+    /// Build a hook around the given detector and event broadcast sender.
+    pub fn new(detector: Arc<AnomalyDetector>, event_tx: broadcast::Sender<AnomalyEvent>) -> Self {
+        Self { detector, event_tx }
+    }
+
+    /// Shared handle to the underlying detector (for stateful checks/tests).
+    pub fn detector(&self) -> Arc<AnomalyDetector> {
+        Arc::clone(&self.detector)
+    }
+}
 
 /// gRPC service implementation wiring `CheckAction` / `BatchCheck` to [`PolicyEngine`].
 pub struct PolicyServiceImpl {
@@ -65,6 +92,12 @@ pub struct PolicyServiceImpl {
     /// new subscriptions with `Unavailable`. PR-H will pair this with
     /// `OpsRegistry` transition call sites that drive `publish()`.
     ops_publisher: Option<SharedOpControlPublisher>,
+    /// Optional live anomaly-detection hook (AAASM-3378). When set, every
+    /// `check_action` / `batch_check` evaluation is run through the anomaly
+    /// detector and any detection triggers the responder + an `AnomalyEvent`
+    /// broadcast. `None` disables detection — the default for unit tests and
+    /// any caller that does not opt in via [`with_anomaly_detection`].
+    anomaly: Option<AnomalyHook>,
 }
 
 impl PolicyServiceImpl {
@@ -94,6 +127,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -123,6 +157,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -154,6 +189,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -190,6 +226,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -259,6 +296,23 @@ impl PolicyServiceImpl {
     /// [`OpControlPublisher`]: crate::ops::OpControlPublisher
     pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.ops_publisher = Some(publisher);
+        self
+    }
+
+    /// Attach a live anomaly-detection hook (AAASM-3378).
+    ///
+    /// Wires the previously-unwired `aa-gateway::anomaly` engine into the live
+    /// `check_action` / `batch_check` path. With a hook attached, every
+    /// evaluated action updates the per-agent behavioral baseline, runs through
+    /// [`AnomalyDetector::detect`], and — on a detection — executes
+    /// [`AnomalyResponder::respond`] and broadcasts the resulting
+    /// [`AnomalyEvent`]. Without a hook, behavior is unchanged.
+    pub fn with_anomaly_detection(
+        mut self,
+        detector: Arc<AnomalyDetector>,
+        event_tx: broadcast::Sender<AnomalyEvent>,
+    ) -> Self {
+        self.anomaly = Some(AnomalyHook::new(detector, event_tx));
         self
     }
 
@@ -1082,6 +1136,59 @@ impl PolicyServiceImpl {
         }
     }
 
+    /// AAASM-3378 — run the live anomaly detector over an evaluated action.
+    ///
+    /// This is the wiring that the previously-unwired `aa-gateway::anomaly`
+    /// engine was missing: the detector had a full API + unit tests but **no
+    /// non-test caller**, so no `AnomalyEvent` could ever fire at runtime.
+    ///
+    /// Behaviour (no-op when no hook is attached):
+    /// 1. Rebuild the core `(ctx, action)` from the request.
+    /// 2. Update the per-agent baseline (`record_action`, and for tool calls
+    ///    `record_tool_call`; one `record_credential_finding` per credential
+    ///    finding the evaluation surfaced).
+    /// 3. Run [`AnomalyDetector::detect`] with `has_pii` derived from the
+    ///    evaluation's credential findings and the policy network allowlist.
+    /// 4. On a detection, execute [`AnomalyResponder::respond`] (logs the
+    ///    response action) and broadcast the [`AnomalyEvent`] so subscribers
+    ///    (and tests) observe the live detection.
+    fn maybe_detect_anomaly(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
+        let Some(hook) = self.anomaly.as_ref() else {
+            return;
+        };
+        let (ctx, action) = match convert::request_to_core(req) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to rebuild ctx for anomaly detection");
+                return;
+            }
+        };
+        let agent_id = ctx.agent_id;
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Update the behavioral baseline before detection so spike / loop
+        // checks see the current action.
+        hook.detector.record_action(agent_id, now_ms);
+        if let aa_core::GovernanceAction::ToolCall { name, args } = &action {
+            hook.detector.record_tool_call(agent_id, name, args, now_ms);
+        }
+        for _ in 0..eval.credential_findings.len() {
+            hook.detector.record_credential_finding(agent_id);
+        }
+
+        let has_pii = !eval.credential_findings.is_empty();
+        let allowlist = self.engine.network_allowlist();
+        if let Some(event) = hook.detector.detect(agent_id, &action, has_pii, &allowlist, None) {
+            AnomalyResponder::respond(&event);
+            if let Err(err) = hook.event_tx.send(event) {
+                tracing::trace!(error = %err, "no subscribers for AnomalyEvent broadcast");
+            }
+        }
+    }
+
     /// Compose the live-ops registry id and ingest if a registry is attached.
     ///
     /// Returns `Some(op_id)` when ingestion happened so the caller can drive
@@ -1227,6 +1334,9 @@ impl PolicyService for PolicyServiceImpl {
         // AAASM-3353: accrue LLM-call cost so daily / monthly budget limits fire.
         self.maybe_accrue_llm_spend(&req, &response);
 
+        // AAASM-3378: run the live anomaly detector over the evaluated action.
+        self.maybe_detect_anomaly(&req, &eval);
+
         // Fire-and-forget audit entry — never blocks the response.
         self.record_audit(&req, &response, &eval, shadow_event.as_ref()).await;
 
@@ -1259,6 +1369,8 @@ impl PolicyService for PolicyServiceImpl {
             self.maybe_suspend_agent(req, deny_action).await;
             // AAASM-3353: accrue LLM-call cost so budget limits fire in batch mode too.
             self.maybe_accrue_llm_spend(req, &resp);
+            // AAASM-3378: run the live anomaly detector in batch mode too.
+            self.maybe_detect_anomaly(req, &eval);
             self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
         }
