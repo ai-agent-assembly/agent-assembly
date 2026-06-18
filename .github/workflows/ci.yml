@@ -1139,6 +1139,12 @@ jobs:
     needs: [changes, coverage, dashboard-test]
     if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage')) }}
     runs-on: ubuntu-latest
+    # AAASM-3197: actions:read lets `gh run download` pull the last successful
+    # master LCOV when a coverage producer was skipped this run (see fallback
+    # steps below). contents:read mirrors the workflow default for checkout.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
         with:
