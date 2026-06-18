@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AuthContext } from './AuthContext'
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
   const [token, setToken] = useState<string | null>(
     () => localStorage.getItem('aa_token'),
   )
