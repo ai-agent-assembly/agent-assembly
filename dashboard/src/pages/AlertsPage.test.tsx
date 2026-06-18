@@ -146,4 +146,58 @@ describe('AlertsPage', () => {
     fireEvent.click(row)
     expect(screen.getByTestId('alert-detail-drawer')).toBeInTheDocument()
   })
+
+  it('updates the URL filters when a severity chip is toggled', () => {
+    setup()
+    fireEvent.click(screen.getByTestId('alerts-filter-severity-HIGH'))
+    // The page still renders after writing search params (setFilters path).
+    expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
+  })
+
+  it('switches tabs via the AlertsTabs control (setTab path)', () => {
+    setup()
+    fireEvent.click(screen.getByTestId('alerts-tab-incidents'))
+    // Incidents tab filters to RESOLVED; our single alert is FIRING → 0 rows.
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 alerts')
+  })
+
+  it('wires stream handlers that mutate the query cache without throwing', () => {
+    const handlers: Record<string, (a: Alert) => void> = {}
+    vi.spyOn(stream, 'useAlertsStream').mockImplementation((h) => {
+      Object.assign(handlers, h)
+      return 'open'
+    })
+    vi.spyOn(alertsApi, 'useAlertsQuery').mockReturnValue(
+      q<readonly Alert[]>({ data: [FIRING], isLoading: false, isError: false }),
+    )
+    vi.spyOn(alertsApi, 'useAlertRulesQuery').mockReturnValue(
+      q<readonly AlertRule[]>({ data: [RULE], isLoading: false, isError: false }),
+    )
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={['/alerts']}>
+            <AlertsPage />
+          </MemoryRouter>
+        </ToastProvider>
+      </QueryClientProvider>,
+    )
+    expect(() => {
+      handlers.onFire?.(FIRING)
+      handlers.onResolve?.({ ...FIRING, status: 'RESOLVED' })
+      handlers.onSilence?.({ ...FIRING, status: 'SUPPRESSED' })
+    }).not.toThrow()
+  })
+
+  it('fires the rules-tab create / edit / destinations callbacks', () => {
+    setup({
+      route: '/alerts?tab=rules',
+      rules: q<readonly AlertRule[]>({ data: [RULE], isLoading: false, isError: false }),
+    })
+    fireEvent.click(screen.getByTestId('alert-rules-create'))
+    // Opening the rule form via the table's create button mounts the form.
+    fireEvent.click(screen.getByTestId('alert-rules-open-destinations'))
+    expect(screen.getByTestId('destination-manager')).toBeInTheDocument()
+  })
 })

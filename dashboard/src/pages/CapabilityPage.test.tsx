@@ -108,4 +108,54 @@ describe('CapabilityPage', () => {
 
     await waitFor(() => expect(applyOverride).toHaveBeenCalledTimes(1))
   })
+
+  it('rolls back and toasts on a failed bulk override', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    applyOverride.mockRejectedValueOnce(new Error('gateway said no'))
+    renderPage()
+    await screen.findByText('Capability')
+    fireEvent.click(screen.getByLabelText('select all agents'))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+    expect(await screen.findByText(/rollback: gateway said no/)).toBeInTheDocument()
+  })
+
+  it('clears the selection via the bulk Clear button', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    fireEvent.click(screen.getByLabelText('select all agents'))
+    // BulkActionBar is visible while there is a selection.
+    expect(screen.getByRole('region', { name: 'bulk override' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(
+      screen.queryByRole('region', { name: 'bulk override' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('sorts the matrix when a column header is clicked', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    const header = screen.getAllByRole('columnheader')[1]
+    fireEvent.click(header)
+    // First click sets a descending sort on that resource column.
+    expect(header).toHaveAttribute('aria-sort', 'descending')
+  })
+
+  it('closes the cell inspect drawer', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    const cell = screen
+      .getAllByRole('gridcell')
+      .find((c) => c.getAttribute('data-decision') !== 'na')!
+    fireEvent.click(cell)
+    await screen.findByRole('dialog', { name: 'capability cell inspect' })
+    fireEvent.click(screen.getByLabelText('close drawer'))
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'capability cell inspect' }),
+      ).not.toBeInTheDocument(),
+    )
+  })
 })
