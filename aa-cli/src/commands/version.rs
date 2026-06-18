@@ -208,6 +208,27 @@ mod tests {
     }
 
     #[test]
+    fn exit_code_failure_when_unreachable() {
+        // The CI contract requires a non-zero exit when the gateway/api
+        // health probe fails; success must map to a zero exit.
+        assert_eq!(
+            format!("{:?}", exit_code_for(false)),
+            format!("{:?}", ExitCode::FAILURE),
+        );
+        assert_eq!(format!("{:?}", exit_code_for(true)), format!("{:?}", ExitCode::SUCCESS),);
+    }
+
+    #[test]
+    fn health_info_parses_healthz_body_without_api_version() {
+        // The gateway `/healthz` body carries `version` but no
+        // `api_version`; deserialization must succeed and leave it absent.
+        let body = r#"{"mode":"local","version":"0.0.1","storage":"memory","uptime_secs":3}"#;
+        let info: HealthInfo = serde_json::from_str(body).expect("healthz body must parse");
+        assert_eq!(info.version, "0.0.1");
+        assert_eq!(info.api_version, None);
+    }
+
+    #[test]
     fn json_output_unreachable_shows_dash() {
         let rows = unreachable_version_rows();
         let json = serde_json::to_string_pretty(&rows).unwrap();
