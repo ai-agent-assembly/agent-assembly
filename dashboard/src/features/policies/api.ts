@@ -38,7 +38,7 @@ interface OptimisticContext {
  * the YAML is empty or doesn't have a metadata.name line.
  */
 function nameFromYaml(yaml: string): string {
-  const match = yaml.match(/^\s*name:\s*"?([^"\n]+)"?/m)
+  const match = /^\s*name:\s*"?([^"\n]+)"?/m.exec(yaml)
   return match ? match[1].trim() : '(new policy)'
 }
 

@@ -42,7 +42,7 @@ export async function alertsFetch<T>(
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...authHeader(),
-    ...((init.headers as Record<string, string>) ?? {}),
+    ...(init.headers as Record<string, string> | undefined),
   }
   if (init.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
@@ -62,11 +62,11 @@ function buildAlertsQueryString(filters: AlertFilters): string {
   filters.severities.forEach((s) => sp.append('severity', s))
   filters.statuses.forEach((s) => sp.append('status', s))
   if (filters.agentQuery.trim()) sp.set('agent', filters.agentQuery.trim())
-  if (filters.timeRange !== 'custom') {
-    sp.set('range', filters.timeRange)
-  } else {
+  if (filters.timeRange === 'custom') {
     if (filters.customFrom) sp.set('from', filters.customFrom)
     if (filters.customTo) sp.set('to', filters.customTo)
+  } else {
+    sp.set('range', filters.timeRange)
   }
   const qs = sp.toString()
   return qs ? `?${qs}` : ''

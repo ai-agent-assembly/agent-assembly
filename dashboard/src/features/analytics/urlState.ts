@@ -31,9 +31,7 @@ export function encodeFilters(f: FilterParams): URLSearchParams {
 export function decodeFilters(params: URLSearchParams): FilterParams {
   const rawRange = params.get('range') ?? ''
   let range: RangeOption = DEFAULT_RANGE
-  if (isPresetRange(rawRange)) {
-    range = rawRange
-  } else if (isCustomRange(rawRange)) {
+  if (isPresetRange(rawRange) || isCustomRange(rawRange)) {
     range = rawRange
   }
 

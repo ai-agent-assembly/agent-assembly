@@ -32,9 +32,8 @@ async function postOpAction(id: string, action: OpAction): Promise<void> {
   })
   if (!response.ok) {
     const body = await response.text().catch(() => '')
-    throw new Error(
-      `Failed to ${action} op ${id}: ${response.status}${body ? ` — ${body}` : ''}`,
-    )
+    const detail = body ? ` — ${body}` : ''
+    throw new Error(`Failed to ${action} op ${id}: ${response.status}${detail}`)
   }
 }
 

@@ -8,8 +8,8 @@ import type { AgentHealth } from './useFleetHealthQuery'
 const SPARKLINE_COLOR = CHART_CATEGORICAL_PALETTE[0]
 
 function currentScore(agent: AgentHealth): number {
-  if (agent.points.length === 0) return 0
-  return agent.points[agent.points.length - 1].score
+  const last = agent.points.at(-1)
+  return last ? last.score : 0
 }
 
 function scoreBadgeClass(score: number): string {

@@ -45,6 +45,6 @@ export function downloadTraceJson(
   anchor.download = `trace-${agentId}-${sessionId}.json`
   document.body.appendChild(anchor)
   anchor.click()
-  document.body.removeChild(anchor)
+  anchor.remove()
   URL.revokeObjectURL(url)
 }

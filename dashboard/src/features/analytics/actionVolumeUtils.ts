@@ -10,5 +10,5 @@ export function transformSeries(series: ActionVolumeSeries[]): ChartRow[] {
       rowMap.get(pt.t)![s.key] = pt.value
     }
   }
-  return Array.from(rowMap.values()).sort((a, b) => (a['t'] as number) - (b['t'] as number))
+  return Array.from(rowMap.values()).sort((a, b) => a['t'] - b['t'])
 }

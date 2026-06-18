@@ -89,8 +89,7 @@ function deriveDescription(rule: RuleDraft): string {
   if (rule.exceptions && rule.exceptions.length > 0) {
     parts.push(`except [${rule.exceptions.join(', ')}]`)
   }
-  parts.push(`window: ${rule.timeWindow}`)
-  parts.push(`severity: ${rule.severity}`)
+  parts.push(`window: ${rule.timeWindow}`, `severity: ${rule.severity}`)
   return parts.join(' · ')
 }
 
