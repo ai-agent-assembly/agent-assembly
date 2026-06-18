@@ -790,7 +790,15 @@ impl PolicyServiceImpl {
             .map(|reg_lineage| Lineage {
                 org_id: reg_lineage.org_id,
                 team_id: reg_lineage.team_id,
-                ..Lineage::default()
+                // AAASM-3377 — carry the full delegation lineage now sourced by
+                // `AgentRegistry::lineage()` so a child agent's audit entry no
+                // longer drops root / parent / depth / delegation_reason /
+                // spawned_by_tool.
+                root_agent_id: reg_lineage.root_agent_id.map(AgentId::from_bytes),
+                parent_agent_id: reg_lineage.parent_agent_id.map(AgentId::from_bytes),
+                depth: reg_lineage.depth,
+                delegation_reason: reg_lineage.delegation_reason,
+                spawned_by_tool: reg_lineage.spawned_by_tool,
             })
             .unwrap_or_default();
 
