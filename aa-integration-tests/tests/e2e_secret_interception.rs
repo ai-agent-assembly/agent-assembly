@@ -570,6 +570,7 @@ mod proxy_data_path {
             credential_action,
             upstream_override: Some(upstream_override),
             gateway_endpoint: None,
+            mcp_fail_open: false,
             // Dials are redirected via `upstream_override` to a loopback mock,
             // so the SSRF guard stays fully active for the public CONNECT host.
             allow_private_connect_targets: false,
