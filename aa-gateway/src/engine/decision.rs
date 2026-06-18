@@ -476,6 +476,29 @@ mod tests {
         assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
     }
 
+    #[test]
+    fn stage_network_allowlisted_host_with_port_allows() {
+        // AAASM-3350: the gateway builds URLs as `proto://host:port`. A bare
+        // allowlist entry must still match once the port is stripped.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_host_with_port_allows() {
+        // AAASM-3350: port stripping must also let wildcard entries match.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_non_allowlisted_host_with_port_denies() {
+        // AAASM-3350: stripping the port must not let a non-allowlisted host through.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net:8443/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
     // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────
 
     fn doc_with_schedule(tz: &str, start: &str, end: &str) -> PolicyDocument {
