@@ -1273,6 +1273,21 @@ impl PolicyEngine {
         Arc::clone(&self.budget)
     }
 
+    /// Return the primary policy's network allowlist (bare hosts).
+    ///
+    /// Used by the anomaly detector's unknown-external-connection check
+    /// (AAASM-3378) so it can flag `NetworkRequest`s to hosts outside the
+    /// configured allowlist. An empty result means no allowlist is configured
+    /// (open network policy) and the detector treats every host as allowed.
+    pub fn network_allowlist(&self) -> Vec<String> {
+        self.policy
+            .load()
+            .network
+            .as_ref()
+            .map(|np| np.allowlist.clone())
+            .unwrap_or_default()
+    }
+
     /// Return per-policy approval escalation overrides from the primary policy.
     ///
     /// Returns `(escalation_timeout_seconds_override, escalation_role_override)`.
