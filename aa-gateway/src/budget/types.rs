@@ -31,6 +31,44 @@ pub enum Model {
     CommandR,
 }
 
+impl Model {
+    /// Infer the `(Provider, Model)` pair from a free-form model name string.
+    ///
+    /// AAASM-3353 — the live `CheckAction` proto (`LlmCallContext`) carries only
+    /// the model name string; it does NOT carry a provider field. Rather than
+    /// change `proto/` (out of scope), the provider is inferred here from the
+    /// model name. The match is a case-insensitive substring test against the
+    /// known model families, ordered most-specific-first so that e.g.
+    /// `gpt-4o-2024-08-06` maps to `Gpt4o` (not `Gpt4`) and
+    /// `command-r-plus` maps to `CommandRPlus` (not `CommandR`).
+    ///
+    /// Returns `None` for an unrecognised model name — the caller treats an
+    /// unknown model as zero cost (no spend accrued) rather than guessing.
+    pub fn infer_from_name(name: &str) -> Option<(Provider, Self)> {
+        let n = name.to_ascii_lowercase();
+        // Most-specific patterns first; substrings of others must come earlier.
+        if n.contains("gpt-4o") || n.contains("gpt4o") {
+            Some((Provider::OpenAi, Model::Gpt4o))
+        } else if n.contains("gpt-3.5") || n.contains("gpt35") || n.contains("gpt-35") {
+            Some((Provider::OpenAi, Model::Gpt35Turbo))
+        } else if n.contains("gpt-4") || n.contains("gpt4") {
+            Some((Provider::OpenAi, Model::Gpt4))
+        } else if n.contains("opus") {
+            Some((Provider::Anthropic, Model::Claude3Opus))
+        } else if n.contains("sonnet") {
+            Some((Provider::Anthropic, Model::Claude3Sonnet))
+        } else if n.contains("haiku") {
+            Some((Provider::Anthropic, Model::Claude3Haiku))
+        } else if n.contains("command-r-plus") || n.contains("command-r+") {
+            Some((Provider::Cohere, Model::CommandRPlus))
+        } else if n.contains("command-r") {
+            Some((Provider::Cohere, Model::CommandR))
+        } else {
+            None
+        }
+    }
+}
+
 /// Discriminates which budget window a limit or check applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BudgetKind {
