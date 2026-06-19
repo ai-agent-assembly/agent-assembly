@@ -258,6 +258,7 @@ dependencies = [
  "aa-core",
  "aa-proto",
  "aa-runtime",
+ "aa-sdk-client",
  "aa-security",
  "aa-storage-postgres",
  "ahash 0.8.12",
@@ -462,7 +463,9 @@ version = "0.0.1-beta.2"
 dependencies = [
  "aa-proto",
  "aa-security",
+ "bs58",
  "prost",
+ "sha2 0.11.0",
  "tokio",
  "tracing",
 ]

@@ -14,7 +14,10 @@ description = "Shared SDK runtime-client for Agent Assembly — UDS transport, I
 aa-proto = { path = "../aa-proto" }
 # Advisory preflight only — pulled in by the `preflight` feature (default on).
 aa-security = { path = "../aa-security", optional = true }
+# did:key derivation for gateway registration identity (AAASM-3387).
+bs58 = "0.5"
 prost = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
 tracing = { workspace = true }
 

@@ -221,6 +221,46 @@ async fn register_with_non_did_agent_id_returns_invalid_argument() {
     );
 }
 
+/// AAASM-3387 regression: a plain agent identifier run through the shared SDK
+/// client's `did:key` derivation is ACCEPTED by the live Register RPC. This is
+/// the end-to-end proof that SDK-originated registration succeeds against the
+/// gateway's did:key validation (the broken example→live-core path).
+#[tokio::test]
+async fn register_with_sdk_derived_did_key_is_accepted() {
+    let (addr, _registry) = start_server().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+
+    // A human-readable agent_id of the kind SDKs configure today — which the
+    // gateway rejects verbatim — converted via the shared SDK derivation.
+    let plain_agent_id = "my-agent-001";
+    let did = aa_sdk_client::agent_id_to_did_key(plain_agent_id);
+    assert!(did.starts_with("did:key:z"), "derived DID must be a did:key, got {did}");
+
+    let resp = client
+        .register(RegisterRequest {
+            agent_id: Some(ProtoAgentId {
+                org_id: "org-test".into(),
+                team_id: "team-test".into(),
+                agent_id: did,
+            }),
+            name: "sdk-derived-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: test_ed25519_public_key_hex(),
+            metadata: Default::default(),
+            ..Default::default()
+        })
+        .await
+        .expect("SDK-derived did:key must be accepted by Register")
+        .into_inner();
+
+    assert!(!resp.credential_token.is_empty());
+}
+
 #[tokio::test]
 async fn heartbeat_with_wrong_token_returns_unauthenticated() {
     let (addr, _registry) = start_server().await;

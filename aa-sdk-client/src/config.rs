@@ -35,6 +35,17 @@ impl AssemblyConfig {
 
         PathBuf::from(format!("/tmp/aa-runtime-{}.sock", self.agent_id))
     }
+
+    /// Return the agent identity to send on gateway registration.
+    ///
+    /// The gateway's `AgentLifecycleService.Register` rejects a plain
+    /// `agent_id`; it must be a `did:key` DID. This derives a conformant
+    /// `did:key` from the configured `agent_id` (passing through an
+    /// already-`did:key` identifier unchanged). The socket-path / event-tag
+    /// `agent_id` is intentionally left as-is.
+    pub fn registration_did(&self) -> String {
+        crate::identity::agent_id_to_did_key(&self.agent_id)
+    }
 }
 
 #[cfg(test)]
