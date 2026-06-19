@@ -423,6 +423,62 @@ mod tests {
         }
     }
 
+    /// Test-only seam: set the stored credential token without a live gateway.
+    /// The end-to-end registered path is covered by the with-core gateway test.
+    impl AssemblyClient {
+        fn set_credential_token_for_test(&self, token: &str) {
+            *self.credential_token.lock().unwrap() = Some(token.to_string());
+        }
+    }
+
+    #[test]
+    fn query_policy_attaches_stored_credential_token() {
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_credential_token_for_test("tok-abc");
+
+        // Run query_policy on a thread and answer it from the test thread so the
+        // blocking recv_timeout does not deadlock.
+        let handle = std::thread::spawn(move || {
+            client.query_policy(CheckActionRequest::default()).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(request.credential_token, "tok-abc");
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn query_policy_keeps_explicit_credential_token() {
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_credential_token_for_test("stored-tok");
+
+        let explicit = CheckActionRequest {
+            credential_token: "explicit-tok".to_string(),
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            client.query_policy(explicit).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(request.credential_token, "explicit-tok");
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
     #[cfg(feature = "preflight")]
     #[test]
     fn report_event_with_preflight_disabled_passes_details_through() {
