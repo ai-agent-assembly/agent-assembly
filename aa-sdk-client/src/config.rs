@@ -22,6 +22,14 @@ pub struct AssemblyConfig {
     /// Explicit gateway gRPC endpoint override (e.g. `"http://127.0.0.1:50051"`).
     /// When `None`, resolved from env or [`DEFAULT_GATEWAY_ENDPOINT`].
     pub gateway_endpoint: Option<String>,
+    /// Team the agent belongs to. Forwarded on gateway registration as the
+    /// `team_id` of the composite `AgentId` so the gateway can attribute the
+    /// agent's spend to the correct team budget. `None` leaves it unset.
+    pub team_id: Option<String>,
+    /// UUID of the parent agent that spawned this one. Forwarded on gateway
+    /// registration so the gateway can build the topology / delegation graph.
+    /// `None` marks the agent as a root agent.
+    pub parent_agent_id: Option<String>,
 }
 
 impl AssemblyConfig {
@@ -92,6 +100,8 @@ mod tests {
             agent_id: agent_id.to_string(),
             socket_path: socket_path.map(|s| s.to_string()),
             gateway_endpoint: None,
+            team_id: None,
+            parent_agent_id: None,
         }
     }
 
@@ -118,6 +128,8 @@ mod tests {
             agent_id: "a".into(),
             socket_path: None,
             gateway_endpoint: Some("http://gw.example:50051".into()),
+            team_id: None,
+            parent_agent_id: None,
         };
         assert_eq!(config.resolve_gateway_endpoint(), "http://gw.example:50051");
     }
