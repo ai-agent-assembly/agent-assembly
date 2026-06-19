@@ -157,6 +157,9 @@ pub enum LocalStateError {
     /// Constructing the audit writer over the local audit directory failed.
     #[error("failed to start local audit writer: {0}")]
     Audit(String),
+    /// `AA_RATE_LIMIT_RPM` was set to an invalid (non-`u32`) value.
+    #[error("invalid AA_RATE_LIMIT_RPM: {0}")]
+    RateLimit(String),
 }
 
 /// Resolved authentication posture for the local single-process entrypoint
@@ -392,6 +395,20 @@ impl AppState {
         use std::sync::atomic::AtomicUsize;
 
         let mut state = Self::local_in_memory()?;
+
+        // --- Rate limiting: honour AA_RATE_LIMIT_RPM in the live limiter. ---
+        // `local_in_memory` hard-codes 1000; the shipped binary resolves the
+        // operator-configured limit here so the live `rate_limiter` (and the
+        // advertised `auth_config.rate_limit_rpm`) reflect the env (AAASM-3441).
+        let rate_limit_rpm =
+            crate::auth::config::resolve_rate_limit_rpm().map_err(|e| LocalStateError::RateLimit(format!("{e}")))?;
+        state.rate_limiter = Arc::new(RateLimiter::new(rate_limit_rpm));
+        state.auth_config = Arc::new(AuthConfig {
+            mode: state.auth_config.mode,
+            jwt_secret: state.auth_config.jwt_secret.clone(),
+            api_keys_path: state.auth_config.api_keys_path.clone(),
+            rate_limit_rpm,
+        });
 
         // --- Auth: require an API key unless explicitly opted out. ---
         match &auth {
