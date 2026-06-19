@@ -40,15 +40,21 @@ impl LiveGateway {
     /// (`"127.0.0.1:<port>"`). Waits up to 30 s for the listener to
     /// accept TCP connections.
     pub fn spawn() -> Result<Self> {
+        Self::spawn_with_policy(
+            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  budget:\n    daily_limit_usd: 1000.0\n",
+        )
+    }
+
+    /// Spawn `aa-gateway` exactly as [`spawn`](Self::spawn) but with a
+    /// caller-supplied policy YAML body. Used by the AAASM-3430 regression
+    /// test, which needs a section-based tool-deny policy so the gateway
+    /// returns a real `Deny` for a deny-listed tool.
+    pub fn spawn_with_policy(policy_yaml: &str) -> Result<Self> {
         let bin = locate_gateway_binary().context("locating aa-gateway binary for LiveGateway::spawn")?;
         let home_tmp = tempfile::tempdir().context("creating HOME tempdir")?;
         let policy_tmp = tempfile::tempdir().context("creating policy tempdir")?;
         let policy_path = policy_tmp.path().join("policy.yaml");
-        std::fs::write(
-            &policy_path,
-            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  budget:\n    daily_limit_usd: 1000.0\n",
-        )
-        .context("writing minimal policy YAML")?;
+        std::fs::write(&policy_path, policy_yaml).context("writing policy YAML")?;
 
         let port = free_port().context("picking a free TCP port")?;
         let addr = format!("127.0.0.1:{port}");
