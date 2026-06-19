@@ -67,6 +67,10 @@ aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # driver's own embedded MIGRATOR so the gateway can never drift from the
 # canonical MVP schema (AAASM-2389).
 aa-storage-postgres = { path = "../aa-storage-postgres" }
+# End-to-end proof that an SDK-derived did:key identity is accepted by the
+# live AgentLifecycleService.Register RPC (AAASM-3387). Default features off
+# to avoid pulling the advisory-preflight (aa-security) dependency.
+aa-sdk-client = { path = "../aa-sdk-client", default-features = false }
 criterion    = { workspace = true, features = ["async_tokio"] }
 proptest     = { workspace = true }
 tempfile     = { workspace = true }
