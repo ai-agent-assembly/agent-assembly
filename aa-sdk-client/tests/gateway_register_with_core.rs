@@ -152,6 +152,8 @@ async fn register_then_check_carries_token_and_surfaces_deny() {
         agent_id: "with-core-agent".to_string(),
         socket_path: None,
         gateway_endpoint: Some(endpoint.clone()),
+        team_id: None,
+        parent_agent_id: None,
     };
 
     // 1) Register directly against the mock gateway — issues + stores the token.
