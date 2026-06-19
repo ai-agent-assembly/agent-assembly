@@ -41,4 +41,39 @@ impl GatewayClient {
             client: PolicyServiceClient::new(channel),
         }
     }
+
+    /// Build a client over a **lazy** channel to an owned `endpoint` without
+    /// connecting eagerly (AAASM-3430).
+    ///
+    /// Used by the runtime when the gateway endpoint is configured but the
+    /// initial eager [`connect`](Self::connect) fails: the runtime must not
+    /// silently fall back to permissive local evaluation. A lazy client lets
+    /// the pipeline's fail-closed path (AAASM-3110) deny checks while the
+    /// gateway is unreachable, and recover automatically once it comes up.
+    ///
+    /// Returns `None` if `endpoint` is not a valid URI.
+    pub fn connect_lazy_owned(endpoint: &str) -> Option<Self> {
+        let channel = Channel::from_shared(endpoint.to_string()).ok()?.connect_lazy();
+        Some(Self {
+            client: PolicyServiceClient::new(channel),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_lazy_owned_accepts_valid_uri() {
+        // `connect_lazy` requires a tokio reactor in scope.
+        assert!(GatewayClient::connect_lazy_owned("http://127.0.0.1:50051").is_some());
+    }
+
+    #[test]
+    fn connect_lazy_owned_rejects_invalid_uri() {
+        // An empty endpoint is not a valid URI and must not yield a client —
+        // the runtime must surface None rather than degrade to local allow.
+        assert!(GatewayClient::connect_lazy_owned("").is_none());
+    }
 }

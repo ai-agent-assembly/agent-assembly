@@ -349,6 +349,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "moka",
  "portpicker",
+ "prost",
  "reqwest 0.12.28",
  "rstest",
  "rust_decimal",
