@@ -252,6 +252,14 @@ mod tests {
     }
 
     #[test]
+    fn is_blocking_only_for_block_and_quarantine() {
+        assert!(AnomalyResponse::Block.is_blocking());
+        assert!(AnomalyResponse::Quarantine.is_blocking());
+        assert!(!AnomalyResponse::Pause.is_blocking());
+        assert!(!AnomalyResponse::Alert.is_blocking());
+    }
+
+    #[test]
     fn anomaly_event_stores_fields() {
         use aa_core::AgentId;
         let event = AnomalyEvent {

