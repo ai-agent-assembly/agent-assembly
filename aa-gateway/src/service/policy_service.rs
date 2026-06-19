@@ -801,49 +801,6 @@ impl PolicyServiceImpl {
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
-        // AAASM-3376 — the session_id stored on the entry is SHA256(trace_id)[:16],
-        // which is one-way: the raw trace_id and the per-action span_id are lost
-        // once the entry is persisted. Carry both in the payload JSON so they
-        // survive to the JSONL log / DB and let `/api/v1/traces/{trace_id}`
-        // reconstruct spans. (A first-class column on `AuditEntry` is the proto /
-        // core-type follow-up — see PR body.)
-        let trace_id_str: Option<&str> = (!req.trace_id.is_empty()).then_some(req.trace_id.as_str());
-        let span_id_str: Option<&str> = (!req.span_id.is_empty()).then_some(req.span_id.as_str());
-        let payload = match shadow {
-            Some(s) => serde_json::json!({
-                "action_type": req.action_type,
-                "decision": response.decision,
-                "reason": &response.reason,
-                "policy_rule": &response.policy_rule,
-                "latency_us": response.decision_latency_us,
-                "dry_run": true,
-                "shadow_decision": &s.shadow_decision,
-                "shadow_reason": &s.reason,
-                "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
-                "trace_id": trace_id_str,
-                "span_id": span_id_str,
-            }),
-            None => serde_json::json!({
-                "action_type": req.action_type,
-                "decision": response.decision,
-                "reason": &response.reason,
-                "policy_rule": &response.policy_rule,
-                "latency_us": response.decision_latency_us,
-                "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
-                "trace_id": trace_id_str,
-                "span_id": span_id_str,
-            }),
-        }
-        .to_string();
-
-        let mut last_hash = self.last_hash.lock().await;
-
-        // When the credential scanner produced findings, attach them (and the
-        // redacted payload) to the audit entry via the redaction-aware constructor.
-        // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
-        // never reach the audit pipeline.
         // AAASM-2008 — resolve the agent's org_id from the registry so the
         // audit entry carries it in the Lineage. Lets `/api/v1/logs?org_id=…`
         // and `aasm audit compliance-export` filter by tenant. Falls back to
@@ -868,6 +825,74 @@ impl PolicyServiceImpl {
             })
             .unwrap_or_default();
 
+        // AAASM-3377 — the lineage above is persisted as top-level `AuditEntry`
+        // fields, but consumers that read only the inner `payload` JSON (e.g.
+        // `/api/v1/logs`, JSONL replay tooling) never saw the delegation chain.
+        // Mirror the delegation lineage into the payload — alongside org/team —
+        // so a child agent's persisted JSONL `payload` carries root / parent /
+        // depth / delegation_reason / spawned_by_tool. Hex-encode the AgentId
+        // fields so the payload value is a stable, human-readable string rather
+        // than the raw byte array the top-level field serializes to.
+        let root_agent_id_hex = lineage.root_agent_id.map(|id| hex::encode(id.as_bytes()));
+        let parent_agent_id_hex = lineage.parent_agent_id.map(|id| hex::encode(id.as_bytes()));
+
+        // AAASM-3376 — the session_id stored on the entry is SHA256(trace_id)[:16],
+        // which is one-way: the raw trace_id and the per-action span_id are lost
+        // once the entry is persisted. Carry both in the payload JSON so they
+        // survive to the JSONL log / DB and let `/api/v1/traces/{trace_id}`
+        // reconstruct spans. (A first-class column on `AuditEntry` is the proto /
+        // core-type follow-up — see PR body.)
+        let trace_id_str: Option<&str> = (!req.trace_id.is_empty()).then_some(req.trace_id.as_str());
+        let span_id_str: Option<&str> = (!req.span_id.is_empty()).then_some(req.span_id.as_str());
+        let payload = match shadow {
+            Some(s) => serde_json::json!({
+                "action_type": req.action_type,
+                "decision": response.decision,
+                "reason": &response.reason,
+                "policy_rule": &response.policy_rule,
+                "latency_us": response.decision_latency_us,
+                "dry_run": true,
+                "shadow_decision": &s.shadow_decision,
+                "shadow_reason": &s.reason,
+                "caller_agent_id": caller_agent_id_str,
+                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
+                "org_id": &lineage.org_id,
+                "team_id": &lineage.team_id,
+                "root_agent_id": &root_agent_id_hex,
+                "parent_agent_id": &parent_agent_id_hex,
+                "depth": lineage.depth,
+                "delegation_reason": &lineage.delegation_reason,
+                "spawned_by_tool": &lineage.spawned_by_tool,
+            }),
+            None => serde_json::json!({
+                "action_type": req.action_type,
+                "decision": response.decision,
+                "reason": &response.reason,
+                "policy_rule": &response.policy_rule,
+                "latency_us": response.decision_latency_us,
+                "caller_agent_id": caller_agent_id_str,
+                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
+                "org_id": &lineage.org_id,
+                "team_id": &lineage.team_id,
+                "root_agent_id": &root_agent_id_hex,
+                "parent_agent_id": &parent_agent_id_hex,
+                "depth": lineage.depth,
+                "delegation_reason": &lineage.delegation_reason,
+                "spawned_by_tool": &lineage.spawned_by_tool,
+            }),
+        }
+        .to_string();
+
+        let mut last_hash = self.last_hash.lock().await;
+
+        // When the credential scanner produced findings, attach them (and the
+        // redacted payload) to the audit entry via the redaction-aware constructor.
+        // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
+        // never reach the audit pipeline.
         let entry = if eval.credential_findings.is_empty() {
             AuditEntry::new_with_lineage(
                 seq,
