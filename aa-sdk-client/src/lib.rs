@@ -29,6 +29,7 @@ pub mod client;
 pub mod codec;
 pub mod config;
 pub mod error;
+pub mod identity;
 pub mod ipc;
 #[cfg(feature = "preflight")]
 pub mod preflight;
@@ -36,5 +37,6 @@ pub mod preflight;
 pub use client::AssemblyClient;
 pub use config::AssemblyConfig;
 pub use error::SdkClientError;
+pub use identity::agent_id_to_did_key;
 #[cfg(feature = "preflight")]
 pub use preflight::Preflight;
