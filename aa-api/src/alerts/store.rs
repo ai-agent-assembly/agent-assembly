@@ -106,6 +106,22 @@ impl AlertStore for InMemoryAlertStore {
         id
     }
 
+    fn record_anomaly(&self, event: &aa_gateway::anomaly::AnomalyEvent) -> String {
+        let id = self.next_id();
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = super::stored_anomaly_alert_from(event, id.clone(), timestamp);
+
+        {
+            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
+        }
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
+        id
+    }
+
     fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String {
         let id = self.next_id();
         let timestamp = chrono::Utc::now().to_rfc3339();

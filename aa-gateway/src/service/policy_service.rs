@@ -1197,15 +1197,17 @@ impl PolicyServiceImpl {
     /// 4. On a detection, execute [`AnomalyResponder::respond`] (logs the
     ///    response action) and broadcast the [`AnomalyEvent`] so subscribers
     ///    (and tests) observe the live detection.
-    fn maybe_detect_anomaly(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
-        let Some(hook) = self.anomaly.as_ref() else {
-            return;
-        };
+    ///
+    /// Returns the detected [`AnomalyEvent`] (if any) so the caller can enforce
+    /// a block-equivalent response as a hard `Deny` (AAASM-3384). Returns `None`
+    /// when no hook is attached or no anomaly fired.
+    fn maybe_detect_anomaly(&self, req: &CheckActionRequest, eval: &EvaluationResult) -> Option<AnomalyEvent> {
+        let hook = self.anomaly.as_ref()?;
         let (ctx, action) = match convert::request_to_core(req) {
             Ok(pair) => pair,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to rebuild ctx for anomaly detection");
-                return;
+                return None;
             }
         };
         let agent_id = ctx.agent_id;
@@ -1226,11 +1228,57 @@ impl PolicyServiceImpl {
 
         let has_pii = !eval.credential_findings.is_empty();
         let allowlist = self.engine.network_allowlist();
-        if let Some(event) = hook.detector.detect(agent_id, &action, has_pii, &allowlist, None) {
-            AnomalyResponder::respond(&event);
-            if let Err(err) = hook.event_tx.send(event) {
-                tracing::trace!(error = %err, "no subscribers for AnomalyEvent broadcast");
-            }
+        let event = hook.detector.detect(agent_id, &action, has_pii, &allowlist, None)?;
+        AnomalyResponder::respond(&event);
+        if let Err(err) = hook.event_tx.send(event.clone()) {
+            tracing::trace!(error = %err, "no subscribers for AnomalyEvent broadcast");
+        }
+        Some(event)
+    }
+
+    /// AAASM-3384 — turn a block-equivalent anomaly detection into a hard
+    /// `Deny` on an otherwise-allowed action.
+    ///
+    /// Detection previously only logged + broadcast; a `Block` (or
+    /// `Quarantine`) outcome did not actually stop the action. This applies the
+    /// responder's enforcement intent to the live `CheckAction` response: if a
+    /// blocking anomaly fired and the current decision is `Allow`, the response
+    /// is rewritten to `Deny` with a clear, operator-readable reason.
+    ///
+    /// Non-Allow responses (already Deny / Redact / Pending) are left untouched
+    /// — the action is already governed, and we never weaken an existing
+    /// decision. Returns the (possibly rewritten) response.
+    fn enforce_anomaly_block(
+        &self,
+        response: CheckActionResponse,
+        event: Option<&AnomalyEvent>,
+    ) -> CheckActionResponse {
+        let Some(event) = event else {
+            return response;
+        };
+        if !event.response.is_blocking() {
+            return response;
+        }
+        if response.decision != aa_proto::assembly::common::v1::Decision::Allow as i32 {
+            return response;
+        }
+        let reason = format!(
+            "anomaly detected ({:?}): {} — blocked by anomaly responder",
+            event.anomaly_type, event.description
+        );
+        tracing::warn!(
+            anomaly_type = ?event.anomaly_type,
+            response = ?event.response,
+            reason = %reason,
+            "enforcing anomaly block: rewriting Allow → Deny"
+        );
+        CheckActionResponse {
+            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+            reason,
+            policy_rule: "anomaly_detection".to_string(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: response.decision_latency_us,
         }
     }
 
@@ -1345,6 +1393,12 @@ impl PolicyService for PolicyServiceImpl {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
 
+        // AAASM-3378 / AAASM-3384: run the live anomaly detector over the
+        // evaluated action, then enforce a block-equivalent detection as a hard
+        // Deny before the ops transition / audit observe the final decision.
+        let anomaly_event = self.maybe_detect_anomaly(&req, &eval);
+        let response = self.enforce_anomaly_block(response, anomaly_event.as_ref());
+
         // AAASM-1422 / AAASM-1657: transition the registry op to match the
         // final policy decision. Allow → Running, Deny → Terminated.
         // RequiresApproval is handled by the approval queue path above and
@@ -1379,9 +1433,6 @@ impl PolicyService for PolicyServiceImpl {
         // AAASM-3353: accrue LLM-call cost so daily / monthly budget limits fire.
         self.maybe_accrue_llm_spend(&req, &response);
 
-        // AAASM-3378: run the live anomaly detector over the evaluated action.
-        self.maybe_detect_anomaly(&req, &eval);
-
         // Fire-and-forget audit entry — never blocks the response.
         self.record_audit(&req, &response, &eval, shadow_event.as_ref()).await;
 
@@ -1411,11 +1462,13 @@ impl PolicyService for PolicyServiceImpl {
             } else {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
+            // AAASM-3378 / AAASM-3384: detect + enforce a block-equivalent
+            // anomaly as a hard Deny in batch mode too.
+            let anomaly_event = self.maybe_detect_anomaly(req, &eval);
+            let resp = self.enforce_anomaly_block(resp, anomaly_event.as_ref());
             self.maybe_suspend_agent(req, deny_action).await;
             // AAASM-3353: accrue LLM-call cost so budget limits fire in batch mode too.
             self.maybe_accrue_llm_spend(req, &resp);
-            // AAASM-3378: run the live anomaly detector in batch mode too.
-            self.maybe_detect_anomaly(req, &eval);
             self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
         }

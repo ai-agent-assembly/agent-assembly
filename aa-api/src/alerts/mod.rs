@@ -16,6 +16,7 @@ pub mod store;
 pub use event::AlertEvent;
 
 use aa_gateway::alerts::SecretAlert;
+use aa_gateway::anomaly::{AnomalyEvent, AnomalyResponse};
 use aa_gateway::budget::types::BudgetAlert;
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -125,6 +126,11 @@ pub enum AlertCategory {
     /// Alert produced by the rule engine — carries `rule_context` with
     /// the rule snapshot, routing log, and dedup state (AAASM-1385).
     Rule,
+    /// Behavioral anomaly detected by the gateway's anomaly engine
+    /// (AAASM-3384). Surfaces detections such as child-process execution,
+    /// credential-leak attempts, and behavior spikes through the public
+    /// alerts API alongside budget and secret alerts.
+    Anomaly,
 }
 
 impl std::fmt::Display for AlertCategory {
@@ -133,6 +139,7 @@ impl std::fmt::Display for AlertCategory {
             AlertCategory::Budget => write!(f, "budget"),
             AlertCategory::SecretDetected => write!(f, "secret_detected"),
             AlertCategory::Rule => write!(f, "rule"),
+            AlertCategory::Anomaly => write!(f, "anomaly"),
         }
     }
 }
@@ -203,6 +210,61 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         updated_at: None,
         detected_pattern_type: Some(kind.as_str().to_string()),
         redacted_value: Some(alert.redacted_label()),
+        first_fired_at: timestamp,
+        resolved_at: None,
+        rule_context: None,
+        rule_snapshot: None,
+    }
+}
+
+/// Map an [`AnomalyResponse`] to the public [`AlertSeverity`] used for
+/// anomaly alerts (AAASM-3384).
+///
+/// Block / Quarantine outcomes actually stop the action, so they surface as
+/// `Critical`; `Pause` (suspend the agent) is a `Warning`; `Alert` (notify
+/// only) is informational.
+pub fn severity_from_anomaly_response(response: AnomalyResponse) -> AlertSeverity {
+    match response {
+        AnomalyResponse::Block | AnomalyResponse::Quarantine => AlertSeverity::Critical,
+        AnomalyResponse::Pause => AlertSeverity::Warning,
+        AnomalyResponse::Alert => AlertSeverity::Info,
+    }
+}
+
+/// Build a human-readable message for an [`AnomalyEvent`].
+fn build_anomaly_alert_message(event: &AnomalyEvent) -> String {
+    format!(
+        "Anomaly detected ({:?}) for agent {}: {} [response: {:?}]",
+        event.anomaly_type,
+        format_agent_id(&event.agent_id),
+        event.description,
+        event.response,
+    )
+}
+
+/// Convert an [`AnomalyEvent`] into a [`StoredAlert`] with the given ID and
+/// timestamp (AAASM-3384). Severity is derived from the anomaly's response
+/// action; the category is [`AlertCategory::Anomaly`].
+///
+/// Security invariant: the event carries only an anomaly classification and a
+/// description — no raw payload bytes — so nothing sensitive is stored here.
+pub fn stored_anomaly_alert_from(event: &AnomalyEvent, id: String, timestamp: String) -> StoredAlert {
+    StoredAlert {
+        id,
+        severity: severity_from_anomaly_response(event.response),
+        category: AlertCategory::Anomaly,
+        message: build_anomaly_alert_message(event),
+        agent_id: format_agent_id(&event.agent_id),
+        team_id: None,
+        timestamp: timestamp.clone(),
+        threshold_pct: 0,
+        spent_usd: 0.0,
+        limit_usd: 0.0,
+        status: "unresolved".to_string(),
+        prior_status: None,
+        updated_at: None,
+        detected_pattern_type: Some(format!("{:?}", event.anomaly_type)),
+        redacted_value: None,
         first_fired_at: timestamp,
         resolved_at: None,
         rule_context: None,
@@ -366,6 +428,13 @@ pub trait AlertStore: Send + Sync {
     /// with no window expiry — `dedup_or_record_rule_alert` (AAASM-1627)
     /// is the dedup-aware entry point.
     fn record_rule_alert(&self, seed: &RuleAlertSeed) -> String;
+
+    /// Record a behavioral-anomaly alert (AAASM-3384), returning the
+    /// assigned ULID. The stored alert has `category: AlertCategory::Anomaly`
+    /// and a severity derived from the anomaly's response action. Called by
+    /// `aa-api::alerts::capture::spawn_anomaly_alert_capture` so anomalies
+    /// detected by the gateway surface via `GET /api/v1/alerts`.
+    fn record_anomaly(&self, event: &AnomalyEvent) -> String;
 
     /// Record a rule alert with deduplication.
     ///
