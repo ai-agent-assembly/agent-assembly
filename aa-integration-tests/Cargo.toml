@@ -69,6 +69,7 @@ bytes        = { workspace = true }
 libc        = { workspace = true }
 moka        = { workspace = true, features = ["future"] }
 portpicker  = "0.1"
+prost       = { workspace = true }
 reqwest     = { workspace = true, features = ["json", "rustls-tls"] }
 rustls      = { workspace = true, features = ["ring"] }
 tokio-rustls = { workspace = true }
