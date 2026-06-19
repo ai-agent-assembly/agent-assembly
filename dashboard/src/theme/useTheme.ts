@@ -53,19 +53,19 @@ export interface UseThemeResult {
 }
 
 export function useTheme(): UseThemeResult {
-  const [theme, setThemeState] = useState<Theme>(getInitialTheme)
+  const [activeTheme, setActiveTheme] = useState<Theme>(getInitialTheme)
 
   // Keep the document root in sync with the active theme.
   useEffect(() => {
-    applyTheme(theme)
-  }, [theme])
+    applyTheme(activeTheme)
+  }, [activeTheme])
 
   // Follow OS changes only while the user has NOT made an explicit choice.
   useEffect(() => {
     if (typeof globalThis === 'undefined' || typeof globalThis.matchMedia !== 'function') return
     const mq = globalThis.matchMedia('(prefers-color-scheme: dark)')
     const onChange = (e: MediaQueryListEvent) => {
-      if (readStored() === null) setThemeState(e.matches ? 'dark' : 'light')
+      if (readStored() === null) setActiveTheme(e.matches ? 'dark' : 'light')
     }
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
@@ -77,12 +77,12 @@ export function useTheme(): UseThemeResult {
     } catch {
       /* storage unavailable (private mode) — theme still applies for the session */
     }
-    setThemeState(next)
+    setActiveTheme(next)
   }
 
   return {
-    theme,
+    theme: activeTheme,
     setTheme: persist,
-    toggleTheme: () => persist(theme === 'dark' ? 'light' : 'dark'),
+    toggleTheme: () => persist(activeTheme === 'dark' ? 'light' : 'dark'),
   }
 }
