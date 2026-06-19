@@ -39,10 +39,13 @@ pub fn build_app_with_spa(state: AppState, spa_dist: Option<&std::path::Path>) -
             .nest("/api/v1", routes::v1_router().fallback(routes::fallback_404))
             .merge(aa_gateway::dashboard_server::dashboard_router(dist))
             .with_state(()),
-        // No SPA: unmatched routes (including `/api/v1/*`) return JSON 404 via
-        // the app-level fallback — identical to the original `build_app`.
+        // No SPA: only the `/api/v1/*` surface is exposed and unmatched routes
+        // return JSON 404 via the app-level fallback — identical to the original
+        // `build_app`. `/healthz` is intentionally *not* registered here: the
+        // top-level liveness probe lives in `aa-gateway`, and the
+        // `aa-integration-tests` harness mounts its own `/healthz` on top of
+        // `build_app`. Registering it here would collide with that mount.
         None => Router::new()
-            .route("/healthz", get(routes::health::health))
             .nest("/api/v1", routes::v1_router())
             .fallback(routes::fallback_404)
             .with_state(()),

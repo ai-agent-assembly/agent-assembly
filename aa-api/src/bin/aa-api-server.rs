@@ -17,7 +17,9 @@
 //!   random admin key is generated and printed on startup.
 //! * `AASM_API_AUTH=off` disables auth entirely (every request is admin) — for
 //!   throwaway local development only.
-//! * `/healthz` and `/api/v1/health` are always reachable without a key.
+//! * `/api/v1/health` is always reachable without a key; the top-level
+//!   `/healthz` liveness probe is served alongside the dashboard SPA when a
+//!   `dashboard/dist/` is resolved.
 //!
 //! Audit and retention are backed by a per-process local SQLite store, so
 //! `/api/v1/audit/*`, `/api/v1/logs/*`, and `/api/v1/admin/retention*` return
