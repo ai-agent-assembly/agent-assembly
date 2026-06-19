@@ -9,29 +9,31 @@
 //!
 //! The derivation is **deterministic**: the same input always yields the same
 //! DID, so an agent keeps a stable identity across process restarts without
-//! having to persist a keypair. Bytes are produced by hashing the input with
-//! SHA-256, then wrapped as an Ed25519 `did:key` (multicodec `0xed 0x01`,
-//! base58btc multibase). The resulting DID has the canonical `did:key:z6Mk…`
-//! shape and passes the gateway's syntactic `did:key` validation.
+//! having to persist a keypair. The DID encodes a real Ed25519 verifying key
+//! deterministically derived from the input (see [`crate::keypair`]), wrapped
+//! as an Ed25519 `did:key` (multicodec `0xed 0x01`, base58btc multibase). The
+//! resulting DID has the canonical `did:key:z6Mk…` shape, passes the gateway's
+//! syntactic `did:key` validation, and is bound to the same key the gateway
+//! receives in the `public_key` field at registration (AAASM-3396).
 
-use sha2::{Digest, Sha256};
-
-/// Multicodec prefix for an Ed25519 public key (`0xed`), varint-encoded as
-/// the two bytes `0xed 0x01`. A `did:key` for Ed25519 is the base58btc
-/// multibase encoding of these two bytes followed by the 32-byte key.
-const ED25519_MULTICODEC_PREFIX: [u8; 2] = [0xed, 0x01];
+use crate::keypair::AgentKeypair;
 
 /// Length, in bytes, of an Ed25519 public key.
+#[cfg(test)]
 const ED25519_PUBLIC_KEY_LEN: usize = 32;
+
+/// Multicodec prefix for an Ed25519 public key, used by the tests below.
+#[cfg(test)]
+const ED25519_MULTICODEC_PREFIX: [u8; 2] = [0xed, 0x01];
 
 /// Derive a deterministic, conformant Ed25519 `did:key` DID from a plain agent
 /// identifier.
 ///
 /// The returned string has the shape `did:key:z<base58btc>` where the decoded
-/// multibase value is `[0xed, 0x01]` followed by 32 deterministic bytes derived
-/// from `identity`. This is accepted by the gateway's `did:key` validation,
-/// which checks the `did:key:` prefix, the `z` base58btc multibase marker, and
-/// that the value decodes to non-empty bytes.
+/// multibase value is `[0xed, 0x01]` followed by the 32-byte Ed25519 verifying
+/// key deterministically derived from `identity`. This is accepted by the
+/// gateway's `did:key` validation and binds the DID to the same key that
+/// [`AgentKeypair::public_key_hex`] supplies as the registration `public_key`.
 ///
 /// If `identity` is already a `did:key` DID (it starts with `did:key:`), it is
 /// returned unchanged so callers can pass through an explicitly-provisioned DID.
@@ -40,19 +42,7 @@ pub fn agent_id_to_did_key(identity: &str) -> String {
         return identity.to_string();
     }
 
-    // Derive a stable 32-byte value to stand in for an Ed25519 public key. No
-    // keypair is provisioned at this layer, so the DID identifies the agent by
-    // its configured identifier rather than by a verifiable signing key.
-    let digest = Sha256::digest(identity.as_bytes());
-    let mut key_bytes = [0u8; ED25519_PUBLIC_KEY_LEN];
-    key_bytes.copy_from_slice(&digest[..ED25519_PUBLIC_KEY_LEN]);
-
-    let mut multicodec = Vec::with_capacity(ED25519_MULTICODEC_PREFIX.len() + ED25519_PUBLIC_KEY_LEN);
-    multicodec.extend_from_slice(&ED25519_MULTICODEC_PREFIX);
-    multicodec.extend_from_slice(&key_bytes);
-
-    let multibase = bs58::encode(&multicodec).into_string();
-    format!("did:key:z{multibase}")
+    AgentKeypair::derive(identity).did_key()
 }
 
 #[cfg(test)]
