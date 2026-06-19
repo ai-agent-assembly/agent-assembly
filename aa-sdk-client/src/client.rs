@@ -219,8 +219,18 @@ impl AssemblyClient {
     /// release it around this call, since it blocks the calling thread.
     pub fn query_policy(
         &self,
-        request: aa_proto::assembly::policy::v1::CheckActionRequest,
+        mut request: aa_proto::assembly::policy::v1::CheckActionRequest,
     ) -> Result<aa_proto::assembly::policy::v1::CheckActionResponse, SdkClientError> {
+        // Attach the credential token issued at registration so the gateway's
+        // `validate_credential_token` does not deny a registered agent. Only
+        // fill it when the caller did not supply one, so an explicitly-set
+        // token still wins. The check is forwarded verbatim by the runtime.
+        if request.credential_token.is_empty() {
+            if let Some(token) = self.credential_token() {
+                request.credential_token = token;
+            }
+        }
+
         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
 
         // Enqueue under the lock, then release it before blocking on the
