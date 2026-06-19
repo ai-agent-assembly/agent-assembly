@@ -78,10 +78,7 @@ impl AuthConfig {
         let api_keys_path = std::env::var("AA_API_KEYS_PATH").unwrap_or_else(|_| DEFAULT_API_KEYS_PATH.to_string());
         let api_keys_path = expand_tilde(&api_keys_path);
 
-        let rate_limit_rpm = match std::env::var("AA_RATE_LIMIT_RPM") {
-            Ok(val) => val.parse::<u32>().map_err(|_| AuthConfigError::InvalidRateLimit(val))?,
-            Err(_) => DEFAULT_RATE_LIMIT_RPM,
-        };
+        let rate_limit_rpm = resolve_rate_limit_rpm()?;
 
         Ok(Self {
             mode,
@@ -89,6 +86,19 @@ impl AuthConfig {
             api_keys_path,
             rate_limit_rpm,
         })
+    }
+}
+
+/// Resolve the per-key requests-per-minute limit from `AA_RATE_LIMIT_RPM`.
+///
+/// Returns [`DEFAULT_RATE_LIMIT_RPM`] when the variable is unset, and an
+/// [`AuthConfigError::InvalidRateLimit`] when it is set to a non-`u32` value.
+/// Shared by [`AuthConfig::from_env`] and the local-mode entrypoint so the
+/// shipped server honours `AA_RATE_LIMIT_RPM` in its live rate limiter.
+pub fn resolve_rate_limit_rpm() -> Result<u32, AuthConfigError> {
+    match std::env::var("AA_RATE_LIMIT_RPM") {
+        Ok(val) => val.parse::<u32>().map_err(|_| AuthConfigError::InvalidRateLimit(val)),
+        Err(_) => Ok(DEFAULT_RATE_LIMIT_RPM),
     }
 }
 
