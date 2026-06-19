@@ -108,6 +108,27 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
     // (AAASM-1657 PR-H). Default: tick every 10s, drop entries older than 60s.
     let _ops_sweep_handle = aa_gateway::ops::spawn_sweep_task(state.ops_registry.clone());
 
+    // Spawn the retention engine's cron-driven background loop (AAASM-3383).
+    // AAASM-3369 constructed the engine in `local_hardened` for the on-demand
+    // `/api/v1/admin/retention*` handlers but DEFERRED the scheduled sweep.
+    // Drive the same engine on its configured cron schedule here, mirroring the
+    // gateway's `spawn_retention_engine` boot pattern. The token is cancelled
+    // after the HTTP server drains so the loop exits cleanly on shutdown.
+    let retention_shutdown = tokio_util::sync::CancellationToken::new();
+    let _retention_handle = match state.retention_engine.clone() {
+        Some(engine) => match engine.start(retention_shutdown.clone()) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "retention engine has an invalid schedule; cron loop not started");
+                None
+            }
+        },
+        None => {
+            tracing::debug!("no retention engine wired; cron loop not started");
+            None
+        }
+    };
+
     let app = build_app(state);
 
     let listener = TcpListener::bind(config.bind_addr).await?;
@@ -115,7 +136,16 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
 
     let serve = axum::serve(listener, app).with_graceful_shutdown(crate::shutdown::shutdown_signal());
 
-    match tokio::time::timeout(crate::shutdown::DRAIN_TIMEOUT, serve).await {
+    let serve_result = tokio::time::timeout(crate::shutdown::DRAIN_TIMEOUT, serve).await;
+
+    // Signal the retention loop to exit and let it finish its current tick
+    // before the process tears down storage (AAASM-3383).
+    retention_shutdown.cancel();
+    if let Some(handle) = _retention_handle {
+        let _ = handle.await;
+    }
+
+    match serve_result {
         Ok(Ok(())) => {
             tracing::info!("aa-api server shut down gracefully");
         }
