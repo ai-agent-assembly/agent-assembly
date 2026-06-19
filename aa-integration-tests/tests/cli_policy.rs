@@ -1,8 +1,8 @@
 //! CLI integration tests for `aasm policy` (AAASM-1261 / F121 Phase A ST-3).
 //!
 //! Exercises every `aasm policy <leaf>` subcommand against a live in-process
-//! gateway booted via `CliFixture`. Three leaves (`list`, `show`) hit the
-//! gateway via HTTP; the other three (`get`, `history`, `simulate`) are
+//! gateway booted via `CliFixture`. `list`, `show`, and no-arg `get` hit the
+//! gateway via HTTP; `get --version`, `history`, and `simulate` are
 //! filesystem-only and read from `AA_DATA_DIR` (defaulting via
 //! `HistoryConfig::default_config()`). `CliFixture::cmd()` automatically
 //! sets `AA_DATA_DIR` to a per-fixture TempDir so these tests don't
@@ -13,6 +13,7 @@
 //! | Leaf | Args | Backend | Notes |
 //! | --- | --- | --- | --- |
 //! | list     | —                                    | GET `/api/v1/policies`                                          | PaginatedResponse |
+//! | get      | (none)                                | GET `/api/v1/policies/active`                                   | raw active YAML to stdout |
 //! | get      | `--version`                           | filesystem (`AA_DATA_DIR/policy-history`)                       | raw YAML to stdout |
 //! | show     | `<agent_id> --show-permissions --show-budget` | GET `/api/v1/policies/agents/{id}/permissions` + `/budget` | `{permissions, budget}` |
 //! | history  | `-n / --limit`                        | filesystem (`AA_DATA_DIR/policy-history`)                       | table |
@@ -108,11 +109,15 @@ async fn policy_list_succeeds_for_every_output_format(#[case] fmt: &str) {
 // =============================================================================
 
 #[tokio::test(flavor = "multi_thread")]
-async fn policy_get_with_empty_data_dir_exits_failure() {
+async fn policy_get_no_version_resolves_active_policy() {
     let fixture = CliFixture::start().await.expect("fixture should start");
-    // AA_DATA_DIR is set to the fixture's empty TempDir, so no policy
-    // history exists — `policy get` should report "No policy versions
-    // found" and exit non-zero.
+    // No-arg `policy get` resolves the currently active policy from the
+    // gateway (`GET /api/v1/policies/active`), not the local history store
+    // — so a just-applied policy is found instead of "no versions". Seed
+    // an active policy first to make the assertion deterministic.
+    let yaml =
+        std::fs::read_to_string(CliFixture::fixture_path("policies/allow_all.yaml")).expect("read allow_all fixture");
+    fixture.seed_policy(&yaml).await.expect("seed_policy");
 
     let out = fixture
         .cmd()
@@ -120,9 +125,14 @@ async fn policy_get_with_empty_data_dir_exits_failure() {
         .output()
         .expect("aasm policy get should execute");
     assert!(
-        !out.status.success(),
-        "empty history should fail; stdout:\n{}\nstderr:\n{}",
+        out.status.success(),
+        "no-arg get should resolve the active policy and exit 0; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !out.stdout.is_empty(),
+        "no-arg get should print the active policy YAML; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr),
     );
 }
