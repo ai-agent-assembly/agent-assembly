@@ -78,6 +78,13 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
     let _secret_alert_capture_handle =
         crate::alerts::capture::spawn_secret_alert_capture(secret_rx, state.alert_store.clone());
 
+    // Spawn background task to capture anomaly detections into the alert
+    // store (AAASM-3384) so gateway anomalies surface via GET /api/v1/alerts,
+    // mirroring the budget/secret capture tasks above.
+    let anomaly_rx = state.events.subscribe_anomaly();
+    let _anomaly_alert_capture_handle =
+        crate::alerts::capture::spawn_anomaly_alert_capture(anomaly_rx, state.alert_store.clone());
+
     // Spawn background task to restore alerts when their silence expires (AAASM-1646 / AAASM-1647).
     let _silence_expiry_handle = crate::alerts::silence_watcher::spawn_silence_expiry_watcher(
         state.silence_store.clone(),
