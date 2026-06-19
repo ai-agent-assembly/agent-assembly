@@ -37,7 +37,9 @@ default = ["preflight"]
 preflight = ["dep:aa-security"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "rt", "sync", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "sync", "macros", "net", "io-util"] }
+# Mock gateway gRPC server for the with-core register+check test (AAASM-3398).
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true
