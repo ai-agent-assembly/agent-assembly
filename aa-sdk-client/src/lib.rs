@@ -29,6 +29,7 @@ pub mod client;
 pub mod codec;
 pub mod config;
 pub mod error;
+pub mod gateway;
 pub mod identity;
 pub mod ipc;
 pub mod keypair;
