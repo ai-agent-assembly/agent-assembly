@@ -478,13 +478,20 @@
                 select.addEventListener("change", function () {
                     // select.value comes from versions.json (a fetched, hence
                     // untrusted, document). Constrain it to a safe version-subpath
-                    // shape before building a navigation URL so a crafted value
-                    // cannot smuggle in a "javascript:" scheme, "//host" authority,
-                    // or path traversal. Legitimate ids/targets (e.g. "latest",
-                    // "v0.0.1-alpha.5", "v0.1.0") only use these characters.
+                    // shape as defense-in-depth — legitimate ids/targets (e.g.
+                    // "latest", "v0.0.1-alpha.5", "v0.1.0") only use these chars.
                     var subpath = select.value;
                     if (!/^[A-Za-z0-9._-]+$/.test(subpath)) { return; }
-                    window.location.href = siteRoot + subpath + "/";
+                    // Navigate by *path only*, never by concatenating the value into
+                    // a URL string. We resolve a same-origin URL from siteRoot and
+                    // append the subpath to its pathname component; assigning to
+                    // URL.pathname cannot introduce a "javascript:" scheme or a
+                    // "//host" authority, so the untrusted value is structurally
+                    // confined to the path and can never reach the navigation sink
+                    // as a raw concatenated string.
+                    var dest = new URL(siteRoot, window.location.href);
+                    dest.pathname = dest.pathname.replace(/\/+$/, "") + "/" + subpath + "/";
+                    window.location.assign(dest.href);
                 });
                 label.classList.remove("hidden");
             }
