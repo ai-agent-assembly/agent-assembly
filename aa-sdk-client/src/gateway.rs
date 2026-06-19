@@ -58,13 +58,14 @@ pub fn build_register_request(config: &AssemblyConfig, name: String, framework: 
     RegisterRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
-            team_id: String::new(),
+            team_id: config.team_id.clone().unwrap_or_default(),
             agent_id: config.registration_did(),
         }),
         name,
         framework,
         version: env!("CARGO_PKG_VERSION").to_string(),
         public_key: keypair.public_key_hex(),
+        parent_agent_id: config.parent_agent_id.clone(),
         ..Default::default()
     }
 }
@@ -78,6 +79,8 @@ mod tests {
             agent_id: agent_id.to_string(),
             socket_path: None,
             gateway_endpoint: None,
+            team_id: None,
+            parent_agent_id: None,
         }
     }
 
@@ -101,5 +104,29 @@ mod tests {
             .into_vec()
             .unwrap();
         assert_eq!(&did_payload[2..], pk_bytes.as_slice());
+    }
+
+    #[test]
+    fn register_request_forwards_team_id_and_parent_agent_id() {
+        let mut config = cfg("child-agent");
+        config.team_id = Some("team-payments".into());
+        config.parent_agent_id = Some("11111111-2222-3333-4444-555555555555".into());
+
+        let req = build_register_request(&config, "Child".into(), "custom".into());
+
+        assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "team-payments");
+        assert_eq!(
+            req.parent_agent_id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+    }
+
+    #[test]
+    fn register_request_omits_lineage_when_unset() {
+        let config = cfg("root-agent");
+        let req = build_register_request(&config, "Root".into(), "custom".into());
+
+        assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "");
+        assert_eq!(req.parent_agent_id, None);
     }
 }
