@@ -1,5 +1,6 @@
 //! Server builder wiring router, middleware, state, and graceful shutdown.
 
+use axum::routing::get;
 use axum::Router;
 use tokio::net::TcpListener;
 
@@ -13,12 +14,39 @@ use crate::state::AppState;
 /// Auth components are injected as individual `Extension` layers so the
 /// `AuthenticatedCaller` extractor can resolve them from request parts.
 pub fn build_app(state: AppState) -> Router {
-    let api = routes::v1_router();
+    build_app_with_spa(state, None)
+}
 
-    let app = Router::new()
-        .nest("/api/v1", api)
-        .fallback(routes::fallback_404)
-        .with_state(());
+/// Build the full Axum application, optionally serving the dashboard SPA from
+/// `spa_dist` as the top-level fallback (AAASM-3382).
+///
+/// When `spa_dist` is `None` the behaviour is identical to [`build_app`]: an
+/// unmatched route returns the RFC 7807 JSON 404 ([`routes::fallback_404`]).
+///
+/// When `spa_dist` is `Some`, the `/api/v1` nested router carries its own JSON
+/// 404 fallback so unknown `/api/v1/*` routes still return `ProblemDetail` JSON,
+/// while the *app-level* fallback serves the React SPA (via
+/// [`aa_gateway::dashboard_server::dashboard_router`]) so browser routes resolve
+/// to `index.html`. This lets the shipped `aa-api-server` binary serve the SPA
+/// *and* the full `/api/v1/*` REST surface from a single process and port.
+pub fn build_app_with_spa(state: AppState, spa_dist: Option<&std::path::Path>) -> Router {
+    let app = match spa_dist {
+        // SPA present: the nested API router owns its JSON 404 so `/api/v1/*`
+        // never falls through to the HTML SPA fallback; the app-level fallback
+        // is the SPA `ServeDir`.
+        Some(dist) => Router::new()
+            .route("/healthz", get(routes::health::health))
+            .nest("/api/v1", routes::v1_router().fallback(routes::fallback_404))
+            .merge(aa_gateway::dashboard_server::dashboard_router(dist))
+            .with_state(()),
+        // No SPA: unmatched routes (including `/api/v1/*`) return JSON 404 via
+        // the app-level fallback — identical to the original `build_app`.
+        None => Router::new()
+            .route("/healthz", get(routes::health::health))
+            .nest("/api/v1", routes::v1_router())
+            .fallback(routes::fallback_404)
+            .with_state(()),
+    };
 
     // Auth extensions — read by FromRequestParts extractors.
     let app = app
@@ -58,7 +86,20 @@ pub async fn serve_local(
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
     };
-    run_server(config, state).await
+    // AAASM-3382: resolve the dashboard SPA so a single `aa-api-server` process
+    // serves the React app at `/` *and* the full `/api/v1/*` REST surface. When
+    // no `dashboard/dist/` resolves the server still starts (REST-only) and logs
+    // a warning, mirroring `aa-gateway` local mode.
+    let dist = aa_gateway::dashboard_server::find_dashboard_dist();
+    if dist.is_none() {
+        tracing::warn!(
+            target: "aa_api::serve_local",
+            "no dashboard/dist/ resolved (checked AAASM_DASHBOARD_DIST, installed \
+             layout, and workspace layout); serving the REST API only — run \
+             `pnpm --dir dashboard build` to enable the SPA"
+        );
+    }
+    run_server_with_spa(config, state, dist.as_deref()).await
 }
 
 /// Start the HTTP server and block until shutdown.
@@ -69,6 +110,16 @@ pub async fn serve_local(
 ///
 /// [`DRAIN_TIMEOUT`]: crate::shutdown::DRAIN_TIMEOUT
 pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dyn std::error::Error>> {
+    run_server_with_spa(config, state, None).await
+}
+
+/// Same as [`run_server`] but additionally serves the dashboard SPA from
+/// `spa_dist` as the top-level fallback when `Some` (AAASM-3382).
+pub async fn run_server_with_spa(
+    config: ApiConfig,
+    state: AppState,
+    spa_dist: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Spawn background task to capture budget alerts into the alert store.
     let budget_rx = state.events.subscribe_budget();
     let _alert_capture_handle = crate::alerts::capture::spawn_alert_capture(budget_rx, state.alert_store.clone());
@@ -108,7 +159,7 @@ pub async fn run_server(config: ApiConfig, state: AppState) -> Result<(), Box<dy
     // (AAASM-1657 PR-H). Default: tick every 10s, drop entries older than 60s.
     let _ops_sweep_handle = aa_gateway::ops::spawn_sweep_task(state.ops_registry.clone());
 
-    let app = build_app(state);
+    let app = build_app_with_spa(state, spa_dist);
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "aa-api server listening");
