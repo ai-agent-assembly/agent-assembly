@@ -130,3 +130,4 @@
   - [0001 - Storage Architecture](adr/0001-storage-architecture.md)
   - [0002 - SDK Security Boundary](adr/0002-sdk-security-boundary.md)
   - [0003 - Cross-Repo Dependency Pinning](adr/0003-cross-repo-dependency-pinning.md)
+  - [0004 - Governance Enforcement Flow](adr/0004-governance-enforcement-flow.md)
