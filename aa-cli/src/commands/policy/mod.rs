@@ -53,7 +53,7 @@ pub fn dispatch(args: PolicyArgs, ctx: &ResolvedContext, output: OutputFormat) -
         PolicyCommands::Diff(diff_args) => history::run_diff(diff_args),
         PolicyCommands::Simulate(sim_args) => simulate::run(sim_args),
         PolicyCommands::Validate(val_args) => validate::run(val_args),
-        PolicyCommands::Get(get_args) => get::run(get_args),
+        PolicyCommands::Get(get_args) => get::run(get_args, ctx),
         PolicyCommands::List(list_args) => list::run(list_args, ctx, output),
         PolicyCommands::Show(show_args) => show::run(show_args, ctx, output),
     }
