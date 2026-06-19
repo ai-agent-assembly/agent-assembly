@@ -649,6 +649,36 @@ pub async fn run(config: RuntimeConfig) {
         spawn_ebpf_exec_tracepoints(&tracker, &broadcast_tx, &token, &mut degraded_layers);
     }
 
+    // AAASM-3430: build the gateway client when an endpoint is configured so
+    // policy checks are forwarded to the authoritative governance gateway. When
+    // no endpoint is set the pipeline falls back to local evaluation. Without
+    // this, the pipeline always received `None` and every per-tool deny held by
+    // the gateway was silently dropped to a permissive local allow.
+    let gateway_client = match &config.gateway_endpoint {
+        Some(endpoint) => match crate::gateway_client::GatewayClient::connect(endpoint).await {
+            Ok(client) => {
+                tracing::info!(endpoint, "gateway client connected — forwarding policy checks");
+                Some(std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+            }
+            Err(e) => {
+                // Construction failure must not silently degrade to local allow.
+                // Build a lazy client so the pipeline's fail-closed path
+                // (AAASM-3110) governs the unreachable case at check time.
+                tracing::warn!(
+                    endpoint,
+                    error = %e,
+                    "gateway client initial connect failed — using lazy channel (checks fail-closed when unreachable)"
+                );
+                crate::gateway_client::GatewayClient::connect_lazy_owned(endpoint)
+                    .map(|client| std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+            }
+        },
+        None => {
+            tracing::info!("no gateway endpoint configured — policy checks evaluated locally");
+            None
+        }
+    };
+
     // Spawn the event aggregation pipeline task.
     {
         let pipeline_token = token.clone();
@@ -667,7 +697,7 @@ pub async fn run(config: RuntimeConfig) {
                 pipeline_policy,
                 pipeline_router,
                 pipeline_approval_queue,
-                None,
+                gateway_client,
                 pipeline_seq,
             )
             .await;
