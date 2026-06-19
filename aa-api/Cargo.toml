@@ -49,6 +49,7 @@ hex = { workspace = true }
 moka = { workspace = true, features = ["future"] }
 rust_decimal = { workspace = true, features = ["serde-str"] }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 ulid = "1"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

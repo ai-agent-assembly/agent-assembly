@@ -45,7 +45,7 @@ export function CapabilityMatrixGrid({
   const templateColumns = `260px repeat(${resources.length}, minmax(110px, 1fr))`
 
   function sortIndicator(resourceId: string): string {
-    if (!sort || sort.resourceId !== resourceId || !sort.direction) return '↕'
+    if (sort?.resourceId !== resourceId || !sort.direction) return '↕'
     return sort.direction === 'desc' ? '↓' : '↑'
   }
 
