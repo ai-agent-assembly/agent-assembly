@@ -1,14 +1,13 @@
 //! `aasm start` — explicit lifecycle command for the locally-managed
 //! gateway process (Epic 17 / AAASM-1568 / Story AAASM-1578).
 //!
-//! This module is the CLI surface. It spawns the existing
-//! `aa-gateway` binary, manages the PID file via [`pidfile`], and
-//! waits for the listener to come up via [`gw_probe`]. The actual
-//! mode-dispatch logic (`--mode local` vs `--mode remote`) is
-//! delivered by AAASM-1576 and AAASM-1577 — until those land,
-//! `aasm start` translates its high-level flags into the gateway's
-//! current `--listen` flag and accepts `--config` / `--no-dashboard`
-//! as a no-op so the operator-facing surface is stable.
+//! This module is the CLI surface. It spawns the entrypoint binary
+//! matching the requested mode (AAASM-3382): `--mode local` launches
+//! `aa-api-server` (dashboard SPA + full `/api/v1/*` REST surface from a
+//! single process); `--mode remote` launches `aa-gateway` via `--listen`.
+//! It manages the PID file via [`pidfile`] and waits for the listener to
+//! come up via [`gw_probe`]. `--config` / `--no-dashboard` are accepted as
+//! no-ops so the operator-facing surface is stable.
 //!
 //! See the sibling `pidfile` and `gw_probe` modules for the
 //! primitives used here.
@@ -148,23 +147,50 @@ pub trait GatewaySpawner {
     fn exec_foreground(&self, addr: SocketAddr) -> std::io::Result<std::process::ExitStatus>;
 }
 
-/// Default [`GatewaySpawner`] that invokes the real `aa-gateway` binary.
-pub struct ProcessSpawner;
+/// Default [`GatewaySpawner`].
+///
+/// * **Local mode** invokes the `aa-api-server` binary (AAASM-3382), which
+///   serves the dashboard SPA *and* the full `/api/v1/*` REST surface from a
+///   single process and port — so one `aasm start --mode local` brings up both.
+///   The bind address is passed via the `AA_API_ADDR` environment variable the
+///   binary reads.
+/// * **Remote mode** invokes the `aa-gateway` binary via its `--listen` flag,
+///   exactly as before.
+pub struct ProcessSpawner {
+    mode: ModeArg,
+}
+
+impl ProcessSpawner {
+    /// Build a spawner that launches the binary matching `mode`.
+    pub fn new(mode: ModeArg) -> Self {
+        Self { mode }
+    }
+
+    /// Construct the `Command` that starts the right binary for `addr`.
+    fn command(&self, addr: SocketAddr) -> Command {
+        match self.mode {
+            ModeArg::Local => {
+                let mut cmd = Command::new("aa-api-server");
+                cmd.env("AA_API_ADDR", addr.to_string());
+                cmd
+            }
+            ModeArg::Remote => {
+                let mut cmd = Command::new("aa-gateway");
+                cmd.arg("--listen").arg(addr.to_string());
+                cmd
+            }
+        }
+    }
+}
 
 impl GatewaySpawner for ProcessSpawner {
     fn spawn_background(&self, addr: SocketAddr) -> std::io::Result<u32> {
-        let child = Command::new("aa-gateway")
-            .arg("--listen")
-            .arg(addr.to_string())
-            .spawn()?;
+        let child = self.command(addr).spawn()?;
         Ok(child.id())
     }
 
     fn exec_foreground(&self, addr: SocketAddr) -> std::io::Result<std::process::ExitStatus> {
-        Command::new("aa-gateway")
-            .arg("--listen")
-            .arg(addr.to_string())
-            .status()
+        self.command(addr).status()
     }
 }
 
@@ -190,7 +216,8 @@ pub fn run(args: StartArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    run_with_spawner(args, &ProcessSpawner, &pid_file)
+    let spawner = ProcessSpawner::new(args.mode);
+    run_with_spawner(args, &spawner, &pid_file)
 }
 
 /// Same as [`run`] but with an injectable `Spawner` and PID-file path
