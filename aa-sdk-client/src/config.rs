@@ -6,6 +6,12 @@
 use std::env;
 use std::path::PathBuf;
 
+/// Default gateway gRPC endpoint, matching `aa-runtime`'s
+/// `AA_GATEWAY_ENDPOINT` default. This is the **gRPC** port (`:50051`) that
+/// serves `AgentLifecycleService` / `PolicyService` — *not* the gateway's
+/// `:8080` HTTP/OpenAPI surface that some docs reference for REST.
+pub const DEFAULT_GATEWAY_ENDPOINT: &str = "http://127.0.0.1:50051";
+
 /// Configuration for connecting to `aa-runtime`.
 #[derive(Debug, Clone)]
 pub struct AssemblyConfig {
@@ -13,6 +19,9 @@ pub struct AssemblyConfig {
     pub agent_id: String,
     /// Explicit socket path override. When `None`, resolved from env or default.
     pub socket_path: Option<String>,
+    /// Explicit gateway gRPC endpoint override (e.g. `"http://127.0.0.1:50051"`).
+    /// When `None`, resolved from env or [`DEFAULT_GATEWAY_ENDPOINT`].
+    pub gateway_endpoint: Option<String>,
 }
 
 impl AssemblyConfig {
@@ -36,6 +45,32 @@ impl AssemblyConfig {
         PathBuf::from(format!("/tmp/aa-runtime-{}.sock", self.agent_id))
     }
 
+    /// Resolve the gateway gRPC endpoint to use for registration.
+    ///
+    /// Resolution order:
+    /// 1. Explicit `gateway_endpoint` if provided
+    /// 2. `AA_GATEWAY_ENDPOINT` environment variable (the same knob
+    ///    `aa-runtime` reads)
+    /// 3. Default: [`DEFAULT_GATEWAY_ENDPOINT`] (`http://127.0.0.1:50051`)
+    ///
+    /// Note this is the gRPC `:50051` endpoint, not the gateway's `:8080`
+    /// HTTP/OpenAPI URL.
+    pub fn resolve_gateway_endpoint(&self) -> String {
+        if let Some(ref endpoint) = self.gateway_endpoint {
+            if !endpoint.is_empty() {
+                return endpoint.clone();
+            }
+        }
+
+        if let Ok(env_endpoint) = env::var("AA_GATEWAY_ENDPOINT") {
+            if !env_endpoint.is_empty() {
+                return env_endpoint;
+            }
+        }
+
+        DEFAULT_GATEWAY_ENDPOINT.to_string()
+    }
+
     /// Return the agent identity to send on gateway registration.
     ///
     /// The gateway's `AgentLifecycleService.Register` rejects a plain
@@ -56,6 +91,7 @@ mod tests {
         AssemblyConfig {
             agent_id: agent_id.to_string(),
             socket_path: socket_path.map(|s| s.to_string()),
+            gateway_endpoint: None,
         }
     }
 
@@ -74,6 +110,23 @@ mod tests {
             config.resolve_socket_path(),
             PathBuf::from("/tmp/aa-runtime-my-agent.sock")
         );
+    }
+
+    #[test]
+    fn resolve_gateway_uses_explicit_endpoint() {
+        let config = AssemblyConfig {
+            agent_id: "a".into(),
+            socket_path: None,
+            gateway_endpoint: Some("http://gw.example:50051".into()),
+        };
+        assert_eq!(config.resolve_gateway_endpoint(), "http://gw.example:50051");
+    }
+
+    #[test]
+    fn resolve_gateway_falls_back_to_default() {
+        env::remove_var("AA_GATEWAY_ENDPOINT");
+        let config = make_config("a", None);
+        assert_eq!(config.resolve_gateway_endpoint(), DEFAULT_GATEWAY_ENDPOINT);
     }
 
     #[test]
