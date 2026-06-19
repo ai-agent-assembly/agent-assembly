@@ -43,6 +43,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
+ "tokio-util",
  "tonic",
  "tower",
  "tower-http 0.7.0",
