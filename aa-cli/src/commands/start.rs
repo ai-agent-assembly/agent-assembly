@@ -270,6 +270,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_mode_spawns_aa_api_server_with_bind_env() {
+        // AAASM-3382: local mode launches the combined SPA + REST entrypoint and
+        // passes the bind address via AA_API_ADDR (the binary reads it from env).
+        let addr: SocketAddr = "127.0.0.1:7391".parse().unwrap();
+        let cmd = ProcessSpawner::new(ModeArg::Local).command(addr);
+        assert_eq!(cmd.get_program(), "aa-api-server");
+        let env: Vec<_> = cmd.get_envs().collect();
+        assert!(
+            env.iter().any(|(k, v)| *k == std::ffi::OsStr::new("AA_API_ADDR")
+                && *v == Some(std::ffi::OsStr::new("127.0.0.1:7391"))),
+            "local mode must pass the bind address via AA_API_ADDR; got {env:?}",
+        );
+    }
+
+    #[test]
+    fn remote_mode_spawns_aa_gateway_with_listen_flag() {
+        let addr: SocketAddr = "0.0.0.0:7391".parse().unwrap();
+        let cmd = ProcessSpawner::new(ModeArg::Remote).command(addr);
+        assert_eq!(cmd.get_program(), "aa-gateway");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, vec!["--listen", "0.0.0.0:7391"]);
+    }
+
+    #[test]
     fn resolve_listen_addr_local_binds_loopback() {
         let addr = resolve_listen_addr(ModeArg::Local, 7391);
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
