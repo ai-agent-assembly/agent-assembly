@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
+use crate::gateway::{build_register_request, GatewayRegistrationClient};
 use crate::ipc::{IpcCommand, IpcHandle};
 #[cfg(feature = "preflight")]
 use crate::preflight::Preflight;
@@ -28,6 +30,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct AssemblyClient {
     inner: Mutex<Option<IpcHandle>>,
     detected_frameworks: Vec<String>,
+    /// Credential token issued by the gateway at [`register`](Self::register).
+    /// `None` until registration succeeds; attached to every `CheckActionRequest`
+    /// so the gateway's `validate_credential_token` does not deny the call.
+    credential_token: Mutex<Option<String>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -39,6 +45,7 @@ impl AssemblyClient {
         Self {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
+            credential_token: Mutex::new(None),
             #[cfg(feature = "preflight")]
             preflight: Some(Preflight::new()),
         }
@@ -57,6 +64,7 @@ impl AssemblyClient {
         Self {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
+            credential_token: Mutex::new(None),
             preflight,
         }
     }
@@ -75,6 +83,43 @@ impl AssemblyClient {
     #[cfg(not(feature = "preflight"))]
     fn apply_preflight(&self, details: String) -> String {
         details
+    }
+
+    /// Register this agent with the governance gateway over a direct gRPC call
+    /// and store the issued `credential_token`.
+    ///
+    /// Per ADR 0004 this is the *only* direct SDK→gateway call; `CheckAction`
+    /// continues to flow through the `aa-runtime` UDS forward. The stored token
+    /// is then attached to every [`query_policy`](Self::query_policy) request so
+    /// the gateway's `validate_credential_token` does not deny a registered
+    /// agent.
+    ///
+    /// `config` supplies the agent identity (its `agent_id` is derived into a
+    /// `did:key` + a consistent Ed25519 `public_key`) and the gateway gRPC
+    /// endpoint. Returns the assigned policy id from the gateway on success.
+    pub async fn register(
+        &self,
+        config: &AssemblyConfig,
+        name: String,
+        framework: String,
+    ) -> Result<String, SdkClientError> {
+        let endpoint = config.resolve_gateway_endpoint();
+        let request = build_register_request(config, name, framework);
+
+        let mut client = GatewayRegistrationClient::connect(endpoint).await?;
+        let response = client.register(request).await?;
+
+        {
+            let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;
+            *guard = Some(response.credential_token);
+        }
+
+        Ok(response.assigned_policy)
+    }
+
+    /// Return the stored gateway credential token, if registration has run.
+    pub fn credential_token(&self) -> Option<String> {
+        self.credential_token.lock().ok().and_then(|g| g.clone())
     }
 
     /// Enqueue an already-built event onto the IPC command channel.
