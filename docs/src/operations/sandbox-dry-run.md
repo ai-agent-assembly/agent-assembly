@@ -155,13 +155,19 @@ The flag is **exclusive**: by default `aasm audit list` HIDES shadow events so o
 
 All three SDKs expose the same posture surface. Pass an `enforcement_mode` (Python / Go) or `enforcementMode` (Node.js) at agent registration:
 
+The SDK never talks to the core over HTTP. The public API delegates to the native
+`aa-sdk-client` shim, which speaks gRPC (over a Unix domain socket by default, or
+TCP for cross-host) to `aa-gateway` — see [ADR 0004](../adr/0004-governance-enforcement-flow.md).
+`gateway_url` / `gatewayUrl` / `WithGatewayURL` is therefore the gateway's gRPC
+endpoint as `host:port` (no scheme); the OSS local default is `localhost:7391`.
+
 ### Python
 
 ```python
 from agent_assembly import init_assembly
 
 ctx = init_assembly(
-    gateway_url="http://localhost:8080",
+    gateway_url="localhost:7391",   # gRPC endpoint, host:port (no scheme)
     api_key="...",
     agent_id="experimental-agent-001",
     enforcement_mode="observe",   # "enforce" | "observe" | "disabled"
@@ -176,7 +182,7 @@ The parameter is keyword-only; the type is `Literal["enforce", "observe", "disab
 import { initAssembly, type EnforcementMode } from "@agent-assembly/sdk";
 
 const ctx = await initAssembly({
-  gatewayUrl: "http://localhost:8080",
+  gatewayUrl: "localhost:7391",   // gRPC endpoint, host:port (no scheme)
   apiKey: "...",
   agentId: "experimental-agent-001",
   enforcementMode: "observe",   // 'enforce' | 'observe' | 'disabled'
@@ -191,7 +197,7 @@ The `EnforcementMode` union narrows at compile time; runtime validation catches 
 import "github.com/agent-assembly/go-sdk/assembly"
 
 a, err := assembly.Init(ctx,
-    assembly.WithGatewayURL("http://localhost:8080"),
+    assembly.WithGatewayURL("localhost:7391"),   // gRPC endpoint, host:port (no scheme)
     assembly.WithAPIKey("..."),
     assembly.WithSelfAgentID("experimental-agent-001"),
     assembly.WithEnforcementMode(assembly.EnforcementModeObserve),
