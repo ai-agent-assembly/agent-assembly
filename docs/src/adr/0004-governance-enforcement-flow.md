@@ -90,6 +90,23 @@ Concretely:
 | REST is non-SDK only | A REST `/api/v1/policy/check`, **if it is ever added**, exists solely for non-SDK consumers (dashboard, operators, CLI data commands). It is never on the SDK path. |
 | Identity on Register | Registration through `aa-sdk-client` carries the `did:key` identity requirement; an out-of-band REST call would not, which is another reason the SDK path must stay on the boundary. |
 
+### Decision (Register transport)
+
+`aa-sdk-client` owns a **direct gateway gRPC client for `AgentLifecycleService.Register`**.
+On registration it derives a deterministic Ed25519 keypair from the agent identifier,
+sends the `did:key` agent id plus the matching `public_key`, and **stores the returned
+`credential_token`**. That token is then attached to every subsequent
+`CheckActionRequest`, so the gateway's `validate_credential_token` does not deny a
+registered agent.
+
+`CheckAction` itself stays on the **UDS / IPC forward through `aa-runtime`** (the mandatory
+chokepoint) — it is **not** sent directly to the gateway. This keeps the fast-path single
+chokepoint intact while closing the gap that nothing on the SDK path called `Register`
+(so no `credential_token` was ever issued or carried). Both transports still live inside
+`aa-sdk-client`, behind one API. See [AAASM-3396](https://lightning-dust-mite.atlassian.net/browse/AAASM-3396),
+[AAASM-3397](https://lightning-dust-mite.atlassian.net/browse/AAASM-3397),
+[AAASM-3398](https://lightning-dust-mite.atlassian.net/browse/AAASM-3398).
+
 ---
 
 ## Rationale / Consequences
