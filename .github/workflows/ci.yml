@@ -50,6 +50,15 @@ on:
       - "!**/*.gif"
       - "!**/*.webp"
       - "!**/*.ico"
+  # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
+  # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
+  # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
+  # master. A weekly schedule + on-demand dispatch restores standing master
+  # coverage for the AAASM-1520/1522/1523 suites at ~1 run/week without
+  # adding per-PR eBPF cost. The eBPF jobs' `if:` opt in to these events.
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -677,8 +686,10 @@ jobs:
 
   ebpf-build:
     needs: [changes]
-    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
-    if: needs.changes.outputs.ebpf == 'true'
+    # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
+    # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
+    # Layer 3 suite keeps standing master coverage despite the path-filter.
+    if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: eBPF probes build (Linux nightly)
     runs-on: ubuntu-latest
     defaults:
@@ -758,8 +769,10 @@ jobs:
 
   e2e-ebpf-linux:
     needs: [changes]
-    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
-    if: needs.changes.outputs.ebpf == 'true'
+    # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
+    # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
+    # Layer 3 e2e suite keeps standing master coverage despite the path-filter.
+    if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # AAASM-1520 / F116 ST-H — Layer 3 (eBPF) end-to-end interception suite.
     # Linux-only, runs as root for CAP_BPF + CAP_PERFMON; the test source is
     # `#[cfg(all(target_os = "linux", feature = "integration-test"))]` so it
