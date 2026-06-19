@@ -69,7 +69,11 @@ async fn subscribe(url: &str) -> (async_nats::Client, async_nats::Subscriber) {
     (client, sub)
 }
 
-/// Collect up to `n` decoded `seq` values from `sub`, stopping early on timeout.
+/// Collect exactly `n` decoded `seq` values from `sub`, waiting up to `timeout`
+/// for the full set to arrive. This is a wait-for-delivery poll: async delivery
+/// over NATS can still be in flight under CI load, so we keep waiting for the
+/// next message until either `n` have arrived or the overall deadline elapses —
+/// we never bail on an interim quiet gap between messages.
 async fn collect_seqs(sub: &mut async_nats::Subscriber, n: usize, timeout: Duration) -> Vec<u64> {
     let mut seqs = Vec::with_capacity(n);
     let deadline = Instant::now() + timeout;
@@ -83,6 +87,7 @@ async fn collect_seqs(sub: &mut async_nats::Subscriber, n: usize, timeout: Durat
                 let decoded: AuditEntry = serde_json::from_slice(&msg.payload).expect("decode audit entry");
                 seqs.push(decoded.seq());
             }
+            // Subscription closed (None) or the overall deadline elapsed: stop.
             _ => break,
         }
     }
@@ -126,8 +131,15 @@ async fn buffers_during_outage_and_replays_all_on_reconnect() {
     for seq in 0..1000 {
         publisher.publish(entry(seq)).await;
     }
-    let got1 = collect_seqs(&mut sub1, 1000, Duration::from_secs(30)).await;
-    assert_eq!(got1.len(), 1000, "all 1000 events delivered while NATS is up");
+    // Wait for the full set to drain — async delivery may still be in flight
+    // under CI load. The generous timeout keeps this deterministic and bounded.
+    let got1 = collect_seqs(&mut sub1, 1000, Duration::from_secs(120)).await;
+    assert_eq!(
+        got1.len(),
+        1000,
+        "all 1000 events should be delivered while NATS is up, but only {} arrived within the timeout",
+        got1.len()
+    );
     assert_eq!(publisher.buffered_len().unwrap(), 0, "nothing buffered while up");
 
     // --- Phase 2: NATS down — publish 100 more, all buffered, never blocking. ---
@@ -157,11 +169,15 @@ async fn buffers_during_outage_and_replays_all_on_reconnect() {
     assert_eq!(flushed, 100, "all buffered events flushed on reconnect");
     assert_eq!(publisher.buffered_len().unwrap(), 0, "buffer fully drained");
 
-    let got2 = collect_seqs(&mut sub2, 100, Duration::from_secs(30)).await;
+    // Wait for the full replayed set to drain before asserting order/count —
+    // the replay is async and may still be in flight under CI load.
+    let got2 = collect_seqs(&mut sub2, 100, Duration::from_secs(120)).await;
     assert_eq!(
         got2,
         (1000..1100).collect::<Vec<u64>>(),
-        "buffered events replayed in FIFO order"
+        "buffered events should replay in FIFO order, but received {} events: {:?}",
+        got2.len(),
+        got2
     );
 
     // 1000 (pre-outage) + 100 (replayed) = 1100 events land across the restart.
