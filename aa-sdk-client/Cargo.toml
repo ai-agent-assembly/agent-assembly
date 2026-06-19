@@ -16,8 +16,15 @@ aa-proto = { path = "../aa-proto" }
 aa-security = { path = "../aa-security", optional = true }
 # did:key derivation for gateway registration identity (AAASM-3387).
 bs58 = "0.5"
+# Deterministic Ed25519 keypair backing the registration did:key + public_key
+# (AAASM-3396); the gateway validates public_key as a real Ed25519 verifying key.
+ed25519-dalek = { version = "2", features = ["std"] }
+hex = { workspace = true }
 prost = { workspace = true }
 sha2 = { workspace = true }
+# Direct gateway gRPC Register client (AAASM-3396). CheckAction stays via the
+# runtime UDS forward; only AgentLifecycleService.Register is called directly.
+tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
 tracing = { workspace = true }
 
