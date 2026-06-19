@@ -42,10 +42,8 @@ export function CapabilityPage() {
     })
   }
 
-  const toggleSelectAll = (next: boolean) => {
-    if (next) setSelected(new Set(visibleAgents.map((a) => a.id)))
-    else setSelected(new Set())
-  }
+  const selectAllAgents = () => setSelected(new Set(visibleAgents.map((a) => a.id)))
+  const clearSelectedAgents = () => setSelected(new Set())
 
   const handleBulkApply = async ({
     resourceId,
@@ -211,7 +209,7 @@ export function CapabilityPage() {
             onCellClick={setInspected}
             selectedIds={selected}
             onToggleSelect={toggleSelect}
-            onToggleSelectAll={toggleSelectAll}
+            onToggleSelectAll={(next) => (next ? selectAllAgents() : clearSelectedAgents())}
           />
         )}
         {tab === 'resource' && matrix && (
