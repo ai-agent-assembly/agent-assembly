@@ -464,9 +464,13 @@ dependencies = [
  "aa-proto",
  "aa-security",
  "bs58",
+ "ed25519-dalek",
+ "hex",
  "prost",
  "sha2 0.11.0",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tracing",
 ]
 

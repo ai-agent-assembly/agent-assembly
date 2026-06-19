@@ -19,6 +19,11 @@ pub enum SdkClientError {
     /// within the timeout, or the IPC connection closed before a response
     /// arrived. Callers should treat this as *fail-open* (the SDK is advisory).
     QueryFailed,
+    /// The gateway gRPC endpoint could not be reached for registration.
+    GatewayUnreachable,
+    /// The gateway rejected the `Register` call. Carries the gRPC status message
+    /// (e.g. an invalid did:key or public_key).
+    RegisterFailed(String),
 }
 
 impl std::fmt::Display for SdkClientError {
@@ -33,6 +38,12 @@ impl std::fmt::Display for SdkClientError {
             }
             SdkClientError::QueryFailed => {
                 write!(f, "policy query failed: runtime did not respond in time")
+            }
+            SdkClientError::GatewayUnreachable => {
+                write!(f, "gateway gRPC endpoint is unreachable for registration")
+            }
+            SdkClientError::RegisterFailed(msg) => {
+                write!(f, "gateway rejected registration: {msg}")
             }
         }
     }
