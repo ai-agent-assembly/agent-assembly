@@ -8,15 +8,14 @@ name: CodeQL
 # Mirrors the known-good go-sdk codeql.yml, adapted for this Rust + TS/JS repo.
 
 on:
+  workflow_dispatch:
   pull_request:
     paths-ignore:
       - "**/*.md"
-      - "docs/**"
       - "LICENSE"
   push:
     paths-ignore:
       - "**/*.md"
-      - "docs/**"
       - "LICENSE"
     branches:
       - master
