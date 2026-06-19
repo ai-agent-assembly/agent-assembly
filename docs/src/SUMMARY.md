@@ -131,4 +131,4 @@
   - [0002 - SDK Security Boundary](adr/0002-sdk-security-boundary.md)
   - [0003 - Cross-Repo Dependency Pinning](adr/0003-cross-repo-dependency-pinning.md)
   - [0004 - Governance Enforcement Flow](adr/0004-governance-enforcement-flow.md)
-  - [0005 - SDK-Client-Only Gateway Access](adr/0005-sdk-only-gateway-access.md)
+  - [0005 - Gateway Endpoint Surface Hardening](adr/0005-gateway-endpoint-surface-hardening.md)

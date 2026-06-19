@@ -12,4 +12,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0002](0002-sdk-security-boundary.md) | SDK Security Boundary, Shared-Crate Layout & Distribution | Accepted |
 | [0003](0003-cross-repo-dependency-pinning.md) | Cross-Repo Dependency Pinning on the Core Crates | Accepted |
 | [0004](0004-governance-enforcement-flow.md) | Governance Enforcement Flow — SDK → `aa-sdk-client` → core (gRPC / UDS) | Accepted |
-| [0005](0005-sdk-only-gateway-access.md) | SDK-Client-Only Gateway Access — Two-Plane Mutual Auth + Dashboard Control-Plane | Accepted |
+| [0005](0005-gateway-endpoint-surface-hardening.md) | Gateway Endpoint Surface Hardening — Per-Endpoint Auth + Two-Plane (not SDK-client-only blocking) | Accepted |
