@@ -8,7 +8,7 @@ detailed Level-3 reference it links to.
 ## Contents
 
 - [The channel matrix](#the-channel-matrix)
-  - [1. GitHub Release — 8 assets, isPrerelease](#1-github-release--8-assets-isprerelease)
+  - [1. GitHub Release — 6 assets, isPrerelease](#1-github-release--6-assets-isprerelease)
   - [2. crates.io — sparse-index probe per crate](#2-cratesio--sparse-index-probe-per-crate)
   - [3. npm — sdk + 4 runtime sub-packages](#3-npm--sdk--4-runtime-sub-packages)
   - [4. PyPI — wheels + sdist, distinguishing yanked from active](#4-pypi--wheels--sdist-distinguishing-yanked-from-active)
@@ -31,7 +31,7 @@ literal output so the operator can paste back into a follow-up ticket.
 
 | # | Channel              | Check |
 |---|----------------------|-------|
-| 1 | GitHub Release       | `gh release view <TAG>` exposes the 8 expected assets and `isPrerelease=true` |
+| 1 | GitHub Release       | `gh release view <TAG>` exposes the 6 expected assets and `isPrerelease=true` |
 | 2 | crates.io            | Each workspace-published crate's sparse-index latest line `vers` matches `$VERSION` |
 | 3 | npm                  | `@agent-assembly/sdk@$VERSION` + 4 platform runtime sub-packages exist |
 | 4 | PyPI                 | `agent-assembly==$PEP440` exists with 4 wheels + 1 sdist; no yanked higher version shadows |
@@ -41,7 +41,7 @@ literal output so the operator can paste back into a follow-up ticket.
 | 8 | Docs sites           | `Docs` workflow on agent-assembly + `pages-build-deployment` on python-sdk / node-sdk all succeeded post-tag |
 | 9 | GHCR                 | `ghcr.io/ai-agent-assembly/{python,go}:$VERSION` manifests exist |
 
-### 1. GitHub Release — 8 assets, isPrerelease
+### 1. GitHub Release — 6 assets, isPrerelease
 
 ```bash
 gh release view "$TAG" \
@@ -54,15 +54,13 @@ Pass criteria:
 - `isDraft = false`
 - `isPrerelease = true` (every tag with a `-alpha`/`-beta`/`-rc` suffix is a
   pre-release — `release.yml` sets `prerelease: contains(ref_name, '-')`)
-- `assets` array has **8 entries**, exactly:
+- `assets` array has **6 entries**, exactly:
   - `aasm-aarch64-apple-darwin.tar.gz`
   - `aasm-x86_64-apple-darwin.tar.gz`
   - `aasm-aarch64-unknown-linux-gnu.tar.gz`
   - `aasm-x86_64-unknown-linux-gnu.tar.gz`
   - `SHA256SUMS`
   - `SHA256SUMS.cosign.bundle`
-  - `SHA256SUMS.sig`
-  - `SHA256SUMS.pem`
 
 If asset count or names diverge, report the exact `assets[].name` list and
 flag the release run URL.

@@ -93,7 +93,7 @@ green / red per channel:
 
 | # | Channel              | One-line check |
 |---|----------------------|----------------|
-| 1 | GitHub Release       | 8 expected assets present, `isPrerelease=true`, `isDraft=false` |
+| 1 | GitHub Release       | 6 expected assets present, `isPrerelease=true`, `isDraft=false` |
 | 2 | crates.io            | All 9 published crates' sparse-index latest `vers` = `$VERSION` |
 | 3 | npm                  | `@agent-assembly/sdk` + 4 runtime sub-packages exist at `$VERSION` |
 | 4 | PyPI                 | `agent-assembly==$PEP440` active with 4 wheels + 1 sdist; no yanked higher shadow |
@@ -118,7 +118,7 @@ Release validation for <TAG>:
 
 | Channel              | Status | Detail                                          |
 |----------------------|--------|-------------------------------------------------|
-| GitHub Release       | ✓      | 8 assets, isPrerelease=true                     |
+| GitHub Release       | ✓      | 6 assets, isPrerelease=true                     |
 | crates.io (9 crates) | ✓      | all latest line vers = <VERSION>                |
 | npm (5 packages)     | ✓      | sdk + 4 runtime sub-packages at <VERSION>       |
 | PyPI                 | ✓      | <PEP440> active, 4 wheels + 1 sdist, no shadows |
