@@ -6,6 +6,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::auth::scope::{RequireRead, Scope};
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
 
@@ -46,22 +47,44 @@ pub struct LogFilterParams {
 ///
 /// Query the paginated audit log of governance events.
 /// Supports optional filtering by agent ID and event type.
+///
+/// Per-tenant scoping (AAASM-3483): the audit log is per-tenant data. An admin
+/// caller may read any org's audit (honouring an explicit `?org_id`); a
+/// tenant-scoped caller has the `org_id` filter forced to its own org, so it
+/// can neither read another org's audit nor omit the filter to enumerate every
+/// org. A non-admin caller with no org scope receives an empty page rather than
+/// a cross-tenant dump.
 #[utoipa::path(
     get,
     path = "/api/v1/logs",
     params(PaginationParams, LogFilterParams),
     responses(
-        (status = 200, description = "Paginated audit log entries", body = Vec<LogEntry>)
+        (status = 200, description = "Paginated audit log entries", body = Vec<LogEntry>),
+        (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "logs"
 )]
 pub async fn list_logs(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
     axum::extract::Query(filters): axum::extract::Query<LogFilterParams>,
 ) -> impl IntoResponse {
     let limit = params.per_page() as usize;
     let offset = params.offset();
+
+    // AAASM-3483 — bind the `org_id` filter to the caller's tenant. An admin
+    // honours the caller-supplied `?org_id`; a tenant-scoped caller is forced to
+    // its own org; a non-admin with no org scope is given a sentinel that the
+    // `AuditReader` org filter never matches (entries with `org_id = None` never
+    // match an explicit filter), yielding an empty page instead of every org's
+    // audit.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let effective_org: Option<&str> = if is_admin {
+        filters.org_id.as_deref()
+    } else {
+        Some(caller.tenant.org_id.as_deref().unwrap_or("\0__no_tenant_scope__"))
+    };
 
     let (entries, total) = state
         .audit_reader
@@ -70,7 +93,7 @@ pub async fn list_logs(
             offset,
             filters.agent_id.as_deref(),
             filters.event_type.as_deref(),
-            filters.org_id.as_deref(),
+            effective_org,
         )
         .await
         .unwrap_or_default();

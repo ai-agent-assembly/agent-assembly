@@ -124,6 +124,19 @@ impl AuthenticatedCaller {
         }
         self.tenant.team_id.as_deref() == Some(team)
     }
+
+    /// Whether this caller may see data for `org` without a separate admin gate.
+    ///
+    /// AAASM-3483: the org-tier analogue of [`Self::can_access_team`], used by
+    /// the topology and audit-log surfaces. An admin sees every org; a
+    /// tenant-scoped caller sees only its own org. A caller with no org scope
+    /// (and no admin) sees no per-org data.
+    pub fn can_access_org(&self, org: &str) -> bool {
+        if self.scopes.contains(&Scope::Admin) {
+            return true;
+        }
+        self.tenant.org_id.as_deref() == Some(org)
+    }
 }
 
 /// Prefix used by API keys (`aa_`).

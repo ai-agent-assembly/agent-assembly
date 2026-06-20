@@ -43,7 +43,7 @@ pub(crate) fn status_str(status: &AgentStatus) -> &'static str {
 ///   "standalone_root_agents": []
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "team_count": 2,
     "root_agent_count": 3,

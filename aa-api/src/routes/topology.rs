@@ -13,9 +13,10 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use aa_gateway::registry::{AgentRegistry, AgentStatus};
+use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
 
-use crate::auth::scope::RequireRead;
+use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{format_id, status_str};
 pub use crate::models::topology::{
@@ -48,6 +49,67 @@ fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
         "deregistered" => matches!(status, AgentStatus::Deregistered),
         _ => true,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tenant scoping (AAASM-3483)
+// ---------------------------------------------------------------------------
+//
+// The topology surface is per-tenant data, but the org/team/agent selector is
+// caller-controlled. Without scoping, any read-scoped caller can read another
+// tenant's topology, or omit the filter to enumerate every tenant. Mirror the
+// cost / agent-budget reference pattern (AAASM-3139): admin bypasses; a
+// tenant-scoped caller is confined to its own org / team; a non-admin caller
+// with no tenant scope at all sees nothing (deny / empty, never a cross-tenant
+// dump).
+
+/// Whether a single record is visible to `caller` under tenant scoping.
+///
+/// Admin sees every record. A non-admin caller only sees a record whose
+/// `org_id` matches its org scope (when it has one) AND whose `team_id` matches
+/// its team scope (when it has one). A record carrying no `org_id` / `team_id`
+/// never matches a scoped non-admin caller — untagged records are not exposed
+/// across the tenant boundary.
+fn record_visible_to(caller: &AuthenticatedCaller, record: &AgentRecord) -> bool {
+    if caller.scopes.contains(&Scope::Admin) {
+        return true;
+    }
+    // A non-admin caller with no tenant scope at all can never be confined to a
+    // tenant, so it sees nothing (fail-closed; never a cross-tenant dump).
+    if caller.tenant.org_id.is_none() && caller.tenant.team_id.is_none() {
+        return false;
+    }
+    if let Some(org) = caller.tenant.org_id.as_deref() {
+        if record.org_id.as_deref() != Some(org) {
+            return false;
+        }
+    }
+    if let Some(team) = caller.tenant.team_id.as_deref() {
+        if record.team_id.as_deref() != Some(team) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A non-admin caller with neither an org nor a team scope can never be
+/// confined to a tenant, so it must not receive any per-tenant topology data.
+fn caller_has_no_tenant_scope(caller: &AuthenticatedCaller) -> bool {
+    !caller.scopes.contains(&Scope::Admin) && caller.tenant.org_id.is_none() && caller.tenant.team_id.is_none()
+}
+
+/// Cache-key fragment that makes a cached topology response specific to the
+/// caller's tenant scope, so a tenant-scoped response is never served to a
+/// caller from a different tenant.
+fn tenant_cache_tag(caller: &AuthenticatedCaller) -> String {
+    if caller.scopes.contains(&Scope::Admin) {
+        return "admin".to_string();
+    }
+    format!(
+        "org={}|team={}",
+        caller.tenant.org_id.as_deref().unwrap_or(""),
+        caller.tenant.team_id.as_deref().unwrap_or(""),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -146,12 +208,31 @@ fn build_tree(
     tag = "topology"
 )]
 pub async fn get_overview(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<TopologyFilterParams>,
 ) -> (StatusCode, Json<TopologyOverview>) {
+    // AAASM-3483 — a non-admin caller with no tenant scope receives an empty
+    // overview rather than a cross-tenant dump.
+    if caller_has_no_tenant_scope(&caller) {
+        return (StatusCode::OK, Json(TopologyOverview::default()));
+    }
+
+    // AAASM-3483 — a tenant-scoped caller is confined to its own org; an
+    // explicit `?org_id` selector outside that scope yields no agents. Force
+    // the effective org filter to the caller's own org for non-admins.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let effective_org: Option<String> = if is_admin {
+        params.org_id.clone()
+    } else {
+        caller.tenant.org_id.clone()
+    };
+
+    // AAASM-3483 — the tenant tag scopes the cache entry to the caller's tenant
+    // so a tenant-scoped response is never served to a different tenant.
     let cache_key = format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
+        tenant_cache_tag(&caller),
         params.status.as_deref().unwrap_or(""),
         params.min_depth.unwrap_or(0),
         params.show_budget.unwrap_or(false),
@@ -162,7 +243,7 @@ pub async fn get_overview(
 
     // AAASM-2008 — when org_id is set, scope to that org's members
     // (O(members) lookup). Otherwise list all agents.
-    let all = match params.org_id.as_deref() {
+    let all: Vec<AgentRecord> = match effective_org.as_deref() {
         Some(oid) => {
             let keys = state.agent_registry.org_members(oid);
             keys.into_iter().filter_map(|k| state.agent_registry.get(&k)).collect()
@@ -173,6 +254,9 @@ pub async fn get_overview(
 
     let filtered: Vec<_> = all
         .iter()
+        // AAASM-3483 — confine the result to records the caller's tenant may see
+        // (team-tier scoping; org-tier handled by `effective_org` above).
+        .filter(|r| record_visible_to(&caller, r))
         .filter(|r| {
             params
                 .status
@@ -260,7 +344,7 @@ pub async fn get_overview(
     tag = "topology"
 )]
 pub async fn get_tree(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(root_id): Path<String>,
     Query(params): Query<TreeParams>,
@@ -269,8 +353,24 @@ pub async fn get_tree(
     let max_depth = params.depth.unwrap_or(MAX_TREE_DEPTH).min(MAX_TREE_DEPTH);
     let show_budget = params.show_budget.unwrap_or(false);
 
+    // AAASM-3483 — a non-admin caller with no tenant scope sees no per-tenant
+    // topology; report 404 (not 403) so it cannot probe agent existence.
+    if caller_has_no_tenant_scope(&caller) {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
+        );
+    }
+
     // Validate the starting agent exists and is a root before hitting the cache.
     if let Some(record) = state.agent_registry.get(&agent_id) {
+        // AAASM-3483 — a root outside the caller's tenant is reported as not
+        // found, so the tree of another tenant's agent never leaks and the
+        // 404-vs-422 distinction cannot be used to enumerate cross-tenant roots.
+        if !record_visible_to(&caller, &record) {
+            return Err(
+                ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
+            );
+        }
         if record.depth > 0 {
             return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
                 .with_detail(format!("Agent {root_id} is not a root agent (depth {})", record.depth)));
@@ -282,7 +382,8 @@ pub async fn get_tree(
     }
 
     let cache_key = format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
+        tenant_cache_tag(&caller),
         root_id,
         max_depth,
         params.status.as_deref().unwrap_or(""),
@@ -329,13 +430,22 @@ pub async fn get_tree(
     tag = "topology"
 )]
 pub async fn get_team(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(team_id): Path<String>,
     Query(params): Query<TopologyFilterParams>,
 ) -> Result<(StatusCode, Json<TeamTopology>), ProblemDetail> {
+    // AAASM-3483 — a tenant-scoped caller may only read its own team; any other
+    // team (and an unscoped non-admin caller) is denied, so a team's membership
+    // never leaks across the tenant boundary.
+    if !caller.can_access_team(&team_id) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("Reading a team's topology requires admin scope or membership in that team"));
+    }
+
     let cache_key = format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
+        tenant_cache_tag(&caller),
         team_id,
         params.status.as_deref().unwrap_or(""),
         params.min_depth.unwrap_or(0),
@@ -353,6 +463,9 @@ pub async fn get_team(
     let mut members: Vec<AgentNode> = member_ids
         .iter()
         .filter_map(|id| state.agent_registry.get(id))
+        // AAASM-3483 — apply org-tier scoping too: a caller scoped to both an
+        // org and a team must not see a same-named team's members in another org.
+        .filter(|r| record_visible_to(&caller, r))
         .filter(|r| {
             params
                 .status
@@ -403,11 +516,20 @@ pub async fn get_team(
     tag = "topology"
 )]
 pub async fn get_lineage(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(agent_id_str): Path<String>,
 ) -> Result<(StatusCode, Json<AgentLineage>), ProblemDetail> {
-    if let Some(cached) = state.topology_lineage_cache.get(&agent_id_str).await {
+    // AAASM-3483 — a non-admin caller with no tenant scope sees no per-tenant
+    // topology; report 404 so it cannot probe agent existence.
+    if caller_has_no_tenant_scope(&caller) {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
+        );
+    }
+
+    let cache_key = format!("{}|{}", tenant_cache_tag(&caller), agent_id_str);
+    if let Some(cached) = state.topology_lineage_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
 
@@ -416,6 +538,14 @@ pub async fn get_lineage(
     let record = state.agent_registry.get(&agent_id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
     })?;
+
+    // AAASM-3483 — an agent outside the caller's tenant is reported as not found
+    // so its delegation lineage (and that of its ancestors) never leaks.
+    if !record_visible_to(&caller, &record) {
+        return Err(
+            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {agent_id_str}"))
+        );
+    }
 
     // ancestors_of returns parent-first (direct parent at [0], root at end).
     // Reverse to root-first, then append the requested agent as the final element.
@@ -450,7 +580,7 @@ pub async fn get_lineage(
     };
     state
         .topology_lineage_cache
-        .insert(agent_id_str, Arc::new(lineage.clone()))
+        .insert(cache_key, Arc::new(lineage.clone()))
         .await;
     Ok((StatusCode::OK, Json(lineage)))
 }
@@ -468,12 +598,25 @@ pub async fn get_lineage(
     ),
     tag = "topology"
 )]
-pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>) -> (StatusCode, Json<TopologyStats>) {
-    if let Some(cached) = state.topology_stats_cache.get("stats").await {
+pub async fn get_stats(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<TopologyStats>) {
+    // AAASM-3483 — stats aggregate the whole registry, so without tenant scoping
+    // they leak every tenant's agent counts. The tenant tag scopes the cache and
+    // the visibility filter below confines the aggregation to the caller's tenant
+    // (a non-admin with no tenant scope aggregates over an empty set → zeros).
+    let cache_key = format!("stats|{}", tenant_cache_tag(&caller));
+    if let Some(cached) = state.topology_stats_cache.get(&cache_key).await {
         return (StatusCode::OK, Json((*cached).clone()));
     }
 
-    let all = state.agent_registry.list();
+    let all: Vec<AgentRecord> = state
+        .agent_registry
+        .list()
+        .into_iter()
+        .filter(|r| record_visible_to(&caller, r))
+        .collect();
 
     let mut root_agent_count = 0usize;
     let mut max_depth = 0u32;
@@ -546,7 +689,7 @@ pub async fn get_stats(_auth: RequireRead, Extension(state): Extension<AppState>
     };
     state
         .topology_stats_cache
-        .insert("stats", Arc::new(stats.clone()))
+        .insert(cache_key, Arc::new(stats.clone()))
         .await;
     (StatusCode::OK, Json(stats))
 }

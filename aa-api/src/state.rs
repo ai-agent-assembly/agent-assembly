@@ -92,7 +92,7 @@ pub struct AppState {
     /// Short-lived cache for GET /topology/lineage/{agent_id} responses (5 s TTL).
     pub topology_lineage_cache: moka::future::Cache<String, Arc<AgentLineage>>,
     /// Short-lived cache for GET /topology/stats responses (10 s TTL).
-    pub topology_stats_cache: moka::future::Cache<&'static str, Arc<TopologyStats>>,
+    pub topology_stats_cache: moka::future::Cache<String, Arc<TopologyStats>>,
     /// Dashboard Capability Matrix store (AAASM-1366).
     pub capability_store: Arc<CapabilityStore>,
     /// Dashboard Identity & Access — IAM API key management (AAASM-1397).
