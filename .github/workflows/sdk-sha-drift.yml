@@ -18,7 +18,7 @@ jobs:
     name: SDK ↔ core SHA consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
       - name: Check SDK ↔ core SHA consistency
         id: check
         continue-on-error: true

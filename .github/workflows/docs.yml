@@ -40,7 +40,7 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
         with:
           # Full history so the last-changed preprocessor can read per-page
           # git dates; a shallow clone would collapse every page to one commit.
@@ -277,7 +277,7 @@ jobs:
     if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
 
       - name: Install system dependencies (protoc, pkg-config, libssl-dev)
         run: |
