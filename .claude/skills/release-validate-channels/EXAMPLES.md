@@ -32,13 +32,17 @@ gh release view v0.0.1-alpha.9 --repo ai-agent-assembly/agent-assembly \
 ```
 
 - `isDraft = false`, `isPrerelease = true`
-- 6 assets:
+- 8 assets (current `release.yml` uploads the detached cosign `.sig`/`.pem`
+  alongside the self-contained `.cosign.bundle`; the very earliest cuts
+  predated the detached pair and showed 6):
   - `aasm-aarch64-apple-darwin.tar.gz`
   - `aasm-x86_64-apple-darwin.tar.gz`
   - `aasm-aarch64-unknown-linux-gnu.tar.gz`
   - `aasm-x86_64-unknown-linux-gnu.tar.gz`
   - `SHA256SUMS`
   - `SHA256SUMS.cosign.bundle`
+  - `SHA256SUMS.sig`
+  - `SHA256SUMS.pem`
 
 ### 2. crates.io (sparse-index)
 
@@ -120,7 +124,7 @@ Release validation for v0.0.1-alpha.9:
 
 | Channel              | Status | Detail                                                            |
 |----------------------|--------|-------------------------------------------------------------------|
-| GitHub Release       | ✓      | 6 assets, isPrerelease=true                                       |
+| GitHub Release       | ✓      | 8 assets, isPrerelease=true                                       |
 | crates.io (9 crates) | ✓      | all sparse-index vers = 0.0.1-alpha.9                             |
 | npm (5 packages)     | ✓      | sdk + 4 runtime sub-packages (linux-{arm64,x64}, no -gnu)         |
 | PyPI                 | ✓      | 0.0.1a9 active, 4 wheels + 1 sdist; soft note: 0.0.2 yanked shadow|

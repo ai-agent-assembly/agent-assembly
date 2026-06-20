@@ -86,13 +86,14 @@ this skill.
 
 ## The nine channels
 
-`VERSION="${TAG#v}"`; `PEP440`: `0.0.1-alpha.N` → `0.0.1aN` (canonical sed in
+`VERSION="${TAG#v}"`; `PEP440`: `-alpha.N`→`aN`, `-beta.N`→`bN`, `-rc.N`→`rcN`
+(e.g. current cadence `0.0.1-beta.2` → `0.0.1b2`; canonical sed in
 `scripts/check-release.sh` `to_pep440()`). Probe in this order, recording
 green / red per channel:
 
 | # | Channel              | One-line check |
 |---|----------------------|----------------|
-| 1 | GitHub Release       | 6 expected assets present, `isPrerelease=true`, `isDraft=false` |
+| 1 | GitHub Release       | 8 expected assets present, `isPrerelease=true`, `isDraft=false` |
 | 2 | crates.io            | All 9 published crates' sparse-index latest `vers` = `$VERSION` |
 | 3 | npm                  | `@agent-assembly/sdk` + 4 runtime sub-packages exist at `$VERSION` |
 | 4 | PyPI                 | `agent-assembly==$PEP440` active with 4 wheels + 1 sdist; no yanked higher shadow |
@@ -117,7 +118,7 @@ Release validation for <TAG>:
 
 | Channel              | Status | Detail                                          |
 |----------------------|--------|-------------------------------------------------|
-| GitHub Release       | ✓      | 6 assets, isPrerelease=true                     |
+| GitHub Release       | ✓      | 8 assets, isPrerelease=true                     |
 | crates.io (9 crates) | ✓      | all latest line vers = <VERSION>                |
 | npm (5 packages)     | ✓      | sdk + 4 runtime sub-packages at <VERSION>       |
 | PyPI                 | ✓      | <PEP440> active, 4 wheels + 1 sdist, no shadows |
@@ -174,10 +175,15 @@ tempted to "fix" things from inside the validation loop.
   job.** That aggregator decides whether the cut itself succeeded; this skill
   is the *external* cross-channel confirmation that runs after it. The two
   complement each other; the skill does not block the workflow.
-- **go-sdk is out of scope by design.** The Go SDK cuts its own
-  `goreleaser`-driven tag on its own cadence (RUNBOOK § 7). Do **not** flag
-  go-sdk as a missing channel, probe a non-existent `release-go.yml`, or add
-  it to the matrix. The 9-channel matrix is complete as-is.
+- **go-sdk has no distribution channel to validate here.** The Go SDK ships
+  via the Go module proxy off its own `goreleaser`-driven tag on its own
+  cadence (RUNBOOK § 7), so there is no `release-go.yml` binary fan-out and no
+  registry row to probe. Do **not** add go-sdk to the matrix or flag it as a
+  missing channel — the 9-channel matrix is complete as-is. (Note: go-sdk's
+  `aa-sdk-client` source pin IS now kept in lockstep with each tag via
+  `release.yml`'s `update-go-sdk-ffi-pin` auto-bump PR, AAASM-3006 — but that
+  is a source-pin PR on go-sdk, not a published channel, so it is verified by
+  merging the bump PR, not by this read-only channel matrix.)
 
 If a fix is required, exit with the matrix, then invoke the appropriate
 write-side skill or RUNBOOK procedure separately, and re-run this skill to
