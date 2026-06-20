@@ -2855,6 +2855,210 @@ mod tests {
         );
     }
 
+    // ── Directory-cascade hot-reload (AAASM-3497) ─────────────────────────────
+
+    /// Poll `engine.evaluate(ctx, action)` until its decision equals `want`,
+    /// or fail after `timeout`. Used instead of a fixed sleep so the test is
+    /// deterministic across slow/fast filesystems: it succeeds as soon as the
+    /// directory watcher has applied the on-disk change, and only fails if the
+    /// re-evaluation never lands within the (generous) budget.
+    fn poll_until_decision(
+        engine: &PolicyEngine,
+        ctx: &AgentContext,
+        action: &GovernanceAction,
+        want: &PolicyResult,
+        timeout: std::time::Duration,
+    ) -> PolicyResult {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let got = engine.evaluate(ctx, action).decision;
+            if &got == want {
+                return got;
+            }
+            if std::time::Instant::now() >= deadline {
+                return got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    /// Modifying a `*.yaml` in the policy directory must re-evaluate the
+    /// cascade on the running engine. A Global allow-all baseline plus an
+    /// org-alpha doc that initially allows `bash`; once the org doc on disk is
+    /// rewritten to deny `bash`, an org-alpha agent's `bash` call flips from
+    /// Allow to Deny without reloading the engine.
+    #[test]
+    fn cascade_hot_reload_modify_file_re_evaluates() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-global-allow-all\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let org_doc = tmp.path().join("100-org-alpha.yaml");
+        // Initially org-alpha explicitly *allows* bash.
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-org-alpha\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: true\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xaa, "org-alpha");
+        let bash = tool_call("bash", "");
+
+        // Baseline: bash is allowed before any edit.
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            PolicyResult::Allow,
+            "org-alpha bash must start allowed"
+        );
+
+        // Strengthen the org doc to DENY bash. Truncate+rewrite mirrors how an
+        // operator edits a policy file in place.
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-org-alpha\n  version: \"0.2.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let want = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        let got = poll_until_decision(&engine, &ctx, &bash, &want, std::time::Duration::from_secs(10));
+        assert_eq!(
+            got, want,
+            "modifying the org doc on disk must hot-reload the cascade and deny bash"
+        );
+    }
+
+    /// Adding a brand-new scoped `*.yaml` to the policy directory must register
+    /// in the cascade on the running engine. Starting from a Global allow-all
+    /// with no org doc, dropping in an org-alpha `bash` deny flips an org-alpha
+    /// agent's `bash` call from Allow to Deny.
+    #[test]
+    fn cascade_hot_reload_add_scoped_file_re_evaluates() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-add-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xcc, "org-alpha");
+        let bash = tool_call("bash", "");
+
+        // Baseline: only Global allow-all loaded → bash allowed.
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            PolicyResult::Allow,
+            "org-alpha bash must start allowed with no org doc present"
+        );
+
+        // Add a new org-scoped deny document to the directory.
+        std::fs::write(
+            tmp.path().join("100-org-alpha-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-add-org-alpha\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let want = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        let got = poll_until_decision(&engine, &ctx, &bash, &want, std::time::Duration::from_secs(10));
+        assert_eq!(
+            got, want,
+            "adding a new org-scoped deny doc must hot-reload the cascade and deny bash"
+        );
+    }
+
+    /// A read/parse failure during a hot-reload must preserve the current
+    /// cascade — a broken mid-edit file must never degrade the running gateway
+    /// to allow-all. Writing invalid YAML over the org-alpha *deny* doc must
+    /// leave bash denied, not silently re-allowed.
+    #[test]
+    fn cascade_hot_reload_invalid_yaml_preserves_cascade() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-inv-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-inv-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xdd, "org-alpha");
+        let bash = tool_call("bash", "");
+        let deny = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            deny,
+            "org-alpha bash starts denied"
+        );
+
+        // Corrupt the org doc. The reload must fail-safe and keep the deny.
+        std::fs::write(&org_doc, "this: is: not: valid: yaml: [[[").unwrap();
+
+        // Give the watcher ample time to observe + reject the bad edit, then
+        // assert the deny is still in force (the cascade was preserved).
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            deny,
+            "an invalid mid-edit file must not degrade the cascade to allow-all"
+        );
+    }
+
     // ── approval_escalation_overrides tests ───────────────────────────────────
 
     #[test]
