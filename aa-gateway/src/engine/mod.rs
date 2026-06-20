@@ -201,6 +201,12 @@ pub struct PolicyEngine {
     /// or modified, without locking the request hot path. For the single-file
     /// and in-memory construction paths the slot is built once and never
     /// swapped.
+    ///
+    /// Known residual: the single-file watcher ([`watcher::start_watcher`])
+    /// swaps the `policy` document but not these `compiled_patterns`, so a
+    /// single-file hot-reload still serves the construction-time
+    /// `sensitive_patterns`. The directory path recompiles them on every swap;
+    /// recompiling on the single-file path is left out of scope for AAASM-3497.
     cascade: Arc<ArcSwap<CascadeState>>,
     /// Directory watcher for the multi-document cascade (AAASM-3497).
     ///
