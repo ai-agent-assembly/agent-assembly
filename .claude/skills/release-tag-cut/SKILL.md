@@ -1,6 +1,6 @@
 ---
 name: release-tag-cut
-description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new alpha-series agent-assembly release (e.g. 0.0.1-alpha.N) on a green master and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
+description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new pre-release agent-assembly tag (the current cadence is the 0.0.1-beta.N series; earlier cuts were 0.0.1-alpha.N) on a green master and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
 ---
 
 # release-tag-cut
@@ -12,6 +12,30 @@ Executable contract for cutting an agent-assembly release tag from a clean
 gates, and downstream channel matrix live in
 [`docs/release/RUNBOOK.md`](../../../docs/release/RUNBOOK.md).
 
+## Release-flow index (cut → fan-out → validate → tap-merge)
+
+A full release is a four-stage relay across three sibling skills. WHY this is
+split: each stage has a different write-authority and a different owner, so
+collapsing them invites an LLM to "fix" downstream channels from inside the
+cut. Run them in order:
+
+1. **`release-tag-cut`** (this skill, write) — bump the workspace version, tag,
+   push the tag. Ends the moment `git push remote v<X>` fires `release.yml`.
+2. **fan-out** (automatic, owned by `release.yml`) — the pushed tag triggers
+   GitHub Release + cosign signing, `cargo publish` of the workspace,
+   `notify-downstream` `repository_dispatch` to node-sdk + python-sdk, the
+   `update-{node,python,go}-sdk-ffi-pin` auto-bump PRs, and the
+   `update-homebrew-tap` bot PR. The operator runs none of these by hand.
+3. **`/release-validate-channels v<X>`** (read-only) — once `release.yml` is
+   green, confirm every channel actually caught up. Emits a green/red matrix.
+4. **`/homebrew-tap-merge <PR>`** (write, on the tap repo) — verify the bot's
+   sha256s against the release `SHA256SUMS` and merge the tap PR so
+   `brew install aasm` serves the new version.
+
+The cadence is currently the `0.0.1-beta.N` pre-release series (the latest cut
+is `v0.0.1-beta.2`); the same relay served the earlier `0.0.1-alpha.N` cuts and
+is version-string-agnostic — the operator always supplies the exact literal.
+
 > This skill ends at `git push remote v<X>`. The post-tag verification loop
 > (Homebrew tap PR merge, crates.io / PyPI / npm propagation, ghcr.io image
 > push) is owned by `/release-validate-channels`, invoked by the operator once
@@ -22,7 +46,8 @@ gates, and downstream channel matrix live in
 Pick this skill when **all** of the following hold:
 
 - The operator has decided agent-assembly is ready for a new pre-release tag
-  in the alpha series (e.g. cutting `0.0.1-alpha.10` after `0.0.1-alpha.9`).
+  (current cadence: the beta series, e.g. cutting `0.0.1-beta.3` after
+  `0.0.1-beta.2`; the same path served the earlier `0.0.1-alpha.N` cuts).
 - The most recent CI run on `master` is green.
 - Draft release notes exist (or the operator is prepared to write them inline
   during step 5).
@@ -30,19 +55,20 @@ Pick this skill when **all** of the following hold:
 
 The triggering operator phrasing is typically:
 
-> "Cut alpha-N+1", "Tag v0.0.1-alpha.10", "Release the next alpha".
+> "Cut beta-N+1", "Tag v0.0.1-beta.3", "Release the next beta".
 
 ## When NOT to use
 
-This skill is **alpha-series, agent-assembly-monorepo, full-fanout** specific.
-Pick a different path in any of the following cases:
+This skill is **pre-release-series, agent-assembly-monorepo, full-fanout**
+specific. Pick a different path in any of the following cases:
 
 - **SDK-only release** — use `/sdk-only-release` in the target SDK repo.
   Cutting an `agent-assembly` tag for an SDK-only change wastes a full
   crates.io publish cycle.
-- **GA or non-pre-release tag** (`v1.0.0`, `v0.1.0`, etc.) — this skill is
-  intentionally scoped to the alpha pre-release cadence; a GA cut needs the
-  release-readiness checklist + manual review, not this autopilot path.
+- **GA or non-pre-release tag** (`v1.0.0`, `v0.1.0`, etc. — any tag with no
+  `-alpha`/`-beta`/`-rc` suffix) — this skill is intentionally scoped to the
+  pre-release cadence; a GA cut needs the release-readiness checklist + manual
+  review, not this autopilot path.
 - **Hotfix to an already-tagged release** — use the SDK-only path or a
   follow-up patch tag coordinated via the RUNBOOK; do not re-cut the same tag.
 - **Pre-conditions not met** — if `master` is dirty, behind `remote/master`,
