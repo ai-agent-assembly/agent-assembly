@@ -51,9 +51,17 @@ RUN apt-get update \
 # Drop the prebuilt `aasm` binary into the image PATH.
 COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
-# Install the AAASM Node SDK. Transitional git source; switches to
-# `npm install @agent-assembly/sdk` once AAASM-1203 lands.
-RUN npm install -g 'github:ai-agent-assembly/node-sdk'
+# Install the AAASM Node SDK from the npm registry (AAASM-1203 published
+# `@agent-assembly/sdk`). The `beta` dist-tag tracks the current pre-release
+# line, mirroring how the Python image installs its SDK from the canonical
+# source. The previous `github:` shorthand made npm git-clone over SSH, which
+# fails in the build image (no ssh) with exit code 128.
+RUN npm install -g '@agent-assembly/sdk@beta'
+
+# Make the globally-installed SDK resolvable to bare `require()` /`import`
+# from arbitrary scripts (a `-g` package is not on the default module
+# resolution path). Points at `npm root -g`.
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
