@@ -450,9 +450,10 @@ jobs:
             Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   update-node-sdk-ffi-pin:
-    # AAASM-2883: after every tag push, open a PR on node-sdk that bumps
-    # native/aa-ffi-node/Cargo.toml's `aa-sdk-client` git-SHA pin to the
-    # exact commit this release was cut from. Without this, the SDK pin
+    # AAASM-2883 / AAASM-3468: after every tag push, open a PR on node-sdk
+    # that bumps every agent-assembly git-SHA pin (aa-sdk-client + aa-proto,
+    # + any future shared crate) in native/aa-ffi-node/Cargo.toml in lockstep
+    # to the exact commit this release was cut from. Without this, the SDK pin
     # drifts behind the published binaries (AAASM-2880 observed an 8-day
     # drift behind alpha-9) because the manual bump step on the SDK side
     # gets forgotten. The PR is opened by the bot and reviewed/merged on
@@ -472,35 +473,53 @@ jobs:
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
           path: sdk
 
-      - name: Rewrite native/aa-ffi-node/Cargo.toml aa-sdk-client rev
+      - name: Rewrite native/aa-ffi-node/Cargo.toml agent-assembly git pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # Match the literal `aa-sdk-client = { git = "...", rev = "<40-hex>"`
-          # prefix and rewrite only the rev value. We don't need to know the
-          # old SHA ahead of time; the regex anchors on the surrounding tokens.
-          sed -i -E 's|(aa-sdk-client = \{ git = "[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|' \
+          # AAASM-3468: the shim Cargo.toml pins MORE than one agent-assembly
+          # crate (today aa-sdk-client + aa-proto; a future shared crate would
+          # add more). ADR 0003 lockstep (native-pin-consistency gate) requires
+          # EVERY aa-* git dep from the agent-assembly source to share one rev.
+          # Rewrite the rev on every line whose git URL points at the
+          # agent-assembly workspace, so new shared crates are covered without
+          # editing this workflow again. The casing of the host org has varied
+          # historically (canonical id is lowercase `ai-agent-assembly`), so the
+          # URL match tolerates `[^"]*`.
+          sed -i -E 's|(git = "[^"]*agent-assembly[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|g' \
             native/aa-ffi-node/Cargo.toml
-          grep -q "rev = \"${NEW_SHA}\"" native/aa-ffi-node/Cargo.toml \
-            || { echo "::error::aa-sdk-client rev rewrite produced unexpected result"; exit 1; }
+          # Verify no agent-assembly git pin still carries a stale rev.
+          if grep -nE 'git = "[^"]*agent-assembly[^"]*", rev = "[0-9a-f]{40}"' native/aa-ffi-node/Cargo.toml \
+               | grep -v "${NEW_SHA}"; then
+            echo "::error::one or more agent-assembly git pins did not rewrite to NEW_SHA"
+            exit 1
+          fi
           git -C . diff -- native/aa-ffi-node/Cargo.toml || true
 
-      - name: Regenerate native/aa-ffi-node/Cargo.lock for the new pin
+      - name: Regenerate native/aa-ffi-node/Cargo.lock for the new pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # AAASM-2959: re-resolve the lock so it matches the just-rewritten
-          # Cargo.toml rev. node pins only aa-sdk-client; its transitive
-          # aa-core/aa-proto from the same git source update with it. This only
+          # AAASM-2959 + AAASM-3468: re-resolve the lock so it matches the
+          # just-rewritten Cargo.toml revs. The shim pins multiple direct
+          # agent-assembly crates, so update every one to NEW_SHA together (a
+          # single -p aa-sdk-client would leave aa-proto behind and break the
+          # lockstep gate). Discover the pinned crate names from the manifest so
+          # a future shared crate is handled automatically. This only
           # re-resolves the lock (no compile), so cargo alone suffices.
+          update_args=()
+          while IFS= read -r p; do
+            [ -n "$p" ] && update_args+=( -p "$p" )
+          done < <(grep -oE '^[a-z0-9_-]+ = \{ git = "[^"]*agent-assembly[^"]*"' \
+            native/aa-ffi-node/Cargo.toml | sed -E 's| =.*||')
           cargo update --manifest-path native/aa-ffi-node/Cargo.toml \
-            -p aa-sdk-client --precise "${NEW_SHA}"
+            "${update_args[@]}" --precise "${NEW_SHA}"
           git -C . diff -- native/aa-ffi-node/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
@@ -514,12 +533,17 @@ jobs:
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
           base: master
           delete-branch: true
-          commit-message: "🤖 (aa-ffi-node): Bump aa-sdk-client pin to ${{ github.ref_name }}"
-          title: "🤖 (aa-ffi-node): Bump aa-sdk-client pin to ${{ github.ref_name }}"
+          commit-message: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"
+          title: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"
           body: |
-            Auto-bump `aa-sdk-client` git-SHA pin in `native/aa-ffi-node/Cargo.toml`
-            to track agent-assembly release `${{ github.ref_name }}` (commit
-            `${{ github.sha }}`).
+            Auto-bump every agent-assembly git-SHA pin (`aa-sdk-client`,
+            `aa-proto`, and any other shared crate) in
+            `native/aa-ffi-node/Cargo.toml` to track agent-assembly release
+            `${{ github.ref_name }}` (commit `${{ github.sha }}`).
+
+            Per ADR 0003 all aa-* git deps must share one rev so cargo resolves
+            a single checkout of the agent-assembly workspace; this PR bumps them
+            in lockstep (AAASM-3468).
 
             Why: without this PR, the SDK source pin drifts behind the published
             agent-assembly binaries (AAASM-2880 observed an 8-day drift behind
@@ -629,10 +653,11 @@ jobs:
     # mechanism as node-sdk's aa-ffi-node and drifts the same way
     # without this automation.
     #
-    # Mirrors `update-node-sdk-ffi-pin` (single-pin path) rather than
-    # `update-python-sdk-ffi-pin` (three-pin path) because aa-ffi-go's
-    # Cargo.toml carries only the single `aa-sdk-client` direct dep —
-    # aa-core / aa-proto arrive transitively, same shape as aa-ffi-node.
+    # AAASM-3468: bumps EVERY agent-assembly git pin in the shim in lockstep
+    # (aa-ffi-go's Cargo.toml carries direct `aa-sdk-client` AND `aa-proto`
+    # pins). The earlier single-pin path left aa-proto stale, breaking the
+    # ADR 0003 native-pin-consistency gate. Same generic shape as
+    # update-node-sdk-ffi-pin.
     name: Update go-sdk aa-ffi-go pin
     runs-on: ubuntu-latest
     needs: publish
@@ -648,35 +673,53 @@ jobs:
           token: ${{ secrets.GO_SDK_BOT_TOKEN }}
           path: sdk
 
-      - name: Rewrite native/aa-ffi-go/Cargo.toml aa-sdk-client rev
+      - name: Rewrite native/aa-ffi-go/Cargo.toml agent-assembly git pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # Match the literal `aa-sdk-client = { git = "...", rev = "<40-hex>"`
-          # prefix and rewrite only the rev value. We don't need to know the
-          # old SHA ahead of time; the regex anchors on the surrounding tokens.
-          sed -i -E 's|(aa-sdk-client = \{ git = "[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|' \
+          # AAASM-3468: the shim Cargo.toml pins MORE than one agent-assembly
+          # crate (today aa-sdk-client + aa-proto; a future shared crate would
+          # add more). ADR 0003 lockstep (native-pin-consistency gate) requires
+          # EVERY aa-* git dep from the agent-assembly source to share one rev.
+          # Rewrite the rev on every line whose git URL points at the
+          # agent-assembly workspace, so new shared crates are covered without
+          # editing this workflow again. The casing of the host org has varied
+          # historically (canonical id is lowercase `ai-agent-assembly`), so the
+          # URL match tolerates `[^"]*`.
+          sed -i -E 's|(git = "[^"]*agent-assembly[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|g' \
             native/aa-ffi-go/Cargo.toml
-          grep -q "rev = \"${NEW_SHA}\"" native/aa-ffi-go/Cargo.toml \
-            || { echo "::error::aa-sdk-client rev rewrite produced unexpected result"; exit 1; }
+          # Verify no agent-assembly git pin still carries a stale rev.
+          if grep -nE 'git = "[^"]*agent-assembly[^"]*", rev = "[0-9a-f]{40}"' native/aa-ffi-go/Cargo.toml \
+               | grep -v "${NEW_SHA}"; then
+            echo "::error::one or more agent-assembly git pins did not rewrite to NEW_SHA"
+            exit 1
+          fi
           git -C . diff -- native/aa-ffi-go/Cargo.toml || true
 
-      - name: Regenerate native/aa-ffi-go/Cargo.lock for the new pin
+      - name: Regenerate native/aa-ffi-go/Cargo.lock for the new pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # AAASM-2959: re-resolve the lock so it matches the just-rewritten
-          # Cargo.toml rev. go-sdk pins only aa-sdk-client; its transitive
-          # aa-core/aa-proto from the same git source update with it. This only
+          # AAASM-2959 + AAASM-3468: re-resolve the lock so it matches the
+          # just-rewritten Cargo.toml revs. The shim pins multiple direct
+          # agent-assembly crates, so update every one to NEW_SHA together (a
+          # single -p aa-sdk-client would leave aa-proto behind and break the
+          # lockstep gate). Discover the pinned crate names from the manifest so
+          # a future shared crate is handled automatically. This only
           # re-resolves the lock (no compile), so cargo alone suffices.
+          update_args=()
+          while IFS= read -r p; do
+            [ -n "$p" ] && update_args+=( -p "$p" )
+          done < <(grep -oE '^[a-z0-9_-]+ = \{ git = "[^"]*agent-assembly[^"]*"' \
+            native/aa-ffi-go/Cargo.toml | sed -E 's| =.*||')
           cargo update --manifest-path native/aa-ffi-go/Cargo.toml \
-            -p aa-sdk-client --precise "${NEW_SHA}"
+            "${update_args[@]}" --precise "${NEW_SHA}"
           git -C . diff -- native/aa-ffi-go/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
@@ -690,12 +733,17 @@ jobs:
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
           base: master
           delete-branch: true
-          commit-message: "🤖 (aa-ffi-go): Bump aa-sdk-client pin to ${{ github.ref_name }}"
-          title: "🤖 (aa-ffi-go): Bump aa-sdk-client pin to ${{ github.ref_name }}"
+          commit-message: "🤖 (aa-ffi-go): Bump agent-assembly git pins to ${{ github.ref_name }}"
+          title: "🤖 (aa-ffi-go): Bump agent-assembly git pins to ${{ github.ref_name }}"
           body: |
-            Auto-bump `aa-sdk-client` git-SHA pin in `native/aa-ffi-go/Cargo.toml`
-            to track agent-assembly release `${{ github.ref_name }}` (commit
-            `${{ github.sha }}`).
+            Auto-bump every agent-assembly git-SHA pin (`aa-sdk-client`,
+            `aa-proto`, and any other shared crate) in
+            `native/aa-ffi-go/Cargo.toml` to track agent-assembly release
+            `${{ github.ref_name }}` (commit `${{ github.sha }}`).
+
+            Per ADR 0003 all aa-* git deps must share one rev so cargo resolves
+            a single checkout of the agent-assembly workspace; this PR bumps them
+            in lockstep (AAASM-3468).
 
             Why: without this PR, the SDK source pin drifts behind the published
             agent-assembly binaries (AAASM-2880 observed an 8-day drift behind
