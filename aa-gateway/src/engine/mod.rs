@@ -2644,6 +2644,117 @@ mod tests {
         );
     }
 
+    // ── Directory-cascade binary-loader regression (AAASM-3499) ───────────────
+
+    /// Build a `ctx` for a distinct agent (`agent_byte`) whose lineage
+    /// `org_id` is `org`, mirroring the metadata `convert.rs` deposits on the
+    /// live gRPC path. Distinct agent ids matter: the decision cache is keyed
+    /// by `agent_id` (different orgs run different agents in production), so a
+    /// test must not reuse one agent id across two orgs.
+    fn make_ctx_in_org(agent_byte: u8, org: &str) -> AgentContext {
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([agent_byte; 16]);
+        ctx.metadata.insert("org_id".to_string(), org.to_string());
+        ctx
+    }
+
+    /// AAASM-3499 — the directory cascade must be reachable through the loader
+    /// the shipped `aa-gateway` binary calls (`load_cascade_from_dir_with_budget`),
+    /// not just the test-only `load_cascade_from_dir`. Mirrors the ST-org-4 QA
+    /// fixtures: a Global allow-all baseline plus an org-alpha-scoped `bash`
+    /// deny. The narrower org-scoped deny must override the Global allow for an
+    /// org-alpha agent, while an org-beta agent falls through to the allow.
+    #[test]
+    fn binary_loader_cascades_org_scoped_deny_over_global_allow() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Global baseline — empty tools = allow-by-default.
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global-allow-all\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        // Org-alpha-scoped deny of `bash`. `scope:` lives INSIDE `spec:`.
+        std::fs::write(
+            tmp.path().join("100-org-alpha-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-org-alpha-deny-bash\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let (alert_tx, _alert_rx) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(8);
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        // The binary path: a pre-built tracker is adopted, scope_index populated.
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget)
+            .expect("cascade directory loads via the binary loader");
+        let _ = alert_tx; // budget alerts unused in this assertion
+
+        let bash = tool_call("bash", "");
+
+        // org-alpha → the org-scoped deny fires and overrides the Global allow.
+        assert_eq!(
+            engine.evaluate(&make_ctx_in_org(0xaa, "org-alpha"), &bash).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "org-alpha bash must be denied by the narrower org-scoped document"
+        );
+
+        // org-beta → the org-alpha doc is filtered out; falls through to allow.
+        assert_eq!(
+            engine.evaluate(&make_ctx_in_org(0xbb, "org-beta"), &bash).decision,
+            PolicyResult::Allow,
+            "org-beta bash must pass through to the Global allow-all default"
+        );
+    }
+
+    /// The single-file loader must keep the same `scope_index`-empty,
+    /// primary-only behaviour (back-compat) — a directory and a file are not
+    /// interchangeable through the same loader, but routing on
+    /// `path.is_dir()` (in `server::load_policy_engine`) is what selects them.
+    #[test]
+    fn binary_loader_cascade_populates_scope_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:acme\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("loads");
+        // A populated scope_index is what routes evaluate() through the cascade.
+        assert!(
+            !engine.scope_index.is_empty(),
+            "directory loader must populate the scope_index (cascade active)"
+        );
+    }
+
     // ── approval_escalation_overrides tests ───────────────────────────────────
 
     #[test]

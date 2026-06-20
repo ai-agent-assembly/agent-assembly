@@ -611,3 +611,116 @@ pub async fn serve_uds(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::identity::{AgentId, SessionId};
+    use aa_core::time::Timestamp;
+    use aa_core::{AgentContext, GovernanceAction, PolicyResult};
+    use std::collections::BTreeMap;
+
+    fn new_tracker() -> Arc<BudgetTracker> {
+        Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ))
+    }
+
+    fn ctx_in_org(agent_byte: u8, org: &str) -> AgentContext {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("org_id".to_string(), org.to_string());
+        AgentContext {
+            agent_id: AgentId::from_bytes([agent_byte; 16]),
+            session_id: SessionId::from_bytes([2u8; 16]),
+            pid: 1,
+            started_at: Timestamp::from_nanos(0),
+            metadata,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+        }
+    }
+
+    fn bash_call() -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: "bash".to_string(),
+            args: String::new(),
+        }
+    }
+
+    fn write_cascade_dir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:acme\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    /// AAASM-3499 — `load_policy_engine` must route a *directory* to the
+    /// multi-document cascade loader, making the documented Org/Team/Agent
+    /// cascade reachable from the shipped `aa-gateway` binary. Asserted
+    /// behaviourally: the org-acme `bash` deny overrides the Global allow for
+    /// an org-acme agent, while a different org falls through to allow.
+    #[test]
+    fn load_policy_engine_routes_directory_to_cascade() {
+        let tmp = write_cascade_dir();
+        let engine = load_policy_engine(tmp.path(), new_tracker()).expect("directory loads");
+
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0xac, "acme"), &bash_call()).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "org-acme bash must be denied by the cascade loaded from the directory"
+        );
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0x07, "other"), &bash_call()).decision,
+            PolicyResult::Allow,
+            "a non-matching org must fall through to the Global allow-all"
+        );
+    }
+
+    /// A single file preserves the long-standing single-policy behaviour: with
+    /// no cascade loaded, the same org-acme agent is not subject to any
+    /// org-scoped deny (the directory document is never consulted).
+    #[test]
+    fn load_policy_engine_routes_file_to_single_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("policy.yaml");
+        std::fs::write(
+            &file,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-single\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+
+        let engine = load_policy_engine(&file, new_tracker()).expect("file loads");
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0xac, "acme"), &bash_call()).decision,
+            PolicyResult::Allow,
+            "single-file load must not apply any org-scoped cascade deny"
+        );
+    }
+}
