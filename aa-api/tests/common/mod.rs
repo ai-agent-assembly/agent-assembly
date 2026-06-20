@@ -265,3 +265,20 @@ pub fn generate_test_jwt_for_team(key_id: &str, scopes: &[Scope], team_id: &str)
         .sign_with_tenant(key_id, scopes, Some(team_id.to_string()), None)
         .expect("signing should succeed")
 }
+
+/// Generate a test JWT scoped to an arbitrary (team, org) tenant (AAASM-3483).
+///
+/// Mirrors the bug repro's `sign_with_tenant(.., team, org)`, letting tests
+/// mint org-scoped callers for the topology / audit-log isolation checks.
+#[allow(dead_code)]
+pub fn generate_test_jwt_for_tenant(
+    key_id: &str,
+    scopes: &[Scope],
+    team_id: Option<&str>,
+    org_id: Option<&str>,
+) -> String {
+    let signer = JwtSigner::new(TEST_SECRET);
+    signer
+        .sign_with_tenant(key_id, scopes, team_id.map(str::to_string), org_id.map(str::to_string))
+        .expect("signing should succeed")
+}
