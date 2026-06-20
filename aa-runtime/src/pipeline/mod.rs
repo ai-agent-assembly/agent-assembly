@@ -640,6 +640,7 @@ mod tests {
     use super::*;
     use crate::policy::PolicyRules;
     use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
+    use aa_proto::assembly::policy::v1::OpControlSignal;
 
     /// Unwrap a `PipelineEvent::Audit` variant, panicking if it is a different variant.
     fn unwrap_audit(event: PipelineEvent) -> EnrichedEvent {
@@ -1511,6 +1512,141 @@ mod tests {
 
         if let IpcResponse::PolicyResponse(r) = resp {
             assert_eq!(r.decision, Decision::Deny as i32);
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// Build a per-tool PolicyQuery tagged with the trace/span that compose
+    /// `op_id` ("{trace_id}:{span_id}"), so the op-control store can address it.
+    fn policy_query_frame_for_op(
+        action_type: aa_proto::assembly::common::v1::ActionType,
+        trace_id: &str,
+        span_id: &str,
+    ) -> IpcFrame {
+        IpcFrame::PolicyQuery(aa_proto::assembly::policy::v1::CheckActionRequest {
+            action_type: action_type as i32,
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            ..Default::default()
+        })
+    }
+
+    /// AAASM-3491: a gateway terminate for the running op must **halt** the
+    /// agent — the in-flight per-tool check fast-fails with `OpTerminatedError`
+    /// even though no policy rule blocks the action. This is the core
+    /// regression: before the op-control consumer, terminate was a silent
+    /// allow-through.
+    #[tokio::test]
+    async fn op_control_terminate_halts_running_agent_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // Operator terminates the op via the gateway kill switch; the
+        // subscriber records it in the store before the next tool check.
+        op_control.apply("trace-1:span-1", OpControlSignal::Terminate);
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            // Empty policy: nothing here would deny — only the kill switch does.
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-1", "span-1")))
+            .await
+            .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Deny as i32, "terminated op must be denied");
+            assert!(
+                r.reason.contains("OpTerminatedError"),
+                "deny reason must name OpTerminatedError, got: {}",
+                r.reason
+            );
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3491: a paused op blocks the per-tool check; once the operator
+    /// resumes it, the same check completes (here: allowed by the empty policy).
+    /// Proves cooperative pause/resume reaches the running agent.
+    #[tokio::test]
+    async fn op_control_pause_blocks_then_resume_releases_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        op_control.apply("trace-2:span-2", OpControlSignal::Pause);
+        let store_for_resume = op_control.clone();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-2", "span-2")))
+            .await
+            .unwrap();
+
+        // While paused, the check must NOT have answered yet.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), resp_rx.recv())
+                .await
+                .is_err(),
+            "paused op must block the tool check until resume"
+        );
+
+        // Operator resumes; the blocked check should now complete.
+        store_for_resume.apply("trace-2:span-2", OpControlSignal::Resume);
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), resp_rx.recv())
+            .await
+            .expect("resume did not release the blocked check")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Allow as i32, "resumed op must proceed");
         } else {
             panic!("expected PolicyResponse, got {resp:?}");
         }
