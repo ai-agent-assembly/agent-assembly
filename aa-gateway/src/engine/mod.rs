@@ -244,6 +244,22 @@ enum CredentialScanOutcome {
     Continue(Option<String>, Vec<aa_security::CredentialFinding>),
 }
 
+/// Parsed result of reading a cascade directory, before a budget tracker is
+/// chosen. Shared between [`PolicyEngine::load_cascade_from_dir`] (fresh
+/// tracker) and [`PolicyEngine::load_cascade_from_dir_with_budget`]
+/// (externally-restored tracker) so the parse path stays identical.
+struct ParsedCascade {
+    scope_index: ScopeIndex,
+    /// First Global-scoped document, if any — becomes the primary slot.
+    primary: Option<PolicyDocument>,
+    compiled_patterns: Vec<regex::Regex>,
+    budget_tz: chrono_tz::Tz,
+    daily_limit: Option<rust_decimal::Decimal>,
+    monthly_limit: Option<rust_decimal::Decimal>,
+    org_daily_limit: Option<rust_decimal::Decimal>,
+    org_monthly_limit: Option<rust_decimal::Decimal>,
+}
+
 impl PolicyEngine {
     /// Load a policy from a YAML file, parse it, validate it, and start the filesystem watcher.
     ///
@@ -375,6 +391,48 @@ impl PolicyEngine {
         dir: &Path,
         budget_alert_tx: tokio::sync::broadcast::Sender<crate::budget::BudgetAlert>,
     ) -> Result<Self, PolicyLoadError> {
+        let parsed = Self::read_cascade_dir(dir)?;
+
+        // The Global-scoped document supplies the budget limits; build a
+        // fresh tracker around them. (The `_with_budget` sibling instead
+        // adopts an externally-restored tracker — see
+        // [`load_cascade_from_dir_with_budget`].)
+        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            parsed.daily_limit,
+            parsed.monthly_limit,
+            parsed.budget_tz,
+            budget_alert_tx,
+        );
+        if let Some(limit) = parsed.org_daily_limit {
+            budget_tracker = budget_tracker.with_org_daily_limit(limit);
+        }
+        if let Some(limit) = parsed.org_monthly_limit {
+            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
+        }
+        Ok(Self::assemble_cascade(parsed, Arc::new(budget_tracker)))
+    }
+
+    /// Directory-cascade loader that adopts a **pre-built** budget tracker —
+    /// the multi-document analogue of [`load_from_file_with_budget`].
+    ///
+    /// The shipped `aa-gateway` binary uses this so the gateway's
+    /// persistence loop (background writer + shutdown flush) owns the same
+    /// `Arc<BudgetTracker>` it restored from disk, exactly as it does for the
+    /// single-file path. Scope-index population and primary-doc selection are
+    /// identical to [`load_cascade_from_dir`]; only the budget-tracker
+    /// ownership differs. No filesystem watcher is attached (the watcher is
+    /// single-file only — see [`load_cascade_from_dir`] semantics).
+    pub fn load_cascade_from_dir_with_budget(dir: &Path, budget: Arc<BudgetTracker>) -> Result<Self, PolicyLoadError> {
+        let parsed = Self::read_cascade_dir(dir)?;
+        Ok(Self::assemble_cascade(parsed, budget))
+    }
+
+    /// Read and parse every `*.yaml` file in `dir` (alphabetical order) into
+    /// a populated [`ScopeIndex`] plus the budget/pattern config drawn from
+    /// the first Global-scoped document. Shared by both cascade loaders so
+    /// the parse semantics stay identical regardless of budget ownership.
+    fn read_cascade_dir(dir: &Path) -> Result<ParsedCascade, PolicyLoadError> {
         // Collect *.yaml entries in alphabetical order so the cascade is
         // deterministic across runs and filesystems with different
         // dir-iteration orders.
@@ -445,20 +503,27 @@ impl PolicyEngine {
             scope_index.insert(doc);
         }
 
-        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
-            crate::budget::PricingTable::default_table(),
+        Ok(ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            budget_tz,
             daily_limit,
             monthly_limit,
-            budget_tz,
-            budget_alert_tx,
-        );
-        if let Some(limit) = org_daily_limit {
-            budget_tracker = budget_tracker.with_org_daily_limit(limit);
-        }
-        if let Some(limit) = org_monthly_limit {
-            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
-        }
-        let budget = Arc::new(budget_tracker);
+            org_daily_limit,
+            org_monthly_limit,
+        })
+    }
+
+    /// Assemble a [`PolicyEngine`] from a [`ParsedCascade`] and the budget
+    /// tracker the caller chose to own (freshly built or externally restored).
+    fn assemble_cascade(parsed: ParsedCascade, budget: Arc<BudgetTracker>) -> Self {
+        let ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            ..
+        } = parsed;
 
         let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
             name: None,
@@ -476,7 +541,7 @@ impl PolicyEngine {
         });
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(primary_doc)));
 
-        Ok(PolicyEngine {
+        PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
@@ -488,7 +553,7 @@ impl PolicyEngine {
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
-        })
+        }
     }
 
     /// Load a policy from a YAML file using a pre-built budget tracker.
@@ -2576,6 +2641,117 @@ mod tests {
             PolicyResult::Deny {
                 reason: "capability not in allow list".into()
             }
+        );
+    }
+
+    // ── Directory-cascade binary-loader regression (AAASM-3499) ───────────────
+
+    /// Build a `ctx` for a distinct agent (`agent_byte`) whose lineage
+    /// `org_id` is `org`, mirroring the metadata `convert.rs` deposits on the
+    /// live gRPC path. Distinct agent ids matter: the decision cache is keyed
+    /// by `agent_id` (different orgs run different agents in production), so a
+    /// test must not reuse one agent id across two orgs.
+    fn make_ctx_in_org(agent_byte: u8, org: &str) -> AgentContext {
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([agent_byte; 16]);
+        ctx.metadata.insert("org_id".to_string(), org.to_string());
+        ctx
+    }
+
+    /// AAASM-3499 — the directory cascade must be reachable through the loader
+    /// the shipped `aa-gateway` binary calls (`load_cascade_from_dir_with_budget`),
+    /// not just the test-only `load_cascade_from_dir`. Mirrors the ST-org-4 QA
+    /// fixtures: a Global allow-all baseline plus an org-alpha-scoped `bash`
+    /// deny. The narrower org-scoped deny must override the Global allow for an
+    /// org-alpha agent, while an org-beta agent falls through to the allow.
+    #[test]
+    fn binary_loader_cascades_org_scoped_deny_over_global_allow() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Global baseline — empty tools = allow-by-default.
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global-allow-all\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        // Org-alpha-scoped deny of `bash`. `scope:` lives INSIDE `spec:`.
+        std::fs::write(
+            tmp.path().join("100-org-alpha-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-org-alpha-deny-bash\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let (alert_tx, _alert_rx) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(8);
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        // The binary path: a pre-built tracker is adopted, scope_index populated.
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget)
+            .expect("cascade directory loads via the binary loader");
+        let _ = alert_tx; // budget alerts unused in this assertion
+
+        let bash = tool_call("bash", "");
+
+        // org-alpha → the org-scoped deny fires and overrides the Global allow.
+        assert_eq!(
+            engine.evaluate(&make_ctx_in_org(0xaa, "org-alpha"), &bash).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "org-alpha bash must be denied by the narrower org-scoped document"
+        );
+
+        // org-beta → the org-alpha doc is filtered out; falls through to allow.
+        assert_eq!(
+            engine.evaluate(&make_ctx_in_org(0xbb, "org-beta"), &bash).decision,
+            PolicyResult::Allow,
+            "org-beta bash must pass through to the Global allow-all default"
+        );
+    }
+
+    /// The single-file loader must keep the same `scope_index`-empty,
+    /// primary-only behaviour (back-compat) — a directory and a file are not
+    /// interchangeable through the same loader, but routing on
+    /// `path.is_dir()` (in `server::load_policy_engine`) is what selects them.
+    #[test]
+    fn binary_loader_cascade_populates_scope_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:acme\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("loads");
+        // A populated scope_index is what routes evaluate() through the cascade.
+        assert!(
+            !engine.scope_index.is_empty(),
+            "directory loader must populate the scope_index (cascade active)"
         );
     }
 

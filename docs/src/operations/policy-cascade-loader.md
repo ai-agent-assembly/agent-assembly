@@ -33,6 +33,27 @@ Filename prefixes are convention only — the loader sorts alphabetically
 so the cascade order is deterministic across filesystems. Use numeric
 prefixes to make precedence visually obvious.
 
+## Activating the cascade on the gateway (AAASM-3499)
+
+Point `--policy` at the **directory** instead of a single file — the
+shipped binaries detect a directory and route it through the cascade
+loader; a file path keeps the long-standing single-policy behaviour.
+
+```bash
+# aa-gateway binary
+aa-gateway --policy /etc/aa-gateway/policies/ --listen 127.0.0.1:50051
+
+# via the operator CLI
+aasm gateway start --policy /etc/aa-gateway/policies/
+```
+
+`aasm gateway start` also accepts a directory through `$AA_POLICY`, and
+falls back to the well-known directories `~/.aasm/policies/` and
+`/etc/aasm/policies/` (after the `policy.yaml` file locations) when no
+`--policy` flag is given. The budget limits and `data.sensitive_patterns`
+the gateway enforces are taken from the first Global-scoped document in
+the directory, identical to the programmatic loader below.
+
 ## Scope field placement (gotcha)
 
 When using the envelope format (`apiVersion` / `kind` / `metadata` /
