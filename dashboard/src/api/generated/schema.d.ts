@@ -927,6 +927,13 @@ export interface paths {
          * `GET /api/v1/logs` — paginated audit log query.
          * @description Query the paginated audit log of governance events.
          *     Supports optional filtering by agent ID and event type.
+         *
+         *     Per-tenant scoping (AAASM-3483): the audit log is per-tenant data. An admin
+         *     caller may read any org's audit (honouring an explicit `?org_id`); a
+         *     tenant-scoped caller has the `org_id` filter forced to its own org, so it
+         *     can neither read another org's audit nor omit the filter to enumerate every
+         *     org. A non-admin caller with no org scope receives an empty page rather than
+         *     a cross-tenant dump.
          */
         get: operations["list_logs"];
         put?: never;
@@ -5182,6 +5189,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LogEntry"][];
                 };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
