@@ -559,9 +559,10 @@ jobs:
         run: |
           set -euo pipefail
           cd sdk
-          # Rewrite the rev for each of the three shared crates. The host
-          # casing varies (`AI-agent-assembly` vs `ai-agent-assembly`) across
-          # historical edits, so the regex tolerates `[^"]*` for the URL.
+          # Rewrite the rev for each of the three shared crates. The host org
+          # casing has varied across historical edits (the canonical id is the
+          # lowercase `ai-agent-assembly`), so the regex tolerates `[^"]*` for
+          # the URL.
           for crate in aa-core aa-proto aa-sdk-client; do
             sed -i -E "s|(${crate} = \{ git = \"[^\"]*\", rev = )\"[0-9a-f]{40}\"|\\1\"${NEW_SHA}\"|" \
               native/aa-ffi-python/Cargo.toml

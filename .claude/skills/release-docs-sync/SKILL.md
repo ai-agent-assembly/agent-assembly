@@ -115,8 +115,8 @@ uses **static** shields.io badges that do NOT self-update:
   `0.0.1-beta.x`" prose. Otherwise nothing to bump.
 - **go-sdk** — badges are static `docs-live` only; the install snippet is
   `go get github.com/<org>/go-sdk` with no version. **Nothing version-bump to
-  do.** (Note: the README's `go get` path uses mixed-case org `AI-agent-assembly`;
-  the canonical org id is lowercase `ai-agent-assembly` — a casing fix, tracked
+  do.** (Note: the canonical org id is lowercase `ai-agent-assembly`; if a
+  README's `go get` path ever uses mixed case, that is a casing fix tracked
   separately, not part of version-sync.)
 
 **Net for SDKs:** on a same-channel forward-roll, the SDK READMEs need **no**
