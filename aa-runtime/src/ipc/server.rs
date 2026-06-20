@@ -657,6 +657,7 @@ mod tests {
             pipeline_router,
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         ));
 
@@ -751,6 +752,7 @@ mod tests {
             pipeline_router,
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         ));
 
@@ -852,6 +854,7 @@ mod tests {
             pipeline_router,
             approval_queue,
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
         ));
 

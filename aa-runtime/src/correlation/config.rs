@@ -65,6 +65,8 @@ mod tests {
     fn from_runtime_config_maps_fields() {
         let rc = crate::config::RuntimeConfig {
             agent_id: "test".to_string(),
+            agent_team_id: String::new(),
+            agent_org_id: String::new(),
             worker_threads: 0,
             shutdown_timeout_secs: 30,
             ipc_max_connections: 64,
