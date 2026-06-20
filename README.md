@@ -7,7 +7,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver&logo=github&label=release)](https://github.com/ai-agent-assembly/agent-assembly/releases)
 [![crates.io](https://img.shields.io/crates/v/aa-cli?logo=rust&label=crates.io)](https://crates.io/crates/aa-cli)
 [![Coverage](https://img.shields.io/codecov/c/github/ai-agent-assembly/agent-assembly?logo=codecov&logoColor=white)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
-[![Quality Gate](https://img.shields.io/sonar/quality_gate/AI-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=AI-agent-assembly_agent-assembly)
+[![Quality Gate](https://img.shields.io/sonar/quality_gate/ai-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=ai-agent-assembly_agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-%E2%89%A51.75-orange?logo=rust)](https://www.rust-lang.org)
 [![Style](https://img.shields.io/badge/style-rustfmt-000?logo=rust)](https://github.com/rust-lang/rustfmt)
