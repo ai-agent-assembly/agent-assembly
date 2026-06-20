@@ -190,21 +190,30 @@ pub struct PolicyEngine {
     /// Built once at construction time from [`aa_security::CredentialScanner`].
     /// Always active — scans every action payload regardless of policy data section.
     scanner: aa_security::CredentialScanner,
-    /// Pre-compiled regex patterns from the policy's `data.sensitive_patterns`.
-    ///
-    /// Compiled once at load time to avoid re-compiling on every `evaluate()` call.
-    // TODO: recompile on hot-reload — currently these patterns reflect the policy at engine
-    // construction time and will not update when the watcher swaps in a new policy document.
-    compiled_patterns: Vec<regex::Regex>,
     rate_state: DashMap<String, Mutex<crate::engine::rate_limit::TokenBucket>>,
     budget: Arc<BudgetTracker>,
-    /// Scope-keyed index of additionally-loaded policies (AAASM-951).
+    /// Hot-swappable cascade state: the scope-keyed policy index plus the
+    /// regex patterns compiled from the Global doc's `data.sensitive_patterns`.
     ///
-    /// Populated via [`PolicyEngine::load_policy`]. The single primary
-    /// policy held in `policy` (above) is unaffected — F93 (AAASM-220)
-    /// will migrate the evaluator to consult this index for cascading
-    /// most-restrictive-wins resolution.
-    scope_index: ScopeIndex,
+    /// Held behind an [`ArcSwap`] so the directory watcher (AAASM-3497) can
+    /// atomically replace the whole cascade — index and compiled patterns
+    /// together — when a `*.yaml` in the policy directory is added, removed,
+    /// or modified, without locking the request hot path. For the single-file
+    /// and in-memory construction paths the slot is built once and never
+    /// swapped.
+    ///
+    /// Known residual: the single-file watcher ([`watcher::start_watcher`])
+    /// swaps the `policy` document but not these `compiled_patterns`, so a
+    /// single-file hot-reload still serves the construction-time
+    /// `sensitive_patterns`. The directory path recompiles them on every swap;
+    /// recompiling on the single-file path is left out of scope for AAASM-3497.
+    cascade: Arc<ArcSwap<CascadeState>>,
+    /// Directory watcher for the multi-document cascade (AAASM-3497).
+    ///
+    /// Present only when the engine was built from a policy *directory*
+    /// (`load_cascade_from_dir*`); drop it to stop watching. Distinct from
+    /// `_watcher`, which is the single-file watcher.
+    _cascade_watcher: Option<notify::RecommendedWatcher>,
     _watcher: Option<notify::RecommendedWatcher>,
     /// Optional registry for resolving agent lineage during cascade evaluation.
     /// When `None`, `collect_cascade` walks only Global and Agent scopes.
@@ -258,6 +267,22 @@ struct ParsedCascade {
     monthly_limit: Option<rust_decimal::Decimal>,
     org_daily_limit: Option<rust_decimal::Decimal>,
     org_monthly_limit: Option<rust_decimal::Decimal>,
+}
+
+/// The hot-swappable half of a cascade engine: the scope-keyed policy index
+/// plus the regex patterns compiled from the Global document's
+/// `data.sensitive_patterns`.
+///
+/// Bundled into one [`ArcSwap`] slot so the directory watcher (AAASM-3497)
+/// replaces the index and its derived patterns as a single atomic unit — a
+/// request never observes a new index against stale patterns or vice versa.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CascadeState {
+    pub(crate) scope_index: ScopeIndex,
+    /// Regex patterns compiled from the Global doc's `data.sensitive_patterns`.
+    /// Recompiled on every cascade swap so hot-reload keeps them in sync with
+    /// the directory's current Global document.
+    pub(crate) compiled_patterns: Vec<regex::Regex>,
 }
 
 impl PolicyEngine {
@@ -334,10 +359,13 @@ impl PolicyEngine {
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns,
             rate_state: DashMap::new(),
             budget,
-            scope_index: ScopeIndex::new(),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState {
+                scope_index: ScopeIndex::new(),
+                compiled_patterns,
+            })),
+            _cascade_watcher: None,
             _watcher: watcher,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
@@ -371,9 +399,11 @@ impl PolicyEngine {
     ///   none is present). With a non-empty `scope_index`, `evaluate()`
     ///   routes through `evaluate_with_cascade` and the primary slot is
     ///   only consulted by callers that bypass the cascade path.
-    /// * No filesystem watcher is attached — the watcher today is
-    ///   single-file. Hot-reload across multiple files is a separate
-    ///   concern; for now the cascade is static-at-load.
+    /// * A directory watcher is attached (AAASM-3497): editing, adding, or
+    ///   removing a `*.yaml` in `dir` re-reads the whole directory and
+    ///   atomically swaps the rebuilt cascade into the live slot. A read or
+    ///   parse failure during reload is ignored and the current cascade is
+    ///   preserved — a broken edit never degrades to allow-all.
     ///
     /// ## Example
     ///
@@ -410,7 +440,7 @@ impl PolicyEngine {
         if let Some(limit) = parsed.org_monthly_limit {
             budget_tracker = budget_tracker.with_org_monthly_limit(limit);
         }
-        Ok(Self::assemble_cascade(parsed, Arc::new(budget_tracker)))
+        Ok(Self::assemble_cascade(dir, parsed, Arc::new(budget_tracker)))
     }
 
     /// Directory-cascade loader that adopts a **pre-built** budget tracker —
@@ -421,11 +451,36 @@ impl PolicyEngine {
     /// `Arc<BudgetTracker>` it restored from disk, exactly as it does for the
     /// single-file path. Scope-index population and primary-doc selection are
     /// identical to [`load_cascade_from_dir`]; only the budget-tracker
-    /// ownership differs. No filesystem watcher is attached (the watcher is
-    /// single-file only — see [`load_cascade_from_dir`] semantics).
+    /// ownership differs. A directory watcher is attached for hot-reload —
+    /// see [`load_cascade_from_dir`] semantics (AAASM-3497).
     pub fn load_cascade_from_dir_with_budget(dir: &Path, budget: Arc<BudgetTracker>) -> Result<Self, PolicyLoadError> {
         let parsed = Self::read_cascade_dir(dir)?;
-        Ok(Self::assemble_cascade(parsed, budget))
+        Ok(Self::assemble_cascade(dir, parsed, budget))
+    }
+
+    /// Re-read `dir` and produce the swap-ready primary document and cascade
+    /// state for a hot-reload (AAASM-3497). Used by the directory watcher.
+    ///
+    /// Returns the same `(primary_doc, CascadeState)` pair that
+    /// [`Self::assemble_cascade`] would build at construction time, so a reload
+    /// is byte-for-byte equivalent to a fresh load of the directory. A read or
+    /// parse failure surfaces as `Err`; the watcher preserves the current
+    /// cascade in that case rather than swapping in a degraded one.
+    pub(crate) fn rebuild_cascade_state(dir: &Path) -> Result<(Arc<PolicyDocument>, CascadeState), PolicyLoadError> {
+        let ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            ..
+        } = Self::read_cascade_dir(dir)?;
+        let primary_doc = Arc::new(primary.unwrap_or_else(Self::empty_primary_doc));
+        Ok((
+            primary_doc,
+            CascadeState {
+                scope_index,
+                compiled_patterns,
+            },
+        ))
     }
 
     /// Read and parse every `*.yaml` file in `dir` (alphabetical order) into
@@ -515,17 +570,11 @@ impl PolicyEngine {
         })
     }
 
-    /// Assemble a [`PolicyEngine`] from a [`ParsedCascade`] and the budget
-    /// tracker the caller chose to own (freshly built or externally restored).
-    fn assemble_cascade(parsed: ParsedCascade, budget: Arc<BudgetTracker>) -> Self {
-        let ParsedCascade {
-            scope_index,
-            primary,
-            compiled_patterns,
-            ..
-        } = parsed;
-
-        let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
+    /// The default primary `PolicyDocument` used when a cascade directory has
+    /// no Global-scoped document. An empty allow-by-default Global doc — the
+    /// cascade's scoped documents still apply on top via `scope_index`.
+    fn empty_primary_doc() -> PolicyDocument {
+        PolicyDocument {
             name: None,
             policy_version: None,
             version: None,
@@ -538,19 +587,52 @@ impl PolicyEngine {
             approval_policy: None,
             tools: std::collections::HashMap::new(),
             capabilities: None,
-        });
+        }
+    }
+
+    /// Assemble a [`PolicyEngine`] from a [`ParsedCascade`] and the budget
+    /// tracker the caller chose to own (freshly built or externally restored).
+    ///
+    /// Attaches a directory watcher on `dir` (AAASM-3497) so the cascade
+    /// re-evaluates when any `*.yaml` is added, removed, or modified.
+    fn assemble_cascade(dir: &Path, parsed: ParsedCascade, budget: Arc<BudgetTracker>) -> Self {
+        let ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            ..
+        } = parsed;
+
+        let primary_doc = primary.unwrap_or_else(Self::empty_primary_doc);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(primary_doc)));
+        let cascade = Arc::new(ArcSwap::from_pointee(CascadeState {
+            scope_index,
+            compiled_patterns,
+        }));
+        let policy_epoch = Arc::new(AtomicU64::new(0));
+
+        // Hot-reload: re-read the directory and swap the rebuilt cascade +
+        // primary doc into the live slots when a `*.yaml` changes. Invalid
+        // edits are ignored and the current cascade is preserved (fail-safe,
+        // mirroring the single-file watcher) — see `start_cascade_watcher`.
+        let cascade_watcher = crate::engine::watcher::start_cascade_watcher(
+            dir,
+            policy_arc.clone(),
+            cascade.clone(),
+            policy_epoch.clone(),
+        )
+        .ok();
 
         PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns,
             rate_state: DashMap::new(),
             budget,
-            scope_index,
+            cascade,
+            _cascade_watcher: cascade_watcher,
             _watcher: None,
             registry: None,
-            policy_epoch: Arc::new(AtomicU64::new(0)),
+            policy_epoch,
             invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
         }
@@ -579,10 +661,13 @@ impl PolicyEngine {
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns,
             rate_state: DashMap::new(),
             budget,
-            scope_index: ScopeIndex::new(),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState {
+                scope_index: ScopeIndex::new(),
+                compiled_patterns,
+            })),
+            _cascade_watcher: None,
             _watcher: watcher,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
@@ -622,10 +707,10 @@ impl PolicyEngine {
         PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns: vec![],
             rate_state: DashMap::new(),
             budget,
-            scope_index: ScopeIndex::new(),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState::default())),
+            _cascade_watcher: None,
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
@@ -1009,7 +1094,8 @@ impl PolicyEngine {
         let mut all_findings = scan.findings;
 
         // Pass 2: policy-defined regex patterns.
-        for re in &self.compiled_patterns {
+        let cascade_state = self.cascade.load();
+        for re in &cascade_state.compiled_patterns {
             for m in re.find_iter(text) {
                 all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
             }
@@ -1391,38 +1477,51 @@ impl PolicyEngine {
     /// index — that wiring lands in F93 (AAASM-220). For now `load_policy`
     /// is purely about populating the index for backward-compat tests
     /// and so consumers can prepare scoped policies in advance.
+    ///
+    /// The cascade lives behind an [`ArcSwap`] (AAASM-3497), so this clones
+    /// the current state, inserts into the clone, and swaps it in. Cheap
+    /// enough for the test-prep / pre-load use it serves — not a hot path.
     pub fn load_policy(&mut self, doc: PolicyDocument) -> scope_index::PolicyId {
         self.policy_epoch.fetch_add(1, Ordering::Relaxed);
-        self.scope_index.insert(doc)
+        let mut state = (**self.cascade.load()).clone();
+        let id = state.scope_index.insert(doc);
+        self.cascade.store(Arc::new(state));
+        id
     }
 
     /// Drop a previously-registered policy by id, keeping `by_scope`
     /// consistent. Returns the dropped `Arc<PolicyDocument>` if the id
     /// was present, or `None` if it had already been removed.
     pub fn remove_policy(&mut self, id: scope_index::PolicyId) -> Option<Arc<PolicyDocument>> {
-        self.scope_index.remove(id)
+        let mut state = (**self.cascade.load()).clone();
+        let removed = state.scope_index.remove(id);
+        if removed.is_some() {
+            self.cascade.store(Arc::new(state));
+        }
+        removed
     }
 
     /// Return the [`scope_index::PolicyId`]s registered under `scope`,
-    /// in load order. Returns an empty slice when no policy has ever
+    /// in load order. Returns an empty `Vec` when no policy has ever
     /// been registered under that scope (or all of them have been
     /// removed).
-    pub fn policies_for_scope(&self, scope: &crate::policy::PolicyScope) -> &[scope_index::PolicyId] {
-        self.scope_index.policies_for_scope(scope)
+    ///
+    /// Returns an owned `Vec` rather than a borrow because the scope index
+    /// lives behind an [`ArcSwap`] (AAASM-3497) and the loaded guard cannot
+    /// outlive the call.
+    pub fn policies_for_scope(&self, scope: &crate::policy::PolicyScope) -> Vec<scope_index::PolicyId> {
+        self.cascade.load().scope_index.policies_for_scope(scope).to_vec()
     }
 
     /// Look up a policy previously registered via [`Self::load_policy`]
     /// by its [`scope_index::PolicyId`].
     ///
     /// Returns `None` if the id was never issued, or if the policy
-    /// has since been removed via [`Self::remove_policy`]. Cheap —
-    /// backed by a `HashMap` lookup with no allocation.
-    ///
-    /// F93 (AAASM-220) will use this to materialise the cascading
-    /// chain of `(scope, doc)` pairs once it consults
-    /// [`Self::policies_for_scope`].
-    pub fn policy(&self, id: scope_index::PolicyId) -> Option<&Arc<PolicyDocument>> {
-        self.scope_index.policy(id)
+    /// has since been removed via [`Self::remove_policy`]. Returns an
+    /// owned `Arc` clone because the index lives behind an [`ArcSwap`]
+    /// (AAASM-3497) and the loaded guard cannot outlive the call.
+    pub fn policy(&self, id: scope_index::PolicyId) -> Option<Arc<PolicyDocument>> {
+        self.cascade.load().scope_index.policy(id).map(Arc::clone)
     }
 
     /// Collect all policies applicable to `agent_id` in cascade walk order:
@@ -1478,8 +1577,9 @@ impl PolicyEngine {
     /// Append all policy documents registered for `scope` to `cascade`,
     /// preserving the scope index's order.
     fn push_scope_policies(&self, scope: &crate::policy::scope::PolicyScope, cascade: &mut Vec<Arc<PolicyDocument>>) {
-        for &id in self.scope_index.policies_for_scope(scope) {
-            if let Some(doc) = self.scope_index.policy(id) {
+        let state = self.cascade.load();
+        for &id in state.scope_index.policies_for_scope(scope) {
+            if let Some(doc) = state.scope_index.policy(id) {
                 cascade.push(Arc::clone(doc));
             }
         }
@@ -1615,7 +1715,6 @@ mod tests {
         PolicyEngine {
             policy: Arc::new(ArcSwap::new(Arc::new(doc))),
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns,
             rate_state: DashMap::new(),
             budget: Arc::new(BudgetTracker::new(
                 crate::budget::PricingTable::default_table(),
@@ -1623,7 +1722,11 @@ mod tests {
                 monthly_limit,
                 chrono_tz::UTC,
             )),
-            scope_index: ScopeIndex::new(),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState {
+                scope_index: ScopeIndex::new(),
+                compiled_patterns,
+            })),
+            _cascade_watcher: None,
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
@@ -2453,7 +2556,6 @@ mod tests {
         PolicyEngine {
             policy: Arc::new(ArcSwap::new(Arc::new(doc))),
             scanner: aa_security::CredentialScanner::new(),
-            compiled_patterns,
             rate_state: DashMap::new(),
             budget: Arc::new(BudgetTracker::new_with_alert_sender(
                 crate::budget::PricingTable::default_table(),
@@ -2462,7 +2564,11 @@ mod tests {
                 chrono_tz::UTC,
                 alert_tx,
             )),
-            scope_index: ScopeIndex::new(),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState {
+                scope_index: ScopeIndex::new(),
+                compiled_patterns,
+            })),
+            _cascade_watcher: None,
             _watcher: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
@@ -2750,8 +2856,212 @@ mod tests {
         let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("loads");
         // A populated scope_index is what routes evaluate() through the cascade.
         assert!(
-            !engine.scope_index.is_empty(),
+            !engine.cascade.load().scope_index.is_empty(),
             "directory loader must populate the scope_index (cascade active)"
+        );
+    }
+
+    // ── Directory-cascade hot-reload (AAASM-3497) ─────────────────────────────
+
+    /// Poll `engine.evaluate(ctx, action)` until its decision equals `want`,
+    /// or fail after `timeout`. Used instead of a fixed sleep so the test is
+    /// deterministic across slow/fast filesystems: it succeeds as soon as the
+    /// directory watcher has applied the on-disk change, and only fails if the
+    /// re-evaluation never lands within the (generous) budget.
+    fn poll_until_decision(
+        engine: &PolicyEngine,
+        ctx: &AgentContext,
+        action: &GovernanceAction,
+        want: &PolicyResult,
+        timeout: std::time::Duration,
+    ) -> PolicyResult {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let got = engine.evaluate(ctx, action).decision;
+            if &got == want {
+                return got;
+            }
+            if std::time::Instant::now() >= deadline {
+                return got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    /// Modifying a `*.yaml` in the policy directory must re-evaluate the
+    /// cascade on the running engine. A Global allow-all baseline plus an
+    /// org-alpha doc that initially allows `bash`; once the org doc on disk is
+    /// rewritten to deny `bash`, an org-alpha agent's `bash` call flips from
+    /// Allow to Deny without reloading the engine.
+    #[test]
+    fn cascade_hot_reload_modify_file_re_evaluates() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-global-allow-all\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let org_doc = tmp.path().join("100-org-alpha.yaml");
+        // Initially org-alpha explicitly *allows* bash.
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-org-alpha\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: true\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xaa, "org-alpha");
+        let bash = tool_call("bash", "");
+
+        // Baseline: bash is allowed before any edit.
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            PolicyResult::Allow,
+            "org-alpha bash must start allowed"
+        );
+
+        // Strengthen the org doc to DENY bash. Truncate+rewrite mirrors how an
+        // operator edits a policy file in place.
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-org-alpha\n  version: \"0.2.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let want = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        let got = poll_until_decision(&engine, &ctx, &bash, &want, std::time::Duration::from_secs(10));
+        assert_eq!(
+            got, want,
+            "modifying the org doc on disk must hot-reload the cascade and deny bash"
+        );
+    }
+
+    /// Adding a brand-new scoped `*.yaml` to the policy directory must register
+    /// in the cascade on the running engine. Starting from a Global allow-all
+    /// with no org doc, dropping in an org-alpha `bash` deny flips an org-alpha
+    /// agent's `bash` call from Allow to Deny.
+    #[test]
+    fn cascade_hot_reload_add_scoped_file_re_evaluates() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-add-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xcc, "org-alpha");
+        let bash = tool_call("bash", "");
+
+        // Baseline: only Global allow-all loaded → bash allowed.
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            PolicyResult::Allow,
+            "org-alpha bash must start allowed with no org doc present"
+        );
+
+        // Add a new org-scoped deny document to the directory.
+        std::fs::write(
+            tmp.path().join("100-org-alpha-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-add-org-alpha\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let want = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        let got = poll_until_decision(&engine, &ctx, &bash, &want, std::time::Duration::from_secs(10));
+        assert_eq!(
+            got, want,
+            "adding a new org-scoped deny doc must hot-reload the cascade and deny bash"
+        );
+    }
+
+    /// A read/parse failure during a hot-reload must preserve the current
+    /// cascade — a broken mid-edit file must never degrade the running gateway
+    /// to allow-all. Writing invalid YAML over the org-alpha *deny* doc must
+    /// leave bash denied, not silently re-allowed.
+    #[test]
+    fn cascade_hot_reload_invalid_yaml_preserves_cascade() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-inv-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: hr-inv-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+
+        let ctx = make_ctx_in_org(0xdd, "org-alpha");
+        let bash = tool_call("bash", "");
+        let deny = PolicyResult::Deny {
+            reason: "tool denied by policy".into(),
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            deny,
+            "org-alpha bash starts denied"
+        );
+
+        // Corrupt the org doc. The reload must fail-safe and keep the deny.
+        std::fs::write(&org_doc, "this: is: not: valid: yaml: [[[").unwrap();
+
+        // Give the watcher ample time to observe + reject the bad edit, then
+        // assert the deny is still in force (the cascade was preserved).
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(
+            engine.evaluate(&ctx, &bash).decision,
+            deny,
+            "an invalid mid-edit file must not degrade the cascade to allow-all"
         );
     }
 
