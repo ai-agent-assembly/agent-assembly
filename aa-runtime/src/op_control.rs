@@ -117,10 +117,15 @@ impl OpControlStore {
         self.states.get(op_id).as_deref().copied()
     }
 
-    /// Await the next signal application. Used by a check parked on a paused op
-    /// to wake the moment a resume/terminate lands rather than busy-polling.
-    pub async fn changed(&self) {
-        self.changed.notified().await;
+    /// A future that resolves on the next signal application.
+    ///
+    /// Returned (not awaited) so a caller parked on a paused op can register
+    /// interest **before** re-reading [`state`](Self::state) — closing the race
+    /// where a resume/terminate lands between the state read and the await.
+    /// `notify_waiters` only wakes already-registered waiters, so registering
+    /// first is required for correctness.
+    pub fn changed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
     }
 }
 
@@ -212,7 +217,10 @@ mod tests {
     #[test]
     fn terminate_records_terminated_state() {
         let store = OpControlStore::new();
-        assert_eq!(store.apply("t:s", OpControlSignal::Terminate), Some(OpState::Terminated));
+        assert_eq!(
+            store.apply("t:s", OpControlSignal::Terminate),
+            Some(OpState::Terminated)
+        );
         assert_eq!(store.state("t:s"), Some(OpState::Terminated));
     }
 

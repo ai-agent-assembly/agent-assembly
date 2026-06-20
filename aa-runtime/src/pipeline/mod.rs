@@ -428,7 +428,11 @@ async fn op_control_halts(
             }
             Some(OpState::Paused) => {
                 ::metrics::counter!("aa_op_control_pauses_total").increment(1);
-                tracing::info!(connection_id, op_id, "op paused by operator — blocking action until resume");
+                tracing::info!(
+                    connection_id,
+                    op_id,
+                    "op paused by operator — blocking action until resume"
+                );
                 // Wait for the next signal, then re-evaluate. A resume removes
                 // the entry (loop reads `None` → runnable); a terminate upgrades
                 // it (loop fast-fails on the next pass).
