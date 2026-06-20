@@ -58,6 +58,11 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 # fails in the build image (no ssh) with exit code 128.
 RUN npm install -g '@agent-assembly/sdk@beta'
 
+# Make the globally-installed SDK resolvable to bare `require()` /`import`
+# from arbitrary scripts (a `-g` package is not on the default module
+# resolution path). Points at `npm root -g`.
+ENV NODE_PATH=/usr/local/lib/node_modules
+
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
 RUN aasm --version
