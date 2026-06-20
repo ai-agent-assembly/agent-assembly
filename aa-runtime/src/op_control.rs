@@ -26,11 +26,20 @@
 //! kill switch cannot be undone by a racing signal.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
-use aa_proto::assembly::policy::v1::OpControlSignal;
+use aa_proto::assembly::common::v1::AgentId;
+use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
+use aa_proto::assembly::policy::v1::{OpControlSignal, OpControlSubscribeRequest};
+
+/// First reconnect delay; doubles on each consecutive failure.
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+/// Upper bound on the reconnect delay (1s → 2 → 4 → … → 32s cap).
+const MAX_BACKOFF: Duration = Duration::from_secs(32);
 
 /// The runtime-observed lifecycle state of a single op.
 ///
@@ -115,9 +124,90 @@ impl OpControlStore {
     }
 }
 
+/// Next reconnect delay: double the current one, capped at [`MAX_BACKOFF`].
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(MAX_BACKOFF)
+}
+
+/// Background subscriber that keeps an [`OpControlStore`] fresh from the
+/// gateway's `PolicyService.OpControlStream`.
+///
+/// Mirrors [`crate::invalidation_client::InvalidationClient`]: it opens the
+/// stream keyed by this agent's composite id, applies each pushed signal to the
+/// store, and reconnects forever with exponential backoff. The gateway filters
+/// the broadcast so only this agent's ops arrive.
+pub struct OpControlClient;
+
+impl OpControlClient {
+    /// Spawn the subscribe loop on the Tokio runtime and return its handle.
+    ///
+    /// `gateway_url` is the same endpoint the policy-check path forwards to;
+    /// `agent_id` must match the `agent_id` on this agent's `CheckActionRequest`s
+    /// so the gateway routes the right signals. Abort the returned
+    /// [`JoinHandle`] to stop the subscriber.
+    pub fn start(gateway_url: String, agent_id: AgentId, store: OpControlStore) -> JoinHandle<()> {
+        tokio::spawn(async move { run(gateway_url, agent_id, store).await })
+    }
+}
+
+/// Reconnect loop: subscribe, apply signals, and on disconnect back off
+/// exponentially before resubscribing.
+async fn run(gateway_url: String, agent_id: AgentId, store: OpControlStore) {
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match subscribe_once(&gateway_url, &agent_id, &store).await {
+            // The gateway closed the stream cleanly — reconnect promptly.
+            Ok(()) => backoff = INITIAL_BACKOFF,
+            Err(err) => {
+                metrics::counter!("aa_op_control_reconnects_total").increment(1);
+                tracing::warn!(
+                    error = %err,
+                    backoff_secs = backoff.as_secs(),
+                    "op-control stream dropped; reconnecting after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = next_backoff(backoff);
+            }
+        }
+    }
+}
+
+/// Open one `OpControlStream` and apply messages to the store until it ends or
+/// errors.
+async fn subscribe_once(
+    gateway_url: &str,
+    agent_id: &AgentId,
+    store: &OpControlStore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut client = PolicyServiceClient::connect(gateway_url.to_owned()).await?;
+    let request = OpControlSubscribeRequest {
+        agent_id: Some(agent_id.clone()),
+    };
+    let response = client.op_control_stream(request).await?;
+    let mut inbound = response.into_inner();
+
+    while let Some(message) = inbound.message().await? {
+        let signal = message.signal();
+        tracing::debug!(op_id = %message.op_id, ?signal, "op-control signal received");
+        store.apply(&message.op_id, signal);
+        metrics::counter!("aa_op_control_signals_total").increment(1);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backoff_doubles_then_caps_at_32s() {
+        let schedule: Vec<u64> = std::iter::successors(Some(INITIAL_BACKOFF), |&d| Some(next_backoff(d)))
+            .take(7)
+            .map(|d| d.as_secs())
+            .collect();
+        assert_eq!(schedule, vec![1, 2, 4, 8, 16, 32, 32]);
+    }
 
     #[test]
     fn terminate_records_terminated_state() {
