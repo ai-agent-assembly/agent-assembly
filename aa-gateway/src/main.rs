@@ -62,8 +62,10 @@ struct Cli {
     #[arg(long, value_enum)]
     mode: Option<Mode>,
 
-    /// Path to the policy YAML file. Required by `legacy-grpc`; ignored by
-    /// `remote` and `local` modes.
+    /// Path to the policy YAML file, or a directory of scoped `*.yaml`
+    /// documents. A directory activates the multi-document Global/Org/Team/
+    /// Agent cascade (AAASM-3499); a file preserves single-policy behaviour.
+    /// Required by `legacy-grpc`; ignored by `remote` and `local` modes.
     #[arg(long)]
     policy: Option<PathBuf>,
 

@@ -104,6 +104,36 @@ async fn setup_audit(
     Ok((audit_tx, audit_drops, initial_hash, initial_seq))
 }
 
+/// Return the YAML of the first Global-scoped `*.yaml` document in a cascade
+/// directory (alphabetical order), or empty string if none parses as Global.
+///
+/// AAASM-3499 — the budget tracker the gateway's persistence loop owns must
+/// reflect the same limits `load_cascade_from_dir` derives, which come from
+/// the Global-scoped document. Returning empty on absence makes the limits
+/// default to `None`, identical to the cascade loader's own behaviour.
+fn read_global_doc_yaml(dir: &Path) -> String {
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .collect(),
+        Err(_) => return String::new(),
+    };
+    entries.sort();
+    for path in &entries {
+        let Ok(yaml) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
+            if matches!(output.document.scope, crate::policy::scope::PolicyScope::Global) {
+                return yaml;
+            }
+        }
+    }
+    String::new()
+}
+
 /// Load persisted budget state from `~/.aa/budget.json`, construct a
 /// [`BudgetTracker`] pre-populated with the restored spend totals, and
 /// return it wrapped in `Arc` alongside the budget file path.
@@ -123,8 +153,14 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     });
 
     // Extract limits and rollover window from the policy YAML so the tracker
-    // enforces them.
-    let yaml = std::fs::read_to_string(policy_path).unwrap_or_default();
+    // enforces them. For a cascade directory (AAASM-3499) the limits live in
+    // the first Global-scoped document, mirroring `load_cascade_from_dir`;
+    // for a single file we read it directly.
+    let yaml = if policy_path.is_dir() {
+        read_global_doc_yaml(policy_path)
+    } else {
+        std::fs::read_to_string(policy_path).unwrap_or_default()
+    };
     let (daily_limit, monthly_limit, window) = if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
         let daily = output
             .document
@@ -163,6 +199,26 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     tracing::info!(path = %budget_path.display(), "budget state loaded");
 
     (tracker, budget_path)
+}
+
+/// Build the [`PolicyEngine`] from `policy_path`, routing on whether the path
+/// is a directory.
+///
+/// AAASM-3499 — a directory activates the multi-document Global/Org/Team/Agent
+/// cascade via [`PolicyEngine::load_cascade_from_dir_with_budget`]; a single
+/// file preserves the long-standing [`PolicyEngine::load_from_file_with_budget`]
+/// behaviour unchanged (back-compat). Both adopt the pre-built `tracker` so the
+/// gateway's persistence loop owns the same budget state either way.
+fn load_policy_engine(
+    policy_path: &Path,
+    tracker: Arc<BudgetTracker>,
+) -> Result<PolicyEngine, crate::engine::PolicyLoadError> {
+    if policy_path.is_dir() {
+        tracing::info!(dir = %policy_path.display(), "loading policy cascade from directory");
+        PolicyEngine::load_cascade_from_dir_with_budget(policy_path, tracker)
+    } else {
+        PolicyEngine::load_from_file_with_budget(policy_path, tracker)
+    }
 }
 
 /// Spawn a periodic flush task when the tracker is configured with a
@@ -402,7 +458,7 @@ pub async fn serve_tcp(
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     let engine = Arc::new(
-        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+        load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
@@ -485,7 +541,7 @@ pub async fn serve_uds(
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     let engine = Arc::new(
-        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+        load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
     );
