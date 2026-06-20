@@ -78,6 +78,7 @@ pub async fn run(
     response_router: ResponseRouter,
     approval_queue: Arc<ApprovalQueue>,
     gateway_client: Option<Arc<Mutex<GatewayClient>>>,
+    op_control: crate::op_control::OpControlStore,
     seq: Arc<AtomicU64>,
 ) {
     let mut batch: Vec<EnrichedEvent> = Vec::with_capacity(config.batch_size);
@@ -134,6 +135,7 @@ pub async fn run(
                             &approval_queue,
                             &response_router,
                             &gateway_client,
+                            &op_control,
                             config.gateway_fail_closed,
                             &broadcast_tx,
                             &seq,
@@ -275,10 +277,24 @@ async fn handle_policy_query(
     approval_queue: &Arc<ApprovalQueue>,
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
+    op_control: &crate::op_control::OpControlStore,
     fail_closed: bool,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
 ) {
+    // ── Op-control kill switch (AAASM-3491) ─────────────────────────────
+    // Consult the operator-driven op lifecycle BEFORE any policy evaluation:
+    // a terminated op must fast-fail and a paused op must block, regardless of
+    // what the policy would otherwise decide. The op_id mirrors the gateway's
+    // form ("{trace_id}:{span_id}"); an empty trace_id means the request is not
+    // part of a tracked op, so there is nothing to halt.
+    if !req.trace_id.is_empty() {
+        let op_id = format!("{}:{}", req.trace_id, req.span_id);
+        if op_control_halts(connection_id, &op_id, op_control, response_router).await {
+            return;
+        }
+    }
+
     // ── Gateway forwarding path ─────────────────────────────────────────
     match try_gateway_forward(
         connection_id,
@@ -369,6 +385,62 @@ async fn handle_policy_query(
         response_router,
     )
     .await;
+}
+
+/// Enforce the op-control kill switch for `op_id` before the action proceeds.
+///
+/// Returns `true` when the action was **halted** and a response already sent —
+/// the caller must stop processing. Returns `false` when the op is runnable
+/// (no signal, or a pause that was subsequently resumed).
+///
+/// - **Terminated:** fast-fail the in-flight action with a `Deny`
+///   (`OpTerminatedError`); the kill switch reached the agent.
+/// - **Paused:** cooperatively block until the gateway pushes a resume (op
+///   leaves the store) or a terminate. This parks the per-tool check on the
+///   store's change notification rather than busy-polling, so a paused agent
+///   makes no further progress until the operator resumes it.
+async fn op_control_halts(
+    connection_id: u64,
+    op_id: &str,
+    op_control: &crate::op_control::OpControlStore,
+    response_router: &ResponseRouter,
+) -> bool {
+    use crate::op_control::OpState;
+    loop {
+        // Register interest before reading state so a resume/terminate that
+        // lands during this iteration cannot be missed (see `changed`).
+        let changed = op_control.changed();
+        match op_control.state(op_id) {
+            Some(OpState::Terminated) => {
+                ::metrics::counter!("aa_op_control_terminations_total").increment(1);
+                tracing::warn!(connection_id, op_id, "op terminated by operator — fast-failing action");
+                send_ipc_response(
+                    connection_id,
+                    IpcResponse::PolicyResponse(CheckActionResponse {
+                        decision: Decision::Deny as i32,
+                        reason: "OpTerminatedError: operator terminated this op via the live kill switch".to_string(),
+                        ..Default::default()
+                    }),
+                    response_router,
+                )
+                .await;
+                return true;
+            }
+            Some(OpState::Paused) => {
+                ::metrics::counter!("aa_op_control_pauses_total").increment(1);
+                tracing::info!(
+                    connection_id,
+                    op_id,
+                    "op paused by operator — blocking action until resume"
+                );
+                // Wait for the next signal, then re-evaluate. A resume removes
+                // the entry (loop reads `None` → runnable); a terminate upgrades
+                // it (loop fast-fails on the next pass).
+                changed.await;
+            }
+            None => return false,
+        }
+    }
 }
 
 /// Outcome of attempting to forward a policy check to the gateway.
@@ -572,6 +644,7 @@ mod tests {
     use super::*;
     use crate::policy::PolicyRules;
     use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
+    use aa_proto::assembly::policy::v1::OpControlSignal;
 
     /// Unwrap a `PipelineEvent::Audit` variant, panicking if it is a different variant.
     fn unwrap_audit(event: PipelineEvent) -> EnrichedEvent {
@@ -753,6 +826,8 @@ mod tests {
     fn from_runtime_config_copies_all_fields() {
         let runtime_config = RuntimeConfig {
             agent_id: "test-agent".to_string(),
+            agent_team_id: String::new(),
+            agent_org_id: String::new(),
             worker_threads: 0,
             shutdown_timeout_secs: 30,
             ipc_max_connections: 64,
@@ -857,6 +932,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -894,6 +970,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -931,6 +1008,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -967,6 +1045,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1022,6 +1101,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1067,6 +1147,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1121,6 +1202,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1171,6 +1253,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1217,6 +1300,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1287,6 +1371,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1368,6 +1453,7 @@ mod tests {
             router,
             approval_queue,
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1417,6 +1503,7 @@ mod tests {
             router,
             approval_queue,
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1429,6 +1516,141 @@ mod tests {
 
         if let IpcResponse::PolicyResponse(r) = resp {
             assert_eq!(r.decision, Decision::Deny as i32);
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// Build a per-tool PolicyQuery tagged with the trace/span that compose
+    /// `op_id` ("{trace_id}:{span_id}"), so the op-control store can address it.
+    fn policy_query_frame_for_op(
+        action_type: aa_proto::assembly::common::v1::ActionType,
+        trace_id: &str,
+        span_id: &str,
+    ) -> IpcFrame {
+        IpcFrame::PolicyQuery(aa_proto::assembly::policy::v1::CheckActionRequest {
+            action_type: action_type as i32,
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            ..Default::default()
+        })
+    }
+
+    /// AAASM-3491: a gateway terminate for the running op must **halt** the
+    /// agent — the in-flight per-tool check fast-fails with `OpTerminatedError`
+    /// even though no policy rule blocks the action. This is the core
+    /// regression: before the op-control consumer, terminate was a silent
+    /// allow-through.
+    #[tokio::test]
+    async fn op_control_terminate_halts_running_agent_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // Operator terminates the op via the gateway kill switch; the
+        // subscriber records it in the store before the next tool check.
+        op_control.apply("trace-1:span-1", OpControlSignal::Terminate);
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            // Empty policy: nothing here would deny — only the kill switch does.
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-1", "span-1")))
+            .await
+            .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Deny as i32, "terminated op must be denied");
+            assert!(
+                r.reason.contains("OpTerminatedError"),
+                "deny reason must name OpTerminatedError, got: {}",
+                r.reason
+            );
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3491: a paused op blocks the per-tool check; once the operator
+    /// resumes it, the same check completes (here: allowed by the empty policy).
+    /// Proves cooperative pause/resume reaches the running agent.
+    #[tokio::test]
+    async fn op_control_pause_blocks_then_resume_releases_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        op_control.apply("trace-2:span-2", OpControlSignal::Pause);
+        let store_for_resume = op_control.clone();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+        ));
+
+        tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-2", "span-2")))
+            .await
+            .unwrap();
+
+        // While paused, the check must NOT have answered yet.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), resp_rx.recv())
+                .await
+                .is_err(),
+            "paused op must block the tool check until resume"
+        );
+
+        // Operator resumes; the blocked check should now complete.
+        store_for_resume.apply("trace-2:span-2", OpControlSignal::Resume);
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), resp_rx.recv())
+            .await
+            .expect("resume did not release the blocked check")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Allow as i32, "resumed op must proceed");
         } else {
             panic!("expected PolicyResponse, got {resp:?}");
         }
@@ -1465,6 +1687,7 @@ mod tests {
             router,
             approval_queue,
             Some(gateway),
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1517,6 +1740,7 @@ mod tests {
             router,
             approval_queue,
             Some(gateway),
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1572,6 +1796,7 @@ mod tests {
             router,
             approval_queue,
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1630,6 +1855,7 @@ mod tests {
             router,
             approval_queue,
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1723,6 +1949,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 
@@ -1770,6 +1997,7 @@ mod tests {
             crate::ipc::new_response_router(),
             crate::approval::ApprovalQueue::new(),
             None,
+            crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
         ));
 

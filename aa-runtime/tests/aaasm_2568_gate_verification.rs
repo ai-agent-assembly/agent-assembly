@@ -79,6 +79,7 @@ async fn drive_one(policy: PolicyRules) -> PipelineEvent {
         new_response_router(),
         ApprovalQueue::new(),
         None,
+        aa_runtime::op_control::OpControlStore::new(),
         Arc::new(AtomicU64::new(0)),
     ));
 
@@ -146,6 +147,7 @@ async fn configured_size_cap_redacts_oversized_field_through_run() {
         new_response_router(),
         ApprovalQueue::new(),
         None,
+        aa_runtime::op_control::OpControlStore::new(),
         Arc::new(AtomicU64::new(0)),
     ));
 

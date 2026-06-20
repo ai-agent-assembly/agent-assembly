@@ -679,6 +679,27 @@ pub async fn run(config: RuntimeConfig) {
         }
     };
 
+    // AAASM-3491: shared op-control store + subscriber. The store records the
+    // gateway's pause/resume/terminate signals; the pipeline consults it on
+    // every per-tool check so a terminate fast-fails and a pause blocks the
+    // running agent. Without a configured gateway there is no kill-switch
+    // channel to subscribe to, so the store simply stays empty (no op control).
+    let op_control = crate::op_control::OpControlStore::new();
+    if let Some(endpoint) = &config.gateway_endpoint {
+        let subscriber_agent = aa_proto::assembly::common::v1::AgentId {
+            org_id: config.agent_org_id.clone(),
+            team_id: config.agent_team_id.clone(),
+            agent_id: config.agent_id.clone(),
+        };
+        let handle = crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, op_control.clone());
+        tracker.spawn(async move {
+            let _ = handle.await;
+        });
+        tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
+    } else {
+        tracing::info!("no gateway endpoint configured — op-control kill switch inactive");
+    }
+
     // Spawn the event aggregation pipeline task.
     {
         let pipeline_token = token.clone();
@@ -687,6 +708,7 @@ pub async fn run(config: RuntimeConfig) {
         let pipeline_router = std::sync::Arc::clone(&response_router);
         let pipeline_approval_queue = std::sync::Arc::clone(&approval_queue);
         let pipeline_seq = std::sync::Arc::clone(&seq);
+        let pipeline_op_control = op_control.clone();
         tracker.spawn(async move {
             crate::pipeline::run(
                 inbound_rx,
@@ -698,6 +720,7 @@ pub async fn run(config: RuntimeConfig) {
                 pipeline_router,
                 pipeline_approval_queue,
                 gateway_client,
+                pipeline_op_control,
                 pipeline_seq,
             )
             .await;
@@ -1243,6 +1266,8 @@ mod tests {
     fn audit_test_config(nats_config_path: Option<std::path::PathBuf>) -> crate::config::RuntimeConfig {
         crate::config::RuntimeConfig {
             agent_id: "audit-test".to_string(),
+            agent_team_id: String::new(),
+            agent_org_id: String::new(),
             worker_threads: 0,
             shutdown_timeout_secs: 30,
             ipc_max_connections: 64,

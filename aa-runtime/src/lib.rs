@@ -18,6 +18,7 @@ pub mod ipc;
 pub mod l1_cache;
 pub mod layer;
 pub mod lifecycle;
+pub mod op_control;
 pub mod pipeline;
 pub mod policy;
 pub mod runtime;

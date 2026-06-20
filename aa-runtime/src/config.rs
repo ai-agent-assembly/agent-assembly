@@ -15,6 +15,21 @@ pub struct RuntimeConfig {
     /// Used to name the Unix socket: `/tmp/aa-runtime-<agent_id>.sock`.
     pub agent_id: String,
 
+    /// Team component of this agent's composite identity.
+    ///
+    /// Read from `AA_AGENT_TEAM_ID` (default empty). Combined with
+    /// [`agent_org_id`](Self::agent_org_id) and [`agent_id`](Self::agent_id) to
+    /// build the `AgentId` triple the runtime uses to subscribe to the
+    /// gateway's `OpControlStream`, which the gateway routes by the full
+    /// `(org_id, team_id, agent_id)` triple (AAASM-3491).
+    pub agent_team_id: String,
+
+    /// Org component of this agent's composite identity.
+    ///
+    /// Read from `AA_AGENT_ORG_ID` (default empty). See
+    /// [`agent_team_id`](Self::agent_team_id).
+    pub agent_org_id: String,
+
     /// Number of Tokio worker threads.
     ///
     /// Read from `AA_RUNTIME_WORKER_THREADS`. Defaults to `0`, which tells
@@ -157,6 +172,8 @@ impl RuntimeConfig {
     /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
     /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
+    /// | `AA_AGENT_TEAM_ID` | `String` | `""` (op-control subscription identity) |
+    /// | `AA_AGENT_ORG_ID` | `String` | `""` (op-control subscription identity) |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -167,6 +184,12 @@ impl RuntimeConfig {
         if agent_id.contains('/') || agent_id.contains("..") {
             return Err("AA_AGENT_ID must not contain path separators ('/' or '..')".to_string());
         }
+
+        // Optional composite-identity components — empty when the agent is not
+        // scoped to a team/org. Used only to address the OpControlStream
+        // subscription (AAASM-3491).
+        let agent_team_id = std::env::var("AA_AGENT_TEAM_ID").unwrap_or_default();
+        let agent_org_id = std::env::var("AA_AGENT_ORG_ID").unwrap_or_default();
 
         let worker_threads = std::env::var("AA_RUNTIME_WORKER_THREADS")
             .ok()
@@ -255,6 +278,8 @@ impl RuntimeConfig {
 
         Ok(Self {
             agent_id,
+            agent_team_id,
+            agent_org_id,
             worker_threads,
             shutdown_timeout_secs,
             ipc_max_connections,
