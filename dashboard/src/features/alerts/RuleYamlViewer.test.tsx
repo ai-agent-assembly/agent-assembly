@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { Theme } from '../../theme/useTheme'
 import { RuleYamlViewer } from './RuleYamlViewer'
 
 // Mock @monaco-editor/react so the test stays fast and deterministic:
@@ -20,6 +21,17 @@ vi.mock('@monaco-editor/react', () => ({
     </div>
   ),
 }))
+
+// Mock useTheme so each test can drive the active app theme and assert
+// that the editor's Monaco theme follows it (AAASM-3507).
+let mockTheme: Theme = 'dark'
+vi.mock('../../theme/useTheme', () => ({
+  useTheme: () => ({ theme: mockTheme, setTheme: vi.fn(), toggleTheme: vi.fn() }),
+}))
+
+beforeEach(() => {
+  mockTheme = 'dark'
+})
 
 const YAML_SAMPLE = `name: "Budget guardrail"
 metric: budget_spent_pct
@@ -47,12 +59,11 @@ describe('RuleYamlViewer', () => {
     expect(editor.textContent).toBe(YAML_SAMPLE)
   })
 
-  it('configures Monaco for read-only YAML rendering at 200px height with vs-dark theme', async () => {
+  it('configures Monaco for read-only YAML rendering at 200px height', async () => {
     render(<RuleYamlViewer yaml={YAML_SAMPLE} />)
     const editor = await waitFor(() => screen.getByTestId('monaco-editor-mock'))
 
     expect(editor).toHaveAttribute('data-language', 'yaml')
-    expect(editor).toHaveAttribute('data-theme', 'vs-dark')
     expect(editor).toHaveAttribute('data-height', '200')
 
     const options = JSON.parse(editor.dataset.options ?? '{}') as Record<string, unknown>
@@ -66,5 +77,19 @@ describe('RuleYamlViewer', () => {
     expect(options.lineNumbers).toBe('off')
     expect(options.folding).toBe(false)
     expect(options.wordWrap).toBe('on')
+  })
+
+  it("uses Monaco's light theme 'vs' when the app theme is light", async () => {
+    mockTheme = 'light'
+    render(<RuleYamlViewer yaml={YAML_SAMPLE} />)
+    const editor = await waitFor(() => screen.getByTestId('monaco-editor-mock'))
+    expect(editor).toHaveAttribute('data-theme', 'vs')
+  })
+
+  it("uses Monaco's dark theme 'vs-dark' when the app theme is dark", async () => {
+    mockTheme = 'dark'
+    render(<RuleYamlViewer yaml={YAML_SAMPLE} />)
+    const editor = await waitFor(() => screen.getByTestId('monaco-editor-mock'))
+    expect(editor).toHaveAttribute('data-theme', 'vs-dark')
   })
 })
