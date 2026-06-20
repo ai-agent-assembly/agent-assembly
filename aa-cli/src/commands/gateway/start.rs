@@ -323,6 +323,44 @@ mod tests {
         assert_eq!(resolve_policy(&args), Some(PathBuf::from("/tmp/policy.yaml")));
     }
 
+    /// AAASM-3499 — `--policy` must accept a cascade *directory*, forwarded
+    /// verbatim to `aa-gateway --policy` (which routes a directory to the
+    /// multi-document cascade loader). Before the fix the dir was usable from
+    /// Rust test code only; the operator path rejected it.
+    #[test]
+    fn resolve_policy_accepts_directory_via_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let args = StartArgs {
+            policy: Some(dir.clone()),
+            listen: DEFAULT_LISTEN.to_string(),
+            socket: None,
+            no_detach: false,
+            log_file: None,
+        };
+        let resolved = resolve_policy(&args).expect("a directory must resolve");
+        assert_eq!(resolved, dir);
+        assert!(resolved.is_dir(), "the resolved policy path is a directory");
+    }
+
+    /// `$AA_POLICY` pointing at a directory resolves too (the env-var path uses
+    /// `.exists()`, which is true for directories).
+    #[test]
+    fn resolve_policy_accepts_directory_via_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let _guard = PolicyEnvGuard::set(dir.to_str().unwrap());
+
+        let args = StartArgs {
+            policy: None,
+            listen: DEFAULT_LISTEN.to_string(),
+            socket: None,
+            no_detach: false,
+            log_file: None,
+        };
+        assert_eq!(resolve_policy(&args), Some(dir));
+    }
+
     #[test]
     fn resolve_policy_uses_env_when_no_flag_and_file_exists() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
