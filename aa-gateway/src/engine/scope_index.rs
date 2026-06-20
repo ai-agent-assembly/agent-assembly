@@ -56,7 +56,7 @@ impl PolicyId {
 ///   their corresponding documents were passed to [`Self::insert`].
 ///   Documents inserted under unrelated scopes between two same-scope
 ///   inserts do not affect the relative order of the same-scope ids.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ScopeIndex {
     /// Owned policy documents keyed by their assigned id.
     policies: HashMap<PolicyId, Arc<PolicyDocument>>,
