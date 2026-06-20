@@ -244,6 +244,22 @@ enum CredentialScanOutcome {
     Continue(Option<String>, Vec<aa_security::CredentialFinding>),
 }
 
+/// Parsed result of reading a cascade directory, before a budget tracker is
+/// chosen. Shared between [`PolicyEngine::load_cascade_from_dir`] (fresh
+/// tracker) and [`PolicyEngine::load_cascade_from_dir_with_budget`]
+/// (externally-restored tracker) so the parse path stays identical.
+struct ParsedCascade {
+    scope_index: ScopeIndex,
+    /// First Global-scoped document, if any — becomes the primary slot.
+    primary: Option<PolicyDocument>,
+    compiled_patterns: Vec<regex::Regex>,
+    budget_tz: chrono_tz::Tz,
+    daily_limit: Option<rust_decimal::Decimal>,
+    monthly_limit: Option<rust_decimal::Decimal>,
+    org_daily_limit: Option<rust_decimal::Decimal>,
+    org_monthly_limit: Option<rust_decimal::Decimal>,
+}
+
 impl PolicyEngine {
     /// Load a policy from a YAML file, parse it, validate it, and start the filesystem watcher.
     ///
@@ -375,6 +391,48 @@ impl PolicyEngine {
         dir: &Path,
         budget_alert_tx: tokio::sync::broadcast::Sender<crate::budget::BudgetAlert>,
     ) -> Result<Self, PolicyLoadError> {
+        let parsed = Self::read_cascade_dir(dir)?;
+
+        // The Global-scoped document supplies the budget limits; build a
+        // fresh tracker around them. (The `_with_budget` sibling instead
+        // adopts an externally-restored tracker — see
+        // [`load_cascade_from_dir_with_budget`].)
+        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            parsed.daily_limit,
+            parsed.monthly_limit,
+            parsed.budget_tz,
+            budget_alert_tx,
+        );
+        if let Some(limit) = parsed.org_daily_limit {
+            budget_tracker = budget_tracker.with_org_daily_limit(limit);
+        }
+        if let Some(limit) = parsed.org_monthly_limit {
+            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
+        }
+        Ok(Self::assemble_cascade(parsed, Arc::new(budget_tracker)))
+    }
+
+    /// Directory-cascade loader that adopts a **pre-built** budget tracker —
+    /// the multi-document analogue of [`load_from_file_with_budget`].
+    ///
+    /// The shipped `aa-gateway` binary uses this so the gateway's
+    /// persistence loop (background writer + shutdown flush) owns the same
+    /// `Arc<BudgetTracker>` it restored from disk, exactly as it does for the
+    /// single-file path. Scope-index population and primary-doc selection are
+    /// identical to [`load_cascade_from_dir`]; only the budget-tracker
+    /// ownership differs. No filesystem watcher is attached (the watcher is
+    /// single-file only — see [`load_cascade_from_dir`] semantics).
+    pub fn load_cascade_from_dir_with_budget(dir: &Path, budget: Arc<BudgetTracker>) -> Result<Self, PolicyLoadError> {
+        let parsed = Self::read_cascade_dir(dir)?;
+        Ok(Self::assemble_cascade(parsed, budget))
+    }
+
+    /// Read and parse every `*.yaml` file in `dir` (alphabetical order) into
+    /// a populated [`ScopeIndex`] plus the budget/pattern config drawn from
+    /// the first Global-scoped document. Shared by both cascade loaders so
+    /// the parse semantics stay identical regardless of budget ownership.
+    fn read_cascade_dir(dir: &Path) -> Result<ParsedCascade, PolicyLoadError> {
         // Collect *.yaml entries in alphabetical order so the cascade is
         // deterministic across runs and filesystems with different
         // dir-iteration orders.
@@ -445,20 +503,27 @@ impl PolicyEngine {
             scope_index.insert(doc);
         }
 
-        let mut budget_tracker = BudgetTracker::new_with_alert_sender(
-            crate::budget::PricingTable::default_table(),
+        Ok(ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            budget_tz,
             daily_limit,
             monthly_limit,
-            budget_tz,
-            budget_alert_tx,
-        );
-        if let Some(limit) = org_daily_limit {
-            budget_tracker = budget_tracker.with_org_daily_limit(limit);
-        }
-        if let Some(limit) = org_monthly_limit {
-            budget_tracker = budget_tracker.with_org_monthly_limit(limit);
-        }
-        let budget = Arc::new(budget_tracker);
+            org_daily_limit,
+            org_monthly_limit,
+        })
+    }
+
+    /// Assemble a [`PolicyEngine`] from a [`ParsedCascade`] and the budget
+    /// tracker the caller chose to own (freshly built or externally restored).
+    fn assemble_cascade(parsed: ParsedCascade, budget: Arc<BudgetTracker>) -> Self {
+        let ParsedCascade {
+            scope_index,
+            primary,
+            compiled_patterns,
+            ..
+        } = parsed;
 
         let primary_doc = primary.unwrap_or_else(|| PolicyDocument {
             name: None,
@@ -476,7 +541,7 @@ impl PolicyEngine {
         });
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(primary_doc)));
 
-        Ok(PolicyEngine {
+        PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
             compiled_patterns,
@@ -488,7 +553,7 @@ impl PolicyEngine {
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
             decision_cache: DecisionCache::new(100_000),
-        })
+        }
     }
 
     /// Load a policy from a YAML file using a pre-built budget tracker.
