@@ -180,4 +180,73 @@ describe('AuditLogPage', () => {
     expect(await screen.findByTestId('audit-error')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
   })
+
+  it('renders the allow decision chip for a non-violation row', async () => {
+    renderPage()
+    const row = await screen.findByTestId('audit-row-1047')
+    expect(within(row).getByText('allow')).toBeInTheDocument()
+  })
+
+  it('renders an em-dash decision chip when the payload carries no verdict', async () => {
+    get.mockResolvedValue({
+      data: [entry({ seq: 900, event_type: 'LLMCall', payload: '{"model":"gpt-4o"}' })],
+    })
+    renderPage()
+    const row = await screen.findByTestId('audit-row-900')
+    expect(within(row).getByText('—')).toBeInTheDocument()
+  })
+
+  it('falls back to the raw event-type label for an unknown type', async () => {
+    get.mockResolvedValue({
+      data: [entry({ seq: 901, event_type: 'MysteryEvent', payload: '{}' })],
+    })
+    renderPage()
+    const row = await screen.findByTestId('audit-row-901')
+    expect(within(row).getByText(/MysteryEvent/)).toBeInTheDocument()
+  })
+
+  it('lists one agent-select option per distinct agent plus "all"', async () => {
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+    const options = within(screen.getByTestId('audit-agent-filter')).getAllByRole('option')
+    expect(options.map((o) => o.getAttribute('value'))).toEqual([
+      'all',
+      'research-bot-04',
+      'support-triage',
+    ])
+  })
+
+  it('combines the type filter with free-text search', async () => {
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    fireEvent.click(screen.getByTestId('audit-stat-ToolCall'))
+    await waitFor(() => expect(screen.queryByTestId('audit-row-1048')).toBeNull())
+
+    fireEvent.change(screen.getByTestId('audit-search'), {
+      target: { value: 'no-match' },
+    })
+    expect(await screen.findByTestId('audit-empty')).toBeInTheDocument()
+    expect(screen.getByTestId('audit-count')).toHaveTextContent('0 / 3')
+  })
+
+  it('shows the loading state before the query resolves', async () => {
+    let resolve: (v: { data: LogEntry[] }) => void = () => {}
+    get.mockReturnValue(
+      new Promise<{ data: LogEntry[] }>((r) => {
+        resolve = r
+      }),
+    )
+    renderPage()
+    expect(await screen.findByTestId('audit-loading')).toBeInTheDocument()
+    resolve({ data: ENTRIES })
+    await screen.findByTestId('audit-table')
+  })
+
+  it('navigates to the agent detail view from the agent link', async () => {
+    renderPage()
+    const row = await screen.findByTestId('audit-row-1044')
+    const agentLink = within(row).getByTestId('audit-agent-link-1044')
+    expect(agentLink).toHaveTextContent('support-triage')
+  })
 })
