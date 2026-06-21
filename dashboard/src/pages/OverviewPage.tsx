@@ -238,7 +238,7 @@ export function OverviewPage() {
       <header className="overview-head">
         <div>
           <h1 className="overview-title">
-            Overview
+            Overview{' '}
             <span className="overview-title-zh">· 治理態勢儀表</span>
           </h1>
           <p className="overview-sub">
