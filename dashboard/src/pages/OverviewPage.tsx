@@ -126,12 +126,15 @@ function LayerCard({
         <span className="overview-chip">open ↗</span>
       </div>
       <div className="overview-layer__stats">
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div className={`overview-stat__v${s.tone ? ` ${TONE_CLASS[s.tone]}` : ''}`}>{s.value}</div>
-            <div className="overview-stat__l">{s.label}</div>
-          </div>
-        ))}
+        {stats.map((s) => {
+          const toneClass = s.tone ? ` ${TONE_CLASS[s.tone]}` : ''
+          return (
+            <div key={s.label}>
+              <div className={`overview-stat__v${toneClass}`}>{s.value}</div>
+              <div className="overview-stat__l">{s.label}</div>
+            </div>
+          )
+        })}
       </div>
       <div className="overview-layer__footer">{footer}</div>
     </button>
