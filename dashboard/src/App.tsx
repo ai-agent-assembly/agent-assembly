@@ -20,6 +20,7 @@ import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
+import { OverviewPage } from './pages/OverviewPage'
 import {
   SettingsLayout,
   SettingsGeneralPlaceholder,
@@ -39,7 +40,7 @@ function App() {
 
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}
-            <Route path="/overview" element={<ComingSoon name="Overview" />} />
+            <Route path="/overview" element={<OverviewPage />} />
             <Route path="/agents" element={<FleetPage />}>
               {/* Agent Detail drawer overlays the Fleet page so filter state stays mounted. */}
               <Route path=":id" element={<AgentDetailPage />} />
