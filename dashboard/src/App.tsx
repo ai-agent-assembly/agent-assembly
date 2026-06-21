@@ -15,12 +15,12 @@ import { TopologyPage } from './pages/TopologyPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ScrubPage } from './pages/ScrubPage'
 import { OnboardingPage } from './pages/OnboardingPage'
-import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
 import { CostsPage } from './pages/CostsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
+import { AuditLogPage } from './pages/AuditLogPage'
 import { OverviewPage } from './pages/OverviewPage'
 import {
   SettingsLayout,
@@ -49,7 +49,7 @@ function App() {
             <Route path="/topology" element={<TopologyPage />} />
             <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
+            <Route path="/audit" element={<AuditLogPage />} />
             <Route path="/audit/violations" element={<ViolationHeatmapPage />} />
             {/* control */}
             <Route path="/capability" element={<CapabilityPage />} />
