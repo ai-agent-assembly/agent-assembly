@@ -19,6 +19,7 @@ import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
+import { CostsPage } from './pages/CostsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
 import { OverviewPage } from './pages/OverviewPage'
 import {
@@ -55,7 +56,7 @@ function App() {
             <Route path="/policies" element={<PoliciesPage />} />
             <Route path="/scrub" element={<ScrubPage />} />
             {/* manage */}
-            <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
+            <Route path="/costs" element={<CostsPage />} />
             <Route path="/teams" element={<TeamsPage />} />
             <Route path="/identity" element={<IdentityPage />} />
 
