@@ -180,7 +180,7 @@ describe('OverviewPage', () => {
       )
       expect(active).toEqual([win])
       // The subtitle echoes the selected window.
-      expect(screen.getByText(new RegExp(`last ${win}\\.`))).toBeInTheDocument()
+      expect(screen.getByText(new RegExp(String.raw`last ${win}\.`))).toBeInTheDocument()
     },
   )
 
