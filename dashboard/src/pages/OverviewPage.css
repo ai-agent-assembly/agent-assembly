@@ -1,0 +1,385 @@
+/* Overview page — exec-level posture summary across the three governance
+   layers. Layout/visuals follow design/v1/hi-fi/overview.jsx, but every
+   colour is a theme token so the page inverts for free under
+   :root[data-theme="dark"] (no hardcoded hex / white / black). */
+
+.overview-page {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  min-height: calc(100vh - 56px);
+}
+
+.overview-head {
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.overview-title {
+  margin: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.5px;
+}
+
+.overview-title-zh {
+  color: var(--ink-4);
+  font-weight: 400;
+  font-size: 14px;
+  margin-left: 8px;
+}
+
+.overview-sub {
+  margin: 6px 0 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-3);
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+.overview-head-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.overview-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.overview-btn:hover {
+  background: var(--paper-3);
+}
+
+.overview-btn--sm {
+  font-size: 11px;
+  padding: 5px 10px;
+}
+
+.overview-btn.is-active {
+  background: var(--ink);
+  color: var(--paper-2);
+  border-color: var(--ink);
+}
+
+.overview-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── shared card ──────────────────────────────────────────────────── */
+
+.overview-card {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 16px;
+}
+
+.overview-card--accent {
+  border-left: 3px solid var(--accent, var(--line));
+}
+
+.overview-card__label {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+/* ── hero strip ───────────────────────────────────────────────────── */
+
+.overview-hero__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  gap: 16px;
+}
+
+.overview-hero__title {
+  margin: 4px 0 0;
+  font-size: 16px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.overview-hero__title em {
+  font-style: normal;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.overview-rings {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.overview-ring {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.overview-ring__label {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.overview-ring__sub {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-top: 2px;
+}
+
+/* ── top issues row ───────────────────────────────────────────────── */
+
+.overview-row-2 {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 12px;
+}
+
+.overview-row-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.overview-row-wide {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 12px;
+}
+
+.overview-issue__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.overview-issue__tag {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--danger);
+}
+
+.overview-issue__title {
+  margin: 0;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.overview-issue__body {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.overview-issue__body code {
+  color: var(--ink-2);
+}
+
+.overview-issue__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.overview-bignum {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 32px;
+  font-weight: 700;
+  margin-top: 4px;
+  color: var(--info);
+}
+
+.overview-muted {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ── chips ────────────────────────────────────────────────────────── */
+
+.overview-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+  background: var(--paper-3);
+}
+
+.overview-chip--danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-bg);
+}
+
+/* ── layer cards ──────────────────────────────────────────────────── */
+
+.overview-layer {
+  cursor: pointer;
+}
+
+.overview-layer__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.overview-layer__sub {
+  font-size: 14px;
+  margin-top: 2px;
+  color: var(--ink-2);
+}
+
+.overview-layer__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.overview-stat__v {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.overview-stat__l {
+  font-size: 10px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.overview-layer__footer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+.overview-layer__footer code {
+  color: var(--ink-2);
+}
+
+/* ── recent decisions list ────────────────────────────────────────── */
+
+.overview-recent__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.overview-recent__row {
+  display: grid;
+  grid-template-columns: 64px 72px 1fr;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.overview-recent__time {
+  color: var(--ink-4);
+}
+
+.overview-recent__decision {
+  font-weight: 600;
+}
+
+.overview-recent__target {
+  color: var(--ink-2);
+}
+
+.overview-recent__target span {
+  color: var(--ink-4);
+}
+
+.overview-empty-note {
+  font-size: 12px;
+  color: var(--ink-4);
+  font-family: 'JetBrains Mono', monospace;
+  padding: 12px 0;
+}
+
+/* ── fleet snapshot ───────────────────────────────────────────────── */
+
+.overview-snapshot__grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.overview-snapshot__num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.overview-snapshot__lbl {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* semantic colour helpers — token-backed, used for numeric emphasis */
+.is-ok { color: var(--ok); }
+.is-warn { color: var(--warn); }
+.is-danger { color: var(--danger); }
+.is-info { color: var(--info); }
+.is-scrub { color: var(--scrub); }
+
+@media (max-width: 900px) {
+  .overview-rings,
+  .overview-row-2,
+  .overview-row-3,
+  .overview-row-wide,
+  .overview-snapshot__grid {
+    grid-template-columns: 1fr;
+  }
+}
