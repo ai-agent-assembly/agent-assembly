@@ -26,8 +26,19 @@ scenarios:
 
 Each language SDK also publishes its examples as rendered documentation, with the
 governance walkthrough alongside the code. These are the same scenarios as the
-repo links above, presented in the SDK's own docs site:
+repo links above, presented in the SDK's own docs site.
 
-- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/pre-release/examples/)
-- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/examples/)
-- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/pre-release/examples/)
+<!--
+  Link convention: we point at each SDK's channel-agnostic documentation root, not
+  a pinned version and not a hardcoded `pre-release`/`latest` segment. Per the docs
+  versioning model the root auto-redirects to the latest *stable* channel when one
+  exists (falling back to the best-available channel while the products are still in
+  beta). A `/stable/examples/` deep link does not resolve yet (the stable channel has
+  no published version during `0.0.1-beta.x`), so we link the SDK doc root — which
+  always tracks stable and returns HTTP 200 — and let its navigation surface the
+  examples section. Revisit deep `/stable/examples/` links once a stable release ships.
+-->
+
+- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/)
+- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/)
+- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/)
