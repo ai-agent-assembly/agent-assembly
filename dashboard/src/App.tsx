@@ -15,12 +15,13 @@ import { TopologyPage } from './pages/TopologyPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ScrubPage } from './pages/ScrubPage'
 import { OnboardingPage } from './pages/OnboardingPage'
-import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
+import { CostsPage } from './pages/CostsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
 import { AuditLogPage } from './pages/AuditLogPage'
+import { OverviewPage } from './pages/OverviewPage'
 import {
   SettingsLayout,
   SettingsGeneralPlaceholder,
@@ -40,7 +41,7 @@ function App() {
 
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}
-            <Route path="/overview" element={<ComingSoon name="Overview" />} />
+            <Route path="/overview" element={<OverviewPage />} />
             <Route path="/agents" element={<FleetPage />}>
               {/* Agent Detail drawer overlays the Fleet page so filter state stays mounted. */}
               <Route path=":id" element={<AgentDetailPage />} />
@@ -55,7 +56,7 @@ function App() {
             <Route path="/policies" element={<PoliciesPage />} />
             <Route path="/scrub" element={<ScrubPage />} />
             {/* manage */}
-            <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
+            <Route path="/costs" element={<CostsPage />} />
             <Route path="/teams" element={<TeamsPage />} />
             <Route path="/identity" element={<IdentityPage />} />
 
