@@ -1,0 +1,11 @@
+# Keep the Docker build context lean. The aa-runtime image build (context: .)
+# only needs the Cargo workspace sources; everything below is rebuilt inside the
+# image or is irrelevant to it. Excluding target/ in particular avoids shipping a
+# host-built (wrong-arch, non-musl) artifact into the build and bloating context.
+target/
+**/target/
+.git/
+.github/
+dashboard/node_modules/
+**/node_modules/
+*.log
