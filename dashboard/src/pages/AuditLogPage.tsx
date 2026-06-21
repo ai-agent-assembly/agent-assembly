@@ -100,6 +100,166 @@ export function AuditLogPage() {
     })),
   ]
 
+  // Pick the body section with an explicit branch rather than a nested ternary
+  // (error → loading → table), keeping the render tree readable.
+  let body: React.ReactNode
+  if (isError) {
+    body = (
+      <div className="audit-state audit-state--error" data-testid="audit-error">
+        <p>Failed to load audit log.</p>
+        <button type="button" className="audit-btn" onClick={() => ignorePromise(refetch())}>
+          Retry
+        </button>
+      </div>
+    )
+  } else if (isLoading) {
+    body = (
+      <div className="audit-state" data-testid="audit-loading">
+        Loading…
+      </div>
+    )
+  } else {
+    body = (
+      <div className="audit-table-wrap">
+        <table className="audit-table" data-testid="audit-table">
+          <thead>
+            <tr>
+              <th style={{ width: 52 }}>seq</th>
+              <th style={{ width: 100 }}>time</th>
+              <th style={{ width: 150 }}>agent</th>
+              <th style={{ width: 150 }}>event type</th>
+              <th style={{ width: 84 }}>decision</th>
+              <th>summary</th>
+              <th style={{ width: 90 }}>session</th>
+              <th style={{ width: 64 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="audit-empty-cell" data-testid="audit-empty">
+                  no entries match
+                </td>
+              </tr>
+            ) : (
+              filtered.map((e) => {
+                const meta = EVENT_META[e.event_type] ?? {
+                  label: e.event_type,
+                  chip: '',
+                  icon: '·',
+                }
+                const decision = extractDecision(e.payload)
+                const dm = (decision && DECISION_META[decision]) || {
+                  chip: '',
+                  label: decision ? decision.toLowerCase() : '—',
+                }
+                const summary = payloadSummary(e.event_type, e.payload)
+                const isExp = expanded === e.seq
+                const isViolation = e.event_type === 'PolicyViolation'
+                const rowCls = [
+                  'audit-row',
+                  isExp ? 'audit-row--expanded' : '',
+                  !isExp && isViolation ? 'audit-row--violation' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')
+
+                return (
+                  <Fragment key={e.seq}>
+                    <tr
+                      className={rowCls}
+                      data-testid={`audit-row-${e.seq}`}
+                      onClick={() => setExpanded(isExp ? null : e.seq)}
+                    >
+                      <td className="audit-mono audit-session">{e.seq}</td>
+                      <td>
+                        <div className="audit-cell-time">{e.timestamp.slice(11, 19)}</div>
+                        <div className="audit-cell-date">{e.timestamp.slice(0, 10)}</div>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="audit-agent-link"
+                          data-testid={`audit-agent-link-${e.seq}`}
+                          onClick={(ev) => {
+                            ev.stopPropagation()
+                            navigate(`/agents/${e.agent_id}`)
+                          }}
+                        >
+                          {e.agent_id}
+                        </button>
+                      </td>
+                      <td>
+                        <span className={chipClass(meta.chip)}>
+                          {meta.icon} {meta.label}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={chipClass(dm.chip)}>{dm.label}</span>
+                      </td>
+                      <td>
+                        <span
+                          className={[
+                            'audit-summary',
+                            isViolation ? 'audit-summary--violation' : '',
+                            MONO_SUMMARY_TYPES.has(e.event_type) ? 'audit-summary--mono' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                        >
+                          {summary}
+                        </span>
+                      </td>
+                      <td className="audit-session">{e.session_id}</td>
+                      <td>
+                        <Link
+                          to={auditEventHref(e.seq)}
+                          className="audit-event-link"
+                          data-testid={`audit-event-link-${e.seq}`}
+                          onClick={(ev) => ev.stopPropagation()}
+                        >
+                          View →
+                        </Link>
+                      </td>
+                    </tr>
+
+                    {isExp && (
+                      <tr>
+                        <td colSpan={8} className="audit-detail-cell">
+                          <div className="audit-detail" data-testid={`audit-detail-${e.seq}`}>
+                            <div>
+                              <div className="audit-detail__section-title">metadata</div>
+                              <div className="audit-kv">
+                                <span className="audit-kv__k">seq</span>
+                                <span className="audit-kv__v">{e.seq}</span>
+                                <span className="audit-kv__k">timestamp</span>
+                                <span className="audit-kv__v">{e.timestamp}</span>
+                                <span className="audit-kv__k">session</span>
+                                <span className="audit-kv__v">{e.session_id}</span>
+                                <span className="audit-kv__k">decision</span>
+                                <span className="audit-kv__v">
+                                  <span className={chipClass(dm.chip)}>{dm.label}</span>
+                                </span>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="audit-detail__section-title">payload</div>
+                              <pre className="audit-payload">{prettyPayload(e.payload)}</pre>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
   return (
     <div className="audit-page" data-testid="audit-log-page">
       <header className="audit-head">
@@ -178,156 +338,7 @@ export function AuditLogPage() {
         </span>
       </div>
 
-      {isError ? (
-        <div className="audit-state audit-state--error" data-testid="audit-error">
-          <p>Failed to load audit log.</p>
-          <button type="button" className="audit-btn" onClick={() => ignorePromise(refetch())}>
-            Retry
-          </button>
-        </div>
-      ) : isLoading ? (
-        <div className="audit-state" data-testid="audit-loading">
-          Loading…
-        </div>
-      ) : (
-        <div className="audit-table-wrap">
-          <table className="audit-table" data-testid="audit-table">
-            <thead>
-              <tr>
-                <th style={{ width: 52 }}>seq</th>
-                <th style={{ width: 100 }}>time</th>
-                <th style={{ width: 150 }}>agent</th>
-                <th style={{ width: 150 }}>event type</th>
-                <th style={{ width: 84 }}>decision</th>
-                <th>summary</th>
-                <th style={{ width: 90 }}>session</th>
-                <th style={{ width: 64 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="audit-empty-cell" data-testid="audit-empty">
-                    no entries match
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((e) => {
-                  const meta = EVENT_META[e.event_type] ?? {
-                    label: e.event_type,
-                    chip: '',
-                    icon: '·',
-                  }
-                  const decision = extractDecision(e.payload)
-                  const dm = (decision && DECISION_META[decision]) || {
-                    chip: '',
-                    label: decision ? decision.toLowerCase() : '—',
-                  }
-                  const summary = payloadSummary(e.event_type, e.payload)
-                  const isExp = expanded === e.seq
-                  const isViolation = e.event_type === 'PolicyViolation'
-                  const rowCls = [
-                    'audit-row',
-                    isExp ? 'audit-row--expanded' : '',
-                    !isExp && isViolation ? 'audit-row--violation' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')
-
-                  return (
-                    <Fragment key={e.seq}>
-                      <tr
-                        className={rowCls}
-                        data-testid={`audit-row-${e.seq}`}
-                        onClick={() => setExpanded(isExp ? null : e.seq)}
-                      >
-                        <td className="audit-mono audit-session">{e.seq}</td>
-                        <td>
-                          <div className="audit-cell-time">{e.timestamp.slice(11, 19)}</div>
-                          <div className="audit-cell-date">{e.timestamp.slice(0, 10)}</div>
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className="audit-agent-link"
-                            data-testid={`audit-agent-link-${e.seq}`}
-                            onClick={(ev) => {
-                              ev.stopPropagation()
-                              navigate(`/agents/${e.agent_id}`)
-                            }}
-                          >
-                            {e.agent_id}
-                          </button>
-                        </td>
-                        <td>
-                          <span className={chipClass(meta.chip)}>
-                            {meta.icon} {meta.label}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={chipClass(dm.chip)}>{dm.label}</span>
-                        </td>
-                        <td>
-                          <span
-                            className={[
-                              'audit-summary',
-                              isViolation ? 'audit-summary--violation' : '',
-                              MONO_SUMMARY_TYPES.has(e.event_type) ? 'audit-summary--mono' : '',
-                            ]
-                              .filter(Boolean)
-                              .join(' ')}
-                          >
-                            {summary}
-                          </span>
-                        </td>
-                        <td className="audit-session">{e.session_id}</td>
-                        <td>
-                          <Link
-                            to={auditEventHref(e.seq)}
-                            className="audit-event-link"
-                            data-testid={`audit-event-link-${e.seq}`}
-                            onClick={(ev) => ev.stopPropagation()}
-                          >
-                            View →
-                          </Link>
-                        </td>
-                      </tr>
-
-                      {isExp && (
-                        <tr>
-                          <td colSpan={8} className="audit-detail-cell">
-                            <div className="audit-detail" data-testid={`audit-detail-${e.seq}`}>
-                              <div>
-                                <div className="audit-detail__section-title">metadata</div>
-                                <div className="audit-kv">
-                                  <span className="audit-kv__k">seq</span>
-                                  <span className="audit-kv__v">{e.seq}</span>
-                                  <span className="audit-kv__k">timestamp</span>
-                                  <span className="audit-kv__v">{e.timestamp}</span>
-                                  <span className="audit-kv__k">session</span>
-                                  <span className="audit-kv__v">{e.session_id}</span>
-                                  <span className="audit-kv__k">decision</span>
-                                  <span className="audit-kv__v">
-                                    <span className={chipClass(dm.chip)}>{dm.label}</span>
-                                  </span>
-                                </div>
-                              </div>
-                              <div>
-                                <div className="audit-detail__section-title">payload</div>
-                                <pre className="audit-payload">{prettyPayload(e.payload)}</pre>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {body}
     </div>
   )
 }
