@@ -89,8 +89,11 @@ export function payloadSummary(eventType: string, payload: string): string {
         return `${p.model} · ${p.prompt_tokens}+${p.completion_tokens} tok · ${p.latency_ms}ms${p.pii_detected ? ' · ⚠ PII detected' : ''}`
       case 'ToolCall':
         return `${p.tool_name} (${p.tool_source}) · ${p.succeeded ? '✓ ok' : '✕ error'} · ${p.latency_ms}ms`
-      case 'FileOp':
-        return `${String(p.operation ?? '').toUpperCase()} ${p.path}${p.bytes ? ` · ${(Number(p.bytes) / 1048576).toFixed(1)} MB` : ''}`
+      case 'FileOp': {
+        const operation = typeof p.operation === 'string' ? p.operation : ''
+        const sizeSuffix = p.bytes ? ` · ${(Number(p.bytes) / 1048576).toFixed(1)} MB` : ''
+        return `${operation.toUpperCase()} ${p.path}${sizeSuffix}`
+      }
       case 'NetworkCall':
         return `${p.protocol}://${p.host} → ${p.status_code} · ${p.latency_ms}ms`
       case 'PolicyViolation':
