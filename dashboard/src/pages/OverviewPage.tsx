@@ -6,11 +6,8 @@ import { useApprovalsQuery } from '../features/approvals/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
-import { LoadingState } from '../components/LoadingState'
-import { EmptyState } from '../components/EmptyState'
-import { ErrorState } from '../components/ErrorState'
-import { ignorePromise } from '../lib/ignorePromise'
 import { deriveOverviewKpis } from './OverviewPage.kpis'
+import { OverviewGuard } from './OverviewPage.guard'
 import './OverviewPage.css'
 
 /**
@@ -204,25 +201,14 @@ export function OverviewPage() {
   const isLoading = agentsQuery.isLoading
   const isError = agentsQuery.isError
 
-  if (isLoading) return <LoadingState page="overview" />
-  if (isError) {
-    return (
-      <ErrorState
-        kind="generic"
-        onRetry={() => ignorePromise(agentsQuery.refetch())}
-        onSecondary={() => navigate('/audit')}
-      />
-    )
-  }
-  if (fleet.length === 0) {
-    return (
-      <EmptyState
-        page="overview"
-        onCta={() => navigate('/onboarding')}
-        onSecondary={() => navigate('/agents')}
-      />
-    )
-  }
+  const guard = OverviewGuard({
+    isLoading,
+    isError,
+    isEmpty: fleet.length === 0,
+    navigate,
+    refetch: agentsQuery.refetch,
+  })
+  if (guard) return guard
 
   const approvals = approvalsQuery.data ?? []
   const policies = policiesQuery.data ?? []

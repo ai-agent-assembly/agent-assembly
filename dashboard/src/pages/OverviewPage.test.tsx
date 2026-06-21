@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { render, screen, fireEvent, within } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
@@ -88,11 +88,17 @@ function setup({
   )
 }
 
+/** Surfaces the current router path so guard-secondary navigation can be asserted. */
+function LocationProbe() {
+  return <div data-testid="location-probe">{useLocation().pathname}</div>
+}
+
 function renderPage() {
   return render(
     <QueryClientProvider client={makeClient()}>
       <MemoryRouter initialEntries={['/overview']}>
         <OverviewPage />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -117,6 +123,27 @@ describe('OverviewPage', () => {
     setup({ agents: [] })
     renderPage()
     expect(screen.getByTestId('empty-state-overview')).toBeInTheDocument()
+  })
+
+  it('error state — Retry refetches the agents query and the secondary action opens the audit log', () => {
+    const refetch = vi.fn().mockResolvedValue(undefined)
+    setup({ agentsState: { isError: true, data: undefined, refetch } })
+    renderPage()
+    const error = within(screen.getByTestId('error-state-generic'))
+    fireEvent.click(error.getByRole('button', { name: /Retry/ }))
+    expect(refetch).toHaveBeenCalledTimes(1)
+    fireEvent.click(error.getByRole('button', { name: /Open status page/ }))
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/audit')
+  })
+
+  it('empty state — the CTA opens onboarding and the secondary opens the fleet', () => {
+    setup({ agents: [] })
+    renderPage()
+    const empty = within(screen.getByTestId('empty-state-overview'))
+    fireEvent.click(empty.getByRole('button', { name: /Start setup wizard/ }))
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/onboarding')
+    fireEvent.click(empty.getByRole('button', { name: /View install docs/ }))
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/agents')
   })
 
   it('renders the headline sections with live-derived KPIs', () => {
@@ -180,7 +207,7 @@ describe('OverviewPage', () => {
       )
       expect(active).toEqual([win])
       // The subtitle echoes the selected window.
-      expect(screen.getByText(new RegExp(`last ${win}\\.`))).toBeInTheDocument()
+      expect(screen.getByText(new RegExp(String.raw`last ${win}\.`))).toBeInTheDocument()
     },
   )
 
