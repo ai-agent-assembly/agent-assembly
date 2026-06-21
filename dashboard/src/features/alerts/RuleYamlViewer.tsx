@@ -1,4 +1,5 @@
 import { Suspense, lazy } from 'react'
+import { useTheme } from '../../theme/useTheme'
 
 // Lazy-load Monaco so the editor JS is fetched only when the alert
 // detail drawer actually opens — keeps the first-paint of the Alerts
@@ -24,6 +25,10 @@ interface RuleYamlViewerProps {
  * lazy-loaded inside a `<Suspense>` boundary.
  */
 export function RuleYamlViewer({ yaml }: Readonly<RuleYamlViewerProps>) {
+  // Follow the dashboard's active theme so the editor doesn't render a dark
+  // box inside the otherwise-light UI in light mode (AAASM-3507). 'vs' is
+  // Monaco's built-in light theme; the repo registers no custom light theme.
+  const { theme } = useTheme()
   return (
     <div
       data-testid="alert-detail-rule-yaml"
@@ -53,7 +58,7 @@ export function RuleYamlViewer({ yaml }: Readonly<RuleYamlViewerProps>) {
           height={HEIGHT_PX}
           language="yaml"
           value={yaml}
-          theme="vs-dark"
+          theme={theme === 'dark' ? 'vs-dark' : 'vs'}
           options={{
             readOnly: true,
             domReadOnly: true,
