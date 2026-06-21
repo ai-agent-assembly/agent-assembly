@@ -9,6 +9,7 @@ import type { Alert, AlertFilters } from '../features/alerts/types'
 import { LoadingState } from '../components/LoadingState'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
+import { ignorePromise } from '../lib/ignorePromise'
 import './OverviewPage.css'
 
 /**
@@ -191,7 +192,7 @@ export function OverviewPage() {
     return (
       <ErrorState
         kind="generic"
-        onRetry={() => void agentsQuery.refetch()}
+        onRetry={() => ignorePromise(agentsQuery.refetch())}
         onSecondary={() => navigate('/audit')}
       />
     )
