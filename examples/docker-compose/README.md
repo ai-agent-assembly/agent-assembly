@@ -1,21 +1,65 @@
-# aa-runtime docker-compose example
+# Open-source self-host — docker-compose example
 
-Demonstrates running `aa-runtime` as a sidecar alongside an agent container,
-connected via a shared Unix domain socket.
+A sample **open-source** self-host stack for Agent Assembly — a quick way for
+developers to set up, run, and maintain the program's infrastructure locally. It
+runs the components that already ship a container image or build context in this
+repository, wired to reflect the sidecar-interception dataflow.
+
+> **"Open source" is about scope, not a crippled build.** This stack starts the
+> enforcement data plane (`aa-runtime` + optional `aa-proxy`), which ship images
+> today. The control plane (`aa-gateway`, `aa-api`, the operator dashboard) is
+> **also open source in this repository** — it just has no published container image
+> *yet*, so you currently build it from source; images are a tracked follow-up. The
+> hosted **SaaS edition** runs the complete stack managed for you and adds the
+> cloud/enterprise control-plane features that live outside this repo. See
+> [`docs/src/usage-guide/self-hosting.md`](../../docs/src/usage-guide/self-hosting.md)
+> for the full architecture.
+
+## What this stack runs
+
+| Service | Image / build | Profile | Port | Role |
+|---|---|---|---|---|
+| `aa-runtime` | `ghcr.io/ai-agent-assembly/aa-runtime:latest` | default | `8080` | Authoritative in-process enforcement sidecar |
+| `agent-stub` | `alpine:latest` (placeholder) | default | — | Stand-in agent sharing the runtime's IPC socket |
+| `aa-proxy` | built from `../../aa-proxy/Dockerfile` | `proxy` | `8899` | Optional egress-interception (MitM HTTPS) proxy |
+
+The control-plane components (`aa-gateway`, `aa-api`, dashboard) are open source in
+this repo but have no published container image yet, so they are not in this
+example; build them from source to run them yourself, or use the hosted SaaS
+edition for the complete managed stack.
 
 ## Prerequisites
 
 - Docker and Docker Compose v2
-- An Agent Assembly API key (`AA_API_KEY`)
+- An Agent Assembly API key (`AA_API_KEY`) — used by the agent stub
 
 ## Running the example
+
+Default (runtime sidecar path):
 
 ```bash
 AA_API_KEY=<your-key> docker compose up
 ```
 
-`aa-runtime` will start, expose the IPC socket at `/tmp/aa-runtime-my-agent-001.sock`,
-and serve health/metrics at `http://localhost:8080`.
+`aa-runtime` starts, enforces locally from the mounted `../policy.toml`, exposes the
+IPC socket at `/tmp/aa-runtime-my-agent-001.sock`, and serves health/metrics at
+`http://localhost:8080`.
+
+With the optional egress proxy:
+
+```bash
+AA_API_KEY=<your-key> docker compose --profile proxy up
+```
+
+This additionally **builds** `aa-proxy` from `../../aa-proxy/Dockerfile` and listens
+on `:8899`.
+
+## Local enforcement (no gateway)
+
+In this example stack `aa-runtime` runs with **no central gateway**. It
+enforces from the policy file mounted at `/etc/aa/policy.toml` (`../policy.toml`).
+To point it at a gateway instead, set `AA_GATEWAY_ENDPOINT` on the `aa-runtime`
+service. See `../policy.toml` for the rule format.
 
 ## Agent placeholder
 
@@ -32,16 +76,13 @@ To swap in your own agent:
 3. Keep the `aa-runtime-socket` volume mount at `/tmp` — the IPC socket lives at
    `/tmp/aa-runtime-<AA_AGENT_ID>.sock`.
 
-## Policy enforcement (optional)
+## About the optional `aa-proxy` profile
 
-Uncomment the policy volume mount in `docker-compose.yml` to load a policy file:
-
-```yaml
-volumes:
-  - ./policy.toml:/etc/aa/policy.toml:ro
-```
-
-See `../policy.toml` for an example policy.
+`aa-proxy` forwards governance decisions to the gateway and **fails closed** when
+the gateway is unreachable. Because no gateway runs in this example stack (it has
+no published image yet), the proxy service sets `AA_PROXY_MCP_FAIL_OPEN=1` so it can
+start standalone for a demo of the egress path. Remove that variable and set
+`AA_PROXY_GATEWAY_ENDPOINT` to enforce through a gateway (self-hosted or SaaS).
 
 ## Health check
 
@@ -49,4 +90,11 @@ See `../policy.toml` for an example policy.
 curl http://localhost:8080/health
 curl http://localhost:8080/ready
 curl http://localhost:8080/metrics
+```
+
+## Tear down
+
+```bash
+docker compose down            # default profile
+docker compose --profile proxy down
 ```
