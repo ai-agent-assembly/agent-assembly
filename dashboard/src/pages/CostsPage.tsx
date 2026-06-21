@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
 import { SegmentedControl } from '../features/analytics/SegmentedControl'
@@ -7,6 +7,7 @@ import {
   joinTeamRows,
   useCostSummaryQuery,
   useTopologyOverviewQuery,
+  type TeamListRow,
 } from '../features/teams/api'
 import { deriveCostKpis, type BudgetPeriod } from '../features/costs/costKpis'
 import '../features/analytics/CostBreakdownPanel.css'
@@ -43,6 +44,58 @@ function KpiCard({ label, value, sub, valueClass = '', testId }: KpiCardProps) {
       <div className="costs-kpi__label">{label}</div>
       <div className={`costs-kpi__value${valueClass}`}>{value}</div>
       <div className="costs-kpi__sub">{sub}</div>
+    </div>
+  )
+}
+
+interface TeamBudgetContentProps {
+  readonly isError: boolean
+  readonly isLoading: boolean
+  readonly teamRows: readonly TeamListRow[]
+  readonly onRetry: () => void
+}
+
+/**
+ * Resolve the per-team budget section body for the current query state.
+ *
+ * Extracted from the JSX as an explicit if/else chain (rather than a nested
+ * ternary) so each error / loading / empty / list branch reads on its own.
+ */
+function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudgetContentProps): ReactNode {
+  if (isError) {
+    return (
+      <p className="costs-state costs-state--error" data-testid="costs-error">
+        Failed to load cost data.{' '}
+        <button type="button" className="costs-state__retry" onClick={onRetry}>
+          Retry
+        </button>
+      </p>
+    )
+  }
+  if (isLoading) {
+    return (
+      <p className="costs-state" data-testid="costs-loading">
+        Loading cost data…
+      </p>
+    )
+  }
+  if (teamRows.length === 0) {
+    return (
+      <p className="costs-team-bars__empty" data-testid="costs-team-empty">
+        No teams registered yet.
+      </p>
+    )
+  }
+  return (
+    <div className="costs-team-bars">
+      {teamRows.map(row => (
+        <TeamBudgetBar
+          key={row.team_id}
+          team={row.team_id}
+          spent={row.daily_spend_usd ?? 0}
+          limit={row.daily_limit_usd ?? 0}
+        />
+      ))}
     </div>
   )
 }
@@ -139,37 +192,12 @@ export function CostsPage() {
           </span>
         </div>
 
-        {isError ? (
-          <p className="costs-state costs-state--error" data-testid="costs-error">
-            Failed to load cost data.
-            <button
-              type="button"
-              className="costs-state__retry"
-              onClick={() => ignorePromise(costsQuery.refetch())}
-            >
-              Retry
-            </button>
-          </p>
-        ) : isLoading ? (
-          <p className="costs-state" data-testid="costs-loading">
-            Loading cost data…
-          </p>
-        ) : teamRows.length === 0 ? (
-          <p className="costs-team-bars__empty" data-testid="costs-team-empty">
-            No teams registered yet.
-          </p>
-        ) : (
-          <div className="costs-team-bars">
-            {teamRows.map(row => (
-              <TeamBudgetBar
-                key={row.team_id}
-                team={row.team_id}
-                spent={row.daily_spend_usd ?? 0}
-                limit={row.daily_limit_usd ?? 0}
-              />
-            ))}
-          </div>
-        )}
+        <TeamBudgetContent
+          isError={isError}
+          isLoading={isLoading}
+          teamRows={teamRows}
+          onRetry={() => ignorePromise(costsQuery.refetch())}
+        />
       </section>
 
       <section className="costs-section" data-testid="costs-breakdown">
