@@ -16,3 +16,13 @@ scenarios:
 - **Python** — [examples-repo/python](https://github.com/ai-agent-assembly/agent-assembly-examples/tree/master/python)
 - **Go** — [examples-repo/go](https://github.com/ai-agent-assembly/agent-assembly-examples/tree/master/go)
 - **Scenarios** (cross-cutting: approval-gates, audit-trace, budget-limits, policy-enforcement, sidecar-runtime) — [examples-repo/scenarios](https://github.com/ai-agent-assembly/agent-assembly-examples/tree/master/scenarios)
+
+## Per-SDK example docs
+
+Each language SDK also publishes its examples as rendered documentation, with the
+governance walkthrough alongside the code. These are the same scenarios as the
+repo links above, presented in the SDK's own docs site:
+
+- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/pre-release/examples/)
+- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/examples/)
+- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/pre-release/examples/)
