@@ -1,0 +1,55 @@
+# Per-image governance smoke stack (AAASM-3524).
+#
+# A parameterized compose stack that brings up, for ONE base image under test:
+#   * aa-runtime — the authoritative enforcement sidecar (the real core the SDK
+#                  talks to), loading the harness allow/deny policy;
+#   * agent      — the minimal per-language agent built FROM the base image with
+#                  only the agent source added (see agents/<lang>/Dockerfile.agent).
+#
+# Both share /tmp via a named volume and the SAME AA_AGENT_ID, so the runtime's
+# UDS (/tmp/aa-runtime-<AA_AGENT_ID>.sock) is reachable from the agent — exactly
+# the wiring modelled by examples/docker-compose/docker-compose.yml.
+#
+# Driven entirely by env vars set by run-smoke.sh (one invocation per image):
+#   AA_RUNTIME_IMAGE  — the locally built aa-runtime image tag
+#   SMOKE_BASE_IMAGE  — the base image under test (build arg to the overlay)
+#   SMOKE_AGENT_DIR   — agents/<lang> build context
+#   SMOKE_AGENT_DOCKERFILE — agents/<lang>/Dockerfile.agent
+#   AA_AGENT_ID       — unique per run (socket isolation)
+#
+# Usage (via the runner): docker compose -f docker-compose.smoke.yml up ...
+
+services:
+  aa-runtime:
+    image: ${AA_RUNTIME_IMAGE:?set AA_RUNTIME_IMAGE to the built aa-runtime tag}
+    environment:
+      AA_AGENT_ID: "${AA_AGENT_ID:?set AA_AGENT_ID}"
+      AA_POLICY_PATH: "/etc/aa/policy.toml"
+      # Pin metrics to loopback inside the container; the harness does not probe
+      # it over the network, the agent reaches the runtime over the UDS only.
+      AA_METRICS_ADDR: "0.0.0.0:8080"
+    volumes:
+      - aa-runtime-socket:/tmp
+      - ./policy.toml:/etc/aa/policy.toml:ro
+    # distroless aa-runtime has no shell, so no CMD-SHELL healthcheck here; the
+    # runner gates the agent on the socket file appearing in the shared volume.
+
+  agent:
+    build:
+      context: ${SMOKE_AGENT_DIR:?set SMOKE_AGENT_DIR}
+      dockerfile: Dockerfile.agent
+      args:
+        BASE_IMAGE: "${SMOKE_BASE_IMAGE:?set SMOKE_BASE_IMAGE}"
+    depends_on:
+      - aa-runtime
+    environment:
+      AA_AGENT_ID: "${AA_AGENT_ID}"
+      # The UDS the runtime binds, derived from the shared AA_AGENT_ID. The agent
+      # uses this only when a live native transport is available (see the agents'
+      # Tier-B notes); absent that, it runs the SDK's offline path honestly.
+      AA_RUNTIME_SOCKET: "/tmp/aa-runtime-${AA_AGENT_ID}.sock"
+    volumes:
+      - aa-runtime-socket:/tmp
+
+volumes:
+  aa-runtime-socket:
