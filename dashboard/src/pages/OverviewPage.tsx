@@ -6,11 +6,8 @@ import { useApprovalsQuery } from '../features/approvals/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
-import { LoadingState } from '../components/LoadingState'
-import { EmptyState } from '../components/EmptyState'
-import { ErrorState } from '../components/ErrorState'
-import { ignorePromise } from '../lib/ignorePromise'
 import { deriveOverviewKpis } from './OverviewPage.kpis'
+import { OverviewGuard } from './OverviewPage.guard'
 import './OverviewPage.css'
 
 /**
@@ -187,39 +184,6 @@ function RecentDecisionRow({ alert }: Readonly<{ alert: Alert }>) {
   )
 }
 
-/** Loading / error / empty guard for the Overview page. Extracted so the page
- * component stays under SonarCloud's cognitive-complexity threshold (S3776). */
-function overviewGuard(
-  args: Readonly<{
-    isLoading: boolean
-    isError: boolean
-    isEmpty: boolean
-    navigate: ReturnType<typeof useNavigate>
-    refetch: () => Promise<unknown>
-  }>,
-): React.ReactElement | null {
-  if (args.isLoading) return <LoadingState page="overview" />
-  if (args.isError) {
-    return (
-      <ErrorState
-        kind="generic"
-        onRetry={() => ignorePromise(args.refetch())}
-        onSecondary={() => args.navigate('/audit')}
-      />
-    )
-  }
-  if (args.isEmpty) {
-    return (
-      <EmptyState
-        page="overview"
-        onCta={() => args.navigate('/onboarding')}
-        onSecondary={() => args.navigate('/agents')}
-      />
-    )
-  }
-  return null
-}
-
 export function OverviewPage() {
   const navigate = useNavigate()
   const [windowSel, setWindowSel] = useState<Window>('24h')
@@ -237,7 +201,7 @@ export function OverviewPage() {
   const isLoading = agentsQuery.isLoading
   const isError = agentsQuery.isError
 
-  const guard = overviewGuard({
+  const guard = OverviewGuard({
     isLoading,
     isError,
     isEmpty: fleet.length === 0,
