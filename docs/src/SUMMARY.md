@@ -63,6 +63,7 @@
 # Architecture
 
 - [Architecture](architecture/README.md)
+  - [Infrastructure overview](architecture/infra-overview.md)
   - [System architecture](architecture/system-architecture.md)
   - [Component deep-dives](architecture/components.md)
   - [Key workflows](architecture/workflows.md)
