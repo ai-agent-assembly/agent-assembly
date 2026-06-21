@@ -1,0 +1,104 @@
+name: Docker image smoke (per-language base images)
+
+# AAASM-3524 — per-language Docker base-image smoke verification.
+#
+# Goes beyond docker.yml's build-time `aasm --version` + bare-import smoke: for
+# EACH of the 9 published base images (3 langs x 3 versions) it builds the image,
+# runs a minimal agent ON the image with no manual config against a real
+# aa-runtime sidecar, and asserts the agent runs clean (Tier A) plus the policy
+# fixture genuinely denies the restricted action. The deny-enforcement-from-image
+# assertion is a known product gap (AAASM-3000 / AAASM-3021), pending AAASM-3172 —
+# the harness records it honestly rather than failing or faking green.
+#
+# Matrix is read from docker/smoke/images.json (single source of truth, shared
+# with the local runner). Pre-publish path: build from docker/. A post-publish
+# pull-smoke against real GHCR tags is the AAASM-1226 follow-up (still missing in
+# docker.yml) and intentionally NOT wired here.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "aa-runtime/**"
+      - "docker/**"
+      - ".github/workflows/docker-image-smoke.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prep:
+    name: Resolve smoke matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - id: set
+        # Read the 9-image matrix from the shared manifest so CI and the local
+        # runner never drift.
+        run: |
+          matrix=$(jq -c '{include: .images}' docker/smoke/images.json)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  build-runtime:
+    name: Build aa-runtime sidecar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Build aa-runtime image and export as artifact
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: aa-runtime/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: false
+          tags: aa-runtime:smoke
+          outputs: type=docker,dest=/tmp/aa-runtime-smoke.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Upload aa-runtime image artifact
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: aa-runtime-smoke-image
+          path: /tmp/aa-runtime-smoke.tar
+          retention-days: 1
+
+  smoke:
+    name: Smoke ${{ matrix.lang }}:${{ matrix.version }}
+    runs-on: ubuntu-latest
+    needs: [prep, build-runtime]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Download aa-runtime image artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aa-runtime-smoke-image
+          path: /tmp
+      - name: Load aa-runtime image
+        # Pre-loading the artifact populates the `aa-runtime:smoke` tag the runner
+        # expects. The runner still issues `docker build` for aa-runtime in build
+        # mode, but with cache-from: type=gha it is a cache hit, not a rebuild.
+        run: docker load -i /tmp/aa-runtime-smoke.tar
+      - name: Run base-image smoke
+        env:
+          IMAGE_MODE: build
+        run: |
+          docker/smoke/run-smoke.sh \
+            --lang "${{ matrix.lang }}" \
+            --version "${{ matrix.version }}"
