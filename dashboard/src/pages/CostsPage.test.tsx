@@ -140,11 +140,11 @@ describe('CostsPage', () => {
     const bars = await screen.findAllByTestId('team-budget-bar')
     expect(bars).toHaveLength(2)
 
-    const hot = bars.find(b => b.getAttribute('data-team') === 'team-hot')!
-    expect(hot.getAttribute('data-threshold-bucket')).toBe('danger')
+    const hot = bars.find(b => b.dataset.team === 'team-hot')!
+    expect(hot.dataset.thresholdBucket).toBe('danger')
 
-    const cool = bars.find(b => b.getAttribute('data-team') === 'team-cool')!
-    expect(cool.getAttribute('data-threshold-bucket')).toBe('ok')
+    const cool = bars.find(b => b.dataset.team === 'team-cool')!
+    expect(cool.dataset.thresholdBucket).toBe('ok')
   })
 
   it('renders the reused per-agent cost breakdown panel', async () => {
