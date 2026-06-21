@@ -193,11 +193,16 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Readonly<Props>) {
       {/* Tooltip */}
       {tooltip && (
         <div
+          data-testid="heatmap-tooltip"
           style={{
             position: "absolute",
             left: tooltip.x + 60,
             top: tooltip.y + 10,
-            background: "white",
+            // Theme tokens (not hardcoded white) so the tooltip stays legible
+            // in dark mode — a bare `white` background inherits the light
+            // foreground and produces light-on-white text (AAASM-3506).
+            background: "var(--paper-2)",
+            color: "var(--ink)",
             border: "1px solid var(--line-2)",
             borderRadius: 6,
             padding: "8px 12px",
