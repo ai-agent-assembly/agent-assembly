@@ -7,7 +7,7 @@
 # run with no extra install step.
 #
 # Use:
-#   FROM ghcr.io/agent-assembly/python:3.14-slim
+#   FROM ghcr.io/ai-agent-assembly/python:3.14-slim
 #
 # Transitional install paths (will simplify once these Stories ship):
 #   * `aasm` is built from source until AAASM-1201 publishes a curl|sh
