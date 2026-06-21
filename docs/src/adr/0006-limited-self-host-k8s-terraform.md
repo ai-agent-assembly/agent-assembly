@@ -1,4 +1,4 @@
-# ADR 0005: Limited-Function Self-Host — Kubernetes (Helm) / Terraform Support
+# ADR 0006: Limited-Function Self-Host — Kubernetes (Helm) / Terraform Support
 
 **Status**: Accepted
 **Date**: 2026-06
