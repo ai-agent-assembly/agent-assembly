@@ -32,16 +32,16 @@ governance walkthrough alongside the code. These are the same scenarios as the
 repo links above, presented in the SDK's own docs site.
 
 <!--
-  Link convention: we point at each SDK's channel-agnostic documentation root, not
-  a pinned version and not a hardcoded `pre-release`/`latest` segment. Per the docs
-  versioning model the root auto-redirects to the latest *stable* channel when one
-  exists (falling back to the best-available channel while the products are still in
-  beta). A `/stable/examples/` deep link does not resolve yet (the stable channel has
-  no published version during `0.0.1-beta.x`), so we link the SDK doc root — which
-  always tracks stable and returns HTTP 200 — and let its navigation surface the
-  examples section. Revisit deep `/stable/examples/` links once a stable release ships.
+  Link convention: always point at the **stable** documentation channel — never a
+  hardcoded `pre-release`/`latest` segment and never a pinned version. These links
+  intentionally use `/stable/`, which 404s while the products are still in
+  `0.0.1-beta.x` (the stable channel has no published version yet). That 404 is
+  expected and correct: as soon as a stable release ships, every link resolves to
+  the right stable page with no further edits. (mdBook does not validate external
+  links and the docs CI has no link-checker, so the temporary 404 does not break the
+  build.) Do NOT "fix" these by switching to pre-release/latest.
 -->
 
-- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/)
-- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/)
-- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/)
+- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/stable/examples/)
+- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/stable/examples/)
+- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/stable/examples/)
