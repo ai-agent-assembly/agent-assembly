@@ -20,6 +20,7 @@ import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
+import { AuditLogPage } from './pages/AuditLogPage'
 import {
   SettingsLayout,
   SettingsGeneralPlaceholder,
@@ -47,7 +48,7 @@ function App() {
             <Route path="/topology" element={<TopologyPage />} />
             <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
+            <Route path="/audit" element={<AuditLogPage />} />
             <Route path="/audit/violations" element={<ViolationHeatmapPage />} />
             {/* control */}
             <Route path="/capability" element={<CapabilityPage />} />
