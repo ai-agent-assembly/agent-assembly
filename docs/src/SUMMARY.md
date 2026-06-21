@@ -131,3 +131,4 @@
   - [0002 - SDK Security Boundary](adr/0002-sdk-security-boundary.md)
   - [0003 - Cross-Repo Dependency Pinning](adr/0003-cross-repo-dependency-pinning.md)
   - [0004 - Governance Enforcement Flow](adr/0004-governance-enforcement-flow.md)
+  - [0006 - Limited-Function Self-Host K8s/Terraform](adr/0006-limited-self-host-k8s-terraform.md)
