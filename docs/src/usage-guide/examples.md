@@ -9,7 +9,10 @@ testable on its own, while these pages stay focused on the concepts.
 > **Want to stand up the infrastructure itself?** The
 > [Self-hosting guide](self-hosting.md) walks through the open-source Docker Compose
 > stack — its architecture, which containers run (and who each is for), and how to
-> set up, run, and maintain the program's infra locally.
+> set up, run, and maintain the program's infra locally. For the wiring diagram
+> behind that stack — how a single agent action travels across every hop and the
+> real config knob at each one — see the
+> [Infrastructure overview](../architecture/infra-overview.md).
 
 Every example is governed by the same three-layer interception model described
 in [Choosing interception layers](interception-layers.md): a gateway as the
