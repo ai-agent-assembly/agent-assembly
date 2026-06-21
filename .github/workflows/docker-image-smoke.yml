@@ -83,8 +83,15 @@ jobs:
       matrix: ${{ fromJSON(needs.prep.outputs.matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      # Deliberately NO docker/setup-buildx-action here. That action installs a
+      # `docker-container` driver builder and makes it the default; a container
+      # builder resolves a Dockerfile `FROM` only against registries, so the
+      # agent overlay's `FROM aaasm-smoke/<lang>-<ver>:local` (a local-only tag
+      # the harness `docker build`s into the engine image store) is not found and
+      # buildx tries to PULL it: "pull access denied ... aaasm-smoke/...:local"
+      # — failing all 9 legs. The default `docker` driver (BuildKit-backed) used
+      # without this action resolves `FROM` from the engine image store, where
+      # both the base image and the loaded aa-runtime:smoke tag live.
       - name: Download aa-runtime image artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
