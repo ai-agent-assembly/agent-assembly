@@ -1,16 +1,19 @@
-# Limited-function self-host — docker-compose example
+# Open-source self-host — docker-compose example
 
-A sample **limited-function** self-host stack for Agent Assembly. It runs the
-open-source enforcement services that ship a real image or build context in this
+A sample **open-source** self-host stack for Agent Assembly — a quick way for
+developers to set up, run, and maintain the program's infrastructure locally. It
+runs the components that already ship a container image or build context in this
 repository, wired to reflect the sidecar-interception dataflow.
 
-> **Limited function, by design.** Per the owner policy (2026-06-21), self-hosting
-> the open-source services is supported, but **complete functionality — the gateway
-> brain, persistence, the HTTP/OpenAPI API, the operator dashboard, central agent
-> registry, and team budgets — is SaaS-only.** This stack does not (and cannot)
-> stand those up; they have no open-source image. See
+> **"Open source" is about scope, not a crippled build.** This stack starts the
+> enforcement data plane (`aa-runtime` + optional `aa-proxy`), which ship images
+> today. The control plane (`aa-gateway`, `aa-api`, the operator dashboard) is
+> **also open source in this repository** — it just has no published container image
+> *yet*, so you currently build it from source; images are a tracked follow-up. The
+> hosted **SaaS edition** runs the complete stack managed for you and adds the
+> cloud/enterprise control-plane features that live outside this repo. See
 > [`docs/src/usage-guide/self-hosting.md`](../../docs/src/usage-guide/self-hosting.md)
-> for the full story.
+> for the full architecture.
 
 ## What this stack runs
 
@@ -20,8 +23,10 @@ repository, wired to reflect the sidecar-interception dataflow.
 | `agent-stub` | `alpine:latest` (placeholder) | default | — | Stand-in agent sharing the runtime's IPC socket |
 | `aa-proxy` | built from `../../aa-proxy/Dockerfile` | `proxy` | `8899` | Optional egress-interception (MitM HTTPS) proxy |
 
-Services that are **SaaS-only** (`aa-gateway`, `aa-api`, persistence, dashboard)
-are intentionally absent — they have no open-source container image.
+The control-plane components (`aa-gateway`, `aa-api`, dashboard) are open source in
+this repo but have no published container image yet, so they are not in this
+example; build them from source to run them yourself, or use the hosted SaaS
+edition for the complete managed stack.
 
 ## Prerequisites
 
@@ -51,7 +56,7 @@ on `:8899`.
 
 ## Local enforcement (no gateway)
 
-In this limited-function stack `aa-runtime` runs with **no central gateway**. It
+In this example stack `aa-runtime` runs with **no central gateway**. It
 enforces from the policy file mounted at `/etc/aa/policy.toml` (`../policy.toml`).
 To point it at a gateway instead, set `AA_GATEWAY_ENDPOINT` on the `aa-runtime`
 service. See `../policy.toml` for the rule format.
@@ -74,10 +79,10 @@ To swap in your own agent:
 ## About the optional `aa-proxy` profile
 
 `aa-proxy` forwards governance decisions to the gateway and **fails closed** when
-the gateway is unreachable. Because this stack has no open-source gateway image,
-the proxy service sets `AA_PROXY_MCP_FAIL_OPEN=1` so it can start standalone for a
-demo of the egress path. Remove that variable and set `AA_PROXY_GATEWAY_ENDPOINT`
-to enforce through a (SaaS) gateway.
+the gateway is unreachable. Because no gateway runs in this example stack (it has
+no published image yet), the proxy service sets `AA_PROXY_MCP_FAIL_OPEN=1` so it can
+start standalone for a demo of the egress path. Remove that variable and set
+`AA_PROXY_GATEWAY_ENDPOINT` to enforce through a gateway (self-hosted or SaaS).
 
 ## Health check
 
