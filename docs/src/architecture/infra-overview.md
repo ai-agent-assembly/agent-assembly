@@ -29,9 +29,104 @@ untrusted) and forwards it to `aa-gateway` over gRPC. The gateway holds the
 **audit** record, persists through the `aa-storage` facade, and exposes its read
 surfaces over HTTP/OpenAPI through `aa-api` for the **dashboard**.
 
+This page gives you **two complementary views** of the same system:
+
+1. **[Architecture at a glance](#architecture-at-a-glance--components-layers--relations)** —
+   a *static* map of the components, the layers/planes they live in, and the
+   relations (and transports/ports) between them. Read this first for the whole
+   picture.
+2. **[Request flow over time](#request-flow-over-time-a-single-agent-action)** — a
+   *dynamic* trace of one agent action moving through those components, top to
+   bottom, with the enforcement decision returning before execution.
+
 ---
 
-## The full path: agent → layers → gateway → persistence → api → dashboard
+## Architecture at a glance — components, layers & relations
+
+The system is organised into four planes. An action is observed in the **agent
+host**, decided in the **control plane**, recorded in the **persistence** plane,
+and surfaced to humans through the **presentation** plane. Solid arrows are the
+in-band enforcement path; dashed arrows are out-of-band observation, async
+persistence, or the enforcement decision returning to the agent. Edge labels name
+the **transport and port**.
+
+```mermaid
+flowchart TB
+    subgraph HOST["🖥️ Agent host — one per governed agent"]
+        AGENT["AI agent process"]
+        subgraph LAYERS["Interception layers · independently deployable (AA_LAYERS)"]
+            direction LR
+            L1["L1 · in-process SDK shim<br/>aa-sdk-client + per-lang FFI<br/><i>lowest latency · needs adoption</i>"]
+            L2["L2 · sidecar proxy<br/>aa-proxy · HTTPS MitM<br/><i>no code changes</i>"]
+            L3["L3 · eBPF<br/>aa-ebpf · kernel uprobes<br/><i>highest authority · Linux-only</i>"]
+        end
+        RT["aa-runtime<br/>per-agent chokepoint<br/>re-scan · redact · enforce"]
+    end
+
+    subgraph CTRL["🧠 Control plane · aa-gateway (the brain)"]
+        GRPC["gRPC services :50051<br/>Policy · Audit · AgentLifecycle · Topology<br/>Approval · Secrets · Invalidation"]
+        subgraph BRAIN["Decision core"]
+            direction LR
+            REG["Agent<br/>registry"]
+            POL["Policy<br/>engine"]
+            BUD["Team<br/>budgets"]
+            AUD["Audit<br/>writer"]
+        end
+    end
+
+    subgraph DATA["💾 Persistence"]
+        CACHE["aa-cache · L1"]
+        STORE["aa-storage facade<br/>driver registry"]
+        DB[("Postgres /<br/>TimescaleDB")]
+        JSONL[/"tamper-evident JSONL<br/>hash-chained · sync"/]
+        NATSQ["NATS → audit_consumer<br/>async"]
+    end
+
+    subgraph PRES["📊 Presentation plane"]
+        API["aa-api<br/>HTTP / OpenAPI :7700"]
+        DASH["Dashboard<br/>React / Vite"]
+        CLI["aasm CLI"]
+    end
+
+    AGENT -->|in-process| L1
+    AGENT -.->|outbound HTTPS| L2
+    AGENT -.->|SSL uprobe · syscalls| L3
+    L1 -->|IpcFrame over UDS| RT
+    L2 -->|forwarded event| RT
+    L3 -->|ring-buffer event| RT
+
+    RT -->|"gRPC CheckAction :50051"| GRPC
+    GRPC -->|"Allow / Deny / RequireApproval"| RT
+    RT -.->|block before execution| AGENT
+    GRPC --> BRAIN
+
+    BRAIN -->|via facade| CACHE
+    CACHE --> STORE
+    STORE --> DB
+    AUD -->|sync write| JSONL
+    AUD -.->|async| NATSQ
+    NATSQ --> DB
+
+    DASH -->|HTTP / WS :7700| API
+    CLI -->|gRPC :50051| GRPC
+    API -->|in-process read| BRAIN
+```
+
+How to read it quickly:
+
+- **Layers stack by trade-off, not sequence.** L1→L2→L3 go from lowest latency to
+  highest detection authority; you deploy the subset you need (`AA_LAYERS`), and
+  whichever fire all converge on the one `aa-runtime` chokepoint.
+- **One brain, many services.** Every gRPC service is a façade onto the same
+  decision core (registry · policy · budgets · audit). `aa-api` reads that core
+  **in-process** — it is not a second source of truth.
+- **The control plane is the only writer of record.** Agents and the dashboard
+  never touch persistence directly; all reads and writes funnel through the
+  gateway and its `aa-cache`/`aa-storage` facade.
+
+---
+
+## Request flow over time: a single agent action
 
 ```mermaid
 sequenceDiagram
