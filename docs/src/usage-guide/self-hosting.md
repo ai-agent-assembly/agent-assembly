@@ -17,10 +17,78 @@ exact configuration, and how to bring it up.
 
 ## Infrastructure architecture
 
-The example stack is a single-host Compose project. Your agent runs alongside an
-`aa-runtime` enforcement sidecar; they share a Unix-domain-socket volume; an
-optional `aa-proxy` adds code-free egress interception. Local policy comes from a
-bind-mounted `policy.toml`.
+The full self-host topology is a short, end-to-end chain. Operators work in the
+**dashboard**; the dashboard reads everything through the **REST API** (`aa-api`);
+the API fronts the **gateway** (the brain), which evaluates policy and saves
+governance records to **persistence**; and your **agents run co-located with an
+`aa-runtime` enforcement sidecar**, which checks every action with the gateway. So
+the very actions your agents take are recorded in persistence and surface back in
+the dashboard:
+
+`you ⇄ dashboard ⇄ aa-api ⇄ aa-gateway ⇄ persistence ⇆ aa-runtime ⇄ your agents`
+
+```mermaid
+flowchart TB
+    user(["Operator — you, in a browser"])
+
+    subgraph present["Observe and manage"]
+        dash["dashboard<br/>single container · React / Vite"]
+        api["aa-api<br/>REST / OpenAPI :7700"]
+    end
+
+    gw["aa-gateway<br/>registry · policy · budgets · audit<br/>gRPC :50051"]
+    db[("persistence — you run and manage<br/>Postgres / TimescaleDB + cache")]
+
+    subgraph workload["Your workload — agent + program, co-located"]
+        agent["your agent(s)"]
+        rt["aa-runtime<br/>enforcement sidecar · :8080"]
+    end
+
+    user -->|HTTPS| dash
+    dash <-->|HTTP / WS :7700| api
+    api <-->|read model| gw
+    gw <-->|audit and state| db
+    agent <-->|IPC over UDS socket| rt
+    rt -->|CheckAction gRPC :50051| gw
+    gw -->|Allow / Deny| rt
+    gw -->|save governance records| db
+```
+
+Two things to read from it:
+
+- **The observability loop.** Your agents + `aa-runtime` produce the governance data
+  (decisions, audit, budget usage); the gateway persists it; the dashboard reads it
+  back through the API. That is how what your agents do shows up on screen.
+- **What runs where.** The **dashboard is a single container**; **persistence is a
+  standard datastore you run and manage** (e.g. Postgres / TimescaleDB); the
+  **gateway + API** are the control plane; and **each agent runs next to its own
+  `aa-runtime`** sidecar, sharing a Unix-domain socket.
+
+### Containers — for whom, for what
+
+| Container | Image / build today | For whom | For what |
+|---|---|---|---|
+| `dashboard` | build from source (`pnpm --dir dashboard build`); image pending | operators | **Single-container** web UI to observe governance and manage agents, policies and budgets — reads everything via the REST API. |
+| `aa-api` | build from source (`cargo build -p aa-api`); image pending | operators (via dashboard) + tools | The REST / OpenAPI surface on `:7700` the dashboard reads; fronts the gateway read model. |
+| `aa-gateway` | build from source (`cargo build -p aa-gateway`); image pending | the deployment | The brain — registry, policy evaluation, budgets, audit; decides each action and saves governance records to persistence. gRPC `:50051`. |
+| persistence | **you run / manage** a standard `postgres` / `timescaledb` image | the deployment | Durable audit history + state that the dashboard displays. |
+| `aa-runtime` | `ghcr.io/ai-agent-assembly/aa-runtime:latest` (pulled) | every agent | Enforcement sidecar **co-located with the agent** — the authoritative chokepoint that checks each action with the gateway. Serves health/metrics on `:8080`. |
+| your agent(s) | your image | you | The workload being governed — runs beside its runtime, sharing the UDS socket. |
+| `aa-proxy` (optional) | build from `aa-proxy/Dockerfile` (`proxy` profile) | teams wanting code-free egress control | MitM-intercepts outbound HTTPS to apply network-egress policy without touching agent code. |
+
+Everything above is **open source in this repository**. Today `aa-runtime` ships a
+published image and `aa-proxy` builds from a Dockerfile; `aa-gateway`, `aa-api` and
+`dashboard` you build from source (first-class images are tracked as follow-up); and
+persistence is any standard Postgres / TimescaleDB you run. The hosted **SaaS
+edition** runs this whole stack managed for you and adds the cloud / enterprise
+control-plane features that live outside this repo.
+
+## What the example Compose wires today
+
+The sample `docker-compose.yml` starts the subset that ships container images out of
+the box — your agent placeholder, its `aa-runtime` sidecar, and the optional egress
+proxy — so you see enforcement working immediately, then grow toward the full
+topology above by adding persistence, gateway, API and dashboard.
 
 ```mermaid
 flowchart LR
@@ -37,33 +105,6 @@ flowchart LR
     stub -.->|outbound HTTPS| proxy
     proxy -.->|decisions| rt
 ```
-
-### Containers — for whom, for what
-
-| Container | Image / build | For whom | For what |
-|---|---|---|---|
-| `aa-runtime` | `ghcr.io/ai-agent-assembly/aa-runtime:latest` (pulled) | everyone self-hosting | The authoritative enforcement sidecar. Re-scans, redacts and enforces every agent action against your `policy.toml`, and serves health/metrics on `:8080`. This is the one container you always run. |
-| `agent-stub` | `alpine:latest` placeholder | developers integrating an agent | A stand-in for **your** agent process. Swap in your own image, keep the same `AA_AGENT_ID`, and share the socket volume — that is all the wiring an agent needs. |
-| `aa-proxy` | built from `aa-proxy/Dockerfile` (`proxy` profile) | teams wanting code-free egress control | Optional sidecar that MitM-intercepts outbound HTTPS to apply network-egress policy without touching agent code. |
-
-### Completing the stack
-
-The example focuses on the **enforcement data plane** (runtime + optional proxy),
-because those ship a ready container image. The **control plane** — `aa-gateway`
-(registry · policy service · budgets), `aa-api` (HTTP/OpenAPI), and the operator
-`dashboard` — is **also open source in this repository**; it simply does not ship a
-published container image *yet*, so to run it yourself today you build it from
-source (`cargo build -p aa-gateway -p aa-api`, `pnpm --dir dashboard build`).
-Publishing first-class images for these is tracked as follow-up work. The hosted
-**SaaS edition** runs the complete control plane managed for you.
-
-| Plane | Components | In this example | Run it yourself |
-|---|---|---|---|
-| Enforcement (data plane) | `aa-runtime`, `aa-proxy` | ✅ container images | pull / `--profile proxy` build |
-| Control plane | `aa-gateway`, `aa-api`, `dashboard` | not yet (no published image) | open source in this repo — build from source; images pending |
-| Managed cloud / enterprise | hosted multi-tenant persistence, SSO, compliance | — | hosted **SaaS edition** |
-
-## What the stack runs
 
 The compose file (`examples/docker-compose/docker-compose.yml`) defines these
 services. Values below are taken directly from that file.
