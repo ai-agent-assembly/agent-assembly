@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentsQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
+import type { FleetAgent } from '../features/agents/fleetTypes'
 import { useApprovalsQuery } from '../features/approvals/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
@@ -170,6 +171,91 @@ function shortTime(iso: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+/** Severity ordering used to pick the single most-urgent firing alert. */
+const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const
+
+/** Sort comparator: most-severe alert first. */
+function compareBySeverity(a: Alert, b: Alert): number {
+  return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
+}
+
+interface OverviewKpis {
+  readonly total: number
+  readonly flagged: number
+  readonly enforcing: number
+  readonly shadow: number
+  readonly blocked: number
+  readonly scrubbed: number
+  readonly firingAlerts: readonly Alert[]
+  readonly topAlert: Alert | undefined
+  readonly identityScore: number
+  readonly capabilityScore: number
+  readonly scrubScore: number
+  readonly overallScore: number
+}
+
+/**
+ * Project the live query results onto the scalar KPIs and derived collections
+ * the page renders. Pure and side-effect free — extracted from the component
+ * body to keep `OverviewPage`'s cognitive complexity within budget and to make
+ * the headline-number derivations independently testable.
+ *
+ * Posture scores are a deterministic projection of live counts: identity is
+ * healthy until an agent is flagged; capability degrades with the flagged
+ * ratio; scrub stays high while nothing leaks. They are headline indicators,
+ * not the authoritative per-layer audit (that lives on each layer's page).
+ */
+function deriveOverviewKpis(
+  fleet: readonly FleetAgent[],
+  alerts: readonly Alert[],
+): OverviewKpis {
+  const total = fleet.length
+  const flagged = fleet.filter((a) => a.flagged).length
+  const enforcing = fleet.filter((a) => a.mode === 'enforce').length
+  const shadow = fleet.filter((a) => a.mode === 'shadow').length
+  const blocked = fleet.reduce((sum, a) => sum + (a.blocked24h ?? 0), 0)
+  const scrubbed = fleet.reduce((sum, a) => sum + (a.scrubbed24h ?? 0), 0)
+
+  const firingAlerts = alerts.filter((a) => a.status === 'FIRING')
+  const topAlert = [...firingAlerts].sort(compareBySeverity)[0]
+
+  const capabilityScore = total > 0 ? Math.round(100 - (flagged / total) * 100 * 0.5) : 100
+  const identityScore = total > 0 ? Math.max(0, 100 - flagged * 3) : 100
+  const scrubScore = 91
+  const overallScore = Math.round((identityScore + capabilityScore + scrubScore) / 3)
+
+  return {
+    total,
+    flagged,
+    enforcing,
+    shadow,
+    blocked,
+    scrubbed,
+    firingAlerts,
+    topAlert,
+    identityScore,
+    capabilityScore,
+    scrubScore,
+    overallScore,
+  }
+}
+
+/** One row in the "recent decisions" list. */
+function RecentDecisionRow({ alert }: Readonly<{ alert: Alert }>) {
+  const decision = alertDecision(alert.severity)
+  return (
+    <div className="overview-recent__row">
+      <span className="overview-recent__time">{shortTime(alert.firstFiredAt)}</span>
+      <span className="overview-recent__decision" style={{ color: decisionTone(decision) }}>
+        {decision}
+      </span>
+      <span className="overview-recent__target">
+        {alert.agentId ?? 'fleet'} <span>· {alert.ruleName}</span>
+      </span>
+    </div>
+  )
+}
+
 export function OverviewPage() {
   const navigate = useNavigate()
   const [windowSel, setWindowSel] = useState<Window>('24h')
@@ -207,30 +293,24 @@ export function OverviewPage() {
     )
   }
 
-  const total = fleet.length
-  const flagged = fleet.filter((a) => a.flagged).length
-  const enforcing = fleet.filter((a) => a.mode === 'enforce').length
-  const shadow = fleet.filter((a) => a.mode === 'shadow').length
-  const blocked = fleet.reduce((sum, a) => sum + (a.blocked24h ?? 0), 0)
-  const scrubbed = fleet.reduce((sum, a) => sum + (a.scrubbed24h ?? 0), 0)
-
   const approvals = approvalsQuery.data ?? []
   const policies = policiesQuery.data ?? []
   const alerts = alertsQuery.data ?? []
-  const firingAlerts = alerts.filter((a) => a.status === 'FIRING')
-  const topAlert = [...firingAlerts].sort((a, b) => {
-    const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const
-    return order[a.severity] - order[b.severity]
-  })[0]
 
-  // Posture scores are a deterministic projection of live counts: identity is
-  // healthy until an agent is flagged; capability degrades with the flagged
-  // ratio; scrub stays high while nothing leaks. They are headline indicators,
-  // not the authoritative per-layer audit (that lives on each layer's page).
-  const capabilityScore = total > 0 ? Math.round(100 - (flagged / total) * 100 * 0.5) : 100
-  const identityScore = total > 0 ? Math.max(0, 100 - flagged * 3) : 100
-  const scrubScore = 91
-  const overallScore = Math.round((identityScore + capabilityScore + scrubScore) / 3)
+  const {
+    total,
+    flagged,
+    enforcing,
+    shadow,
+    blocked,
+    scrubbed,
+    firingAlerts,
+    topAlert,
+    identityScore,
+    capabilityScore,
+    scrubScore,
+    overallScore,
+  } = deriveOverviewKpis(fleet, alerts)
 
   const recent = firingAlerts.slice(0, 5)
 
@@ -460,23 +540,7 @@ export function OverviewPage() {
             {recent.length === 0 ? (
               <p className="overview-empty-note">No enforcement events in this window.</p>
             ) : (
-              recent.map((a) => {
-                const decision = alertDecision(a.severity)
-                return (
-                  <div key={a.id} className="overview-recent__row">
-                    <span className="overview-recent__time">{shortTime(a.firstFiredAt)}</span>
-                    <span
-                      className="overview-recent__decision"
-                      style={{ color: decisionTone(decision) }}
-                    >
-                      {decision}
-                    </span>
-                    <span className="overview-recent__target">
-                      {a.agentId ?? 'fleet'} <span>· {a.ruleName}</span>
-                    </span>
-                  </div>
-                )
-              })
+              recent.map((a) => <RecentDecisionRow key={a.id} alert={a} />)
             )}
           </section>
 
