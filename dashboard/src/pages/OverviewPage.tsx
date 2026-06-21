@@ -187,6 +187,39 @@ function RecentDecisionRow({ alert }: Readonly<{ alert: Alert }>) {
   )
 }
 
+/** Loading / error / empty guard for the Overview page. Extracted so the page
+ * component stays under SonarCloud's cognitive-complexity threshold (S3776). */
+function overviewGuard(
+  args: Readonly<{
+    isLoading: boolean
+    isError: boolean
+    isEmpty: boolean
+    navigate: ReturnType<typeof useNavigate>
+    refetch: () => Promise<unknown>
+  }>,
+): React.ReactElement | null {
+  if (args.isLoading) return <LoadingState page="overview" />
+  if (args.isError) {
+    return (
+      <ErrorState
+        kind="generic"
+        onRetry={() => ignorePromise(args.refetch())}
+        onSecondary={() => args.navigate('/audit')}
+      />
+    )
+  }
+  if (args.isEmpty) {
+    return (
+      <EmptyState
+        page="overview"
+        onCta={() => args.navigate('/onboarding')}
+        onSecondary={() => args.navigate('/agents')}
+      />
+    )
+  }
+  return null
+}
+
 export function OverviewPage() {
   const navigate = useNavigate()
   const [windowSel, setWindowSel] = useState<Window>('24h')
@@ -204,25 +237,14 @@ export function OverviewPage() {
   const isLoading = agentsQuery.isLoading
   const isError = agentsQuery.isError
 
-  if (isLoading) return <LoadingState page="overview" />
-  if (isError) {
-    return (
-      <ErrorState
-        kind="generic"
-        onRetry={() => ignorePromise(agentsQuery.refetch())}
-        onSecondary={() => navigate('/audit')}
-      />
-    )
-  }
-  if (fleet.length === 0) {
-    return (
-      <EmptyState
-        page="overview"
-        onCta={() => navigate('/onboarding')}
-        onSecondary={() => navigate('/agents')}
-      />
-    )
-  }
+  const guard = overviewGuard({
+    isLoading,
+    isError,
+    isEmpty: fleet.length === 0,
+    navigate,
+    refetch: agentsQuery.refetch,
+  })
+  if (guard) return guard
 
   const approvals = approvalsQuery.data ?? []
   const policies = policiesQuery.data ?? []
