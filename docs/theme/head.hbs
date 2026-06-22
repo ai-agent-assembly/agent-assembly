@@ -100,3 +100,68 @@
   .aa-feedback__msg { margin: .5rem 0 0; }
   .aa-feedback__msg a { color: #8ab4f8; }
 </style>
+<script>
+  (function () {
+    // Per-site repo for the "tell us what to improve" pre-filled issue link.
+    var REPO = 'agent-assembly';
+    function sendFeedback(value) {
+      // Consent Mode (AAASM-3554) governs whether this hit is stored; fire either way.
+      if (typeof gtag === 'function') {
+        gtag('event', 'feedback', { 'value': value, 'page_path': location.pathname });
+      }
+    }
+    function issueUrl() {
+      var title = 'Docs feedback: ' + location.pathname;
+      var body = 'Page: ' + location.href + '\n\nWhat could be improved?\n';
+      return 'https://github.com/ai-agent-assembly/' + REPO + '/issues/new?labels=docs,feedback'
+        + '&title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+    }
+    function build() {
+      var main = document.querySelector('main');
+      if (!main || document.querySelector('.aa-feedback')) { return; }
+      var box = document.createElement('div');
+      box.className = 'aa-feedback';
+      var q = document.createElement('p');
+      q.className = 'aa-feedback__q';
+      q.textContent = 'Was this page helpful?';
+      var actions = document.createElement('div');
+      actions.className = 'aa-feedback__actions';
+      var msg = document.createElement('p');
+      msg.className = 'aa-feedback__msg';
+      function done(text, withLink) {
+        if (actions.parentNode) { actions.parentNode.removeChild(actions); }
+        msg.textContent = text;
+        if (withLink) {
+          msg.appendChild(document.createTextNode(' '));
+          var a = document.createElement('a');
+          a.href = issueUrl();
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = 'Tell us what we can improve →';
+          msg.appendChild(a);
+        }
+      }
+      var yes = document.createElement('button');
+      yes.type = 'button';
+      yes.className = 'aa-feedback__btn';
+      yes.textContent = '👍 Yes';
+      yes.addEventListener('click', function () { sendFeedback(1); done('Thanks for your feedback!', false); });
+      var no = document.createElement('button');
+      no.type = 'button';
+      no.className = 'aa-feedback__btn';
+      no.textContent = '👎 No';
+      no.addEventListener('click', function () { sendFeedback(0); done('Thanks — sorry this page missed the mark.', true); });
+      actions.appendChild(yes);
+      actions.appendChild(no);
+      box.appendChild(q);
+      box.appendChild(actions);
+      box.appendChild(msg);
+      main.appendChild(box);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', build);
+    } else {
+      build();
+    }
+  })();
+</script>
