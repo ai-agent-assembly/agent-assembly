@@ -145,7 +145,7 @@ jobs:
             -C "target/${{ matrix.target }}/release" aasm aa-gateway
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: aasm-${{ matrix.target }}
           path: aasm-${{ matrix.target }}.tar.gz
