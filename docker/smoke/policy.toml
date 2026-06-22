@@ -1,0 +1,23 @@
+# docker/smoke/policy.toml — enforcement policy for the base-image smoke harness
+# (AAASM-3524). Mounted read-only into the aa-runtime sidecar at the default
+# AA_POLICY_PATH (/etc/aa/policy.toml).
+#
+# Schema is the aa-runtime TOML policy (aa-runtime/src/policy.rs): each [[rules]]
+# block names a set of action-type strings to block. Action strings must match
+# the proto ActionType enum (proto/assembly/common/v1/common.proto):
+#   FILE_OPERATION, NETWORK_CALL, PROCESS_EXEC, TOOL_CALL, LLM_CALL, MEMORY_ACCESS
+#
+# The harness drives two outcomes through this single fixture:
+#   * ALLOWED  — an action NOT in any blocked_actions set (e.g. a TOOL_CALL the
+#                minimal agent performs) passes the runtime.
+#   * DENIED   — PROCESS_EXEC is blocked, so a restricted action MUST be refused.
+#
+# Test-environment fixture only — NEVER a production policy.
+
+[[rules]]
+name = "deny-process-exec"
+# PROCESS_EXEC is the harness's "restricted action": the deny-path check expects
+# this to be blocked at the runtime. Asserting that block end-to-end from inside
+# the base image is gated on the SDK enforcement gaps (AAASM-3000 / AAASM-3021);
+# see docker/smoke/README.md "Deny path".
+blocked_actions = ["PROCESS_EXEC"]
