@@ -76,6 +76,7 @@
 # Reference
 
 - [API Reference](api-reference.md)
+- [Framework Compatibility](reference/framework-compatibility.md)
 
 # Project Status
 
