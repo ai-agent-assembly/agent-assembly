@@ -21,7 +21,7 @@ compatibility page:
 
 | SDK | Frameworks (high level) | Authoritative compatibility doc |
 |---|---|---|
-| **Python** (`agent-assembly`) | LangChain · LangGraph · Pydantic AI · CrewAI · Google ADK · MCP · OpenAI Agents | [python-sdk → Framework compatibility](https://ai-agent-assembly.github.io/python-sdk/stable/compatibility/frameworks/) |
+| **Python** (`agent-assembly`) | LangChain · LangGraph · Pydantic AI · CrewAI · Google ADK · MCP · OpenAI Agents · LlamaIndex · Agno · Microsoft Agent Framework · Smolagents · Haystack | [python-sdk → Framework compatibility](https://ai-agent-assembly.github.io/python-sdk/stable/compatibility/frameworks/) |
 | **Node / TypeScript** (`@agent-assembly/sdk`) | LangChain.js · LangGraph.js · Vercel AI SDK · Mastra · OpenAI Agents | [node-sdk → Framework compatibility](https://ai-agent-assembly.github.io/node-sdk/stable/compatibility-versioning/compatibility/) |
 | **Go** (`go-sdk`) | LangChainGo (+ generic tool wrapping) | [go-sdk → Framework compatibility](https://ai-agent-assembly.github.io/go-sdk/stable/compatibility/) |
 
@@ -39,6 +39,10 @@ An SDK lists a framework as supported when it has both:
    [AAASM-3525](https://lightning-dust-mite.atlassian.net/browse/AAASM-3525) — a
    minimal agent on that framework, wired to the SDK + core (`aa-runtime` /
    gateway), exercised end-to-end against a real runtime.
+
+The Python list was expanded with LlamaIndex, Agno, Microsoft Agent Framework,
+Smolagents, and Haystack under
+[AAASM-3535](https://lightning-dust-mite.atlassian.net/browse/AAASM-3535).
 
 The exact **supported version range** and the **tested version** live in each
 per-SDK doc above — anchored to that adapter's real constraints and the
