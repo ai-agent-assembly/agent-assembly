@@ -29,3 +29,14 @@ impl fmt::Display for PolicyParseError {
 
 impl std::error::Error for PolicyParseError {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_yaml_error() {
+        let err = PolicyParseError::Yaml("bad".to_string());
+        assert_eq!(err.to_string(), "policy YAML parse error: bad");
+    }
+
+}
