@@ -261,4 +261,22 @@ mod tests {
         assert_eq!(rules.egress_allowlist, vec!["api.openai.com".to_string()]);
     }
 
+    #[test]
+    fn duplicate_path_rules_are_deduplicated() {
+        let tools = vec![
+            ToolRule {
+                name: "a".to_string(),
+                allow: true,
+                requires_approval_if: Some("path starts_with \"/etc\"".to_string()),
+            },
+            ToolRule {
+                name: "b".to_string(),
+                allow: true,
+                requires_approval_if: Some("path starts_with \"/etc\"".to_string()),
+            },
+        ];
+        let rules = lower_to_ebpf(&doc_with(None, tools, vec![]));
+        assert_eq!(rules.path_rules.len(), 1);
+    }
+
 }
