@@ -410,6 +410,30 @@ mod tests {
         stream.flush().await.unwrap();
     }
 
+    /// AAASM-3581: the socket file must be exactly mode 0600 immediately after
+    /// bind (no permission window), and its path must be scoped to the agent id.
+    #[tokio::test]
+    async fn bind_creates_socket_with_0600_and_agent_scoped_path() {
+        let socket_path = temp_socket_path("perm-check");
+        let _ = std::fs::remove_file(&socket_path);
+        let config = IpcServerConfig {
+            socket_path: socket_path.clone(),
+            agent_id: "perm-check".to_string(),
+            max_connections: 8,
+            inbound_channel_capacity: 8,
+        };
+        let _server = IpcServer::bind(config).expect("bind failed");
+
+        let mode = std::fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "socket must be owner-only (0600), got {mode:o}");
+        assert!(
+            socket_path.to_string_lossy().contains("perm-check"),
+            "socket path must be scoped to the agent id"
+        );
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
     #[tokio::test]
     async fn heartbeat_frame_arrives_on_inbound_channel() {
         let socket_path = temp_socket_path("heartbeat");
