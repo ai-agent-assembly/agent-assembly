@@ -145,3 +145,15 @@ pub fn resolve_socket_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(super::protocol::DEFAULT_SOCKET_PATH))
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ping_is_answered_without_touching_bpf() {
+        let manager = Arc::new(Mutex::new(ProbeManager::new()));
+        let resp = dispatch(&manager, ControlRequest::Ping).await;
+        assert_eq!(resp, ControlResponse::Pong);
+    }
+
+}
