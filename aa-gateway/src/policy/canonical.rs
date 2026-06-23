@@ -124,4 +124,38 @@ mod tests {
         assert!(cc.allow.contains(&CanonCapability::FileRead));
     }
 
+    #[test]
+    fn projects_network_and_sorted_tools() {
+        let mut doc = base_doc();
+        doc.network = Some(crate::policy::document::NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        doc.tools.insert(
+            "zebra".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        doc.tools.insert(
+            "alpha".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: Some("path starts_with \"/etc\"".to_string()),
+            },
+        );
+
+        let canon = doc.to_canonical();
+        assert_eq!(canon.egress_allowlist(), ["api.openai.com"]);
+        // deterministic order
+        assert_eq!(canon.tools[0].name, "alpha");
+        assert_eq!(canon.tools[1].name, "zebra");
+        assert_eq!(
+            canon.tools[0].requires_approval_if.as_deref(),
+            Some("path starts_with \"/etc\"")
+        );
+    }
+
 }
