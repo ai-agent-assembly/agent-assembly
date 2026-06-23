@@ -183,3 +183,19 @@ fn first_quoted(s: &str) -> Option<String> {
     let end = s[start..].find('"')? + start;
     Some(s[start..end].to_string())
 }
+#[cfg(test)]
+mod tests {
+    use super::super::capability::CapabilitySet;
+    use super::super::document::{NetworkPolicy, ToolRule};
+    use super::*;
+
+    fn doc_with(caps: Option<CapabilitySet>, tools: Vec<ToolRule>, allowlist: Vec<String>) -> PolicyDocument {
+        PolicyDocument {
+            name: None,
+            network: (!allowlist.is_empty()).then_some(NetworkPolicy { allowlist }),
+            capabilities: caps,
+            tools,
+        }
+    }
+
+}
