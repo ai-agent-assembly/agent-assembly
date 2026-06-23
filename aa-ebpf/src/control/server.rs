@@ -156,4 +156,11 @@ mod tests {
         assert_eq!(resp, ControlResponse::Pong);
     }
 
+    #[tokio::test]
+    async fn detach_of_unloaded_set_is_ok() {
+        let manager = Arc::new(Mutex::new(ProbeManager::new()));
+        let resp = dispatch(&manager, ControlRequest::Detach { set: ProbeSet::Tls }).await;
+        assert_eq!(resp, ControlResponse::Ok);
+    }
+
 }
