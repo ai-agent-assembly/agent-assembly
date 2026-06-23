@@ -183,6 +183,7 @@ fn first_quoted(s: &str) -> Option<String> {
     let end = s[start..].find('"')? + start;
     Some(s[start..end].to_string())
 }
+
 #[cfg(test)]
 mod tests {
     use super::super::capability::CapabilitySet;
@@ -279,4 +280,16 @@ mod tests {
         assert_eq!(rules.path_rules.len(), 1);
     }
 
+    #[test]
+    fn lowering_is_deterministic() {
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(Capability::FileWrite);
+        let tools = vec![ToolRule {
+            name: "write_file".to_string(),
+            allow: true,
+            requires_approval_if: Some("path starts_with \"/var\"".to_string()),
+        }];
+        let doc = doc_with(Some(caps), tools, vec!["h".to_string()]);
+        assert_eq!(lower_to_ebpf(&doc), lower_to_ebpf(&doc));
+    }
 }
