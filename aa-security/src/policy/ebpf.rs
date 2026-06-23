@@ -208,4 +208,10 @@ mod tests {
         assert!(deny.contains(&"/root/.ssh"));
     }
 
+    #[test]
+    fn no_file_write_deny_means_no_default_path_rules() {
+        let rules = lower_to_ebpf(&doc_with(None, vec![], vec![]));
+        assert!(rules.path_rules.is_empty());
+    }
+
 }
