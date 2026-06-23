@@ -1,10 +1,26 @@
+# AAASM-3565 — supply-chain advisory gate.
+#
+# This is the enforced advisory/license gate for the whole workspace, including
+# the transitive dependency graph of every aa-devtool-* plugin (the `deny` CI
+# job runs `cargo deny check --all-features`, so devtool deps are in scope).
+# The threat model is a poisoned transitive dependency carrying a known
+# advisory: this gate must FAIL CI on such a dep rather than let it merge.
+#
+# cargo-deny v2 (the pinned EmbarkStudios/cargo-deny-action) always treats
+# RUSTSEC vulnerability and unsound advisories as errors — there is no opt-out
+# key — and fetches the RustSec advisory DB fresh on every run. The settings
+# below make the remaining knobs explicit and non-silent.
 [advisories]
-# Scope selectors: "all", "workspace", "transitive", "none"
-# "workspace" = flag advisories only for crates you directly depend on
+# Scope selectors: "all", "workspace", "transitive", "none".
+# "workspace" = flag unmaintained advisories for crates we directly depend on.
 unmaintained = "workspace"
-# Lint level for yanked crates: "allow", "warn", "deny"
-yanked = "warn"
-# Advisory IDs or crate@version entries to suppress (RUSTSEC-YYYY-NNNN)
+# Yanked crates are denied (was "warn"): a yanked version is a supply-chain
+# signal — it must fail the gate, not merely warn.
+yanked = "deny"
+# Audited exception list. MUST stay empty unless a security reviewer signs off:
+# every entry here suppresses a real advisory, so adding one requires the
+# devtool/deny.toml CODEOWNERS security reviewer (see .github/CODEOWNERS).
+# Format: advisory IDs ("RUSTSEC-YYYY-NNNN") or "crate@version".
 ignore = []
 
 [licenses]
