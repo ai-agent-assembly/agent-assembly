@@ -128,4 +128,9 @@ mod tests {
         assert!("mcp_tool:".parse::<Capability>().is_err());
         assert!("model:".parse::<Capability>().is_err());
     }
+
+    #[test]
+    fn rejects_unknown_capability() {
+        assert!("teleport".parse::<Capability>().is_err());
+    }
 }
