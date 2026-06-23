@@ -179,4 +179,16 @@ mod tests {
         assert!(matches!(resp, ControlResponse::Error { .. }));
     }
 
+    #[test]
+    fn resolve_socket_path_prefers_env() {
+        // SAFETY: single-threaded test; no other thread reads the env here.
+        unsafe {
+            std::env::set_var("AA_EBPF_LOADERD_SOCK", "/tmp/aa-test.sock");
+        }
+        assert_eq!(resolve_socket_path(), PathBuf::from("/tmp/aa-test.sock"));
+        unsafe {
+            std::env::remove_var("AA_EBPF_LOADERD_SOCK");
+        }
+    }
+
 }
