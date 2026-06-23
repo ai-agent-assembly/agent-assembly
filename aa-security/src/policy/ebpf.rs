@@ -102,3 +102,53 @@ impl EbpfRuleSet {
 /// Well-known sensitive paths denied in-kernel whenever the policy denies the
 /// `file_write` capability. These mirror the kernel probe's sensitive-path
 /// defaults so a "deny file_write" floor is reflected at the kernel boundary,
+/// not just at L7.
+const SENSITIVE_WRITE_DENY_DEFAULTS: &[&str] = &["/etc", "/root/.ssh", "/var/run/secrets"];
+
+/// Lower a canonical [`PolicyDocument`] to its [`EbpfRuleSet`].
+///
+/// Deterministic and pure: the same document always lowers to the same rule
+/// set (path rules are de-duplicated and order-stable).
+pub fn lower_to_ebpf(doc: &PolicyDocument) -> EbpfRuleSet {
+    let mut path_rules: Vec<PathRule> = Vec::new();
+
+    // 1. Capability `file_write` deny → seed the sensitive-path deny defaults.
+    let denies_file_write = doc
+        .capabilities
+        .as_ref()
+        .map(|c| c.deny.contains(&Capability::FileWrite))
+        .unwrap_or(false);
+    if denies_file_write {
+        for prefix in SENSITIVE_WRITE_DENY_DEFAULTS {
+            push_unique(
+                &mut path_rules,
+                PathRule {
+                    pattern: (*prefix).to_string(),
+                    verdict: PathVerdict::Deny,
+                },
+            );
+        }
+    }
+
+    // 2. Tool `requires_approval_if` path predicates → explicit deny rules.
+    for tool in &doc.tools {
+        if let Some(expr) = &tool.requires_approval_if {
+            for prefix in extract_path_prefixes(expr) {
+                push_unique(
+                    &mut path_rules,
+                    PathRule {
+                        pattern: prefix,
+                        verdict: PathVerdict::Deny,
+                    },
+                );
+            }
+        }
+    }
+
+    EbpfRuleSet {
+        path_rules,
+        egress_allowlist: doc.egress_allowlist().to_vec(),
+    }
+}
+
+/// Push a rule only if no rule with the same pattern+verdict already exists,
