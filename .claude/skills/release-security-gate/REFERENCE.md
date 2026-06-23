@@ -1,8 +1,17 @@
-# security-review — detailed reference
+# release-security-gate — detailed reference
 
 The per-tier detail behind the concise tier table in [SKILL.md](SKILL.md). The
 tiers are **additive**: minor runs everything in patch first, major runs
 everything in minor first.
+
+> **This gate composes Anthropic's tooling — it does not reinvent diff
+> scanning.** The release-diff step (patch tier and up) invokes the built-in
+> **`/security-review`** scanner on the release delta; the major tier additionally
+> runs the official
+> [`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review)
+> GitHub Action on the release branch. Both feed their findings into the
+> PASS/BLOCK sign-off, and any unaddressed High/Critical from either is a
+> **BLOCK**.
 
 ## Contents
 
@@ -39,11 +48,20 @@ The baseline every release runs.
    finding; severity tracks the advisory's CVSS / RustSec severity.
 2. **Open security alerts** — enumerate open CodeQL + Dependabot alerts. Each
    open High/Critical alert that ships in this release is a finding.
-3. **Release-diff review** — read `git log <prev-tag>..HEAD`. Flag any commit
-   that touches a security-relevant path (`aa-security/`, `aa-runtime/src/pipeline/`,
-   `aa-gateway/src/policy/`, `aa-gateway/src/sanitizer/`, `aa-gateway/src/budget/`,
-   `aa-ebpf*`) for a closer read.
-4. Record the findings table + `Verdict`.
+3. **Release-diff review (native `/security-review`)** — run the built-in
+   **`/security-review`** (Anthropic's diff vulnerability scanner) against the
+   release delta `<prev-tag>..HEAD`. Do **not** hand-roll diff scanning here — this
+   step *wraps* the native scanner. To scope it to the release window, check out
+   the release branch tip (or a worktree at HEAD) and invoke `/security-review`;
+   it scans the pending changes. Then read `git log <prev-tag>..HEAD` to make sure
+   every commit touching a security-relevant path (`aa-security/`,
+   `aa-runtime/src/pipeline/`, `aa-gateway/src/policy/`,
+   `aa-gateway/src/sanitizer/`, `aa-gateway/src/budget/`, `aa-ebpf*`) is covered.
+   **Fold each finding the native scanner reports into the sign-off findings
+   table**, classified by severity; an unaddressed High/Critical from the scanner
+   is a **BLOCK** like any other.
+4. Record the findings table (including the native `/security-review` output) +
+   `Verdict`.
 
 ## Tier: minor (patch + attack-surface)
 
@@ -81,6 +99,14 @@ Everything in **minor**, then:
    - [ ] **Budget exhaustion** — a runaway agent is denied/suspended on exceed.
    - [ ] **eBPF floor** — direct TLS (SDK + proxy bypassed) is still observed by
      the kernel uprobes (Linux).
+10. **Official Claude Code Security Review Action** — run the official
+    [`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review)
+    GitHub Action against the release branch (e.g. dispatch the security-review
+    workflow on the branch, or run the Action's reusable workflow over the release
+    delta). This is the CI-driven, auditable counterpart to the interactive
+    `/security-review` from the patch tier. **Fold its reported findings into the
+    sign-off findings table**; an unaddressed High/Critical from the Action is a
+    **BLOCK**. Record the Action run URL in the artifact for auditability.
 
 ## Severity classification
 

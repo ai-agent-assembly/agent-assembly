@@ -1,14 +1,23 @@
 ---
-name: security-review
-description: Run the release-gate security review for an agent-assembly release, scaled by release type (patch / minor / major). Patch = dependency/advisory audit + release-diff review; minor = + changed-attack-surface review via the trust-boundary delta checklist; major = + full threat-model refresh + pen-test checklist. Emits a PASS/BLOCK sign-off artifact and BLOCKS on any unaddressed High/Critical finding. Use as the stage-0 pre-cut gate before /release-tag-cut.
+name: release-security-gate
+description: Run the release-gate security review for an agent-assembly release, scaled by release type (patch / minor / major). This gate WRAPS Claude Code's native /security-review diff scanner (and, at major tier, the official anthropics/claude-code-security-review GitHub Action) rather than performing its own diff-scanning — it composes their findings with a dependency/advisory audit and trust-boundary review into a single PASS/BLOCK sign-off. Patch = dependency/advisory audit + native /security-review on the release diff; minor = + changed-attack-surface review via the trust-boundary delta checklist; major = + full threat-model refresh + pen-test checklist + the claude-code-security-review Action. Emits a PASS/BLOCK sign-off artifact and BLOCKS on any unaddressed High/Critical finding. Use as the stage-0 pre-cut gate before /release-tag-cut. NOTE: this is /release-security-gate — distinct from the built-in /security-review it invokes.
 ---
 
-# security-review
+# release-security-gate
 
 The **release-gate** security review. It runs *before* a release tag is cut,
 scales the depth of review to the release type, and produces a committed
 **sign-off artifact** that the release-readiness check enforces. A release with
 an unaddressed High or Critical finding **cannot** proceed.
+
+This gate does **not** reimplement diff vulnerability scanning. It **wraps**
+Claude Code's built-in `/security-review` (Anthropic's diff scanner) on the
+release delta, and at major tier additionally wires the official
+[`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review)
+GitHub Action on the release branch — folding their findings into this gate's
+PASS/BLOCK sign-off alongside the dependency/advisory audit and trust-boundary
+review. This skill is invoked as `/release-security-gate`; the native scanner it
+calls remains reachable as `/security-review`.
 
 This SKILL.md is a lean overview; the per-tier checklist detail lives in
 [REFERENCE.md](REFERENCE.md). The threat model it refreshes is
@@ -22,8 +31,8 @@ A full release is a relay (see
 [`release-tag-cut/SKILL.md`](../release-tag-cut/SKILL.md)). This skill is
 **stage 0 — the pre-cut gate**, run *before* `release-tag-cut`:
 
-0. **`/security-review <version>`** (this skill) — review scaled by release type;
-   write the sign-off artifact under `docs/release/security-signoff/`. A
+0. **`/release-security-gate <version>`** (this skill) — review scaled by release
+   type; write the sign-off artifact under `docs/release/security-signoff/`. A
    **BLOCK** verdict, or any unaddressed High/Critical, stops the release here.
 1. **`/release-tag-cut <version>`** — bump + tag + push. Its pre-conditions now
    require a `Verdict: PASS` sign-off for `<version>` (enforced by
@@ -38,14 +47,15 @@ A full release is a relay (see
   pre-cut security sign-off (every patch / minor / major).
 - Re-running after addressing findings, to flip a prior **BLOCK** to **PASS**.
 
-Triggering phrasing: *"Security-review beta.4"*, *"Run the release security gate
-for 0.0.1-beta.4"*, *"Sign off the security review before we tag"*.
+Triggering phrasing: *"Release security gate beta.4"*, *"Run the release security
+gate for 0.0.1-beta.4"*, *"Sign off the security review before we tag"*.
 
 ## When NOT to use
 
-- **Not a release.** This is a release gate, not an ad-hoc audit. For a
-  standalone code review, use `/security-review` from the built-in review path or
-  open a security ticket.
+- **Not a release.** This is a release gate (`/release-security-gate`), not an
+  ad-hoc audit. For a standalone diff review, use the built-in
+  **`/security-review`** directly (Anthropic's diff vulnerability scanner — which
+  this gate wraps but does not replace) or open a security ticket.
 - **SDK-only release** — the SDK repos run their own quality gates; this skill is
   agent-assembly-monorepo scoped.
 - **The sign-off already PASSes for this exact version and nothing changed
@@ -56,7 +66,7 @@ for 0.0.1-beta.4"*, *"Sign off the security review before we tag"*.
 **Invocation**:
 
 ```text
-/security-review <version>
+/release-security-gate <version>
 ```
 
 where `<version>` is the target literal exactly as it will appear in the tag
@@ -78,9 +88,9 @@ does everything minor does *plus more*.
 
 | Tier | Scope (each tier ADDS to the one above) |
 |---|---|
-| **patch** | Dependency/advisory audit (`cargo deny check advisories`, open Dependabot + CodeQL alerts) **+** release-diff review (`git log <prev-tag>..HEAD`). |
+| **patch** | Dependency/advisory audit (`cargo deny check advisories`, open Dependabot + CodeQL alerts) **+** release-diff review: invoke the built-in **`/security-review`** (Anthropic's diff scanner) on the release delta `<prev-tag>..HEAD` and fold its findings into the sign-off. |
 | **minor** | *patch* **+** changed-attack-surface review: fill the [trust-boundary review checklist](../../../docs/src/security/trust-boundary-review-checklist.md) against the diff (new endpoints, loosened policy defaults, new egress/IPC surface). |
-| **major** | *minor* **+** full [release threat-model](../../../docs/src/security/release-threat-model.md) refresh (advance the version field + revision table) **+** the pen-test checklist (REFERENCE.md). |
+| **major** | *minor* **+** full [release threat-model](../../../docs/src/security/release-threat-model.md) refresh (advance the version field + revision table) **+** the pen-test checklist (REFERENCE.md) **+** run the official [`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review) GitHub Action on the release branch, folding its findings into the sign-off. |
 
 Per-tier step detail, the exact commands, and the pen-test checklist are in
 [REFERENCE.md](REFERENCE.md).
