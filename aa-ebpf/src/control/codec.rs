@@ -74,4 +74,11 @@ mod tests {
         assert_eq!(back, Some(req));
     }
 
+    #[tokio::test]
+    async fn clean_eof_returns_none() {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let back: Option<ControlResponse> = read_frame(&mut cursor).await.unwrap();
+        assert_eq!(back, None);
+    }
+
 }
