@@ -198,4 +198,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn file_write_deny_seeds_sensitive_path_denies() {
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(Capability::FileWrite);
+        let rules = lower_to_ebpf(&doc_with(Some(caps), vec![], vec![]));
+        let deny: Vec<&str> = rules.deny_paths().collect();
+        assert!(deny.contains(&"/etc"));
+        assert!(deny.contains(&"/root/.ssh"));
+    }
+
 }
