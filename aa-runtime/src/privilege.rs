@@ -42,3 +42,24 @@ const FORBIDDEN: &[ForbiddenCap] = &[
         value: 38,
     },
 ];
+
+/// Error returned when the runtime unexpectedly holds a BPF-class capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivilegeError {
+    /// Names of the forbidden capabilities found in the effective set.
+    pub held: Vec<String>,
+}
+
+impl std::fmt::Display for PrivilegeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "aa-runtime must not hold BPF-class capabilities (delegated to aa-ebpf-loaderd), \
+             but the effective set contains: {}",
+            self.held.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for PrivilegeError {}
+
