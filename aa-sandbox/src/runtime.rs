@@ -21,11 +21,12 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
+use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
+use crate::host_fn::HostFnCounter;
 use crate::policy::SandboxConfig;
 
 /// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
@@ -42,6 +43,22 @@ impl std::fmt::Display for MemoryExhaustedMarker {
 }
 
 impl std::error::Error for MemoryExhaustedMarker {}
+
+/// Sentinel error a counted host-function import returns when the per-tenant
+/// host-function rate limit is exhausted. Like [`MemoryExhaustedMarker`], it
+/// rides the `wasmtime::Error` channel out of the guest call and the runtime's
+/// call-result branch downcasts to it to surface
+/// [`SandboxError::HostFnRateLimited`].
+#[derive(Debug)]
+struct HostFnRateLimitMarker;
+
+impl std::fmt::Display for HostFnRateLimitMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox host-function rate limit exceeded")
+    }
+}
+
+impl std::error::Error for HostFnRateLimitMarker {}
 
 /// Per-store linear-memory cap enforced via [`Store::limiter`].
 ///
@@ -76,6 +93,11 @@ impl ResourceLimiter for MemoryLimit {
 struct StoreState {
     wasi: WasiP1Ctx,
     limiter: MemoryLimit,
+    /// Per-invocation host-function call budget (AAASM-3617). Seeded from
+    /// [`SandboxConfig::host_fn_rate_limit`] for each `run_tool` call so the
+    /// budget is never shared across invocations or tenants. Every counted
+    /// host-function import charges this before doing work.
+    host_fn_counter: HostFnCounter,
 }
 
 /// Successful sandboxed-tool invocation outcome.
@@ -120,7 +142,36 @@ impl SandboxRuntime {
         let mut linker: Linker<StoreState> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |s: &mut StoreState| &mut s.wasi)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        Self::register_host_fns(&mut linker)?;
         Ok(Self { engine, linker, config })
+    }
+
+    /// Register the sandbox's custom (non-WASI) host-function imports under the
+    /// `aa_sandbox` module namespace.
+    ///
+    /// Every import registered here is *counted* against the per-tenant
+    /// host-function rate limit (AAASM-3617) by charging
+    /// [`StoreState::host_fn_counter`] before doing any work, and any guest
+    /// memory it reads MUST go through
+    /// [`crate::host_fn::read_guest_bytes`] (AAASM-3614). `aa_host_noop` is the
+    /// first such import: a minimal counted no-op that exists so the
+    /// rate-limit + audit machinery is exercised end-to-end and so future
+    /// imports have a worked example of the counted+validated contract.
+    fn register_host_fns(linker: &mut Linker<StoreState>) -> Result<(), SandboxError> {
+        linker
+            .func_wrap("aa_sandbox", "aa_host_noop", |mut caller: Caller<'_, StoreState>| {
+                // Charge the per-invocation host-fn budget BEFORE doing work.
+                // On breach, return the rate-limit marker through the
+                // wasmtime::Error channel so run_tool can map it to
+                // SandboxError::HostFnRateLimited.
+                caller
+                    .data_mut()
+                    .host_fn_counter
+                    .charge()
+                    .map_err(|_| wasmtime::Error::new(HostFnRateLimitMarker))
+            })
+            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        Ok(())
     }
 
     /// Instantiate the supplied WASM module under WASI preview 1 and
@@ -166,7 +217,17 @@ impl SandboxRuntime {
         let limiter = MemoryLimit {
             max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
         };
-        let mut store = Store::new(&self.engine, StoreState { wasi, limiter });
+        // Fresh per-invocation host-fn budget so it is never shared across
+        // calls or tenants (AAASM-3617).
+        let host_fn_counter = HostFnCounter::new(self.config.host_fn_rate_limit.max_calls_per_call);
+        let mut store = Store::new(
+            &self.engine,
+            StoreState {
+                wasi,
+                limiter,
+                host_fn_counter,
+            },
+        );
         store.limiter(|s| &mut s.limiter);
         store
             .set_fuel(self.config.limits.fuel)
@@ -229,6 +290,8 @@ impl SandboxRuntime {
                     Err(SandboxError::WallClockTimeout)
                 } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
                     Err(SandboxError::MemoryExhausted)
+                } else if trap.downcast_ref::<HostFnRateLimitMarker>().is_some() {
+                    Err(SandboxError::HostFnRateLimited)
                 } else {
                     Err(SandboxError::Wasmtime(trap.to_string()))
                 }
