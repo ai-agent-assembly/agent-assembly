@@ -17,7 +17,8 @@ It is consumed by two operational artifacts:
 
 - the [trust-boundary review checklist](trust-boundary-review-checklist.md) — the
   per-release delta form a reviewer fills in, and
-- the `/security-review` SKILL — the release-gate review scaled by release type.
+- the `/release-security-gate` SKILL — the release-gate review scaled by release
+  type (it wraps the built-in `/security-review` scanner).
 
 ## Why a threat model needs a version
 

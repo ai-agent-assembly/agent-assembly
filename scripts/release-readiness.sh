@@ -134,18 +134,18 @@ else
 fi
 
 # 11. Security-review sign-off artifact present AND verdict is PASS.
-# AAASM-3566 release gate: the /security-review SKILL writes
+# AAASM-3566 release gate: the /release-security-gate SKILL writes
 # docs/release/security-signoff/v<version>.md with a `Verdict: PASS` line.
 # A release must not be tagged with an unaddressed High/Critical finding, so a
 # missing artifact or a non-PASS verdict fails the readiness run. See
-# docs/release/RUNBOOK.md and .claude/skills/security-review/SKILL.md.
+# docs/release/RUNBOOK.md and .claude/skills/release-security-gate/SKILL.md.
 SIGNOFF="docs/release/security-signoff/v${VERSION}.md"
 if [ ! -f "$SIGNOFF" ]; then
-  fail "Security-review sign-off missing ($SIGNOFF)" "run /security-review $VERSION and commit the sign-off"
+  fail "Security-review sign-off missing ($SIGNOFF)" "run /release-security-gate $VERSION and commit the sign-off"
 elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$SIGNOFF"; then
   pass "Security-review sign-off present and Verdict: PASS ($SIGNOFF)"
 else
-  fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /security-review $VERSION"
+  fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /release-security-gate $VERSION"
 fi
 
 echo

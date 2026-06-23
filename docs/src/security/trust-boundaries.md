@@ -113,4 +113,4 @@ release** moved any boundary, fill in the
 [trust-boundary review checklist](trust-boundary-review-checklist.md) — a
 per-release delta form with one row per boundary above, including the guarded
 "no wire trust marker stays NO" invariant. It is run as part of the
-`/security-review` release gate.
+`/release-security-gate` release gate.

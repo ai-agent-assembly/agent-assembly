@@ -1,6 +1,6 @@
 # Trust-boundary review checklist
 
-> **Fill this in once per release**, as part of the `/security-review` gate. It
+> **Fill this in once per release**, as part of the `/release-security-gate`. It
 > maps a concrete release diff onto the trust boundaries documented in
 > [Trust boundaries](trust-boundaries.md) and
 > [ADR 0002](../adr/0002-sdk-security-boundary.md).
@@ -15,8 +15,8 @@ line item per boundary, instead of an unexamined assumption.
 
 ## How to use
 
-1. Run `git log <prev-tag>..HEAD` for the release window (the `/security-review`
-   SKILL does this for you).
+1. Run `git log <prev-tag>..HEAD` for the release window (the
+   `/release-security-gate` SKILL does this for you).
 2. For each row, mark **Changed? (Y/N)**, cite the **commit/PR**, and add a
    **reviewer note**.
 3. Any **Y** row must be justified in the release's

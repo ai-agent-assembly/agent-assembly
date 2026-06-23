@@ -41,8 +41,8 @@ All 11 checks must report ✓ before continuing. Common failures and what to do:
   the per-tag bot will open a parallel PR and reviewers will be unsure
   which one is current.
 - *Security-review sign-off missing or not PASS* — see section 1.5; run
-  `/security-review <version>`, resolve any High/Critical finding, commit the
-  PASS sign-off, then re-run.
+  `/release-security-gate <version>`, resolve any High/Critical finding, commit
+  the PASS sign-off, then re-run.
 
 ## 1.5. Security gate — review sign-off (BLOCKS the tag push)
 
@@ -53,7 +53,7 @@ All 11 checks must report ✓ before continuing. Common failures and what to do:
 Before tagging, run the release-gate security review, scaled by release type:
 
 ```bash
-/security-review <version>      # e.g. 0.0.1-beta.4
+/release-security-gate <version>      # e.g. 0.0.1-beta.4
 ```
 
 - **patch** = dependency/advisory audit (`cargo deny check advisories`, open
@@ -69,8 +69,11 @@ The review writes a committed sign-off artifact at
 `Verdict: BLOCK` line. **`scripts/release-readiness.sh` check 11 fails the
 readiness run unless that file exists and its verdict is `PASS`** — so a BLOCK
 verdict, or a missing sign-off, structurally stops the tag push in section 2.
-See the [`/security-review` SKILL](../../.claude/skills/security-review/SKILL.md)
-for tier detail and the BLOCK-on-unaddressed-High/Critical rule.
+See the [`/release-security-gate` SKILL](../../.claude/skills/release-security-gate/SKILL.md)
+for tier detail and the BLOCK-on-unaddressed-High/Critical rule. The gate wraps
+Claude Code's built-in `/security-review` diff scanner (and, at major tier, the
+`anthropics/claude-code-security-review` Action) — it does not reimplement diff
+scanning.
 
 ## 2. Tag push — IRREVERSIBLE
 
