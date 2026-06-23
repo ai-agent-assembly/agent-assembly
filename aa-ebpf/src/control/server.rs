@@ -145,6 +145,7 @@ pub fn resolve_socket_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(super::protocol::DEFAULT_SOCKET_PATH))
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,4 +192,13 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn bind_hardened_sets_owner_only_perms() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aa-ebpf-loaderd-test-{}.sock", std::process::id()));
+        let _listener = bind_hardened(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "control socket must be owner-only");
+        let _ = std::fs::remove_file(&path);
+    }
 }
