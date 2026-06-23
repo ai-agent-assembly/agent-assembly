@@ -44,8 +44,10 @@
 // Cross-platform modules (no aya dependency).
 pub mod agent_discover;
 pub mod alert;
+pub mod control;
 pub mod error;
 pub mod events;
+pub mod integrity;
 pub mod kprobes;
 pub mod lineage;
 pub mod loader;
@@ -66,6 +68,7 @@ pub mod uprobe;
 pub use alert::SensitivePathDetector;
 pub use error::EbpfError;
 pub use events::FileIoEvent;
+pub use integrity::verify_bytecode;
 pub use lineage::ProcessLineageTracker;
 pub use loader::{EbpfLoader, ExecLoader, FileIoLoader};
 pub use maps::{PathPattern, PathVerdict, MAX_PATH_LEN, MAX_PATH_PATTERNS};

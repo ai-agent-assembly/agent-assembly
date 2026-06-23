@@ -34,10 +34,26 @@ aa-core        = { path = "../aa-core", version = "0.0.1-beta.2" }
 aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-beta.2", features = ["std"] }
 anyhow         = { workspace = true }
 bytes          = { workspace = true }
+hex            = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+sha2           = { workspace = true }
 thiserror      = { workspace = true }
 tokio          = { workspace = true, features = ["full"] }
 tracing        = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# The privileged eBPF loader daemon (AAASM-3603): the sole CAP_BPF/CAP_PERFMON
+# holder. It is the only binary in this crate; nothing else loads BPF.
+[[bin]]
+name = "aa-ebpf-loaderd"
+path = "src/bin/loaderd.rs"
+
+# build.rs hashes the compiled BPF objects to emit per-object sha256 digests
+# (AAASM-3602) that the load-time integrity check pins against.
+[build-dependencies]
+hex  = { workspace = true }
+sha2 = { workspace = true }
 
 # aya is Linux-only: it uses libc symbols (CLOCK_BOOTTIME, etc.) absent on macOS/Windows.
 # The build-dep (aya-build) is unconditional so build.rs always compiles; the actual

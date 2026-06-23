@@ -110,10 +110,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        // AAASM-3602: emit the sha256 of each embedded probe object as a
+        // compile-time env var so the load-time integrity check can pin the
+        // bytecode against the digest CI signed (EBPF_SHA256SUMS, AAASM-3601).
+        // The digest is sourced from the *actual compiled object*, never
+        // hand-written. A stub (empty file) hashes to the well-known empty
+        // digest, which the runtime treats as "unverifiable stub" and refuses
+        // to load — fail-closed, never degrade-to-allow.
+        emit_object_digest(&release_dir, "aa-file-io", "AA_FILE_IO_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-exec-probes", "AA_EXEC_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-tls-probes", "AA_TLS_BPF_SHA256")?;
+    }
+
+    // On non-Linux the BPF statics in lib.rs are cfg'd out, so the digest env
+    // vars are never read; emit empty placeholders so any `env!()` resolves.
+    #[cfg(not(target_os = "linux"))]
+    {
+        for var in ["AA_FILE_IO_BPF_SHA256", "AA_EXEC_BPF_SHA256", "AA_TLS_BPF_SHA256"] {
+            println!("cargo:rustc-env={var}=");
+        }
     }
 
     // Suppress unused warning on non-Linux hosts.
     let _ = probes_dir;
+    Ok(())
+}
+
+/// Hash a compiled probe object and emit `cargo:rustc-env=<var>=<hex>`.
+#[cfg(target_os = "linux")]
+fn emit_object_digest(release_dir: &Path, object: &str, var: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+
+    let path = release_dir.join(object);
+    let bytes = std::fs::read(&path)?;
+    let digest = Sha256::digest(&bytes);
+    println!("cargo:rustc-env={var}={}", hex::encode(digest));
     Ok(())
 }
 

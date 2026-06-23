@@ -33,6 +33,9 @@ impl EbpfLoader {
     /// `CAP_BPF` + `CAP_PERFMON` capabilities.
     #[cfg(target_os = "linux")]
     pub fn load() -> Result<Ebpf, EbpfError> {
+        // AAASM-3602: fail-closed integrity check before handing bytes to the
+        // kernel — a tampered or stub TLS probe is refused, not loaded blind.
+        crate::integrity::verify_bytecode("aa-tls-probes", crate::AA_TLS_BPF, crate::integrity::AA_TLS_BPF_SHA256)?;
         Ok(Ebpf::load(crate::AA_TLS_BPF)?)
     }
 }
@@ -85,6 +88,12 @@ impl FileIoLoader {
         #[cfg(target_os = "linux")]
         {
             tracing::info!(pid = self.target_pid, "loading eBPF programs");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-file-io",
+                crate::AA_FILE_IO_BPF,
+                crate::integrity::AA_FILE_IO_BPF_SHA256,
+            )?;
             let mut bpf = aya::Ebpf::load(crate::AA_FILE_IO_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
 
             // Insert the target PID into the PID filter map.
@@ -400,6 +409,12 @@ impl ExecLoader {
         #[cfg(target_os = "linux")]
         {
             tracing::info!(pid = self.target_pid, "loading exec tracepoint BPF programs");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-exec-probes",
+                crate::AA_EXEC_BPF,
+                crate::integrity::AA_EXEC_BPF_SHA256,
+            )?;
             let mut bpf = aya::Ebpf::load(crate::AA_EXEC_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
 
             // Insert the target PID into the exec PID filter map.

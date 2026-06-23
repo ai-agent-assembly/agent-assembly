@@ -21,6 +21,7 @@ pub mod lifecycle;
 pub mod op_control;
 pub mod pipeline;
 pub mod policy;
+pub mod privilege;
 pub mod runtime;
 
 pub use runtime::run;

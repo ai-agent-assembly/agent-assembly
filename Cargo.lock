@@ -248,6 +248,10 @@ dependencies = [
  "aya",
  "aya-log",
  "bytes",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -491,6 +495,7 @@ dependencies = [
  "aho-corasick",
  "criterion",
  "serde",
+ "serde_yaml",
 ]
 
 [[package]]
