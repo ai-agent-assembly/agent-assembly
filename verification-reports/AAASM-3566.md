@@ -12,7 +12,7 @@ trust-boundary docs
 |---|---|---|
 | AAASM-3572 | `docs/src/security/release-threat-model.md` (versioned, 6-layer map, revision table) + SUMMARY + cross-links | Done |
 | AAASM-3573 | `docs/src/security/trust-boundary-review-checklist.md` (per-boundary delta form, guarded NO row) + SUMMARY + cross-links | Done |
-| AAASM-3574 | `.claude/skills/security-review/SKILL.md` + `REFERENCE.md` (additive patch/minor/major tiers, BLOCK rule) | Done |
+| AAASM-3574 | `.claude/skills/release-security-gate/SKILL.md` + `REFERENCE.md` (additive patch/minor/major tiers, BLOCK rule; wraps native `/security-review` + `claude-code-security-review` Action) | Done |
 | AAASM-3575 | `scripts/release-readiness.sh` check 11 + `docs/release/security-signoff/TEMPLATE.md` + RUNBOOK §1.5 + `release-tag-cut/SKILL.md` wiring | Done |
 | AAASM-3577 | This report | Done |
 
@@ -39,8 +39,10 @@ trust-boundary docs
 
 ### AC3 — Gate scales by release type and blocks on unaddressed High/Critical
 
-- `/security-review` SKILL defines **additive** patch → minor → major tiers and a
-  verdict rule that BLOCKs on any unaddressed Critical/High.
+- `/release-security-gate` SKILL defines **additive** patch → minor → major tiers
+  and a verdict rule that BLOCKs on any unaddressed Critical/High. The release-diff
+  step wraps the built-in `/security-review` scanner (major tier also wires the
+  `anthropics/claude-code-security-review` Action).
 - `release-readiness.sh` check 11 fails on a missing or non-PASS sign-off.
 
 **Gate paths exercised against the real `scripts/release-readiness.sh`:**
@@ -62,7 +64,7 @@ trust-boundary docs
 - `shellcheck -S warning scripts/release-readiness.sh` — clean.
 - All relative Markdown links in the new docs + skill cross-links resolve
   (release-threat-model, trust-boundary-review-checklist, SUMMARY entries,
-  security-review SKILL/REFERENCE → RUNBOOK / script / docs / template).
+  release-security-gate SKILL/REFERENCE → RUNBOOK / script / docs / template).
 - `mdbook` / `cargo doc` not run locally (macOS toolchain); covered by CI on the
   PR.
 
