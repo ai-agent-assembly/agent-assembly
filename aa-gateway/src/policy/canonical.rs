@@ -110,4 +110,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn projects_capabilities() {
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::FileWrite);
+        caps.allow.insert(aa_core::Capability::FileRead);
+        let mut doc = base_doc();
+        doc.capabilities = Some(caps);
+
+        let canon = doc.to_canonical();
+        let cc = canon.capabilities.unwrap();
+        assert!(cc.deny.contains(&CanonCapability::FileWrite));
+        assert!(cc.allow.contains(&CanonCapability::FileRead));
+    }
+
 }
