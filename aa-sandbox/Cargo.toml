@@ -13,6 +13,7 @@ wasmtime      = "46"
 wasmtime-wasi = "46"
 
 [dev-dependencies]
+tempfile = { workspace = true }
 wat = { workspace = true }
 
 [lints]

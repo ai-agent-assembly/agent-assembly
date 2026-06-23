@@ -465,6 +465,7 @@ name = "aa-sandbox"
 version = "0.0.1-beta.3"
 dependencies = [
  "aa-core",
+ "tempfile",
  "thiserror 2.0.18",
  "wasmtime",
  "wasmtime-wasi",
