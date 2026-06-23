@@ -120,3 +120,32 @@ fn parse_capability(raw: &str) -> Result<Capability, PolicyParseError> {
         reason,
     })
 }
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_envelope_capability_policy() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: capability-example
+spec:
+  capabilities:
+    allow:
+      - file_read
+      - mcp_tool:git
+    deny:
+      - terminal_exec
+      - file_write
+"#;
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        assert_eq!(doc.name.as_deref(), Some("capability-example"));
+        let caps = doc.capabilities.unwrap();
+        assert!(caps.allow.contains(&Capability::FileRead));
+        assert!(caps.allow.contains(&Capability::McpTool("git".to_string())));
+        assert!(caps.deny.contains(&Capability::TerminalExec));
+        assert!(caps.deny.contains(&Capability::FileWrite));
+    }
+}
