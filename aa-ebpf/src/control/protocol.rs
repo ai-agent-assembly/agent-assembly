@@ -72,3 +72,21 @@ pub enum ControlResponse {
         message: String,
     },
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_round_trips_through_json() {
+        let req = ControlRequest::UpdatePathMap {
+            rules: vec![PathRuleWire {
+                pattern: "/etc".to_string(),
+                deny: true,
+            }],
+        };
+        let bytes = serde_json::to_vec(&req).unwrap();
+        let back: ControlRequest = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(req, back);
+    }
+
+}
