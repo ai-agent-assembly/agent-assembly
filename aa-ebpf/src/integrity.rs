@@ -50,3 +50,14 @@ pub fn verify_bytecode(object: &str, bytes: &[u8], expected_hex: &str) -> Result
 
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn matching_digest_passes() {
+        let bytes = b"hello bpf";
+        let expected = hex::encode(Sha256::digest(bytes));
+        assert!(verify_bytecode("aa-test", bytes, &expected).is_ok());
+    }
+
+}
