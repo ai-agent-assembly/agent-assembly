@@ -163,4 +163,20 @@ mod tests {
         assert_eq!(resp, ControlResponse::Ok);
     }
 
+    #[tokio::test]
+    async fn update_path_map_without_loaded_probe_is_rejected() {
+        let manager = Arc::new(Mutex::new(ProbeManager::new()));
+        let resp = dispatch(
+            &manager,
+            ControlRequest::UpdatePathMap {
+                rules: vec![PathRuleWire {
+                    pattern: "/etc".into(),
+                    deny: true,
+                }],
+            },
+        )
+        .await;
+        assert!(matches!(resp, ControlResponse::Error { .. }));
+    }
+
 }
