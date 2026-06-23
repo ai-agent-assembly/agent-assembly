@@ -79,4 +79,9 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+    #[test]
+    fn empty_expected_is_unverifiable_and_rejected() {
+        let err = verify_bytecode("aa-test", b"anything", "").unwrap_err();
+        assert!(matches!(err, EbpfError::IntegrityMismatch { .. }));
+    }
 }
