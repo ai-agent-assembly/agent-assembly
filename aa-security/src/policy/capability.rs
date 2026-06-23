@@ -110,4 +110,16 @@ mod tests {
         );
         assert_eq!("terminal_exec".parse::<Capability>().unwrap(), Capability::TerminalExec);
     }
+
+    #[test]
+    fn parses_parameterised_variants() {
+        assert_eq!(
+            "mcp_tool:git".parse::<Capability>().unwrap(),
+            Capability::McpTool("git".to_string())
+        );
+        assert_eq!(
+            "model:gpt-4".parse::<Capability>().unwrap(),
+            Capability::Model("gpt-4".to_string())
+        );
+    }
 }
