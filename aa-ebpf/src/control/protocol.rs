@@ -72,6 +72,7 @@ pub enum ControlResponse {
         message: String,
     },
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,4 +114,8 @@ mod tests {
         }
     }
 
+    #[test]
+    fn default_socket_is_root_owned_run_path() {
+        assert!(DEFAULT_SOCKET_PATH.starts_with("/run/"));
+    }
 }
