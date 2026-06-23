@@ -112,3 +112,11 @@ impl PolicyDocument {
         })
     }
 }
+
+/// Parse a capability token, mapping the parse error onto [`PolicyParseError`].
+fn parse_capability(raw: &str) -> Result<Capability, PolicyParseError> {
+    Capability::from_str(raw).map_err(|reason| PolicyParseError::InvalidCapability {
+        raw: raw.to_string(),
+        reason,
+    })
+}
