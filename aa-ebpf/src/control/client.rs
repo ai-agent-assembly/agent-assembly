@@ -65,6 +65,7 @@ impl LoaderControlClient {
         Self::into_result(resp)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,4 +78,9 @@ mod tests {
         assert!(err.is_err());
     }
 
+    #[test]
+    fn ok_and_pong_map_to_ok() {
+        assert!(LoaderControlClient::into_result(ControlResponse::Ok).is_ok());
+        assert!(LoaderControlClient::into_result(ControlResponse::Pong).is_ok());
+    }
 }
