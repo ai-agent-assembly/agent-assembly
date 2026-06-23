@@ -83,3 +83,31 @@ impl PolicyDocument {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use aa_core::CapabilitySet;
+
+    use super::*;
+    use crate::policy::document::ToolPolicy;
+    use crate::policy::scope::PolicyScope;
+
+    fn base_doc() -> PolicyDocument {
+        PolicyDocument {
+            name: Some("t".to_string()),
+            policy_version: None,
+            version: None,
+            scope: PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: HashMap::new(),
+            capabilities: None,
+        }
+    }
+
+}
