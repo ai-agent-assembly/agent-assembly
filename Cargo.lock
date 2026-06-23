@@ -200,7 +200,7 @@ dependencies = [
 name = "aa-devtool-saas"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "axum",
  "hex",
