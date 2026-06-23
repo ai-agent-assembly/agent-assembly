@@ -246,6 +246,7 @@ fn register_request_topology_fields_round_trip() {
         spawned_by_tool: Some("langgraph.subgraph".into()),
         max_child_depth: Some(3),
         enforcement_mode: 0,
+        possession_proof: vec![1, 2, 3, 4],
     };
     let bytes = original.encode_to_vec();
     let decoded = RegisterRequest::decode(bytes.as_slice()).expect("decode RegisterRequest");
