@@ -170,4 +170,10 @@ spec:
         assert!(write.allow);
         assert_eq!(write.requires_approval_if.as_deref(), Some("path starts_with \"/etc\""));
     }
+    #[test]
+    fn rejects_unknown_capability() {
+        let yaml = "spec:\n  capabilities:\n    deny:\n      - teleport\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(matches!(err, PolicyParseError::InvalidCapability { .. }));
+    }
 }
