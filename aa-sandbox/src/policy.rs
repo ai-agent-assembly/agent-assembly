@@ -122,4 +122,11 @@ pub struct SandboxConfig {
     /// per-field semantics; the [`Default`] is a safe-by-default budget
     /// (10M fuel, 16 pages = 1 MiB memory, 5s wall-clock).
     pub limits: SandboxLimits,
+    /// Tenant the sandboxed tool runs on behalf of. Carried so the
+    /// host-function rate-limit and its audit events are attributable to a
+    /// tenant. The [`Default`] is the empty string (unattributed).
+    pub tenant_id: String,
+    /// Per-tenant host-function call budget. See [`HostFnRateLimit`]; the
+    /// [`Default`] caps a single invocation at 1024 host-function calls.
+    pub host_fn_rate_limit: HostFnRateLimit,
 }
