@@ -420,4 +420,67 @@ mod tests {
             result,
         );
     }
+
+    /// WAT fixture that imports the counted `aa_sandbox/aa_host_noop` host
+    /// function and calls it `$n` times. With a host-fn budget of `N`, calling
+    /// it `N + 1` times trips the rate limit on the last call.
+    const HOST_FN_CALL_LOOP_WAT: &str = r#"
+        (module
+          (import "aa_sandbox" "aa_host_noop" (func $noop))
+          (func (export "_start")
+            (local $i i32)
+            (local.set $i (i32.const 0))
+            (block $done
+              (loop $again
+                (br_if $done (i32.ge_u (local.get $i) (i32.const 5)))
+                (call $noop)
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again)
+              )
+            )
+          )
+        )
+    "#;
+
+    fn host_fn_loop_config(max_calls_per_call: u32) -> SandboxConfig {
+        SandboxConfig {
+            host_fn_rate_limit: crate::policy::HostFnRateLimit {
+                max_calls_per_call,
+                window_calls: None,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn run_tool_denies_host_fn_calls_over_rate_limit() {
+        // Budget of 3, guest calls the host fn 5 times → the 4th call is
+        // denied with HostFnRateLimited.
+        let runtime = SandboxRuntime::new(host_fn_loop_config(3)).expect("runtime must construct");
+        let wasm = wat::parse_str(HOST_FN_CALL_LOOP_WAT).expect("host-fn loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::HostFnRateLimited)),
+            "expected SandboxError::HostFnRateLimited, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn run_tool_allows_host_fn_calls_within_rate_limit() {
+        // Budget of 5, guest calls the host fn exactly 5 times → all allowed,
+        // clean exit.
+        let runtime = SandboxRuntime::new(host_fn_loop_config(5)).expect("runtime must construct");
+        let wasm = wat::parse_str(HOST_FN_CALL_LOOP_WAT).expect("host-fn loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "expected clean exit within budget, got {:?}",
+            result,
+        );
+    }
 }
