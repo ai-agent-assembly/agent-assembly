@@ -62,3 +62,35 @@ impl std::fmt::Display for HostFnError {
 }
 
 impl std::error::Error for HostFnError {}
+
+/// Validate that the guest-supplied `(ptr, len)` names a region fully inside a
+/// guest linear memory of `mem_len` bytes and within the per-call `max_len`
+/// cap, returning the validated `[start, end)` byte range on success.
+///
+/// This is the single bounds-check every host-function import must run before
+/// touching guest memory. It is total and panic-free for *all* inputs:
+///
+/// 1. `len > max_len` → [`HostFnError::LengthTooLarge`] (caps a single read).
+/// 2. `ptr + len` overflowing `u64` → [`HostFnError::LengthOverflow`] (a
+///    wraparound that would otherwise alias low memory).
+/// 3. `ptr + len > mem_len` → [`HostFnError::OutOfBounds`] (the region runs
+///    past the end of guest memory).
+///
+/// On success the returned `(start, end)` satisfies `start <= end <= mem_len`,
+/// so slicing `&memory[start..end]` can never panic or read host memory. A
+/// zero-length read at any in-range (or at the one-past-the-end) `ptr` is
+/// permitted and yields an empty range.
+pub fn validate_guest_ptr_len(mem_len: usize, ptr: u64, len: u64, max_len: u64) -> Result<(usize, usize), HostFnError> {
+    if len > max_len {
+        return Err(HostFnError::LengthTooLarge);
+    }
+    // Checked add on u64 catches the ptr + len wraparound primitive.
+    let end = ptr.checked_add(len).ok_or(HostFnError::LengthOverflow)?;
+    // Compare in u64 space before narrowing to usize so a 64-bit ptr/len on a
+    // 32-bit usize host can never silently truncate into range.
+    if end > mem_len as u64 {
+        return Err(HostFnError::OutOfBounds);
+    }
+    // Both fit: end <= mem_len <= usize::MAX, and ptr <= end.
+    Ok((ptr as usize, end as usize))
+}
