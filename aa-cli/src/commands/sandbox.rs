@@ -74,6 +74,7 @@ fn run_wasm(args: RunArgs) -> ExitCode {
     let config = SandboxConfig {
         preopened_dirs: Vec::new(),
         limits,
+        ..Default::default()
     };
 
     let runtime = match SandboxRuntime::new(config) {

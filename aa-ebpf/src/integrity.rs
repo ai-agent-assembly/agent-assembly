@@ -22,6 +22,8 @@ pub const AA_FILE_IO_BPF_SHA256: &str = env!("AA_FILE_IO_BPF_SHA256");
 pub const AA_EXEC_BPF_SHA256: &str = env!("AA_EXEC_BPF_SHA256");
 /// Expected sha256 (hex) of the TLS uprobe probe object.
 pub const AA_TLS_BPF_SHA256: &str = env!("AA_TLS_BPF_SHA256");
+/// Expected sha256 (hex) of the syscall-guard enforcement probe object.
+pub const AA_SYSCALL_GUARD_BPF_SHA256: &str = env!("AA_SYSCALL_GUARD_BPF_SHA256");
 
 /// Verify `bytes` hashes to `expected_hex`, returning
 /// [`EbpfError::IntegrityMismatch`] on any divergence.

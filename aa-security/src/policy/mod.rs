@@ -16,7 +16,8 @@
 //! - [`document`] — [`PolicyDocument`] and its sub-structures.
 //! - [`parse`] — YAML parsing of the `policy-examples` on-disk contract.
 //! - [`ebpf`] — deterministic lowering of the AST to eBPF map entries
-//!   (AAASM-3608).
+//!   (AAASM-3608, extended for syscalls by AAASM-3635).
+//! - [`syscall`] — the `SyscallAllowlist` kernel-syscall node (AAASM-3624).
 
 pub mod capability;
 pub mod document;
@@ -24,8 +25,10 @@ pub mod ebpf;
 pub mod error;
 #[cfg(feature = "serde")]
 pub mod parse;
+pub mod syscall;
 
 pub use capability::{Capability, CapabilitySet};
 pub use document::{NetworkPolicy, PolicyDocument, ToolRule};
 pub use ebpf::{lower_to_ebpf, EbpfRuleSet, PathRule, PathVerdict};
 pub use error::PolicyParseError;
+pub use syscall::{Syscall, SyscallAllowlist};

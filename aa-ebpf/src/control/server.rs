@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use super::codec::{read_frame, write_frame};
 use super::protocol::{ControlRequest, ControlResponse, PathRuleWire, ProbeSet};
 use crate::error::EbpfError;
-use crate::loader::{ExecLoader, FileIoLoader};
+use crate::loader::{ExecLoader, FileIoLoader, SyscallGuardLoader};
 use crate::maps::{PathPattern, PathVerdict};
 
 /// Owns the live probe loaders behind the control boundary. Only the daemon
@@ -27,6 +27,7 @@ pub struct ProbeManager {
     file_io: Option<FileIoLoader>,
     exec: Option<ExecLoader>,
     tls_loaded: bool,
+    syscall_guard: Option<SyscallGuardLoader>,
 }
 
 impl ProbeManager {
@@ -55,8 +56,23 @@ impl ProbeManager {
                 let _ = crate::loader::EbpfLoader::load()?;
                 self.tls_loaded = true;
             }
+            ProbeSet::SyscallGuard => {
+                let mut loader = SyscallGuardLoader::new(target_pid);
+                loader.load()?;
+                loader.attach()?;
+                self.syscall_guard = Some(loader);
+            }
         }
         Ok(())
+    }
+
+    /// Replace the syscall allowlist map. Requires the syscall-guard probe
+    /// loaded. The full desired set is applied (clear + reapply).
+    pub fn update_syscall_allowlist(&mut self, syscalls: &[u32]) -> Result<(), EbpfError> {
+        let loader = self.syscall_guard.as_mut().ok_or_else(|| {
+            EbpfError::MapUpdate("syscall-guard probe not loaded; load it before updating the syscall allowlist".into())
+        })?;
+        loader.update_syscall_allowlist(syscalls)
     }
 
     /// Replace the path deny/allow map. Requires the file-I/O probe loaded.
@@ -80,6 +96,7 @@ impl ProbeManager {
             ProbeSet::FileIo => self.file_io = None,
             ProbeSet::Exec => self.exec = None,
             ProbeSet::Tls => self.tls_loaded = false,
+            ProbeSet::SyscallGuard => self.syscall_guard = None,
         }
     }
 }
@@ -128,6 +145,7 @@ pub async fn dispatch(manager: &Arc<Mutex<ProbeManager>>, req: ControlRequest) -
         ControlRequest::Ping => return ControlResponse::Pong,
         ControlRequest::LoadProbeSet { set, target_pid } => manager.lock().await.load(set, target_pid),
         ControlRequest::UpdatePathMap { rules } => manager.lock().await.update_path_map(&rules),
+        ControlRequest::UpdateSyscallAllowlist { syscalls } => manager.lock().await.update_syscall_allowlist(&syscalls),
         ControlRequest::Detach { set } => {
             manager.lock().await.detach(set);
             Ok(())

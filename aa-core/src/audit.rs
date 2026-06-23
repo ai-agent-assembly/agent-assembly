@@ -112,6 +112,17 @@ pub enum AuditEventType {
     /// tool-defined error — this variant marks lifecycle completion,
     /// not outcome semantics. (AAASM-1965 / F116 ST-W.)
     SandboxTerminated = 20,
+    /// A sandboxed tool's host-function call was denied because the
+    /// per-tenant host-function rate limit
+    /// (`aa-sandbox::policy::HostFnRateLimit`) was exceeded for the
+    /// invocation. A deny outcome that terminates the lifecycle started by
+    /// [`SandboxStarted`], emitted by `aa-sandbox::runtime` mapping to
+    /// `SandboxError::HostFnRateLimited`. Caps host-fn abuse/fuzzing
+    /// throughput so a single tenant cannot brute-force a host-fn weakness
+    /// or DoS the host. (AAASM-3617.)
+    ///
+    /// [`SandboxStarted`]: Self::SandboxStarted
+    SandboxHostFnRateLimited = 21,
 }
 
 impl AuditEventType {
@@ -141,6 +152,7 @@ impl AuditEventType {
             Self::SandboxCpuTimeout => "SandboxCpuTimeout",
             Self::SandboxOomKilled => "SandboxOomKilled",
             Self::SandboxTerminated => "SandboxTerminated",
+            Self::SandboxHostFnRateLimited => "SandboxHostFnRateLimited",
         }
     }
 }
@@ -1016,6 +1028,10 @@ mod tests {
         assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
         assert_eq!(AuditEventType::SandboxOomKilled.as_str(), "SandboxOomKilled");
         assert_eq!(AuditEventType::SandboxTerminated.as_str(), "SandboxTerminated");
+        assert_eq!(
+            AuditEventType::SandboxHostFnRateLimited.as_str(),
+            "SandboxHostFnRateLimited"
+        );
     }
 
     #[test]
@@ -1037,6 +1053,7 @@ mod tests {
         assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
         assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
         assert_eq!(AuditEventType::SandboxTerminated as u32, 20);
+        assert_eq!(AuditEventType::SandboxHostFnRateLimited as u32, 21);
     }
 
     #[test]
@@ -1059,6 +1076,7 @@ mod tests {
             AuditEventType::SandboxCpuTimeout,
             AuditEventType::SandboxOomKilled,
             AuditEventType::SandboxTerminated,
+            AuditEventType::SandboxHostFnRateLimited,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
@@ -1252,6 +1270,10 @@ mod tests {
             (AuditEventType::SandboxCpuTimeout, "event=SandboxCpuTimeout]"),
             (AuditEventType::SandboxOomKilled, "event=SandboxOomKilled]"),
             (AuditEventType::SandboxTerminated, "event=SandboxTerminated]"),
+            (
+                AuditEventType::SandboxHostFnRateLimited,
+                "event=SandboxHostFnRateLimited]",
+            ),
         ];
         for (event_type, expected_tail) in sandbox_events {
             let entry = AuditEntry::new(

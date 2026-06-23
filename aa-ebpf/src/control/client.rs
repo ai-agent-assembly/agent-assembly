@@ -53,6 +53,14 @@ impl LoaderControlClient {
         Self::into_result(resp)
     }
 
+    /// Replace the syscall allowlist map with `syscalls` (lowered AST output).
+    pub async fn update_syscall_allowlist(&mut self, syscalls: Vec<u32>) -> Result<(), EbpfError> {
+        let resp = self
+            .request(&ControlRequest::UpdateSyscallAllowlist { syscalls })
+            .await?;
+        Self::into_result(resp)
+    }
+
     /// Detach + unload a probe set.
     pub async fn detach(&mut self, set: ProbeSet) -> Result<(), EbpfError> {
         let resp = self.request(&ControlRequest::Detach { set }).await?;

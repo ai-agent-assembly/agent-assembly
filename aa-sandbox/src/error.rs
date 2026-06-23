@@ -62,4 +62,13 @@ pub enum SandboxError {
     /// Scenario 2 — memory half.)
     #[error("sandbox memory store limit exhausted")]
     MemoryExhausted,
+    /// A host-function call was denied because the per-tenant host-function
+    /// rate limit (`crate::policy::HostFnRateLimit`) was exceeded for this
+    /// invocation. Surfaced when a guest drives a validated host-function
+    /// import more than `max_calls_per_call` times in a single `run_tool`
+    /// call. Distinguished from the isolation-kill variants so audit
+    /// consumers can attribute the denial to host-fn abuse rather than a
+    /// resource ceiling. (AAASM-3617.)
+    #[error("sandbox host-function rate limit exceeded")]
+    HostFnRateLimited,
 }

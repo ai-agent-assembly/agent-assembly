@@ -87,6 +87,12 @@ pub struct EbpfRuleSet {
     pub path_rules: Vec<PathRule>,
     /// Egress host allowlist (empty means "no egress restriction").
     pub egress_allowlist: Vec<String>,
+    /// Permitted syscall numbers for the `SYSCALL_ALLOWLIST` BPF map
+    /// (AAASM-3635). Empty means "no syscall allowlist" — the enforcement
+    /// probe leaves a monitored PID's syscalls unconstrained. Order-stable
+    /// (ascending by the AST's `BTreeSet` order) so the lowering is
+    /// deterministic.
+    pub syscall_allowlist: Vec<u32>,
 }
 
 impl EbpfRuleSet {
@@ -148,7 +154,23 @@ pub fn lower_to_ebpf(doc: &PolicyDocument) -> EbpfRuleSet {
     EbpfRuleSet {
         path_rules,
         egress_allowlist: doc.egress_allowlist().to_vec(),
+        syscall_allowlist: lower_syscall_allowlist(doc),
     }
+}
+
+/// Lower the [`SyscallAllowlist`](super::syscall::SyscallAllowlist) node to the
+/// flat list of syscall numbers the `SYSCALL_ALLOWLIST` BPF map consumes
+/// (AAASM-3635).
+///
+/// Reuses the same single `lower_to_ebpf` pipeline as the path/egress lowering
+/// — there is no second policy or lowering path. Deterministic: the AST's
+/// `BTreeSet` ordering makes the emitted numbers order-stable, and an absent
+/// node lowers to an empty list (no syscall constraint).
+fn lower_syscall_allowlist(doc: &PolicyDocument) -> Vec<u32> {
+    doc.syscall_allowlist
+        .as_ref()
+        .map(|a| a.iter().map(|s| s.number()).collect())
+        .unwrap_or_default()
 }
 
 /// Push a rule only if no rule with the same pattern+verdict already exists,
@@ -196,6 +218,7 @@ mod tests {
             network: (!allowlist.is_empty()).then_some(NetworkPolicy { allowlist }),
             capabilities: caps,
             tools,
+            syscall_allowlist: None,
         }
     }
 
@@ -278,6 +301,34 @@ mod tests {
         ];
         let rules = lower_to_ebpf(&doc_with(None, tools, vec![]));
         assert_eq!(rules.path_rules.len(), 1);
+    }
+
+    #[test]
+    fn syscall_allowlist_lowers_to_exact_numbers() {
+        use super::super::syscall::SyscallAllowlist;
+        let mut doc = doc_with(None, vec![], vec![]);
+        doc.syscall_allowlist = Some(SyscallAllowlist::from_names(["read", "write", "close", "exit"]).unwrap());
+        let rules = lower_to_ebpf(&doc);
+        // read=0, write=1, close=3, exit=60 — ordered by the BTreeSet's enum
+        // declaration order (Read, Write, Close, Exit).
+        assert_eq!(rules.syscall_allowlist, vec![0, 1, 3, 60]);
+    }
+
+    #[test]
+    fn absent_syscall_allowlist_lowers_to_empty() {
+        let rules = lower_to_ebpf(&doc_with(None, vec![], vec![]));
+        assert!(rules.syscall_allowlist.is_empty());
+    }
+
+    #[test]
+    fn syscall_lowering_is_deterministic() {
+        use super::super::syscall::SyscallAllowlist;
+        let mut doc = doc_with(None, vec![], vec![]);
+        doc.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read", "openat"]).unwrap());
+        assert_eq!(
+            lower_to_ebpf(&doc).syscall_allowlist,
+            lower_to_ebpf(&doc).syscall_allowlist
+        );
     }
 
     #[test]

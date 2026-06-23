@@ -21,6 +21,8 @@ pub enum ProbeSet {
     Exec,
     /// TLS uprobes (`aa-tls-probes`).
     Tls,
+    /// Syscall-allowlist enforcement probe (`aa-syscall-guard`, AAASM-3631).
+    SyscallGuard,
 }
 
 /// A single path rule pushed into a BPF path map. Mirrors
@@ -49,6 +51,14 @@ pub enum ControlRequest {
     UpdatePathMap {
         /// The full desired rule set (the daemon clears + reapplies).
         rules: Vec<PathRuleWire>,
+    },
+    /// Replace the `SYSCALL_ALLOWLIST` map contents with `syscalls` (the
+    /// lowered policy AST output). Requires the syscall-guard probe loaded.
+    /// (AAASM-3631 / AAASM-3635.)
+    UpdateSyscallAllowlist {
+        /// The full desired set of permitted syscall numbers (the daemon
+        /// clears + reapplies).
+        syscalls: Vec<u32>,
     },
     /// Detach + unload the named probe set.
     Detach {
@@ -117,5 +127,27 @@ mod tests {
     #[test]
     fn default_socket_is_root_owned_run_path() {
         assert!(DEFAULT_SOCKET_PATH.starts_with("/run/"));
+    }
+
+    #[test]
+    fn syscall_guard_requests_round_trip() {
+        let load = ControlRequest::LoadProbeSet {
+            set: ProbeSet::SyscallGuard,
+            target_pid: 99,
+        };
+        let bytes = serde_json::to_vec(&load).unwrap();
+        assert_eq!(serde_json::from_slice::<ControlRequest>(&bytes).unwrap(), load);
+
+        let update = ControlRequest::UpdateSyscallAllowlist {
+            syscalls: vec![0, 1, 3, 60],
+        };
+        let bytes = serde_json::to_vec(&update).unwrap();
+        assert_eq!(serde_json::from_slice::<ControlRequest>(&bytes).unwrap(), update);
+
+        let detach = ControlRequest::Detach {
+            set: ProbeSet::SyscallGuard,
+        };
+        let bytes = serde_json::to_vec(&detach).unwrap();
+        assert_eq!(serde_json::from_slice::<ControlRequest>(&bytes).unwrap(), detach);
     }
 }

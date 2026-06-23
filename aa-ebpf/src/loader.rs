@@ -477,6 +477,156 @@ impl ExecLoader {
     }
 }
 
+// ── Syscall-allowlist enforcement loader (AAASM-3631) ───────────────────
+
+/// Loads + attaches the seccomp-style syscall-allowlist enforcement probe
+/// (`aa-syscall-guard`) and populates its `SYSCALL_ALLOWLIST` map.
+///
+/// Unlike the observe-only loaders, the attached program ENFORCES: a monitored
+/// PID issuing a syscall not in the allowlist is killed in-kernel. This loader
+/// is driven exclusively by the privileged daemon (AAASM-3603/3604); the map
+/// is populated from the policy AST lowering
+/// (`aa_security::policy::lower_to_ebpf().syscall_allowlist`, AAASM-3635).
+pub struct SyscallGuardLoader {
+    /// Target PID to confine (added to the probe's PID filter).
+    #[allow(dead_code)]
+    target_pid: u32,
+    /// Loaded BPF object handle (Linux only).
+    #[cfg(target_os = "linux")]
+    bpf: Option<aya::Ebpf>,
+}
+
+impl SyscallGuardLoader {
+    /// Create a loader confining the given PID.
+    pub fn new(target_pid: u32) -> Self {
+        Self {
+            target_pid,
+            #[cfg(target_os = "linux")]
+            bpf: None,
+        }
+    }
+
+    /// Integrity-verify, load the syscall-guard bytecode, and add the target
+    /// PID to the probe's PID filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::ProgramLoad`] on non-Linux or if the kernel
+    /// rejects the object / the PID filter map is missing.
+    pub fn load(&mut self) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::ProgramLoad("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            tracing::info!(pid = self.target_pid, "loading syscall-guard enforcement BPF program");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-syscall-guard",
+                crate::AA_SYSCALL_GUARD_BPF,
+                crate::integrity::AA_SYSCALL_GUARD_BPF_SHA256,
+            )?;
+            let mut bpf =
+                aya::Ebpf::load(crate::AA_SYSCALL_GUARD_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+
+            let mut pid_filter: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
+                bpf.map_mut("PID_FILTER")
+                    .ok_or_else(|| EbpfError::ProgramLoad("PID_FILTER map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+            pid_filter
+                .insert(self.target_pid, 1, 0)
+                .map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+
+            self.bpf = Some(bpf);
+            Ok(())
+        }
+    }
+
+    /// Attach the `aa_syscall_guard` program at `raw_syscalls/sys_enter`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if the tracepoint
+    /// fails to attach.
+    pub fn attach(&mut self) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::ProbeAttach("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use aya::programs::TracePoint;
+
+            let bpf = self
+                .bpf
+                .as_mut()
+                .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
+
+            let program: &mut TracePoint = bpf
+                .program_mut("aa_syscall_guard")
+                .ok_or_else(|| EbpfError::ProbeAttach("aa_syscall_guard program not found".into()))?
+                .try_into()
+                .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
+
+            program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+            program
+                .attach("raw_syscalls", "sys_enter")
+                .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+
+            tracing::info!("syscall-guard tracepoint attached at raw_syscalls/sys_enter");
+            Ok(())
+        }
+    }
+
+    /// Replace the `SYSCALL_ALLOWLIST` map contents with `syscall_numbers`
+    /// (the lowered policy AST output). Clears then reapplies so the map
+    /// reflects exactly the current policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::MapUpdate`] on non-Linux or if the map is missing
+    /// / cannot be updated.
+    pub fn update_syscall_allowlist(&mut self, syscall_numbers: &[u32]) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = syscall_numbers;
+            Err(EbpfError::MapUpdate("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use aa_ebpf_common::syscall::SYSCALL_ALLOWED;
+
+            let bpf = self
+                .bpf
+                .as_mut()
+                .ok_or_else(|| EbpfError::MapUpdate("BPF not loaded — call load() first".into()))?;
+
+            let mut allowlist: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
+                bpf.map_mut("SYSCALL_ALLOWLIST")
+                    .ok_or_else(|| EbpfError::MapUpdate("SYSCALL_ALLOWLIST map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+
+            // Clear stale entries, then reapply the desired set.
+            let existing: Vec<u32> = allowlist.keys().filter_map(|k| k.ok()).collect();
+            for key in &existing {
+                let _ = allowlist.remove(key);
+            }
+            for nr in syscall_numbers {
+                allowlist
+                    .insert(*nr, SYSCALL_ALLOWED, 0)
+                    .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +635,24 @@ mod tests {
     fn new_stores_target_pid() {
         let loader = FileIoLoader::new(1234);
         assert_eq!(loader.target_pid, 1234);
+    }
+
+    #[test]
+    fn syscall_guard_loader_stores_target_pid() {
+        let loader = SyscallGuardLoader::new(4321);
+        assert_eq!(loader.target_pid, 4321);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn syscall_guard_load_returns_error_on_non_linux() {
+        let mut loader = SyscallGuardLoader::new(1);
+        assert!(matches!(loader.load().unwrap_err(), EbpfError::ProgramLoad(_)));
+        assert!(matches!(loader.attach().unwrap_err(), EbpfError::ProbeAttach(_)));
+        assert!(matches!(
+            loader.update_syscall_allowlist(&[0, 1]).unwrap_err(),
+            EbpfError::MapUpdate(_)
+        ));
     }
 
     #[test]

@@ -10,6 +10,25 @@
 
 use std::path::PathBuf;
 
+/// Least-privilege access level granted to a single preopened directory.
+///
+/// `DirPerms::all()` / `FilePerms::all()` is an over-grant: a tool that only
+/// needs to read a mounted directory would also get write/create/delete,
+/// widening both intra-sandbox impact (overwrite host files in the mount) and
+/// post-escape blast radius. This enum makes every grant explicit and defaults
+/// to the most-restrictive [`PreopenAccess::ReadOnly`]; write access is opt-in
+/// per directory. (AAASM-3618.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreopenAccess {
+    /// Read-only: the guest may open, read, and list within the mount but
+    /// cannot write, create, or delete. The [`Default`].
+    #[default]
+    ReadOnly,
+    /// Read-write: the guest may additionally write, create, and delete
+    /// within the mount. Granted only when the workload demonstrably needs it.
+    ReadWrite,
+}
+
 /// Mapping of one host directory into the WASI sandbox.
 ///
 /// Each entry becomes a single
@@ -18,6 +37,9 @@ use std::path::PathBuf;
 /// only resolve WASI `path_open` calls within that subtree; anything else
 /// surfaces as `errno` `ENOTCAPABLE` and bubbles up as
 /// [`crate::error::SandboxError::FilesystemBlocked`].
+///
+/// `access` is the least-privilege grant for this mount; it defaults to
+/// [`PreopenAccess::ReadOnly`] so a directory is never silently writable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreopenedDir {
     /// Real path on the host filesystem.
@@ -25,6 +47,31 @@ pub struct PreopenedDir {
     /// Path the guest sees this directory mounted at (e.g. `"."` for the
     /// guest's working directory or `"/data"` for a labelled mount).
     pub guest_path: String,
+    /// Least-privilege access level for this mount. Defaults (via
+    /// [`PreopenedDir::read_only`]) to [`PreopenAccess::ReadOnly`]; use
+    /// [`PreopenedDir::read_write`] to opt into write access.
+    pub access: PreopenAccess,
+}
+
+impl PreopenedDir {
+    /// Construct a read-only preopened directory (the least-privilege case).
+    pub fn read_only(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            guest_path: guest_path.into(),
+            access: PreopenAccess::ReadOnly,
+        }
+    }
+
+    /// Construct a read-write preopened directory. Use only when the workload
+    /// demonstrably needs to write within the mount.
+    pub fn read_write(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            guest_path: guest_path.into(),
+            access: PreopenAccess::ReadWrite,
+        }
+    }
 }
 
 /// Per-invocation CPU + memory budget for a sandboxed tool.
@@ -68,6 +115,44 @@ impl Default for SandboxLimits {
     }
 }
 
+/// Per-tenant call budget for host-function imports.
+///
+/// Host functions are the classic sandbox-escape conduit: an attacker fuzzes
+/// a weakly-validated import until it yields a memory-safety or
+/// path-traversal primitive. A per-tenant call rate-limit caps how many times
+/// a single invocation can drive any one host-function import, so a fuzzing
+/// loop cannot brute-force a weakness or DoS the host. The limit is enforced
+/// per [`crate::runtime::SandboxRuntime::run_tool`] call (AAASM-3617); this
+/// struct is the policy half (AAASM-3613).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostFnRateLimit {
+    /// Maximum number of host-function calls a single
+    /// [`crate::runtime::SandboxRuntime::run_tool`] invocation may make.
+    /// Counted across all validated host-function imports; the
+    /// `max_calls_per_call + 1`-th call is denied with
+    /// [`crate::error::SandboxError::HostFnRateLimited`].
+    pub max_calls_per_call: u32,
+    /// Optional finer-grained per-window cap. `None` (the [`Default`]) means
+    /// only `max_calls_per_call` applies; `Some(n)` reserves a tighter
+    /// rolling-window budget for a future windowed counter. Carried on the
+    /// policy now so the on-disk contract is stable before the windowed
+    /// enforcement lands.
+    pub window_calls: Option<u32>,
+}
+
+impl Default for HostFnRateLimit {
+    /// Conservative default: at most 1024 host-function calls per invocation,
+    /// no extra window cap. Modest enough that a fuzzing loop trips the limit
+    /// quickly, generous enough that a legitimate tool's handful of host-fn
+    /// calls is never throttled.
+    fn default() -> Self {
+        Self {
+            max_calls_per_call: 1_024,
+            window_calls: None,
+        }
+    }
+}
+
 /// Sandbox configuration consumed by [`crate::runtime::SandboxRuntime`].
 ///
 /// An empty `preopened_dirs` list is the most-restrictive case: the guest
@@ -84,4 +169,51 @@ pub struct SandboxConfig {
     /// per-field semantics; the [`Default`] is a safe-by-default budget
     /// (10M fuel, 16 pages = 1 MiB memory, 5s wall-clock).
     pub limits: SandboxLimits,
+    /// Tenant the sandboxed tool runs on behalf of. Carried so the
+    /// host-function rate-limit and its audit events are attributable to a
+    /// tenant. The [`Default`] is the empty string (unattributed).
+    pub tenant_id: String,
+    /// Per-tenant host-function call budget. See [`HostFnRateLimit`]; the
+    /// [`Default`] caps a single invocation at 1024 host-function calls.
+    pub host_fn_rate_limit: HostFnRateLimit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_fn_rate_limit_default_is_conservative() {
+        let rl = HostFnRateLimit::default();
+        assert_eq!(rl.max_calls_per_call, 1_024);
+        assert_eq!(rl.window_calls, None);
+    }
+
+    #[test]
+    fn sandbox_config_default_stays_most_restrictive() {
+        let cfg = SandboxConfig::default();
+        // Empty allowlist = no filesystem visibility (the safe case).
+        assert!(cfg.preopened_dirs.is_empty());
+        // Unattributed tenant by default.
+        assert_eq!(cfg.tenant_id, "");
+        // Safe-by-default host-fn budget.
+        assert_eq!(cfg.host_fn_rate_limit, HostFnRateLimit::default());
+        // Existing limits default is unchanged.
+        assert_eq!(cfg.limits, SandboxLimits::default());
+    }
+
+    #[test]
+    fn sandbox_config_round_trips_new_fields() {
+        let cfg = SandboxConfig {
+            tenant_id: "tenant-42".to_string(),
+            host_fn_rate_limit: HostFnRateLimit {
+                max_calls_per_call: 8,
+                window_calls: Some(4),
+            },
+            ..Default::default()
+        };
+        assert_eq!(cfg.tenant_id, "tenant-42");
+        assert_eq!(cfg.host_fn_rate_limit.max_calls_per_call, 8);
+        assert_eq!(cfg.host_fn_rate_limit.window_calls, Some(4));
+    }
 }

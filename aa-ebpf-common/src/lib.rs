@@ -19,4 +19,5 @@
 
 pub mod exec;
 pub mod file;
+pub mod syscall;
 pub mod tls;

@@ -21,12 +21,13 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
+use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
-use crate::policy::SandboxConfig;
+use crate::host_fn::HostFnCounter;
+use crate::policy::{PreopenAccess, SandboxConfig};
 
 /// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
 /// when a `memory.grow` would exceed the configured byte cap. The
@@ -42,6 +43,22 @@ impl std::fmt::Display for MemoryExhaustedMarker {
 }
 
 impl std::error::Error for MemoryExhaustedMarker {}
+
+/// Sentinel error a counted host-function import returns when the per-tenant
+/// host-function rate limit is exhausted. Like [`MemoryExhaustedMarker`], it
+/// rides the `wasmtime::Error` channel out of the guest call and the runtime's
+/// call-result branch downcasts to it to surface
+/// [`SandboxError::HostFnRateLimited`].
+#[derive(Debug)]
+struct HostFnRateLimitMarker;
+
+impl std::fmt::Display for HostFnRateLimitMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("sandbox host-function rate limit exceeded")
+    }
+}
+
+impl std::error::Error for HostFnRateLimitMarker {}
 
 /// Per-store linear-memory cap enforced via [`Store::limiter`].
 ///
@@ -76,6 +93,11 @@ impl ResourceLimiter for MemoryLimit {
 struct StoreState {
     wasi: WasiP1Ctx,
     limiter: MemoryLimit,
+    /// Per-invocation host-function call budget (AAASM-3617). Seeded from
+    /// [`SandboxConfig::host_fn_rate_limit`] for each `run_tool` call so the
+    /// budget is never shared across invocations or tenants. Every counted
+    /// host-function import charges this before doing work.
+    host_fn_counter: HostFnCounter,
 }
 
 /// Successful sandboxed-tool invocation outcome.
@@ -120,7 +142,36 @@ impl SandboxRuntime {
         let mut linker: Linker<StoreState> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |s: &mut StoreState| &mut s.wasi)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        Self::register_host_fns(&mut linker)?;
         Ok(Self { engine, linker, config })
+    }
+
+    /// Register the sandbox's custom (non-WASI) host-function imports under the
+    /// `aa_sandbox` module namespace.
+    ///
+    /// Every import registered here is *counted* against the per-tenant
+    /// host-function rate limit (AAASM-3617) by charging
+    /// [`StoreState::host_fn_counter`] before doing any work, and any guest
+    /// memory it reads MUST go through
+    /// [`crate::host_fn::read_guest_bytes`] (AAASM-3614). `aa_host_noop` is the
+    /// first such import: a minimal counted no-op that exists so the
+    /// rate-limit + audit machinery is exercised end-to-end and so future
+    /// imports have a worked example of the counted+validated contract.
+    fn register_host_fns(linker: &mut Linker<StoreState>) -> Result<(), SandboxError> {
+        linker
+            .func_wrap("aa_sandbox", "aa_host_noop", |mut caller: Caller<'_, StoreState>| {
+                // Charge the per-invocation host-fn budget BEFORE doing work.
+                // On breach, return the rate-limit marker through the
+                // wasmtime::Error channel so run_tool can map it to
+                // SandboxError::HostFnRateLimited.
+                caller
+                    .data_mut()
+                    .host_fn_counter
+                    .charge()
+                    .map_err(|_| wasmtime::Error::new(HostFnRateLimitMarker))
+            })
+            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        Ok(())
     }
 
     /// Instantiate the supplied WASM module under WASI preview 1 and
@@ -153,20 +204,32 @@ impl SandboxRuntime {
 
         let mut builder = WasiCtx::builder();
         for preopen in &self.config.preopened_dirs {
+            // Least-privilege grant: read-only unless the policy explicitly
+            // opted this mount into read-write. Avoids the DirPerms::all() /
+            // FilePerms::all() over-grant. (AAASM-3618.)
+            let (dir_perms, file_perms) = match preopen.access {
+                PreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
+                PreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            };
             builder
-                .preopened_dir(
-                    &preopen.host_path,
-                    &preopen.guest_path,
-                    DirPerms::all(),
-                    FilePerms::all(),
-                )
+                .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
         let limiter = MemoryLimit {
             max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
         };
-        let mut store = Store::new(&self.engine, StoreState { wasi, limiter });
+        // Fresh per-invocation host-fn budget so it is never shared across
+        // calls or tenants (AAASM-3617).
+        let host_fn_counter = HostFnCounter::new(self.config.host_fn_rate_limit.max_calls_per_call);
+        let mut store = Store::new(
+            &self.engine,
+            StoreState {
+                wasi,
+                limiter,
+                host_fn_counter,
+            },
+        );
         store.limiter(|s| &mut s.limiter);
         store
             .set_fuel(self.config.limits.fuel)
@@ -229,6 +292,8 @@ impl SandboxRuntime {
                     Err(SandboxError::WallClockTimeout)
                 } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
                     Err(SandboxError::MemoryExhausted)
+                } else if trap.downcast_ref::<HostFnRateLimitMarker>().is_some() {
+                    Err(SandboxError::HostFnRateLimited)
                 } else {
                     Err(SandboxError::Wasmtime(trap.to_string()))
                 }
@@ -240,6 +305,89 @@ impl SandboxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{PreopenAccess, PreopenedDir};
+
+    /// Guest that opens `f.txt` in preopen fd 3 requesting write rights,
+    /// `fd_write`s one byte, and `proc_exit`s with the errno of whichever
+    /// step fails first (0 if the write succeeds).
+    ///
+    /// Memory layout: bytes 0..5 = "f.txt"; word at 16 = opened-fd output;
+    /// the iovec (ptr=64, len=1) at 32..40; byte to write at 64; nwritten
+    /// output at 48.
+    const PREOPEN_WRITE_PROBE_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "path_open"
+            (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "f.txt")
+          (data (i32.const 64) "X")
+          (func (export "_start")
+            (local $err i32)
+            ;; path_open(dirfd=3, dirflags=0, path=0, path_len=5, oflags=0,
+            ;;   fs_rights_base=FD_READ|FD_WRITE=66, fs_rights_inheriting=66,
+            ;;   fdflags=0, opened_fd_out=16)
+            (local.set $err
+              (call $path_open
+                (i32.const 3) (i32.const 0) (i32.const 0) (i32.const 5)
+                (i32.const 0) (i64.const 66) (i64.const 66) (i32.const 0)
+                (i32.const 16)))
+            (if (i32.ne (local.get $err) (i32.const 0))
+              (then (call $proc_exit (local.get $err))))
+            ;; build iovec at 32: base=64, len=1
+            (i32.store (i32.const 32) (i32.const 64))
+            (i32.store (i32.const 36) (i32.const 1))
+            ;; fd_write(opened_fd, iovs=32, iovs_len=1, nwritten=48)
+            (local.set $err
+              (call $fd_write
+                (i32.load (i32.const 16)) (i32.const 32) (i32.const 1) (i32.const 48)))
+            (call $proc_exit (local.get $err))
+          )
+        )
+    "#;
+
+    fn write_probe_runtime(access: PreopenAccess) -> (SandboxRuntime, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("f.txt"), b"seed").expect("seed file");
+        let config = SandboxConfig {
+            preopened_dirs: vec![PreopenedDir {
+                host_path: dir.path().to_path_buf(),
+                guest_path: ".".to_string(),
+                access,
+            }],
+            ..Default::default()
+        };
+        (SandboxRuntime::new(config).expect("runtime must construct"), dir)
+    }
+
+    #[test]
+    fn read_only_preopen_denies_write() {
+        let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadOnly);
+        let wasm = wat::parse_str(PREOPEN_WRITE_PROBE_WAT).expect("write-probe WAT must parse");
+        let result = runtime.run_tool(&wasm, &[]);
+        // A read-only mount must reject the write — either at path_open (rights
+        // masked) or fd_write — surfacing a non-zero WASI errno.
+        assert!(
+            matches!(result, Err(SandboxError::FilesystemBlocked { errno }) if errno != 0),
+            "read-only preopen must deny write, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn read_write_preopen_allows_write() {
+        let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadWrite);
+        let wasm = wat::parse_str(PREOPEN_WRITE_PROBE_WAT).expect("write-probe WAT must parse");
+        let result = runtime.run_tool(&wasm, &[]);
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "read-write preopen must allow write, got {:?}",
+            result,
+        );
+    }
 
     /// Hand-authored WAT fixture that probes the WASI filesystem
     /// allowlist. The guest:
@@ -354,6 +502,69 @@ mod tests {
         assert!(
             matches!(result, Err(SandboxError::MemoryExhausted)),
             "expected SandboxError::MemoryExhausted, got {:?}",
+            result,
+        );
+    }
+
+    /// WAT fixture that imports the counted `aa_sandbox/aa_host_noop` host
+    /// function and calls it `$n` times. With a host-fn budget of `N`, calling
+    /// it `N + 1` times trips the rate limit on the last call.
+    const HOST_FN_CALL_LOOP_WAT: &str = r#"
+        (module
+          (import "aa_sandbox" "aa_host_noop" (func $noop))
+          (func (export "_start")
+            (local $i i32)
+            (local.set $i (i32.const 0))
+            (block $done
+              (loop $again
+                (br_if $done (i32.ge_u (local.get $i) (i32.const 5)))
+                (call $noop)
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again)
+              )
+            )
+          )
+        )
+    "#;
+
+    fn host_fn_loop_config(max_calls_per_call: u32) -> SandboxConfig {
+        SandboxConfig {
+            host_fn_rate_limit: crate::policy::HostFnRateLimit {
+                max_calls_per_call,
+                window_calls: None,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn run_tool_denies_host_fn_calls_over_rate_limit() {
+        // Budget of 3, guest calls the host fn 5 times → the 4th call is
+        // denied with HostFnRateLimited.
+        let runtime = SandboxRuntime::new(host_fn_loop_config(3)).expect("runtime must construct");
+        let wasm = wat::parse_str(HOST_FN_CALL_LOOP_WAT).expect("host-fn loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::HostFnRateLimited)),
+            "expected SandboxError::HostFnRateLimited, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn run_tool_allows_host_fn_calls_within_rate_limit() {
+        // Budget of 5, guest calls the host fn exactly 5 times → all allowed,
+        // clean exit.
+        let runtime = SandboxRuntime::new(host_fn_loop_config(5)).expect("runtime must construct");
+        let wasm = wat::parse_str(HOST_FN_CALL_LOOP_WAT).expect("host-fn loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "expected clean exit within budget, got {:?}",
             result,
         );
     }
