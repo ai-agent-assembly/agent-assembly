@@ -101,12 +101,14 @@ pub fn dispatch_wasm_tool(tool_name: &str, args: &[u8], registry: &ToolRegistry)
 ///   variant's doc-comment explicitly covers both fuel and wall-clock
 ///   kills).
 /// * `MemoryExhausted` → `SandboxOomKilled`.
+/// * `HostFnRateLimited` → `SandboxHostFnRateLimited` (host-fn abuse denial).
 fn outcome_event(result: &Result<SandboxOutput, SandboxError>) -> AuditEventType {
     match result {
         Ok(_) => AuditEventType::SandboxTerminated,
         Err(SandboxError::FilesystemBlocked { .. }) => AuditEventType::SandboxFilesystemBlocked,
         Err(SandboxError::CpuTimeout) | Err(SandboxError::WallClockTimeout) => AuditEventType::SandboxCpuTimeout,
         Err(SandboxError::MemoryExhausted) => AuditEventType::SandboxOomKilled,
+        Err(SandboxError::HostFnRateLimited) => AuditEventType::SandboxHostFnRateLimited,
         Err(SandboxError::InvalidWasm(_)) | Err(SandboxError::Wasmtime(_)) => AuditEventType::SandboxTerminated,
     }
 }
