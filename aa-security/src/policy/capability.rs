@@ -96,3 +96,18 @@ impl fmt::Display for Capability {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_each_simple_variant() {
+        assert_eq!("file_read".parse::<Capability>().unwrap(), Capability::FileRead);
+        assert_eq!("file_write".parse::<Capability>().unwrap(), Capability::FileWrite);
+        assert_eq!(
+            "network_outbound".parse::<Capability>().unwrap(),
+            Capability::NetworkOutbound
+        );
+        assert_eq!("terminal_exec".parse::<Capability>().unwrap(), Capability::TerminalExec);
+    }
+}
