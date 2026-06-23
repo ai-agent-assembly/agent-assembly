@@ -19,7 +19,9 @@
 
 pub mod audit_jsonl;
 pub mod config;
+pub mod credentials;
 pub mod error;
+pub mod hardening;
 pub mod intercept;
 pub mod mcp_enforce;
 pub mod proxy;
@@ -38,6 +40,12 @@ pub async fn run(
     config: ProxyConfig,
     event_tx: tokio::sync::broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
 ) -> anyhow::Result<()> {
+    // AAASM-3584: harden the process before any credential is loaded — mark it
+    // non-dumpable so a forced crash cannot leave a core dump containing
+    // plaintext provider keys, and so same-uid processes cannot ptrace it.
+    // Best-effort: a failure is logged, not fatal.
+    let _ = hardening::harden_process();
+
     // AAASM-3131: shout if upstream TLS verification is disabled. This is a
     // debug-only test affordance (the env var is ignored in release builds);
     // the banner makes an accidentally-enabled run impossible to miss in logs.
