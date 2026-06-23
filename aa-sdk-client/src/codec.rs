@@ -26,6 +26,8 @@ pub const TAG_EVENT_REPORT: u8 = 2;
 #[allow(dead_code)]
 pub const TAG_APPROVAL_RESPONSE: u8 = 3;
 pub const TAG_HEARTBEAT: u8 = 4;
+/// SDK → runtime signed handshake proof (AAASM-3587).
+pub const TAG_HANDSHAKE_PROOF: u8 = 5;
 
 // Outbound tags (runtime → SDK) — we read these.
 #[allow(dead_code)]
@@ -35,6 +37,8 @@ pub const TAG_APPROVAL_DECISION: u8 = 2;
 pub const TAG_ACK: u8 = 3;
 #[allow(dead_code)]
 pub const TAG_VIOLATION_ALERT: u8 = 4;
+/// runtime → SDK per-session nonce challenge (AAASM-3587).
+pub const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
 /// Errors that can occur during codec operations.
 #[derive(Debug)]
@@ -112,6 +116,37 @@ where
 {
     writer.write_u8(TAG_POLICY_QUERY).await?;
     let payload = request.encode_to_vec();
+    write_length_delimited(writer, &payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read the runtime's handshake challenge frame (tag + length-delimited
+/// `HandshakeChallenge`) — the first frame the runtime sends on connect
+/// (AAASM-3587). Returns the raw nonce to sign.
+pub async fn read_handshake_challenge<R>(reader: &mut R) -> Result<Vec<u8>, CodecError>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let tag = reader.read_u8().await?;
+    if tag != TAG_HANDSHAKE_CHALLENGE {
+        return Err(CodecError::UnknownTag(tag));
+    }
+    let bytes = read_length_delimited(reader).await?;
+    let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge::decode(bytes.as_ref())?;
+    Ok(challenge.nonce)
+}
+
+/// Write the SDK's signed handshake proof frame (AAASM-3587).
+pub async fn write_handshake_proof<W>(
+    writer: &mut W,
+    proof: &aa_proto::assembly::ipc::v1::HandshakeProof,
+) -> Result<(), CodecError>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    writer.write_u8(TAG_HANDSHAKE_PROOF).await?;
+    let payload = proof.encode_to_vec();
     write_length_delimited(writer, &payload).await?;
     writer.flush().await?;
     Ok(())
