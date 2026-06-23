@@ -89,4 +89,14 @@ mod tests {
         assert_eq!(req, back);
     }
 
+    #[test]
+    fn load_request_round_trips() {
+        let req = ControlRequest::LoadProbeSet {
+            set: ProbeSet::FileIo,
+            target_pid: 4321,
+        };
+        let bytes = serde_json::to_vec(&req).unwrap();
+        assert_eq!(serde_json::from_slice::<ControlRequest>(&bytes).unwrap(), req);
+    }
+
 }
