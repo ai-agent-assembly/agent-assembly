@@ -9,9 +9,11 @@ description = "Security primitives for Agent Assembly — credential scanning, r
 [dependencies]
 aho-corasick = "1"
 serde = { workspace = true, optional = true }
+serde_yaml = { workspace = true, optional = true }
 
 [features]
-serde = ["dep:serde"]
+# The canonical policy AST's YAML parsing (`policy::parse`) needs serde + serde_yaml.
+serde = ["dep:serde", "dep:serde_yaml"]
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
