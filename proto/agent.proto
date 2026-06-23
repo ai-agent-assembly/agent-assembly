@@ -58,7 +58,15 @@ message RegisterRequest {
   // scope. Enables gradual rollout — trusted agents stay in ENFORCE while
   // new / experimental ones run under OBSERVE under the same policy.
   assembly.common.v1.EnforcementMode enforcement_mode = 13;
-  // next: 14
+  // Proof of possession of the private key matching `public_key` (AAASM-3591):
+  // a raw 64-byte Ed25519 signature over the registering `agent_id.agent_id`
+  // (the did:key) bytes. The gateway verifies this before minting a
+  // credential_token, so reaching the unauthenticated gRPC port is not enough
+  // to mint one — the caller must hold the agent's key. Coordinates with
+  // AAASM-3416 (broad per-endpoint authn); this field is the credential_token
+  // possession gate.
+  bytes                          possession_proof  = 14;
+  // next: 15
 }
 
 message RegisterResponse {
