@@ -60,4 +60,23 @@ mod tests {
         assert!(verify_bytecode("aa-test", bytes, &expected).is_ok());
     }
 
+    #[test]
+    fn mismatched_digest_is_rejected() {
+        let bytes = b"tampered bytecode";
+        // digest of *different* bytes
+        let wrong = hex::encode(Sha256::digest(b"original bytecode"));
+        let err = verify_bytecode("aa-test", bytes, &wrong).unwrap_err();
+        match err {
+            EbpfError::IntegrityMismatch {
+                object,
+                expected,
+                actual,
+            } => {
+                assert_eq!(object, "aa-test");
+                assert_eq!(expected, wrong);
+                assert_ne!(actual, wrong);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }
