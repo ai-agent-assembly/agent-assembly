@@ -32,7 +32,7 @@ git pull --ff-only remote master
 bash scripts/release-readiness.sh <version>      # e.g. 0.0.1-alpha.5
 ```
 
-All 10 checks must report ✓ before continuing. Common failures and what to do:
+All 11 checks must report ✓ before continuing. Common failures and what to do:
 
 - *Cargo.toml version mismatch* — bump PR not yet merged.
 - *Workspace path-dep literals don't match* — at least one Cargo.toml was
@@ -40,6 +40,37 @@ All 10 checks must report ✓ before continuing. Common failures and what to do:
 - *Stale homebrew tap PR open* — close or merge it before tagging; otherwise
   the per-tag bot will open a parallel PR and reviewers will be unsure
   which one is current.
+- *Security-review sign-off missing or not PASS* — see section 1.5; run
+  `/security-review <version>`, resolve any High/Critical finding, commit the
+  PASS sign-off, then re-run.
+
+## 1.5. Security gate — review sign-off (BLOCKS the tag push)
+
+> **This gate sits between the bump PR (section 1) and the IRREVERSIBLE tag
+> push (section 2). A release cannot proceed past an unaddressed High/Critical
+> finding.**
+
+Before tagging, run the release-gate security review, scaled by release type:
+
+```bash
+/security-review <version>      # e.g. 0.0.1-beta.4
+```
+
+- **patch** = dependency/advisory audit (`cargo deny check advisories`, open
+  CodeQL/Dependabot alerts) + release-diff review.
+- **minor** = + changed-attack-surface review via the
+  [trust-boundary review checklist](../src/security/trust-boundary-review-checklist.md).
+- **major** = + full [release threat-model](../src/security/release-threat-model.md)
+  refresh + pen-test checklist.
+
+The review writes a committed sign-off artifact at
+`docs/release/security-signoff/v<version>.md` (from
+`docs/release/security-signoff/TEMPLATE.md`) ending in a `Verdict: PASS` or
+`Verdict: BLOCK` line. **`scripts/release-readiness.sh` check 11 fails the
+readiness run unless that file exists and its verdict is `PASS`** — so a BLOCK
+verdict, or a missing sign-off, structurally stops the tag push in section 2.
+See the [`/security-review` SKILL](../../.claude/skills/security-review/SKILL.md)
+for tier detail and the BLOCK-on-unaddressed-High/Critical rule.
 
 ## 2. Tag push — IRREVERSIBLE
 
