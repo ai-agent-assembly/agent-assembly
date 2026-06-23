@@ -144,6 +144,7 @@ fn decision_label(event_type: AuditEventType) -> &'static str {
         | AuditEventType::SandboxFilesystemBlocked
         | AuditEventType::SandboxCpuTimeout
         | AuditEventType::SandboxOomKilled
+        | AuditEventType::SandboxHostFnRateLimited
         | AuditEventType::BudgetLimitExceeded => "deny",
         AuditEventType::ApprovalGranted
         | AuditEventType::ApprovalRouted
