@@ -37,7 +37,7 @@ members = [
 # `cargo metadata` fails to read the inner manifest because the outer
 # workspace claims the path without listing it as a member, which
 # breaks `pnpm native:build` (AAASM-1602).
-exclude = ["node-sdk"]
+exclude = ["node-sdk", "aa-sandbox/fuzz"]
 resolver = "2"
 
 [workspace.package]
