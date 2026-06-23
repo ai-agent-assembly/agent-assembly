@@ -70,3 +70,20 @@ impl PolicyDocument {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::super::capability::Capability;
+    use super::*;
+
+    #[test]
+    fn default_document_is_empty() {
+        let doc = PolicyDocument::default();
+        assert!(doc.name.is_none());
+        assert!(doc.network.is_none());
+        assert!(doc.capabilities.is_none());
+        assert!(doc.tools.is_empty());
+        assert!(doc.denied_capabilities().is_empty());
+        assert!(doc.egress_allowlist().is_empty());
+    }
+
+}
