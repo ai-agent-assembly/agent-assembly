@@ -178,7 +178,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -219,7 +219,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -305,7 +305,7 @@ jobs:
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -412,7 +412,7 @@ jobs:
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -1129,7 +1129,7 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Download dashboard dist artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -1184,7 +1184,7 @@ jobs:
         run: cargo clippy --all-targets --all-features --exclude aa-ebpf --message-format=json 2>&1 | tee clippy-report.json || true
       - name: Download Rust coverage (LCOV) from the Coverage job
         if: needs.coverage.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: rust-coverage-lcov
           path: .
@@ -1212,7 +1212,7 @@ jobs:
       # ---- TypeScript coverage (only when the dashboard side ran) ------------
       - name: Download TypeScript coverage (LCOV) from the Dashboard test job
         if: needs.dashboard-test.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage
