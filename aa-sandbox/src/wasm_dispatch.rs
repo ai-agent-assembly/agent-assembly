@@ -319,10 +319,7 @@ mod tests {
                 );
                 assert_eq!(
                     audit_events,
-                    vec![
-                        AuditEventType::SandboxStarted,
-                        AuditEventType::SandboxHostFnRateLimited
-                    ],
+                    vec![AuditEventType::SandboxStarted, AuditEventType::SandboxHostFnRateLimited],
                 );
             }
             WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),

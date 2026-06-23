@@ -325,7 +325,10 @@ mod tests {
         use super::super::syscall::SyscallAllowlist;
         let mut doc = doc_with(None, vec![], vec![]);
         doc.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read", "openat"]).unwrap());
-        assert_eq!(lower_to_ebpf(&doc).syscall_allowlist, lower_to_ebpf(&doc).syscall_allowlist);
+        assert_eq!(
+            lower_to_ebpf(&doc).syscall_allowlist,
+            lower_to_ebpf(&doc).syscall_allowlist
+        );
     }
 
     #[test]

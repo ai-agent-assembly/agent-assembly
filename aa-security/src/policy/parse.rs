@@ -116,9 +116,7 @@ impl PolicyDocument {
                 let names = s.allow.unwrap_or_default();
                 let mut allow = SyscallAllowlist::default();
                 for raw in names {
-                    allow
-                        .syscalls
-                        .insert(parse_syscall(&raw)?);
+                    allow.syscalls.insert(parse_syscall(&raw)?);
                 }
                 Some(allow)
             }

@@ -192,7 +192,10 @@ mod tests {
         let mem = [0u8; 16];
         // len exceeds the per-call cap — rejected as too-large even though it
         // would also be out of bounds.
-        assert_eq!(read_guest_bytes(&mem, 0, MAX + 1, MAX), Err(HostFnError::LengthTooLarge));
+        assert_eq!(
+            read_guest_bytes(&mem, 0, MAX + 1, MAX),
+            Err(HostFnError::LengthTooLarge)
+        );
     }
 
     #[test]
