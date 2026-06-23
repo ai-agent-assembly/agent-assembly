@@ -15,7 +15,7 @@
 //! seed is `SHA-256(identifier)`, fed to [`SigningKey::from_bytes`]; the
 //! resulting [`VerifyingKey`] backs both the `did:key` and the `public_key`.
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 /// Multicodec prefix for an Ed25519 public key (`0xed`), varint-encoded as the
@@ -25,10 +25,13 @@ const ED25519_MULTICODEC_PREFIX: [u8; 2] = [0xed, 0x01];
 
 /// A deterministic Ed25519 keypair derived from an agent identifier.
 ///
-/// Holds the signing key purely so the verifying key (and the identity values
-/// derived from it) are guaranteed to come from a genuine, valid Ed25519
-/// keypair that the gateway will accept.
+/// Holds the signing key so it can both expose the verifying key (and the
+/// identity values derived from it) and **sign** challenges — the latter proves
+/// key possession in the local IPC session handshake (AAASM-3587) and could
+/// back per-RPC request signing. The verifying key is guaranteed to come from a
+/// genuine, valid Ed25519 keypair that the gateway will accept.
 pub struct AgentKeypair {
+    signing_key: SigningKey,
     verifying_key: VerifyingKey,
 }
 
@@ -40,14 +43,23 @@ impl AgentKeypair {
     pub fn derive(identifier: &str) -> Self {
         let seed: [u8; 32] = Sha256::digest(identifier.as_bytes()).into();
         let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
         Self {
-            verifying_key: signing_key.verifying_key(),
+            signing_key,
+            verifying_key,
         }
     }
 
     /// The 32-byte Ed25519 verifying (public) key.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
+    }
+
+    /// Sign `message` with the agent's Ed25519 signing key, returning the raw
+    /// 64-byte signature. Used to prove key possession over a runtime-issued
+    /// handshake nonce (AAASM-3587).
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(message).to_bytes()
     }
 
     /// The verifying key hex-encoded, as the gateway's `public_key` field
@@ -103,6 +115,23 @@ mod tests {
         let bytes = hex::decode(kp.public_key_hex()).unwrap();
         let arr: [u8; 32] = bytes.try_into().unwrap();
         VerifyingKey::from_bytes(&arr).expect("public_key must be a valid Ed25519 key");
+    }
+
+    #[test]
+    fn sign_produces_a_signature_that_verifies_under_the_public_key() {
+        use ed25519_dalek::{Signature, Verifier};
+        let kp = AgentKeypair::derive("signer");
+        let msg = b"challenge-nonce";
+        let sig_bytes = kp.sign(msg);
+        let vk = VerifyingKey::from_bytes(&kp.public_key_bytes()).unwrap();
+        let sig = Signature::from_bytes(&sig_bytes);
+        assert!(vk.verify(msg, &sig).is_ok());
+    }
+
+    #[test]
+    fn sign_is_deterministic_for_same_input() {
+        let kp = AgentKeypair::derive("signer");
+        assert_eq!(kp.sign(b"abc"), kp.sign(b"abc"));
     }
 
     #[test]
