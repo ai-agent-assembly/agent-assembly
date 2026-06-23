@@ -214,4 +214,21 @@ mod tests {
         assert!(rules.path_rules.is_empty());
     }
 
+    #[test]
+    fn tool_path_predicate_lowers_to_deny_rule() {
+        let tools = vec![ToolRule {
+            name: "write_file".to_string(),
+            allow: true,
+            requires_approval_if: Some("path starts_with \"/etc\"".to_string()),
+        }];
+        let rules = lower_to_ebpf(&doc_with(None, tools, vec![]));
+        assert_eq!(
+            rules.path_rules,
+            vec![PathRule {
+                pattern: "/etc".to_string(),
+                verdict: PathVerdict::Deny,
+            }]
+        );
+    }
+
 }
