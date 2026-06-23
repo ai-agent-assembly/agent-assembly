@@ -125,30 +125,64 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// A single credential entry: the [`Secret`] plus an optional expiry.
+///
+/// `expires_at == None` means the entry never expires (the default for keys
+/// configured statically at startup). A `Some(instant)` in the past makes the
+/// entry expired — [`CredentialStore`] refuses to inject it (AAASM-3586).
+struct Entry {
+    secret: Secret,
+    expires_at: Option<std::time::Instant>,
+}
+
+impl Entry {
+    fn is_expired(&self) -> bool {
+        matches!(self.expires_at, Some(deadline) if std::time::Instant::now() >= deadline)
+    }
+}
+
 /// A per-host map of real provider credentials.
 ///
 /// Construct with [`CredentialStore::from_env`] (operator configuration) or
-/// [`CredentialStore::from_pairs`] (tests / programmatic). Look a credential up
-/// by upstream host with [`CredentialStore::secret_for`]; the injection step
-/// (AAASM-3578) uses that to add the real `Authorization` header at egress.
+/// [`CredentialStore::from_pairs`] (tests / programmatic). The injection step
+/// (AAASM-3578) calls [`CredentialStore::authorization_for`] to build the real
+/// `Authorization` header value at egress.
+///
+/// Entries carry an optional TTL (AAASM-3586): an expired entry is never
+/// injected. [`CredentialStore::rotate`] swaps a credential in place — zeroizing
+/// the old secret — and is the OSS seam an external rotator (SaaS/enterprise
+/// dynamic Vault leasing, relates AAASM-242) drives. No Vault client ships in
+/// OSS scope.
 ///
 /// Like [`Secret`], this type has no `Display` impl and a redacting `Debug`
-/// impl so the whole store can never be formatted into a log line.
+/// impl so the whole store can never be formatted into a log line. The inner
+/// map sits behind an `RwLock` so rotation can mutate it while the store is
+/// shared as `Arc<CredentialStore>` across connection tasks.
 #[derive(Default)]
 pub struct CredentialStore {
-    keys: HashMap<String, Secret>,
+    entries: std::sync::RwLock<HashMap<String, Entry>>,
 }
 
 impl CredentialStore {
-    /// Build a store from `(host, secret_bytes)` pairs. Hosts are stored
-    /// lowercased so lookups are case-insensitive (HTTP hosts are
+    /// Build a store from `(host, secret_bytes)` pairs, all non-expiring. Hosts
+    /// are stored lowercased so lookups are case-insensitive (HTTP hosts are
     /// case-insensitive).
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
-        let keys = pairs
+        let map: HashMap<String, Entry> = pairs
             .into_iter()
-            .map(|(host, bytes)| (host.to_ascii_lowercase(), Secret::new(bytes)))
+            .map(|(host, bytes)| {
+                (
+                    host.to_ascii_lowercase(),
+                    Entry {
+                        secret: Secret::new(bytes),
+                        expires_at: None,
+                    },
+                )
+            })
             .collect();
-        Self { keys }
+        Self {
+            entries: std::sync::RwLock::new(map),
+        }
     }
 
     /// Load the store from operator configuration.
@@ -185,40 +219,81 @@ impl CredentialStore {
                     })
                     .collect();
                 let store = Self::from_pairs(pairs);
-                tracing::info!(
-                    hosts = store.keys.len(),
-                    "loaded provider credentials for egress injection"
-                );
+                tracing::info!(hosts = store.len(), "loaded provider credentials for egress injection");
                 store
             }
             _ => Self::default(),
         }
     }
 
-    /// Look up the credential for `host` (case-insensitive). Returns `None`
-    /// when no credential is configured for the host — the injection step then
-    /// forwards the agent's request unchanged.
-    pub fn secret_for(&self, host: &str) -> Option<&Secret> {
-        self.keys.get(&host.to_ascii_lowercase())
+    /// Build the egress `Authorization` header value (`Bearer <key>`) for
+    /// `host` (case-insensitive). Returns `None` when no credential is
+    /// configured for the host, or when the configured credential has expired
+    /// (AAASM-3586) — in both cases the injection step forwards the agent's
+    /// request unchanged.
+    ///
+    /// The secret bytes are expanded only into the returned owned buffer; they
+    /// are never logged or copied into a `String`. This is the single accessor
+    /// the data path uses, so TTL and rotation are honoured uniformly.
+    pub fn authorization_for(&self, host: &str) -> Option<Vec<u8>> {
+        let guard = self.entries.read().ok()?;
+        let entry = guard.get(&host.to_ascii_lowercase())?;
+        if entry.is_expired() {
+            tracing::debug!(%host, "configured provider credential has expired; not injecting");
+            return None;
+        }
+        let key = entry.secret.expose();
+        let mut buf = Vec::with_capacity(key.len() + 7);
+        buf.extend_from_slice(b"Bearer ");
+        buf.extend_from_slice(key);
+        Some(buf)
+    }
+
+    /// Atomically replace the credential for `host` (AAASM-3586).
+    ///
+    /// The previous secret (if any) is zeroized as it is dropped. `ttl` sets the
+    /// new entry's lifetime: `Some(d)` expires `d` from now, `None` never
+    /// expires. This is the hook an external rotator (enterprise dynamic Vault
+    /// leasing, relates AAASM-242) calls to install a freshly-leased key without
+    /// re-plumbing the data path.
+    pub fn rotate(&self, host: &str, new_secret: Vec<u8>, ttl: Option<std::time::Duration>) {
+        let expires_at = ttl.map(|d| std::time::Instant::now() + d);
+        let entry = Entry {
+            secret: Secret::new(new_secret),
+            expires_at,
+        };
+        if let Ok(mut guard) = self.entries.write() {
+            // Inserting overwrites the old Entry, whose Secret is dropped here
+            // (zeroized + munlocked) while the write lock is held — so a
+            // concurrent reader never observes a half-rotated state.
+            guard.insert(host.to_ascii_lowercase(), entry);
+        } else {
+            tracing::error!(%host, "credential store lock poisoned; rotation skipped");
+        }
     }
 
     /// Number of configured hosts. Useful for tests and startup logging; never
     /// reveals key material.
     pub fn len(&self) -> usize {
-        self.keys.len()
+        self.entries.read().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Whether the store holds no credentials.
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.entries.read().map(|g| g.is_empty()).unwrap_or(true)
     }
 }
 
 impl fmt::Debug for CredentialStore {
     /// Print only the configured hosts and a redaction marker — never the keys.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hosts: Vec<String> = self
+            .entries
+            .read()
+            .map(|g| g.keys().cloned().collect())
+            .unwrap_or_default();
         f.debug_struct("CredentialStore")
-            .field("hosts", &self.keys.keys().collect::<Vec<_>>())
+            .field("hosts", &hosts)
             .field("secrets", &"REDACTED")
             .finish()
     }
@@ -229,22 +304,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secret_for_is_case_insensitive() {
+    fn authorization_for_is_case_insensitive_and_bearer_prefixed() {
         let store = CredentialStore::from_pairs([("API.OpenAI.com".to_string(), b"sk-secret".to_vec())]);
         assert_eq!(
-            store.secret_for("api.openai.com").map(|s| s.expose()),
-            Some(&b"sk-secret"[..])
+            store.authorization_for("api.openai.com").as_deref(),
+            Some(&b"Bearer sk-secret"[..])
         );
         assert_eq!(
-            store.secret_for("API.OPENAI.COM").map(|s| s.expose()),
-            Some(&b"sk-secret"[..])
+            store.authorization_for("API.OPENAI.COM").as_deref(),
+            Some(&b"Bearer sk-secret"[..])
         );
     }
 
     #[test]
-    fn secret_for_unknown_host_is_none() {
+    fn authorization_for_unknown_host_is_none() {
         let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-secret".to_vec())]);
-        assert!(store.secret_for("evil.attacker.com").is_none());
+        assert!(store.authorization_for("evil.attacker.com").is_none());
     }
 
     #[test]
@@ -263,7 +338,7 @@ mod tests {
             "store Debug should still name the host"
         );
 
-        let secret = store.secret_for("api.openai.com").unwrap();
+        let secret = Secret::new(b"sk-TOPSECRET-1234".to_vec());
         let secret_dbg = format!("{secret:?}");
         assert!(
             !secret_dbg.contains("sk-TOPSECRET-1234"),
@@ -314,6 +389,64 @@ mod tests {
         let store = CredentialStore::default();
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
-        assert!(store.secret_for("api.openai.com").is_none());
+        assert!(store.authorization_for("api.openai.com").is_none());
+    }
+
+    #[test]
+    fn expired_entry_is_not_injected() {
+        // AAASM-3586: an entry whose TTL has elapsed must not be injected.
+        let store = CredentialStore::default();
+        // Rotate in a credential that expired the moment it was created.
+        store.rotate(
+            "api.openai.com",
+            b"sk-expired".to_vec(),
+            Some(std::time::Duration::ZERO),
+        );
+        assert!(
+            store.authorization_for("api.openai.com").is_none(),
+            "expired credential must not be injected"
+        );
+    }
+
+    #[test]
+    fn rotate_replaces_secret_and_serves_the_new_one() {
+        // AAASM-3586: rotation swaps the credential in place; the new key is
+        // served and the old one is gone.
+        let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-old".to_vec())]);
+        assert_eq!(
+            store.authorization_for("api.openai.com").as_deref(),
+            Some(&b"Bearer sk-old"[..])
+        );
+
+        store.rotate("api.openai.com", b"sk-new".to_vec(), None);
+        assert_eq!(
+            store.authorization_for("api.openai.com").as_deref(),
+            Some(&b"Bearer sk-new"[..]),
+            "rotate must serve the new secret"
+        );
+        // Exactly one entry remains for the host (the old one was overwritten).
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn rotate_installs_credential_for_a_new_host() {
+        // The rotation hook is also the OSS seam an external rotator uses to
+        // install a freshly-leased key for a host with no prior entry.
+        let store = CredentialStore::default();
+        store.rotate(
+            "api.anthropic.com",
+            b"sk-ant-leased".to_vec(),
+            Some(std::time::Duration::from_secs(60)),
+        );
+        assert_eq!(
+            store.authorization_for("api.anthropic.com").as_deref(),
+            Some(&b"Bearer sk-ant-leased"[..])
+        );
+    }
+
+    #[test]
+    fn non_expiring_entry_stays_valid() {
+        let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-forever".to_vec())]);
+        assert!(store.authorization_for("api.openai.com").is_some());
     }
 }

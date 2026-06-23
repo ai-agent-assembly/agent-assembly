@@ -699,18 +699,14 @@ impl ProxyServer {
         // Dial upstream only after we have decided not to block.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
 
-        // AAASM-3578: credential injection. When a real provider key is
-        // configured for this host, build the egress `Authorization` value
-        // (`Bearer <key>`) so the serializer can strip the agent's own
-        // credential headers and inject the real one. The secret is expanded
-        // only into this local buffer, never logged. When no key is configured
-        // the agent's request is forwarded unchanged (backward compatible).
-        let injected_auth: Option<Vec<u8>> = self.credentials.secret_for(host).map(|secret| {
-            let mut buf = Vec::with_capacity(secret.expose().len() + 7);
-            buf.extend_from_slice(b"Bearer ");
-            buf.extend_from_slice(secret.expose());
-            buf
-        });
+        // AAASM-3578: credential injection. When a real, non-expired provider
+        // key is configured for this host the store builds the egress
+        // `Authorization` value (`Bearer <key>`); the serializer then strips the
+        // agent's own credential headers and injects the real one. The secret is
+        // expanded only into this local buffer, never logged. When no key is
+        // configured (or it has expired, AAASM-3586) the agent's request is
+        // forwarded unchanged (backward compatible).
+        let injected_auth: Option<Vec<u8>> = self.credentials.authorization_for(host);
         if injected_auth.is_some() {
             tracing::debug!(%host, "injecting real provider credential at egress");
         }
