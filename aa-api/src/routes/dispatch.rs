@@ -267,6 +267,12 @@ fn sandbox_error_to_outcome(err: &SandboxError) -> SandboxDispatchOutcome {
             error: Some("MemoryExhausted".to_string()),
             errno: None,
         },
+        SandboxError::HostFnRateLimited => SandboxDispatchOutcome {
+            ok: false,
+            exit_code: None,
+            error: Some("HostFnRateLimited".to_string()),
+            errno: None,
+        },
         SandboxError::InvalidWasm(msg) => SandboxDispatchOutcome {
             ok: false,
             exit_code: None,
