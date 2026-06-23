@@ -118,7 +118,8 @@ impl SandboxRuntime {
         engine_config.epoch_interruption(true);
         let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         let mut linker: Linker<StoreState> = Linker::new(&engine);
-        p1::add_to_linker_sync(&mut linker, |s| &mut s.wasi).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        p1::add_to_linker_sync(&mut linker, |s: &mut StoreState| &mut s.wasi)
+            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         Ok(Self { engine, linker, config })
     }
 
