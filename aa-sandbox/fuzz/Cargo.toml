@@ -1,0 +1,27 @@
+[package]
+name = "aa-sandbox-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone workspace so cargo-fuzz's nightly toolchain + libfuzzer-sys
+# instrumentation never perturb the stable parent workspace build. The parent
+# Cargo.toml also lists this path under `workspace.exclude`. (AAASM-3622.)
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.aa-sandbox]
+path = ".."
+
+[[bin]]
+name = "host_fn_validate"
+path = "fuzz_targets/host_fn_validate.rs"
+test = false
+doc = false
+bench = false
