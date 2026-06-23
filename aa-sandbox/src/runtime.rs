@@ -305,6 +305,89 @@ impl SandboxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::{PreopenAccess, PreopenedDir};
+
+    /// Guest that opens `f.txt` in preopen fd 3 requesting write rights,
+    /// `fd_write`s one byte, and `proc_exit`s with the errno of whichever
+    /// step fails first (0 if the write succeeds).
+    ///
+    /// Memory layout: bytes 0..5 = "f.txt"; word at 16 = opened-fd output;
+    /// the iovec (ptr=64, len=1) at 32..40; byte to write at 64; nwritten
+    /// output at 48.
+    const PREOPEN_WRITE_PROBE_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "path_open"
+            (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "f.txt")
+          (data (i32.const 64) "X")
+          (func (export "_start")
+            (local $err i32)
+            ;; path_open(dirfd=3, dirflags=0, path=0, path_len=5, oflags=0,
+            ;;   fs_rights_base=FD_READ|FD_WRITE=66, fs_rights_inheriting=66,
+            ;;   fdflags=0, opened_fd_out=16)
+            (local.set $err
+              (call $path_open
+                (i32.const 3) (i32.const 0) (i32.const 0) (i32.const 5)
+                (i32.const 0) (i64.const 66) (i64.const 66) (i32.const 0)
+                (i32.const 16)))
+            (if (i32.ne (local.get $err) (i32.const 0))
+              (then (call $proc_exit (local.get $err))))
+            ;; build iovec at 32: base=64, len=1
+            (i32.store (i32.const 32) (i32.const 64))
+            (i32.store (i32.const 36) (i32.const 1))
+            ;; fd_write(opened_fd, iovs=32, iovs_len=1, nwritten=48)
+            (local.set $err
+              (call $fd_write
+                (i32.load (i32.const 16)) (i32.const 32) (i32.const 1) (i32.const 48)))
+            (call $proc_exit (local.get $err))
+          )
+        )
+    "#;
+
+    fn write_probe_runtime(access: PreopenAccess) -> (SandboxRuntime, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("f.txt"), b"seed").expect("seed file");
+        let config = SandboxConfig {
+            preopened_dirs: vec![PreopenedDir {
+                host_path: dir.path().to_path_buf(),
+                guest_path: ".".to_string(),
+                access,
+            }],
+            ..Default::default()
+        };
+        (SandboxRuntime::new(config).expect("runtime must construct"), dir)
+    }
+
+    #[test]
+    fn read_only_preopen_denies_write() {
+        let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadOnly);
+        let wasm = wat::parse_str(PREOPEN_WRITE_PROBE_WAT).expect("write-probe WAT must parse");
+        let result = runtime.run_tool(&wasm, &[]);
+        // A read-only mount must reject the write — either at path_open (rights
+        // masked) or fd_write — surfacing a non-zero WASI errno.
+        assert!(
+            matches!(result, Err(SandboxError::FilesystemBlocked { errno }) if errno != 0),
+            "read-only preopen must deny write, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn read_write_preopen_allows_write() {
+        let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadWrite);
+        let wasm = wat::parse_str(PREOPEN_WRITE_PROBE_WAT).expect("write-probe WAT must parse");
+        let result = runtime.run_tool(&wasm, &[]);
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "read-write preopen must allow write, got {:?}",
+            result,
+        );
+    }
 
     /// Hand-authored WAT fixture that probes the WASI filesystem
     /// allowlist. The guest:
