@@ -94,3 +94,18 @@ pub fn validate_guest_ptr_len(mem_len: usize, ptr: u64, len: u64, max_len: u64) 
     // Both fit: end <= mem_len <= usize::MAX, and ptr <= end.
     Ok((ptr as usize, end as usize))
 }
+
+/// Read `len` guest bytes at `ptr` from a guest linear-memory byte slice,
+/// validating the region first via [`validate_guest_ptr_len`].
+///
+/// `memory` is the raw `wasmtime::Memory` data view. On success the returned
+/// slice borrows strictly within `memory` and is exactly `len` bytes; on any
+/// validation failure a typed [`HostFnError`] is returned and `memory` is
+/// never indexed out of range. This is the single sanctioned guest-memory read
+/// path for host-function imports.
+pub fn read_guest_bytes(memory: &[u8], ptr: u64, len: u64, max_len: u64) -> Result<&[u8], HostFnError> {
+    let (start, end) = validate_guest_ptr_len(memory.len(), ptr, len, max_len)?;
+    // start <= end <= memory.len() guaranteed by the validator, so this slice
+    // is always in bounds.
+    Ok(&memory[start..end])
+}
