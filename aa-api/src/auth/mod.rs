@@ -137,6 +137,25 @@ impl AuthenticatedCaller {
         }
         self.tenant.org_id.as_deref() == Some(org)
     }
+
+    /// The verified tenant org that scopes this caller's storage access, if any.
+    ///
+    /// AAASM-3596: this is the single, honest source for the `app.tenant_id` GUC
+    /// the storage layer's Row-Level Security filters on (AAASM-3595). It is
+    /// taken *only* from [`Self::tenant`] — the verified JWT `org_id` claim or
+    /// the authenticated API-key entry — and never from a request `Query`,
+    /// header, or body. A client cannot redirect it by sending a different
+    /// `?org_id` / `X-Org-Id`, because nothing here reads request input.
+    ///
+    /// Returns `None` for a caller with no tenant scope (an admin / cross-tenant
+    /// caller). Such a caller must run the storage connection with NO
+    /// `app.tenant_id` GUC — i.e. via a dedicated RLS-bypass admin DB role — and
+    /// must *never* synthesize a tenant from a client-chosen value. Feeding a
+    /// `None` here into the GUC seam yields a fail-closed (zero-row) connection,
+    /// not a full-table read.
+    pub fn storage_tenant_org(&self) -> Option<&str> {
+        self.tenant.org_id.as_deref()
+    }
 }
 
 /// Prefix used by API keys (`aa_`).
@@ -239,5 +258,60 @@ where
             .map_err(|retry_after_secs| AuthError::RateLimited { retry_after_secs })?;
 
         Ok(caller)
+    }
+}
+
+#[cfg(test)]
+mod tenant_guard_tests {
+    use super::*;
+
+    fn caller_with_org(org: Option<&str>, scopes: Vec<Scope>) -> AuthenticatedCaller {
+        AuthenticatedCaller {
+            key_id: "key-1".to_string(),
+            scopes,
+            tenant: Tenant {
+                team_id: None,
+                org_id: org.map(str::to_string),
+            },
+        }
+    }
+
+    /// AAASM-3596: the value feeding the storage `app.tenant_id` GUC is the
+    /// caller's verified org and nothing else.
+    #[test]
+    fn storage_tenant_org_is_the_verified_org() {
+        let caller = caller_with_org(Some("org-verified"), vec![Scope::Read]);
+        assert_eq!(caller.storage_tenant_org(), Some("org-verified"));
+    }
+
+    /// AAASM-3596 (the spoof case): a request might carry any `?org_id` /
+    /// `X-Org-Id`, but `storage_tenant_org` reads none of that — it only ever
+    /// returns the verified tenant, so a client-supplied org cannot redirect or
+    /// widen a caller's storage scope.
+    #[test]
+    fn client_supplied_org_cannot_redirect_storage_scope() {
+        // The caller is verified as org-A. A spoofed request body/header asking
+        // for "org-victim" is irrelevant: the seam never consults request input.
+        let caller = caller_with_org(Some("org-A"), vec![Scope::Read]);
+        let spoofed_client_org = "org-victim";
+        assert_ne!(
+            caller.storage_tenant_org(),
+            Some(spoofed_client_org),
+            "a client-chosen org must not become the storage tenant"
+        );
+        assert_eq!(
+            caller.storage_tenant_org(),
+            Some("org-A"),
+            "the storage tenant is provably the verified org only"
+        );
+    }
+
+    /// A caller with no verified tenant scope yields None — which the storage
+    /// GUC seam maps to a fail-closed (zero-row) connection, never a synthesized
+    /// client-chosen tenant.
+    #[test]
+    fn no_tenant_scope_yields_none_not_a_client_value() {
+        let caller = caller_with_org(None, vec![Scope::Read, Scope::Admin]);
+        assert_eq!(caller.storage_tenant_org(), None);
     }
 }
