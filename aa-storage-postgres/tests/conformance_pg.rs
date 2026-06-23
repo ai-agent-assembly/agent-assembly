@@ -129,13 +129,22 @@ async fn policy_store_satisfies_conformance() {
     };
     let body = serde_json::to_value(&doc).expect("serialize policy");
     let agent_text = uuid::Uuid::from_bytes(*present.as_bytes()).to_string();
+    // Under FORCE RLS (0007) a bare-pool insert with no app.tenant_id is denied,
+    // so seed the policy under the reserved system org the trait-impl read path
+    // (PgPolicyStore::get_policy) scopes to. The org_id column defaults to the
+    // system org, so this matches the GUC the read uses.
+    let mut tx = pool
+        .begin_for_tenant(uuid::Uuid::nil())
+        .await
+        .expect("begin system-org tx");
     sqlx::query("INSERT INTO policies (agent_id, policy_version, body) VALUES ($1, $2, $3)")
         .bind(&agent_text)
         .bind(1_i64)
         .bind(body)
-        .execute(pool.pool())
+        .execute(&mut *tx)
         .await
         .expect("seed policy row");
+    tx.commit().await.expect("commit seed");
 
     let store = PgPolicyStore::new(pool.clone());
     // Coerces to `&dyn PolicyStore`, exercising object-safety too.

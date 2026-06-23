@@ -26,6 +26,11 @@ UPDATE policies p
  WHERE p.agent_id = a.id
    AND a.org_id IS NOT NULL;
 UPDATE policies SET org_id = '00000000-0000-0000-0000-000000000000' WHERE org_id IS NULL;
+-- DEFAULT the reserved system org so the legacy (non-tenant-aware) trait-impl
+-- writes — which do not supply org_id — land under the reserved tenant rather
+-- than violating NOT NULL. Tenant-aware writes (the *_for_tenant methods) supply
+-- the verified org explicitly and override this default.
+ALTER TABLE policies ALTER COLUMN org_id SET DEFAULT '00000000-0000-0000-0000-000000000000';
 ALTER TABLE policies ALTER COLUMN org_id SET NOT NULL;
 ALTER TABLE policies ADD CONSTRAINT policies_org_id_fkey FOREIGN KEY (org_id) REFERENCES orgs(id);
 -- Tenant-prefixed analogue of idx_policies_agent_version, so RLS-scoped reads of
@@ -41,6 +46,7 @@ UPDATE audit_logs l
  WHERE l.agent_id = a.id
    AND a.org_id IS NOT NULL;
 UPDATE audit_logs SET org_id = '00000000-0000-0000-0000-000000000000' WHERE org_id IS NULL;
+ALTER TABLE audit_logs ALTER COLUMN org_id SET DEFAULT '00000000-0000-0000-0000-000000000000';
 ALTER TABLE audit_logs ALTER COLUMN org_id SET NOT NULL;
 -- No FK to orgs: keep audit append-only and fail-proof, matching the existing
 -- no-FK-on-agent_id rationale (0004). Metadata-only invariant preserved — no
@@ -52,6 +58,7 @@ CREATE INDEX idx_audit_logs_org_agent_ts ON audit_logs(org_id, agent_id, ts DESC
 -- get the reserved system org. New rows carry the writer's verified org.
 ALTER TABLE credentials ADD COLUMN org_id UUID;
 UPDATE credentials SET org_id = '00000000-0000-0000-0000-000000000000' WHERE org_id IS NULL;
+ALTER TABLE credentials ALTER COLUMN org_id SET DEFAULT '00000000-0000-0000-0000-000000000000';
 ALTER TABLE credentials ALTER COLUMN org_id SET NOT NULL;
 ALTER TABLE credentials ADD CONSTRAINT credentials_org_id_fkey FOREIGN KEY (org_id) REFERENCES orgs(id);
 CREATE INDEX idx_credentials_org_key ON credentials(org_id, key);
