@@ -42,7 +42,11 @@ which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-beta.2" }
-libc    = { workspace = true }
+
+# Peer-credential (geteuid) check on the IPC socket — all Unix targets
+# (AAASM-3579). Backed by getpeereid/SO_PEERCRED via tokio's peer_cred.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 # Linux-only dev dep: the AAASM-3128 regression test constructs a
 # `TlsCaptureEvent` to prove the DEBUG log never emits its plaintext payload.
