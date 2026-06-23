@@ -1,7 +1,7 @@
 # Security sign-off — v<version>
 
 > Per-release security-review sign-off artifact. Produced by the
-> [`/security-review`](../../../.claude/skills/security-review/SKILL.md) SKILL
+> [`/release-security-gate`](../../../.claude/skills/release-security-gate/SKILL.md) SKILL
 > and enforced by `scripts/release-readiness.sh` (the readiness run fails unless
 > this file exists for `<version>` and contains `Verdict: PASS`).
 >
@@ -21,6 +21,11 @@
 - Open CodeQL alerts — <count / none>
 - Open Dependabot alerts — <count / none>
 - Release diff — `git log v<prev-version>..HEAD` (<N> commits)
+- Native `/security-review` (Anthropic diff scanner) on the release delta — <result / findings folded below>
+- `anthropics/claude-code-security-review` Action (major only) — <run URL / n/a>
+
+> The release-diff review **wraps** the built-in `/security-review`; fold its
+> findings (and, at major tier, the Action's) into the Findings table below.
 
 ## Findings
 
