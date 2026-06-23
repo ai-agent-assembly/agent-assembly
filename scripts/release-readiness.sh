@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 10 local checks that must all pass before pushing a release tag.
+# Runs 11 local checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -131,6 +131,21 @@ if grep -nE "pip install[^|&]*['\"]?agent-assembly['\"]?([[:space:]]|$)" .github
 else
   rm -f /tmp/naked-pip-$$
   pass "smoke-test.yml pins agent-assembly pip install"
+fi
+
+# 11. Security-review sign-off artifact present AND verdict is PASS.
+# AAASM-3566 release gate: the /security-review SKILL writes
+# docs/release/security-signoff/v<version>.md with a `Verdict: PASS` line.
+# A release must not be tagged with an unaddressed High/Critical finding, so a
+# missing artifact or a non-PASS verdict fails the readiness run. See
+# docs/release/RUNBOOK.md and .claude/skills/security-review/SKILL.md.
+SIGNOFF="docs/release/security-signoff/v${VERSION}.md"
+if [ ! -f "$SIGNOFF" ]; then
+  fail "Security-review sign-off missing ($SIGNOFF)" "run /security-review $VERSION and commit the sign-off"
+elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$SIGNOFF"; then
+  pass "Security-review sign-off present and Verdict: PASS ($SIGNOFF)"
+else
+  fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /security-review $VERSION"
 fi
 
 echo
