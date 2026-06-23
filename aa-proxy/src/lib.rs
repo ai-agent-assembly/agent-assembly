@@ -19,6 +19,7 @@
 
 pub mod audit_jsonl;
 pub mod config;
+pub mod credentials;
 pub mod error;
 pub mod intercept;
 pub mod mcp_enforce;
