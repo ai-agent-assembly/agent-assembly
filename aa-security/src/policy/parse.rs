@@ -14,6 +14,7 @@ use std::str::FromStr;
 use super::capability::{Capability, CapabilitySet};
 use super::document::{NetworkPolicy, PolicyDocument, ToolRule};
 use super::error::PolicyParseError;
+use super::syscall::SyscallAllowlist;
 
 #[cfg(feature = "serde")]
 mod raw {
@@ -39,6 +40,12 @@ mod raw {
         pub network: Option<Network>,
         pub capabilities: Option<Capabilities>,
         pub tools: Option<BTreeMap<String, Tool>>,
+        pub syscalls: Option<Syscalls>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Syscalls {
+        pub allow: Option<Vec<String>>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -104,11 +111,26 @@ impl PolicyDocument {
             })
             .collect();
 
+        let syscall_allowlist = match spec.syscalls {
+            Some(s) => {
+                let names = s.allow.unwrap_or_default();
+                let mut allow = SyscallAllowlist::default();
+                for raw in names {
+                    allow
+                        .syscalls
+                        .insert(parse_syscall(&raw)?);
+                }
+                Some(allow)
+            }
+            None => None,
+        };
+
         Ok(PolicyDocument {
             name,
             network,
             capabilities,
             tools,
+            syscall_allowlist,
         })
     }
 }
@@ -116,6 +138,14 @@ impl PolicyDocument {
 /// Parse a capability token, mapping the parse error onto [`PolicyParseError`].
 fn parse_capability(raw: &str) -> Result<Capability, PolicyParseError> {
     Capability::from_str(raw).map_err(|reason| PolicyParseError::InvalidCapability {
+        raw: raw.to_string(),
+        reason,
+    })
+}
+
+/// Parse a syscall name, mapping the parse error onto [`PolicyParseError`].
+fn parse_syscall(raw: &str) -> Result<super::syscall::Syscall, PolicyParseError> {
+    super::syscall::Syscall::from_str(raw).map_err(|reason| PolicyParseError::InvalidSyscall {
         raw: raw.to_string(),
         reason,
     })

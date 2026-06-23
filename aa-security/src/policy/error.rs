@@ -14,6 +14,13 @@ pub enum PolicyParseError {
         /// Why it was rejected.
         reason: String,
     },
+    /// A syscall name in the `syscalls.allow` list was not recognised.
+    InvalidSyscall {
+        /// The offending raw token.
+        raw: String,
+        /// Why it was rejected.
+        reason: String,
+    },
 }
 
 impl fmt::Display for PolicyParseError {
@@ -22,6 +29,9 @@ impl fmt::Display for PolicyParseError {
             Self::Yaml(msg) => write!(f, "policy YAML parse error: {msg}"),
             Self::InvalidCapability { raw, reason } => {
                 write!(f, "invalid capability {raw:?}: {reason}")
+            }
+            Self::InvalidSyscall { raw, reason } => {
+                write!(f, "invalid syscall {raw:?}: {reason}")
             }
         }
     }

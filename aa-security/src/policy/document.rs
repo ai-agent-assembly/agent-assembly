@@ -12,6 +12,7 @@
 //! budget accounting) stay in `aa-gateway` and operate *on top of* this AST.
 
 use super::capability::CapabilitySet;
+use super::syscall::SyscallAllowlist;
 
 /// Network egress policy: the set of hosts an agent may connect to.
 ///
@@ -53,6 +54,11 @@ pub struct PolicyDocument {
     pub capabilities: Option<CapabilitySet>,
     /// Per-tool rules, in declaration order.
     pub tools: Vec<ToolRule>,
+    /// Kernel syscall allowlist for this workload (AAASM-3624). When set, the
+    /// eBPF enforcement probe default-denies any syscall not listed for a
+    /// monitored PID. Lowered to `SYSCALL_ALLOWLIST` map entries by
+    /// AAASM-3635.
+    pub syscall_allowlist: Option<SyscallAllowlist>,
 }
 
 impl PolicyDocument {
@@ -67,6 +73,15 @@ impl PolicyDocument {
     /// Return the network egress allowlist, or an empty slice if unset.
     pub fn egress_allowlist(&self) -> &[String] {
         self.network.as_ref().map(|n| n.allowlist.as_slice()).unwrap_or(&[])
+    }
+
+    /// Return the permitted syscalls, or an empty iterator if no syscall
+    /// allowlist is set.
+    pub fn allowed_syscalls(&self) -> Vec<super::syscall::Syscall> {
+        self.syscall_allowlist
+            .as_ref()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -84,10 +99,13 @@ mod tests {
         assert!(doc.tools.is_empty());
         assert!(doc.denied_capabilities().is_empty());
         assert!(doc.egress_allowlist().is_empty());
+        assert!(doc.syscall_allowlist.is_none());
+        assert!(doc.allowed_syscalls().is_empty());
     }
 
     #[test]
     fn accessors_read_through() {
+        use super::super::syscall::{Syscall, SyscallAllowlist};
         let mut caps = CapabilitySet::default();
         caps.deny.insert(Capability::FileWrite);
         let doc = PolicyDocument {
@@ -101,9 +119,11 @@ mod tests {
                 allow: false,
                 requires_approval_if: None,
             }],
+            syscall_allowlist: Some(SyscallAllowlist::from_names(["read", "write"]).unwrap()),
         };
         assert_eq!(doc.denied_capabilities(), vec![&Capability::FileWrite]);
         assert_eq!(doc.egress_allowlist(), ["api.openai.com"]);
         assert_eq!(doc.tools.len(), 1);
+        assert_eq!(doc.allowed_syscalls(), vec![Syscall::Read, Syscall::Write]);
     }
 }

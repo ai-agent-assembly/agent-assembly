@@ -79,6 +79,11 @@ impl PolicyDocument {
             network,
             capabilities,
             tools,
+            // The gateway's source PolicyDocument does not yet model a kernel
+            // syscall allowlist; the syscall-allowlist node (AAASM-3624) is
+            // populated from the policy YAML by aa-security's own parser.
+            // Wiring the gateway's projection to it is future work.
+            syscall_allowlist: None,
         }
     }
 }
