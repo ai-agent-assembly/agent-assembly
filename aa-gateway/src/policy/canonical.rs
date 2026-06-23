@@ -158,4 +158,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_lowers_to_ebpf_rules() {
+        // Proves the same gateway document feeds the kernel lowering.
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::FileWrite);
+        let mut doc = base_doc();
+        doc.capabilities = Some(caps);
+
+        let rules = aa_security::policy::lower_to_ebpf(&doc.to_canonical());
+        assert!(rules.deny_paths().any(|p| p == "/etc"));
+    }
 }
