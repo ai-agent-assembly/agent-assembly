@@ -58,3 +58,20 @@ where
     let msg = serde_json::from_slice(&body).map_err(|e| EbpfError::EventParse(format!("decode: {e}")))?;
     Ok(Some(msg))
 }
+#[cfg(test)]
+mod tests {
+    use super::super::protocol::{ControlRequest, ControlResponse};
+    use super::*;
+
+    #[tokio::test]
+    async fn round_trips_a_request() {
+        let req = ControlRequest::Ping;
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &req).await.unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let back: Option<ControlRequest> = read_frame(&mut cursor).await.unwrap();
+        assert_eq!(back, Some(req));
+    }
+
+}
