@@ -83,3 +83,31 @@ lefthook.toml @Chisanan232
 # Documentation — README, CONTRIBUTING, SECURITY, etc.
 # ──────────────────────────────────────────────────────────────────────
 *.md @Chisanan232
+
+# ──────────────────────────────────────────────────────────────────────
+# Dev-tool supply-chain hardening (AAASM-3565)
+#
+# aa-devtool-* plugins run in the developer's TRUSTED environment, so a
+# poisoned plugin PR is a backdoor onto developer machines. These paths
+# therefore require a security-capable reviewer in addition to the project
+# lead, backing the mandatory 2-reviewer policy ("at least one with a
+# security background"). The @ai-agent-assembly/security team is the
+# security owner; the ≥2-approval + require-code-owner-review enforcement
+# itself is a server-side branch-protection setting on `master` (it cannot
+# be committed in this file — see verification-reports/AAASM-3565.md).
+#
+# Placed AFTER the catch-all and the broad Rust-root rules so last-match
+# wins for these paths.
+# ──────────────────────────────────────────────────────────────────────
+/aa-devtool/             @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-contract/    @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-claude-code/ @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-codex/       @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-copilot/     @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-windsurf/    @Chisanan232 @ai-agent-assembly/security
+/aa-devtool-saas/        @Chisanan232 @ai-agent-assembly/security
+/examples/aa-devtool-sample-myeditor/ @Chisanan232 @ai-agent-assembly/security
+
+# The supply-chain advisory gate config — re-routed to require a security
+# reviewer because any `ignore` entry suppresses a real advisory (AAASM-3565).
+deny.toml @Chisanan232 @ai-agent-assembly/security
