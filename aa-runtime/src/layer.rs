@@ -102,15 +102,22 @@ fn check_btf_available() -> bool {
     }
 }
 
-/// Simplified CAP_BPF check — returns `true` if running as root (euid 0).
+/// Whether the privileged eBPF loader daemon (`aa-ebpf-loaderd`) is reachable.
 ///
-/// A full capability check would use `capget(2)` or the `caps` crate, but
-/// for the initial implementation root-check is sufficient.
-fn check_cap_bpf() -> bool {
+/// AAASM-3605: the runtime no longer loads probes in-process and holds NO
+/// `CAP_BPF`/`CAP_PERFMON` (see [`crate::privilege`]). The eBPF layer is
+/// therefore available not when the runtime itself is privileged, but when the
+/// privileged daemon's control socket exists — the runtime delegates all BPF
+/// operations to it. This deliberately replaces the previous `geteuid()==0`
+/// (runtime-must-be-root) check: requiring the runtime to be privileged was the
+/// "detach/replace the probe from userspace" attack surface this Story closes.
+fn loader_daemon_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: geteuid is always safe to call.
-        unsafe { libc::geteuid() == 0 }
+        let path = std::env::var_os("AA_EBPF_LOADERD_SOCK")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/run/aa-ebpf-loaderd.sock"));
+        path.exists()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -119,8 +126,12 @@ fn check_cap_bpf() -> bool {
 }
 
 /// Returns `true` if all eBPF prerequisites are met.
+///
+/// Note the runtime's own capabilities are intentionally NOT a prerequisite —
+/// the loader daemon owns BPF privilege (AAASM-3605). What the runtime needs is
+/// a supported kernel, BTF, and a reachable loader daemon to delegate to.
 fn probe_ebpf() -> bool {
-    check_kernel_version() && check_btf_available() && check_cap_bpf()
+    check_kernel_version() && check_btf_available() && loader_daemon_available()
 }
 
 // ── Proxy availability probe ─────────────────────────────────────────────────
