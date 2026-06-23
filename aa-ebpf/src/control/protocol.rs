@@ -99,4 +99,18 @@ mod tests {
         assert_eq!(serde_json::from_slice::<ControlRequest>(&bytes).unwrap(), req);
     }
 
+    #[test]
+    fn response_round_trips() {
+        for resp in [
+            ControlResponse::Ok,
+            ControlResponse::Pong,
+            ControlResponse::Error {
+                message: "denied".to_string(),
+            },
+        ] {
+            let bytes = serde_json::to_vec(&resp).unwrap();
+            assert_eq!(serde_json::from_slice::<ControlResponse>(&bytes).unwrap(), resp);
+        }
+    }
+
 }
