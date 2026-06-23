@@ -1192,4 +1192,164 @@ mod tests {
 
         token.cancel();
     }
+
+    // ── AAASM-3589: impersonation / forged-event rejection ──────────────────────
+
+    /// A peer that connects and immediately sends an EventReport WITHOUT
+    /// completing the handshake must NOT have its event dispatched, and its
+    /// connection is dropped. Closes the "connect and flood forged audit
+    /// events" vector.
+    #[tokio::test]
+    async fn event_without_handshake_is_not_dispatched() {
+        let socket_path = temp_socket_path("no-handshake-event");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        // Connect WITHOUT performing the handshake.
+        let stream = {
+            let mut s = None;
+            for _ in 0..20 {
+                if let Ok(st) = UnixStream::connect(&socket_path).await {
+                    s = Some(st);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            s.expect("connect failed")
+        };
+        let (_read_half, mut write_half) = stream.into_split();
+
+        // Skip the handshake; send an EventReport as the very first frame.
+        let event = AuditEvent {
+            event_id: "forged-no-handshake".to_string(),
+            ..Default::default()
+        };
+        let payload = event.encode_to_vec();
+        write_raw_frame(&mut write_half, TAG_EVENT_REPORT, &payload).await;
+
+        // The event must NOT arrive on the inbound channel — the server rejects
+        // the connection at the handshake gate before any dispatch.
+        let result = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "an un-handshaked peer's event must never be dispatched"
+        );
+
+        token.cancel();
+    }
+
+    /// A peer that sends a HandshakeProof with a signature that does not verify
+    /// against the agent key is rejected — no session, no dispatch.
+    #[tokio::test]
+    async fn forged_handshake_signature_is_rejected() {
+        use crate::ipc::codec::TAG_HANDSHAKE_PROOF;
+        use aa_proto::assembly::ipc::v1::HandshakeProof;
+        use ed25519_dalek::Signer;
+        use sha2::{Digest, Sha256};
+
+        let socket_path = temp_socket_path("forged-handshake");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        let mut stream = {
+            let mut s = None;
+            for _ in 0..20 {
+                if let Ok(st) = UnixStream::connect(&socket_path).await {
+                    s = Some(st);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            s.expect("connect failed")
+        };
+
+        // Read the challenge (so we consume the nonce), then reply with a proof
+        // whose signature is corrupted.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tag = stream.read_u8().await.unwrap();
+        assert_eq!(tag, crate::ipc::codec::TAG_HANDSHAKE_CHALLENGE);
+        let clen = read_varint_stream(&mut stream).await;
+        let mut cbuf = vec![0u8; clen];
+        stream.read_exact(&mut cbuf).await.unwrap();
+        let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge::decode(cbuf.as_ref()).unwrap();
+
+        let seed: [u8; 32] = Sha256::digest(TEST_AGENT_ID.as_bytes()).into();
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let mut sig = sk.sign(&challenge.nonce).to_bytes().to_vec();
+        sig[0] ^= 0xFF; // corrupt the signature
+
+        let proof = HandshakeProof {
+            agent_did: format!("did:key:{TEST_AGENT_ID}"),
+            public_key: hex::encode(sk.verifying_key().to_bytes()),
+            signature: sig,
+        };
+        let payload = proof.encode_to_vec();
+        stream.write_u8(TAG_HANDSHAKE_PROOF).await.unwrap();
+        write_varint_stream(&mut stream, payload.len() as u64).await;
+        stream.write_all(&payload).await.unwrap();
+        stream.flush().await.unwrap();
+
+        // Now try to send an event over the same (rejected) connection.
+        let (_r, mut w) = stream.into_split();
+        let event = AuditEvent {
+            event_id: "forged-sig".to_string(),
+            ..Default::default()
+        };
+        let payload = event.encode_to_vec();
+        // Best-effort write — the server may have already dropped the connection.
+        let _ = w.write_u8(TAG_EVENT_REPORT).await;
+        let mut len = payload.len() as u64;
+        loop {
+            let byte = (len & 0x7F) as u8;
+            len >>= 7;
+            if len == 0 {
+                let _ = w.write_u8(byte).await;
+                break;
+            } else {
+                let _ = w.write_u8(byte | 0x80).await;
+            }
+        }
+        let _ = w.write_all(&payload).await;
+        let _ = w.flush().await;
+
+        // No frame must be dispatched for a forged handshake.
+        let result = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+        assert!(result.is_err(), "a forged-signature peer must never be dispatched");
+
+        token.cancel();
+    }
+
+    /// Happy path: a peer that completes a valid handshake then sends an event
+    /// has that event dispatched on the inbound channel.
+    #[tokio::test]
+    async fn valid_handshake_then_event_is_dispatched() {
+        let socket_path = temp_socket_path("valid-handshake-event");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        // connect_client performs the valid handshake as TEST_AGENT_ID.
+        let client = connect_client(&socket_path).await;
+        let (_read_half, mut write_half) = client.into_split();
+
+        let event = AuditEvent {
+            event_id: "authenticated-event".to_string(),
+            ..Default::default()
+        };
+        let payload = event.encode_to_vec();
+        write_raw_frame(&mut write_half, TAG_EVENT_REPORT, &payload).await;
+
+        let (_conn_id, frame) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("authenticated event timed out")
+            .expect("channel closed");
+        match frame {
+            IpcFrame::EventReport(decoded) => assert_eq!(decoded.event_id, "authenticated-event"),
+            other => panic!("expected EventReport, got {other:?}"),
+        }
+
+        token.cancel();
+    }
 }
