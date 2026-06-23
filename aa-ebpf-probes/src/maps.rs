@@ -1,6 +1,7 @@
 //! BPF map definitions for file I/O kprobes.
 
 use aa_ebpf_common::file::{FdPathKey, FileIoEventRaw, MAX_ENTRIES, MAX_PATH_LEN, MAX_PATH_PATTERNS};
+use aa_ebpf_common::syscall::MAX_SYSCALL_ALLOWLIST;
 use aya_ebpf::macros::map;
 use aya_ebpf::maps::{HashMap, PerfEventArray};
 
@@ -92,3 +93,11 @@ pub static PATH_BLOCKLIST: HashMap<[u8; MAX_PATH_LEN], u8> =
 #[map]
 pub static PATH_ALLOWLIST: HashMap<[u8; MAX_PATH_LEN], u8> =
     HashMap::with_max_entries(MAX_PATH_PATTERNS, 0);
+
+/// Syscall allowlist for the seccomp-style enforcement probe (AAASM-3631).
+/// Key is the syscall number; a present key means the syscall is permitted
+/// for monitored PIDs. The `syscall_guard` tracepoint default-denies (kills)
+/// any monitored PID issuing a syscall NOT in this map. Populated by the
+/// privileged loader daemon from the policy AST lowering (AAASM-3635).
+#[map]
+pub static SYSCALL_ALLOWLIST: HashMap<u32, u8> = HashMap::with_max_entries(MAX_SYSCALL_ALLOWLIST, 0);

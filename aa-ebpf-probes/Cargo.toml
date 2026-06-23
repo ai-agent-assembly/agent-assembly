@@ -22,6 +22,10 @@ path = "src/ssl_probes.rs"
 name = "aa-exec-probes"
 path = "src/exec_probes.rs"
 
+[[bin]]
+name = "aa-syscall-guard"
+path = "src/syscall_guard.rs"
+
 # Declare this crate as its own standalone workspace so Cargo does not
 # attempt to include it in the parent agent-assembly workspace.
 [workspace]
