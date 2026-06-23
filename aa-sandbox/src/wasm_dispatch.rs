@@ -172,6 +172,25 @@ mod tests {
         )
     "#;
 
+    /// Calls the counted `aa_sandbox/aa_host_noop` import 5 times — trips a
+    /// host-fn budget below 5. Mirrors AAASM-3617's runtime fixture.
+    const HOST_FN_LOOP_WAT: &str = r#"
+        (module
+          (import "aa_sandbox" "aa_host_noop" (func $noop))
+          (func (export "_start")
+            (local $i i32)
+            (block $done
+              (loop $again
+                (br_if $done (i32.ge_u (local.get $i) (i32.const 5)))
+                (call $noop)
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again)
+              )
+            )
+          )
+        )
+    "#;
+
     fn registry_with(name: &str, wat_source: &str) -> ToolRegistry {
         registry_with_config(name, wat_source, SandboxConfig::default())
     }
@@ -275,6 +294,35 @@ mod tests {
                 assert_eq!(
                     audit_events,
                     vec![AuditEventType::SandboxStarted, AuditEventType::SandboxOomKilled],
+                );
+            }
+            WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
+        }
+    }
+
+    #[test]
+    fn dispatch_wasm_tool_emits_started_then_host_fn_rate_limited() {
+        let config = SandboxConfig {
+            host_fn_rate_limit: crate::policy::HostFnRateLimit {
+                max_calls_per_call: 3,
+                window_calls: None,
+            },
+            ..Default::default()
+        };
+        let reg = registry_with_config("host_fn_abuse", HOST_FN_LOOP_WAT, config);
+        match dispatch_wasm_tool("host_fn_abuse", &[], &reg) {
+            WasmDispatchResult::Wasm { result, audit_events } => {
+                assert!(
+                    matches!(result, Err(SandboxError::HostFnRateLimited)),
+                    "expected HostFnRateLimited, got {:?}",
+                    result,
+                );
+                assert_eq!(
+                    audit_events,
+                    vec![
+                        AuditEventType::SandboxStarted,
+                        AuditEventType::SandboxHostFnRateLimited
+                    ],
                 );
             }
             WasmDispatchResult::NotWasm => panic!("expected Wasm outcome, got NotWasm"),
