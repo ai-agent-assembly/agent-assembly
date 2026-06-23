@@ -86,4 +86,24 @@ mod tests {
         assert!(doc.egress_allowlist().is_empty());
     }
 
+    #[test]
+    fn accessors_read_through() {
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(Capability::FileWrite);
+        let doc = PolicyDocument {
+            name: Some("strict".to_string()),
+            network: Some(NetworkPolicy {
+                allowlist: vec!["api.openai.com".to_string()],
+            }),
+            capabilities: Some(caps),
+            tools: vec![ToolRule {
+                name: "write_file".to_string(),
+                allow: false,
+                requires_approval_if: None,
+            }],
+        };
+        assert_eq!(doc.denied_capabilities(), vec![&Capability::FileWrite]);
+        assert_eq!(doc.egress_allowlist(), ["api.openai.com"]);
+        assert_eq!(doc.tools.len(), 1);
+    }
 }
