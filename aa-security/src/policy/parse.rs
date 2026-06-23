@@ -120,6 +120,7 @@ fn parse_capability(raw: &str) -> Result<Capability, PolicyParseError> {
         reason,
     })
 }
+
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
@@ -148,6 +149,7 @@ spec:
         assert!(caps.deny.contains(&Capability::TerminalExec));
         assert!(caps.deny.contains(&Capability::FileWrite));
     }
+
     #[test]
     fn parses_network_and_tools() {
         let yaml = r#"
@@ -170,10 +172,17 @@ spec:
         assert!(write.allow);
         assert_eq!(write.requires_approval_if.as_deref(), Some("path starts_with \"/etc\""));
     }
+
     #[test]
     fn rejects_unknown_capability() {
         let yaml = "spec:\n  capabilities:\n    deny:\n      - teleport\n";
         let err = PolicyDocument::from_yaml(yaml).unwrap_err();
         assert!(matches!(err, PolicyParseError::InvalidCapability { .. }));
+    }
+
+    #[test]
+    fn rejects_malformed_yaml() {
+        let err = PolicyDocument::from_yaml("spec: [unclosed").unwrap_err();
+        assert!(matches!(err, PolicyParseError::Yaml(_)));
     }
 }
