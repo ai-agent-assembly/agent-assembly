@@ -122,4 +122,10 @@ mod tests {
             Capability::Model("gpt-4".to_string())
         );
     }
+
+    #[test]
+    fn rejects_empty_parameterised_name() {
+        assert!("mcp_tool:".parse::<Capability>().is_err());
+        assert!("model:".parse::<Capability>().is_err());
+    }
 }
