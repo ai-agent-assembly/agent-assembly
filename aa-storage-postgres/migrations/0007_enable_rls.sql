@@ -10,9 +10,12 @@
 --   * FORCE ROW LEVEL SECURITY — applies the policy even to the table owner, so a
 --     query run by the owning role is still tenant-confined (without FORCE, the
 --     owner bypasses RLS).
---   * `current_setting('app.tenant_id', true)` — the `true` (missing_ok) form
---     yields NULL when the GUC is unset rather than raising. `org_id = NULL` is
---     never true, so an unset connection sees ZERO rows: fail-closed, not
+--   * `NULLIF(current_setting('app.tenant_id', true), '')::uuid` — the `true`
+--     (missing_ok) form yields NULL when the GUC is unset rather than raising,
+--     and the `NULLIF(…, '')` collapses an empty-string residue (which a pooled
+--     connection or a bare `SET app.tenant_id = ''` can leave) to NULL too, so
+--     it never reaches the `::uuid` cast as `''`. `org_id = NULL` is never true,
+--     so an unset OR empty connection sees ZERO rows: fail-closed, not
 --     fail-open. This is what makes a forgotten `SET app.tenant_id` deny-all.
 --   * WITH CHECK mirrors USING so a write cannot insert/relabel a row into
 --     another tenant.
@@ -39,18 +42,18 @@ ALTER TABLE credentials FORCE  ROW LEVEL SECURITY;
 -- NULL org_id row is still denied to every real tenant.
 CREATE POLICY tenant_isolation ON agents
     USING (COALESCE(org_id, '00000000-0000-0000-0000-000000000000')
-           = current_setting('app.tenant_id', true)::uuid)
+           = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
     WITH CHECK (COALESCE(org_id, '00000000-0000-0000-0000-000000000000')
-           = current_setting('app.tenant_id', true)::uuid);
+           = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
 CREATE POLICY tenant_isolation ON policies
-    USING (org_id = current_setting('app.tenant_id', true)::uuid)
-    WITH CHECK (org_id = current_setting('app.tenant_id', true)::uuid);
+    USING (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
 CREATE POLICY tenant_isolation ON audit_logs
-    USING (org_id = current_setting('app.tenant_id', true)::uuid)
-    WITH CHECK (org_id = current_setting('app.tenant_id', true)::uuid);
+    USING (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
 CREATE POLICY tenant_isolation ON credentials
-    USING (org_id = current_setting('app.tenant_id', true)::uuid)
-    WITH CHECK (org_id = current_setting('app.tenant_id', true)::uuid);
+    USING (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+    WITH CHECK (org_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
