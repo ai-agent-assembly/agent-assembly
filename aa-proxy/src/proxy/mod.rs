@@ -385,6 +385,21 @@ impl ProxyServer {
             return Ok(());
         };
 
+        // AAASM-3580: re-enforce the egress allowlist against the in-tunnel
+        // host before any gateway dispatch or upstream dial. Mirrors the LLM
+        // path so a forged Host cannot bypass the allowlist on the MCP route.
+        if let Some(reason) = self.in_tunnel_deny_reason(&req) {
+            let in_host = Self::effective_request_host(&req).unwrap_or(host);
+            tracing::info!(connect_host = %host, in_tunnel_host = %in_host, "in-tunnel egress denied: {reason}");
+            self.interceptor.emit_policy_decision(in_host, true).await;
+            let mut client_tls = client_reader.into_inner();
+            client_tls
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
+
         // MCP detection. On a successful request-side eval, carry the parsed
         // call AND its serialised args bytes forward so the response-side
         // path below can re-use both for audit emission (args go into
@@ -567,6 +582,50 @@ impl ProxyServer {
         None
     }
 
+    /// Re-enforce the egress policy against the host the agent actually sent
+    /// **inside** the MitM tunnel — the in-tunnel `Host` header or an
+    /// absolute-form request target — not just the CONNECT line (AAASM-3580).
+    ///
+    /// Returns `Some(reason)` when the request must be denied. This defeats the
+    /// prompt-injection → proxy-bypass attack: the agent CONNECTs to an
+    /// allowlisted host (opening the tunnel) but then forges
+    /// `Host: evil.attacker.com` to exfiltrate to a non-allowlisted endpoint.
+    /// Because the allowlist is re-checked here against the agent-supplied host,
+    /// the forged host is rejected before the proxy dials upstream.
+    ///
+    /// When the in-tunnel host is empty (no Host header, origin-form target) the
+    /// CONNECT-time check already covered the destination, so this is a no-op.
+    /// An empty allowlist keeps the default-open behaviour unchanged.
+    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<&'static str> {
+        let host = Self::effective_request_host(req)?;
+        self.connect_deny_reason(host)
+    }
+
+    /// Extract the effective upstream host the in-tunnel request addresses.
+    ///
+    /// Prefers an absolute-form request target (`https://host/...`); otherwise
+    /// falls back to the `Host` header. The port (if any) is stripped so the
+    /// result is comparable against the allowlist/denylist host grammar.
+    /// Returns `None` when neither yields a host.
+    fn effective_request_host(req: &HttpRequest) -> Option<&str> {
+        // Absolute-form target, e.g. "https://evil.attacker.com/v1/..." or
+        // "http://evil.attacker.com/...". Strip the scheme, then keep up to the
+        // first '/' (path) — leaving "host[:port]".
+        let from_target = req
+            .target
+            .strip_prefix("https://")
+            .or_else(|| req.target.strip_prefix("http://"))
+            .map(|rest| rest.split('/').next().unwrap_or(rest));
+
+        let host_port = from_target.or_else(|| req.header("host"))?;
+        let host = host_port.split(':').next().unwrap_or(host_port).trim();
+        if host.is_empty() {
+            None
+        } else {
+            Some(host)
+        }
+    }
+
     /// Inspect, enforce, and forward an LLM-pattern HTTPS request inside an
     /// already-established TLS MitM tunnel.
     ///
@@ -588,6 +647,21 @@ impl ProxyServer {
             // to do, just return cleanly.
             return Ok(());
         };
+
+        // AAASM-3580: re-enforce the egress allowlist against the host the agent
+        // sent INSIDE the tunnel, not just the CONNECT line. A forged
+        // `Host: evil.attacker.com` is rejected here, before any upstream dial.
+        if let Some(reason) = self.in_tunnel_deny_reason(&req) {
+            let in_host = Self::effective_request_host(&req).unwrap_or(host);
+            tracing::info!(connect_host = %host, in_tunnel_host = %in_host, "in-tunnel egress denied: {reason}");
+            self.interceptor.emit_policy_decision(in_host, true).await;
+            let mut client_tls = client_reader.into_inner();
+            client_tls
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
 
         let verdict = self
             .interceptor
@@ -975,6 +1049,52 @@ mod tests {
         let server = server_with(vec![], vec![]).await;
         assert_eq!(server.connect_deny_reason("api.openai.com"), None);
         assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
+    }
+
+    fn req_with(headers: Vec<(&str, &str)>, target: &str) -> HttpRequest {
+        HttpRequest {
+            method: "POST".into(),
+            target: target.into(),
+            version: "HTTP/1.1".into(),
+            headers: headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn effective_request_host_prefers_absolute_target_then_host_header() {
+        // Absolute-form target wins over the Host header.
+        let req = req_with(vec![("Host", "api.openai.com")], "https://evil.attacker.com/v1/x");
+        assert_eq!(ProxyServer::effective_request_host(&req), Some("evil.attacker.com"));
+        // Origin-form target falls back to the Host header, port stripped.
+        let req = req_with(vec![("Host", "api.openai.com:443")], "/v1/chat/completions");
+        assert_eq!(ProxyServer::effective_request_host(&req), Some("api.openai.com"));
+        // Neither yields a host.
+        let req = req_with(vec![], "/v1/x");
+        assert_eq!(ProxyServer::effective_request_host(&req), None);
+    }
+
+    #[tokio::test]
+    async fn in_tunnel_deny_reason_blocks_forged_host_under_allowlist() {
+        // AAASM-3580: with api.openai.com allowlisted, an in-tunnel forged
+        // `Host: evil.attacker.com` must be denied by the re-enforced allowlist.
+        let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
+        let forged = req_with(vec![("Host", "evil.attacker.com")], "/v1/chat/completions");
+        assert_eq!(server.in_tunnel_deny_reason(&forged), Some("network allowlist"));
+        // The allowlisted host inside the tunnel is permitted.
+        let ok = req_with(vec![("Host", "api.openai.com")], "/v1/chat/completions");
+        assert_eq!(server.in_tunnel_deny_reason(&ok), None);
+    }
+
+    #[tokio::test]
+    async fn in_tunnel_deny_reason_empty_allowlist_is_default_open() {
+        // Backward compatibility: no allowlist configured → no in-tunnel denial.
+        let server = server_with(vec![], vec![]).await;
+        let req = req_with(vec![("Host", "anything.example.com")], "/v1/x");
+        assert_eq!(server.in_tunnel_deny_reason(&req), None);
     }
 
     #[tokio::test]
