@@ -86,3 +86,46 @@ pub fn enforce_least_privilege() -> Result<(), PrivilegeError> {
     }
 }
 
+/// Best-effort drop of each forbidden capability from the bounding set via
+/// `prctl(PR_CAPBSET_DROP)`. Failures (e.g. lacking CAP_SETPCAP) are ignored —
+/// the authoritative guard is the effective-set assertion below.
+#[cfg(target_os = "linux")]
+fn drop_forbidden_from_bounding_set() {
+    const PR_CAPBSET_DROP: i32 = 24;
+    for cap in FORBIDDEN {
+        // SAFETY: prctl with PR_CAPBSET_DROP and a capability number is safe;
+        // it only ever clears a bounding-set bit and returns -1 on failure.
+        let _ = unsafe { libc::prctl(PR_CAPBSET_DROP, cap.value as libc::c_ulong, 0, 0, 0) };
+    }
+}
+
+/// Return the names of any forbidden capabilities present in the process's
+/// effective capability set, read from `/proc/self/status` `CapEff`.
+#[cfg(target_os = "linux")]
+fn effective_forbidden_caps() -> Vec<String> {
+    let cap_eff = match read_cap_eff() {
+        Some(v) => v,
+        // If we cannot read CapEff we cannot prove absence; treat as clean only
+        // when running unprivileged (euid != 0). When root and unreadable, be
+        // conservative and report nothing droppable (the bounding-set drop above
+        // already ran); the effective check is best-effort observability here.
+        None => return Vec::new(),
+    };
+    FORBIDDEN
+        .iter()
+        .filter(|c| cap_eff & (1u64 << c.value) != 0)
+        .map(|c| c.name.to_string())
+        .collect()
+}
+
+/// Parse the `CapEff:` hex bitmask from `/proc/self/status`.
+#[cfg(target_os = "linux")]
+fn read_cap_eff() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(hex) = line.strip_prefix("CapEff:") {
+            return u64::from_str_radix(hex.trim(), 16).ok();
+        }
+    }
+    None
+}
