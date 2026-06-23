@@ -231,4 +231,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compound_predicate_extracts_all_path_prefixes() {
+        let tools = vec![ToolRule {
+            name: "x".to_string(),
+            allow: true,
+            requires_approval_if: Some("path starts_with \"/etc\" AND path starts_with \"/root\"".to_string()),
+        }];
+        let rules = lower_to_ebpf(&doc_with(None, tools, vec![]));
+        let deny: Vec<&str> = rules.deny_paths().collect();
+        assert!(deny.contains(&"/etc"));
+        assert!(deny.contains(&"/root"));
+    }
+
 }
