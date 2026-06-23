@@ -178,6 +178,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-devtool-contract"
+version = "0.0.1-beta.3"
+dependencies = [
+ "aa-core",
+]
+
+[[package]]
 name = "aa-devtool-copilot"
 version = "0.0.1-beta.3"
 dependencies = [

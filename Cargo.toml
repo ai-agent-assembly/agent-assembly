@@ -21,6 +21,7 @@ members = [
     "aa-cli",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
+    "aa-devtool-contract",
     "aa-devtool",
     "aa-devtool-claude-code",
     "aa-devtool-codex",
