@@ -244,4 +244,15 @@ mod tests {
         assert!(deny.contains(&"/root"));
     }
 
+    #[test]
+    fn non_path_predicate_is_l7_only_and_lowers_nothing() {
+        let tools = vec![ToolRule {
+            name: "http_get".to_string(),
+            allow: true,
+            requires_approval_if: Some("url contains \"internal\"".to_string()),
+        }];
+        let rules = lower_to_ebpf(&doc_with(None, tools, vec![]));
+        assert!(rules.path_rules.is_empty());
+    }
+
 }
