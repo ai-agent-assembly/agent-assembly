@@ -215,4 +215,38 @@ spec:
         let err = PolicyDocument::from_yaml("spec: [unclosed").unwrap_err();
         assert!(matches!(err, PolicyParseError::Yaml(_)));
     }
+
+    #[test]
+    fn parses_syscall_allowlist() {
+        use super::super::syscall::Syscall;
+        let yaml = r#"
+spec:
+  syscalls:
+    allow:
+      - read
+      - write
+      - close
+      - read
+"#;
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        // De-duplicated by the BTreeSet, order-stable by enum order.
+        assert_eq!(
+            doc.allowed_syscalls(),
+            vec![Syscall::Read, Syscall::Write, Syscall::Close]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_syscall() {
+        let yaml = "spec:\n  syscalls:\n    allow:\n      - execve\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(matches!(err, PolicyParseError::InvalidSyscall { .. }));
+    }
+
+    #[test]
+    fn no_syscalls_section_means_no_allowlist() {
+        let doc = PolicyDocument::from_yaml("spec:\n  network:\n    allowlist: []\n").unwrap();
+        assert!(doc.syscall_allowlist.is_none());
+        assert!(doc.allowed_syscalls().is_empty());
+    }
 }

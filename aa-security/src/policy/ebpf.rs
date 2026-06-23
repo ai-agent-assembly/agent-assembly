@@ -196,6 +196,7 @@ mod tests {
             network: (!allowlist.is_empty()).then_some(NetworkPolicy { allowlist }),
             capabilities: caps,
             tools,
+            syscall_allowlist: None,
         }
     }
 
