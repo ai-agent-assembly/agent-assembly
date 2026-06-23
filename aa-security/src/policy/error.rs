@@ -39,4 +39,12 @@ mod tests {
         assert_eq!(err.to_string(), "policy YAML parse error: bad");
     }
 
+    #[test]
+    fn display_invalid_capability() {
+        let err = PolicyParseError::InvalidCapability {
+            raw: "teleport".to_string(),
+            reason: "unknown capability: 'teleport'".to_string(),
+        };
+        assert!(err.to_string().contains("teleport"));
+    }
 }
