@@ -130,3 +130,43 @@ pub struct SandboxConfig {
     /// [`Default`] caps a single invocation at 1024 host-function calls.
     pub host_fn_rate_limit: HostFnRateLimit,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_fn_rate_limit_default_is_conservative() {
+        let rl = HostFnRateLimit::default();
+        assert_eq!(rl.max_calls_per_call, 1_024);
+        assert_eq!(rl.window_calls, None);
+    }
+
+    #[test]
+    fn sandbox_config_default_stays_most_restrictive() {
+        let cfg = SandboxConfig::default();
+        // Empty allowlist = no filesystem visibility (the safe case).
+        assert!(cfg.preopened_dirs.is_empty());
+        // Unattributed tenant by default.
+        assert_eq!(cfg.tenant_id, "");
+        // Safe-by-default host-fn budget.
+        assert_eq!(cfg.host_fn_rate_limit, HostFnRateLimit::default());
+        // Existing limits default is unchanged.
+        assert_eq!(cfg.limits, SandboxLimits::default());
+    }
+
+    #[test]
+    fn sandbox_config_round_trips_new_fields() {
+        let cfg = SandboxConfig {
+            tenant_id: "tenant-42".to_string(),
+            host_fn_rate_limit: HostFnRateLimit {
+                max_calls_per_call: 8,
+                window_calls: Some(4),
+            },
+            ..Default::default()
+        };
+        assert_eq!(cfg.tenant_id, "tenant-42");
+        assert_eq!(cfg.host_fn_rate_limit.max_calls_per_call, 8);
+        assert_eq!(cfg.host_fn_rate_limit.window_calls, Some(4));
+    }
+}
