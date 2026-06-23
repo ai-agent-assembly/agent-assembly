@@ -50,9 +50,11 @@ pub fn verify_bytecode(object: &str, bytes: &[u8], expected_hex: &str) -> Result
 
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn matching_digest_passes() {
         let bytes = b"hello bpf";
@@ -79,9 +81,17 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
     #[test]
     fn empty_expected_is_unverifiable_and_rejected() {
         let err = verify_bytecode("aa-test", b"anything", "").unwrap_err();
         assert!(matches!(err, EbpfError::IntegrityMismatch { .. }));
+    }
+
+    #[test]
+    fn digest_comparison_is_case_insensitive() {
+        let bytes = b"case test";
+        let expected = hex::encode(Sha256::digest(bytes)).to_uppercase();
+        assert!(verify_bytecode("aa-test", bytes, &expected).is_ok());
     }
 }
