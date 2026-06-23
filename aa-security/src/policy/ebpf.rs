@@ -304,6 +304,31 @@ mod tests {
     }
 
     #[test]
+    fn syscall_allowlist_lowers_to_exact_numbers() {
+        use super::super::syscall::SyscallAllowlist;
+        let mut doc = doc_with(None, vec![], vec![]);
+        doc.syscall_allowlist = Some(SyscallAllowlist::from_names(["read", "write", "close", "exit"]).unwrap());
+        let rules = lower_to_ebpf(&doc);
+        // read=0, write=1, close=3, exit=60 — ordered by the BTreeSet's enum
+        // declaration order (Read, Write, Close, Exit).
+        assert_eq!(rules.syscall_allowlist, vec![0, 1, 3, 60]);
+    }
+
+    #[test]
+    fn absent_syscall_allowlist_lowers_to_empty() {
+        let rules = lower_to_ebpf(&doc_with(None, vec![], vec![]));
+        assert!(rules.syscall_allowlist.is_empty());
+    }
+
+    #[test]
+    fn syscall_lowering_is_deterministic() {
+        use super::super::syscall::SyscallAllowlist;
+        let mut doc = doc_with(None, vec![], vec![]);
+        doc.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read", "openat"]).unwrap());
+        assert_eq!(lower_to_ebpf(&doc).syscall_allowlist, lower_to_ebpf(&doc).syscall_allowlist);
+    }
+
+    #[test]
     fn lowering_is_deterministic() {
         let mut caps = CapabilitySet::default();
         caps.deny.insert(Capability::FileWrite);
