@@ -8,7 +8,7 @@
 //!
 //! [AAASM-983]: https://lightning-dust-mite.atlassian.net/browse/AAASM-983
 
-use aa_core::policy::{PolicyDecision, PolicyDocument};
+use aa_devtool_contract::{PolicyDecision, PolicyDocument};
 use serde::{Deserialize, Serialize};
 
 /// Per-action approval level for the Codex CLI.
@@ -106,7 +106,7 @@ fn is_mcp_pattern(p: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use aa_core::policy::{PolicyDecision, PolicyDocument, PolicyRule};
+    use aa_devtool_contract::{PolicyDecision, PolicyDocument, PolicyRule};
 
     use super::*;
 
@@ -121,7 +121,7 @@ mod tests {
                     decision: dec,
                 })
                 .collect(),
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         }
     }
 

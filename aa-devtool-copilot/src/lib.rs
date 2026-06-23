@@ -39,14 +39,14 @@
 //! [`build_launch_command`]: CopilotAdapter::build_launch_command
 //! [`apply_mcp_governance`]: CopilotAdapter::apply_mcp_governance
 //! [`list_mcp_servers`]: CopilotAdapter::list_mcp_servers
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 
 #![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{
+use aa_devtool_contract::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDecision,
     PolicyDocument,
 };
@@ -76,7 +76,7 @@ const MAX_REQUESTS_PREFIX: &str = "dev_tools.copilot.max_requests:";
 /// Action-pattern prefix in a [`PolicyRule`] that targets an MCP tool.
 /// Full pattern form: `"mcp_tool:<server>:<tool>"`.
 ///
-/// [`PolicyRule`]: aa_core::PolicyRule
+/// [`PolicyRule`]: aa_devtool_contract::PolicyRule
 const MCP_TOOL_PATTERN_PREFIX: &str = "mcp_tool:";
 
 /// VS Code settings key under which MCP server definitions are stored.
@@ -89,7 +89,7 @@ const VSCODE_MCP_SERVERS_KEY: &str = "chat.mcp.servers";
 /// Production code calls [`CopilotAdapter::new`] and relies on platform
 /// defaults.
 ///
-/// [`DevToolAdapter`]: aa_core::DevToolAdapter
+/// [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 #[derive(Debug, Clone)]
 pub struct CopilotAdapter {
     /// Override for `~/.vscode/extensions`. When `None` the adapter resolves
@@ -427,7 +427,7 @@ impl DevToolAdapter for CopilotAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::PolicyRule;
+    use aa_devtool_contract::PolicyRule;
     use tempfile::TempDir;
 
     fn make_extension(base: &Path, name: &str, version: &str) {
@@ -442,7 +442,7 @@ mod tests {
             version: 1,
             name: "test".to_string(),
             rules: vec![],
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         }
     }
 
@@ -454,7 +454,7 @@ mod tests {
                 action_pattern: pattern.to_string(),
                 decision,
             }],
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         }
     }
 
@@ -469,7 +469,7 @@ mod tests {
                     decision: PolicyDecision::Deny,
                 })
                 .collect(),
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         }
     }
 
@@ -583,7 +583,7 @@ mod tests {
                     decision: PolicyDecision::Deny,
                 },
             ],
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         };
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();
@@ -736,7 +736,7 @@ mod tests {
                 action_pattern: "mcp_tool:filesystem:read_file".to_string(),
                 decision: PolicyDecision::RequireApproval,
             }],
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         };
         let adapter = CopilotAdapter::new();
         let json = adapter.generate_managed_settings(&policy).await.unwrap();

@@ -8,7 +8,7 @@ description = "Sample DevToolAdapter implementation for a fictional MyEditor —
 publish = false
 
 [dependencies]
-aa-core      = { path = "../../aa-core", features = ["std", "serde"] }
+aa-devtool-contract = { path = "../../aa-devtool-contract" }
 async-trait  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }

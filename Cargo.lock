@@ -141,7 +141,7 @@ dependencies = [
 name = "aa-devtool"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "dirs",
  "futures",
@@ -154,7 +154,7 @@ dependencies = [
 name = "aa-devtool-claude-code"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "axum",
  "insta",
@@ -168,7 +168,7 @@ dependencies = [
 name = "aa-devtool-codex"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "serde",
  "serde_json",
@@ -188,7 +188,7 @@ dependencies = [
 name = "aa-devtool-copilot"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "serde",
  "serde_json",
@@ -218,7 +218,7 @@ dependencies = [
 name = "aa-devtool-sample-myeditor"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "serde",
  "serde_json",
@@ -230,7 +230,7 @@ dependencies = [
 name = "aa-devtool-windsurf"
 version = "0.0.1-beta.3"
 dependencies = [
- "aa-core",
+ "aa-devtool-contract",
  "async-trait",
  "serde",
  "serde_json",

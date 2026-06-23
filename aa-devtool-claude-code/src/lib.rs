@@ -10,7 +10,7 @@
 //! * **Builds** the launch command wired for AA proxy and identity
 //!   env vars (AAASM-959).
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 
 #![warn(missing_docs)]
 
@@ -20,7 +20,9 @@ mod settings;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_devtool_contract::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+};
 use async_trait::async_trait;
 
 /// Minimum Claude Code CLI version this adapter supports.
@@ -62,7 +64,7 @@ impl VersionProbe for CommandVersionProbe {
 /// and a temporary home directory so detection never touches the real
 /// filesystem or spawns the real `claude` binary.
 ///
-/// [`DevToolAdapter`]: aa_core::DevToolAdapter
+/// [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 pub struct ClaudeCodeAdapter {
     /// Optional override for the `claude` binary path. When set, skips the
     /// `which claude` PATH search and uses this path directly.

@@ -15,14 +15,14 @@
 //! * Builds the `aa run windsurf` launch [`Command`] with governance identity
 //!   and proxy wiring.
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
-//! [`PolicyDocument`]: aa_core::PolicyDocument
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
+//! [`PolicyDocument`]: aa_devtool_contract::PolicyDocument
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{
+use aa_devtool_contract::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDecision,
     PolicyDocument,
 };
@@ -360,7 +360,7 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::PolicyRule;
+    use aa_devtool_contract::PolicyRule;
     use serde_json::Value;
     use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
