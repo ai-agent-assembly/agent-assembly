@@ -87,6 +87,12 @@ pub struct EbpfRuleSet {
     pub path_rules: Vec<PathRule>,
     /// Egress host allowlist (empty means "no egress restriction").
     pub egress_allowlist: Vec<String>,
+    /// Permitted syscall numbers for the `SYSCALL_ALLOWLIST` BPF map
+    /// (AAASM-3635). Empty means "no syscall allowlist" — the enforcement
+    /// probe leaves a monitored PID's syscalls unconstrained. Order-stable
+    /// (ascending by the AST's `BTreeSet` order) so the lowering is
+    /// deterministic.
+    pub syscall_allowlist: Vec<u32>,
 }
 
 impl EbpfRuleSet {
@@ -148,7 +154,23 @@ pub fn lower_to_ebpf(doc: &PolicyDocument) -> EbpfRuleSet {
     EbpfRuleSet {
         path_rules,
         egress_allowlist: doc.egress_allowlist().to_vec(),
+        syscall_allowlist: lower_syscall_allowlist(doc),
     }
+}
+
+/// Lower the [`SyscallAllowlist`](super::syscall::SyscallAllowlist) node to the
+/// flat list of syscall numbers the `SYSCALL_ALLOWLIST` BPF map consumes
+/// (AAASM-3635).
+///
+/// Reuses the same single `lower_to_ebpf` pipeline as the path/egress lowering
+/// — there is no second policy or lowering path. Deterministic: the AST's
+/// `BTreeSet` ordering makes the emitted numbers order-stable, and an absent
+/// node lowers to an empty list (no syscall constraint).
+fn lower_syscall_allowlist(doc: &PolicyDocument) -> Vec<u32> {
+    doc.syscall_allowlist
+        .as_ref()
+        .map(|a| a.iter().map(|s| s.number()).collect())
+        .unwrap_or_default()
 }
 
 /// Push a rule only if no rule with the same pattern+verdict already exists,
