@@ -255,4 +255,10 @@ mod tests {
         assert!(rules.path_rules.is_empty());
     }
 
+    #[test]
+    fn egress_allowlist_is_copied_verbatim() {
+        let rules = lower_to_ebpf(&doc_with(None, vec![], vec!["api.openai.com".to_string()]));
+        assert_eq!(rules.egress_allowlist, vec!["api.openai.com".to_string()]);
+    }
+
 }
