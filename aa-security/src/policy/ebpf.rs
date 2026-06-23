@@ -88,3 +88,17 @@ pub struct EbpfRuleSet {
     /// Egress host allowlist (empty means "no egress restriction").
     pub egress_allowlist: Vec<String>,
 }
+
+impl EbpfRuleSet {
+    /// Convenience: the deny path patterns, in order.
+    pub fn deny_paths(&self) -> impl Iterator<Item = &str> {
+        self.path_rules
+            .iter()
+            .filter(|r| r.verdict == PathVerdict::Deny)
+            .map(|r| r.pattern.as_str())
+    }
+}
+
+/// Well-known sensitive paths denied in-kernel whenever the policy denies the
+/// `file_write` capability. These mirror the kernel probe's sensitive-path
+/// defaults so a "deny file_write" floor is reflected at the kernel boundary,
