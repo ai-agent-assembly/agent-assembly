@@ -110,6 +110,53 @@ pub fn read_guest_bytes(memory: &[u8], ptr: u64, len: u64, max_len: u64) -> Resu
     Ok(&memory[start..end])
 }
 
+/// Per-invocation host-function call counter enforcing
+/// [`crate::policy::HostFnRateLimit`].
+///
+/// Lives in the per-`Store` state so it is reset for every
+/// [`crate::runtime::SandboxRuntime::run_tool`] call (one budget per
+/// invocation, never shared across tenants or calls). Every validated
+/// host-function import calls [`HostFnCounter::charge`] *before* doing its
+/// work; the `max_calls_per_call + 1`-th charge is denied. This is what caps a
+/// fuzzing loop from brute-forcing a host-fn weakness or DoSing the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostFnCounter {
+    calls: u32,
+    max_calls: u32,
+}
+
+impl HostFnCounter {
+    /// Build a counter from the policy's max-calls-per-call budget.
+    pub fn new(max_calls: u32) -> Self {
+        Self { calls: 0, max_calls }
+    }
+
+    /// Account for one host-function call.
+    ///
+    /// Returns `Ok(())` while within budget — incrementing the call count —
+    /// and `Err(RateLimitExceeded)` once `max_calls` charges have already been
+    /// made. Over-limit charges leave the count at the cap so the counter
+    /// never overflows. The caller maps the error to
+    /// [`crate::error::SandboxError::HostFnRateLimited`].
+    pub fn charge(&mut self) -> Result<(), RateLimitExceeded> {
+        if self.calls >= self.max_calls {
+            return Err(RateLimitExceeded);
+        }
+        self.calls += 1;
+        Ok(())
+    }
+
+    /// Number of host-function calls charged so far in this invocation.
+    pub fn calls(self) -> u32 {
+        self.calls
+    }
+}
+
+/// Marker error returned by [`HostFnCounter::charge`] when the per-invocation
+/// host-function budget is exhausted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitExceeded;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +222,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn counter_allows_up_to_max_then_denies() {
+        let mut counter = HostFnCounter::new(3);
+        assert_eq!(counter.charge(), Ok(()));
+        assert_eq!(counter.charge(), Ok(()));
+        assert_eq!(counter.charge(), Ok(()));
+        // The 4th charge (max + 1) is denied.
+        assert_eq!(counter.charge(), Err(RateLimitExceeded));
+        // Subsequent charges keep being denied without overflowing the count.
+        assert_eq!(counter.charge(), Err(RateLimitExceeded));
+        assert_eq!(counter.calls(), 3);
+    }
+
+    #[test]
+    fn counter_with_zero_budget_denies_first_call() {
+        let mut counter = HostFnCounter::new(0);
+        assert_eq!(counter.charge(), Err(RateLimitExceeded));
+        assert_eq!(counter.calls(), 0);
     }
 
     #[test]
