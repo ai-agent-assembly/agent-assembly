@@ -10,6 +10,25 @@
 
 use std::path::PathBuf;
 
+/// Least-privilege access level granted to a single preopened directory.
+///
+/// `DirPerms::all()` / `FilePerms::all()` is an over-grant: a tool that only
+/// needs to read a mounted directory would also get write/create/delete,
+/// widening both intra-sandbox impact (overwrite host files in the mount) and
+/// post-escape blast radius. This enum makes every grant explicit and defaults
+/// to the most-restrictive [`PreopenAccess::ReadOnly`]; write access is opt-in
+/// per directory. (AAASM-3618.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreopenAccess {
+    /// Read-only: the guest may open, read, and list within the mount but
+    /// cannot write, create, or delete. The [`Default`].
+    #[default]
+    ReadOnly,
+    /// Read-write: the guest may additionally write, create, and delete
+    /// within the mount. Granted only when the workload demonstrably needs it.
+    ReadWrite,
+}
+
 /// Mapping of one host directory into the WASI sandbox.
 ///
 /// Each entry becomes a single
@@ -18,6 +37,9 @@ use std::path::PathBuf;
 /// only resolve WASI `path_open` calls within that subtree; anything else
 /// surfaces as `errno` `ENOTCAPABLE` and bubbles up as
 /// [`crate::error::SandboxError::FilesystemBlocked`].
+///
+/// `access` is the least-privilege grant for this mount; it defaults to
+/// [`PreopenAccess::ReadOnly`] so a directory is never silently writable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreopenedDir {
     /// Real path on the host filesystem.
@@ -25,6 +47,31 @@ pub struct PreopenedDir {
     /// Path the guest sees this directory mounted at (e.g. `"."` for the
     /// guest's working directory or `"/data"` for a labelled mount).
     pub guest_path: String,
+    /// Least-privilege access level for this mount. Defaults (via
+    /// [`PreopenedDir::read_only`]) to [`PreopenAccess::ReadOnly`]; use
+    /// [`PreopenedDir::read_write`] to opt into write access.
+    pub access: PreopenAccess,
+}
+
+impl PreopenedDir {
+    /// Construct a read-only preopened directory (the least-privilege case).
+    pub fn read_only(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            guest_path: guest_path.into(),
+            access: PreopenAccess::ReadOnly,
+        }
+    }
+
+    /// Construct a read-write preopened directory. Use only when the workload
+    /// demonstrably needs to write within the mount.
+    pub fn read_write(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            guest_path: guest_path.into(),
+            access: PreopenAccess::ReadWrite,
+        }
+    }
 }
 
 /// Per-invocation CPU + memory budget for a sandboxed tool.
