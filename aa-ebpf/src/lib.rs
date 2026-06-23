@@ -116,3 +116,18 @@ pub static AA_TLS_BPF: &[u8] = aya::include_bytes_aligned!(concat!(
     env!("OUT_DIR"),
     "/aa-ebpf-probes/bpfel-unknown-none/release/aa-tls-probes"
 ));
+
+/// Compiled BPF bytecode for the syscall-allowlist enforcement probe
+/// (AAASM-3631).
+///
+/// Embedded from `aa-ebpf-probes/src/syscall_guard.rs` at build time.
+/// Contains one ENFORCING program: `aa_syscall_guard` at
+/// `raw_syscalls/sys_enter`. Pass this slice to [`aya::Ebpf::load`] to obtain
+/// a handle.
+///
+/// Only meaningful on Linux — on other platforms this constant is absent.
+#[cfg(target_os = "linux")]
+pub static AA_SYSCALL_GUARD_BPF: &[u8] = aya::include_bytes_aligned!(concat!(
+    env!("OUT_DIR"),
+    "/aa-ebpf-probes/bpfel-unknown-none/release/aa-syscall-guard"
+));

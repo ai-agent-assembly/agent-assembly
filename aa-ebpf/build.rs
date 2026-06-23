@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // lib.rs embeds the binary at OUT_DIR/aa-ebpf-probes/bpfel-unknown-none/release/aa-hello
         let target_dir = PathBuf::from(&out_dir).join("aa-ebpf-probes");
         let release_dir = target_dir.join("bpfel-unknown-none/release");
-        let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes"];
+        let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes", "aa-syscall-guard"];
 
         let build_ok = if let Some(dir) = probes_dir.as_ref() {
             // Run `cargo build --release` inside the probes workspace.
@@ -121,13 +121,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         emit_object_digest(&release_dir, "aa-file-io", "AA_FILE_IO_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-exec-probes", "AA_EXEC_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-tls-probes", "AA_TLS_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-syscall-guard", "AA_SYSCALL_GUARD_BPF_SHA256")?;
     }
 
     // On non-Linux the BPF statics in lib.rs are cfg'd out, so the digest env
     // vars are never read; emit empty placeholders so any `env!()` resolves.
     #[cfg(not(target_os = "linux"))]
     {
-        for var in ["AA_FILE_IO_BPF_SHA256", "AA_EXEC_BPF_SHA256", "AA_TLS_BPF_SHA256"] {
+        for var in [
+            "AA_FILE_IO_BPF_SHA256",
+            "AA_EXEC_BPF_SHA256",
+            "AA_TLS_BPF_SHA256",
+            "AA_SYSCALL_GUARD_BPF_SHA256",
+        ] {
             println!("cargo:rustc-env={var}=");
         }
     }
