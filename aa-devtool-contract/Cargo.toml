@@ -1,0 +1,21 @@
+[package]
+name = "aa-devtool-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capability-restricted facade over aa-core for aa-devtool-* plugins (AAASM-3565 supply-chain hardening)"
+publish = false  # internal contract crate; not a published surface
+
+# AAASM-3565 supply-chain hardening: this crate is the SINGLE dependency
+# surface every `aa-devtool-*` plugin is allowed to link. It depends on the
+# full `aa-core` internally but re-exports only the narrow DevToolAdapter
+# capability set (see src/lib.rs). Plugins depend on THIS crate, never on
+# `aa-core` directly, so a poisoned plugin PR can no longer reach unrelated
+# aa-core subsystems (identity, storage, gateway tokens, …) — such an import
+# becomes a compile error rather than a silent capability.
+[dependencies]
+aa-core = { path = "../aa-core", features = ["std", "serde"] }
+
+[lints]
+workspace = true

@@ -15,7 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_devtool_contract::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+};
 use async_trait::async_trait;
 
 mod approval;

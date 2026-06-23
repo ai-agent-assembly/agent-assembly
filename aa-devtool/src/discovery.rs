@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use aa_core::{DevToolAdapter, DevToolInfo};
+use aa_devtool_contract::{DevToolAdapter, DevToolInfo};
 use futures::future;
 
 /// Runs all registered [`DevToolAdapter`]s concurrently and collects detected tools.
@@ -75,8 +75,8 @@ impl DiscoveryService {
 mod tests {
     use std::path::PathBuf;
 
-    use aa_core::policy::PolicyDocument;
-    use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+    use aa_devtool_contract::PolicyDocument;
+    use aa_devtool_contract::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
     use async_trait::async_trait;
 
     use super::DiscoveryService;

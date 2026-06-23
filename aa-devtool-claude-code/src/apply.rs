@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use aa_core::{AdapterError, McpServerInfo};
+use aa_devtool_contract::{AdapterError, McpServerInfo};
 
 /// Injectable path resolver for the settings file location.
 ///

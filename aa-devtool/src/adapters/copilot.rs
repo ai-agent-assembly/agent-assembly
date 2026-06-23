@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use aa_core::policy::PolicyDocument;
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+use aa_devtool_contract::PolicyDocument;
+use aa_devtool_contract::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
 use async_trait::async_trait;
 
 /// Adapter for GitHub Copilot (VS Code extension).
@@ -96,8 +96,8 @@ impl DevToolAdapter for CopilotAdapter {
 
 #[cfg(test)]
 mod tests {
-    use aa_core::policy::PolicyDocument;
-    use aa_core::GovernanceLevel;
+    use aa_devtool_contract::GovernanceLevel;
+    use aa_devtool_contract::PolicyDocument;
 
     use super::*;
 
@@ -112,7 +112,7 @@ mod tests {
             version: 1,
             name: "test".into(),
             rules: vec![],
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         };
         assert!(CopilotAdapter.generate_managed_settings(&policy).await.is_err());
     }

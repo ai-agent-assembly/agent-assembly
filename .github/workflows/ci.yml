@@ -553,12 +553,38 @@ jobs:
 
   deny:
     needs: [changes]
+    # AAASM-3565 supply-chain advisory gate. The `rust` filter already matches
+    # aa-*/** (so aa-devtool*/** and aa-devtool-contract/**), Cargo.toml,
+    # Cargo.lock and deny.toml — any devtool or manifest change runs this job.
     if: needs.changes.outputs.rust == 'true'
     name: Dependency checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.0
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # AAASM-3565 devtool contract boundary guard: every aa-devtool-* plugin
+      # must depend on aa-devtool-contract (the capability-restricted facade),
+      # never on aa-core directly. A PR re-adding a raw aa-core dependency would
+      # re-open the full-surface hole, so fail here rather than rely on review.
+      - name: Enforce devtool contract boundary (no direct aa-core dep)
+        run: |
+          set -euo pipefail
+          # The aa-devtool-contract facade is the ONE crate allowed to depend on
+          # aa-core; every other aa-devtool-* plugin must go through it.
+          status=0
+          for manifest in aa-devtool*/Cargo.toml; do
+            case "$manifest" in
+              aa-devtool-contract/Cargo.toml) continue ;;
+            esac
+            if grep -qE '^[[:space:]]*aa-core\b' "$manifest"; then
+              echo "::error file=$manifest::declares a direct aa-core dependency; depend on aa-devtool-contract instead (AAASM-3565)"
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: no aa-devtool-* plugin depends on aa-core directly."
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check

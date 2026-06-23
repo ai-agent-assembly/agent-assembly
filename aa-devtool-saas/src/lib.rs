@@ -17,7 +17,7 @@
 //! The webhook handler `aa-api::routes::devtools::saas_webhook` consumes
 //! [`signature::verify`] for HMAC validation and [`parser::parse`] for body
 //! decoding, then maps the resulting [`event::SaasAuditEvent`] into the
-//! existing `aa_core::AuditEntry` audit pipeline (Epic 6) — no new
+//! existing `aa_devtool_contract::AuditEntry` audit pipeline (Epic 6) — no new
 //! persistence path is introduced.
 //!
 //! # Modules
@@ -31,8 +31,8 @@
 //! | [`signature`] | Per-provider HMAC-SHA256 webhook signature verification |
 //! | [`overlay`] | Per-provider governance overlay types |
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
-//! [`GovernanceLevel::L1Observe`]: aa_core::GovernanceLevel::L1Observe
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
+//! [`GovernanceLevel::L1Observe`]: aa_devtool_contract::GovernanceLevel::L1Observe
 //! [`SaasCodingAgentAdapter`]: adapter::SaasCodingAgentAdapter
 //! [`SaasAuditEvent`]: event::SaasAuditEvent
 

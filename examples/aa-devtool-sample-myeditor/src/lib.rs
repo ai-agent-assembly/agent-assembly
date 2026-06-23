@@ -8,7 +8,7 @@
 //! per-tool adapters (Claude Code, Codex, Copilot, Windsurf, SaaS) are
 //! tracked separately in AAASM-201..205 and AAASM-918.
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 //! [`docs/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/master/docs/devtools/plugins.md
 
 #![warn(missing_docs)]
@@ -16,7 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_devtool_contract::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

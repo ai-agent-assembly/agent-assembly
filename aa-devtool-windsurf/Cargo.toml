@@ -8,7 +8,7 @@ repository.workspace = true
 description = "DevToolAdapter for Windsurf Cascade — admin settings sync, MCP registry control, terminal allow/deny"
 
 [dependencies]
-aa-core      = { path = "../aa-core", version = "0.0.1-beta.2", features = ["std", "serde"] }
+aa-devtool-contract = { path = "../aa-devtool-contract" }
 async-trait  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }

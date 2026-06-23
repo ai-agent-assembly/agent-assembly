@@ -3,18 +3,19 @@
 //! These tests double as the **reference contract suite** plugin
 //! authors should mirror in their own out-of-tree adapter crates: each
 //! test corresponds to one [`DevToolAdapter`] method's documented
-//! contract from [`aa-core`'s rustdoc][`DevToolAdapter`]. When the
+//! contract from the [`DevToolAdapter`] rustdoc (re-exported via the
+//! `aa-devtool-contract` capability facade). When the
 //! workspace later grows a shared `aa-devtool-contract-tests` crate
 //! (currently out of scope; see `docs/devtools/plugins.md` "What's not
 //! yet in scope"), this file moves there and gets imported by every
 //! adapter crate.
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 //! [`MyEditorAdapter`]: aa_devtool_sample_myeditor::MyEditorAdapter
 
 use std::path::PathBuf;
 
-use aa_core::{DevToolAdapter, DevToolKind, GovernanceLevel};
+use aa_devtool_contract::{DevToolAdapter, DevToolKind, GovernanceLevel};
 use aa_devtool_sample_myeditor::{MyEditorAdapter, MYEDITOR_BIN_ENV, MYEDITOR_KIND_ID};
 
 /// Path to the in-repo MCP fixture, computed at compile time so tests
@@ -27,7 +28,7 @@ fn adapter() -> MyEditorAdapter {
     MyEditorAdapter::new(fixture_path())
 }
 
-// --- Object-safety / Send + Sync (mirrors aa-core's trait_is_object_safe) --
+// --- Object-safety / Send + Sync (mirrors the contract's trait_is_object_safe) --
 
 fn _assert_object_safe(_: &dyn DevToolAdapter) {}
 fn _assert_send_sync<T: Send + Sync>() {}
@@ -70,11 +71,11 @@ fn detect_returns_devtoolinfo_when_env_var_set() {
 
 #[tokio::test]
 async fn generate_managed_settings_returns_valid_json() {
-    let policy = aa_core::PolicyDocument {
+    let policy = aa_devtool_contract::PolicyDocument {
         version: 1,
         name: "sample-test-policy".into(),
         rules: vec![],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -147,7 +148,7 @@ async fn list_mcp_servers_returns_io_error_for_missing_fixture() {
     let err = a.list_mcp_servers().await.expect_err("should fail");
     // The Io variant carries the underlying NotFound — its Display
     // message is the OS-level "No such file or directory" string.
-    assert!(matches!(err, aa_core::AdapterError::Io(_)));
+    assert!(matches!(err, aa_devtool_contract::AdapterError::Io(_)));
 }
 
 #[tokio::test]
@@ -159,7 +160,7 @@ async fn list_mcp_servers_returns_mcp_config_failed_on_malformed_json() {
         .list_mcp_servers()
         .await
         .expect_err("should fail");
-    assert!(matches!(err, aa_core::AdapterError::McpConfigFailed(_)));
+    assert!(matches!(err, aa_devtool_contract::AdapterError::McpConfigFailed(_)));
 }
 
 // --- apply_mcp_governance + governance_level ------------------------------
