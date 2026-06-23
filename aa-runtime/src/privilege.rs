@@ -129,3 +129,12 @@ fn read_cap_eff() -> Option<u64> {
     }
     None
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unprivileged_process_passes_self_check() {
+        // The test runner is unprivileged, so the effective set must be clean.
+        assert!(enforce_least_privilege().is_ok());
+    }
+}
