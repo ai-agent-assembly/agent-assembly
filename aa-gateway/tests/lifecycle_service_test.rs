@@ -17,11 +17,23 @@ use tonic::transport::Server;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/// The deterministic test signing key whose public half is
+/// [`test_ed25519_public_key_hex`].
+fn test_signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[42u8; 32])
+}
+
 /// Generate a hex-encoded Ed25519 public key for testing.
 fn test_ed25519_public_key_hex() -> String {
-    use ed25519_dalek::SigningKey;
-    let signing_key = SigningKey::from_bytes(&[42u8; 32]);
-    hex::encode(signing_key.verifying_key().as_bytes())
+    hex::encode(test_signing_key().verifying_key().as_bytes())
+}
+
+/// AAASM-3591: build a valid possession proof — an Ed25519 signature over the
+/// registering did (`agent_id.agent_id`) with the test signing key — so Register
+/// admits the request and mints a credential_token.
+fn test_possession_proof(did: &str) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    test_signing_key().sign(did.as_bytes()).to_bytes().to_vec()
 }
 
 fn test_agent_id() -> ProtoAgentId {
@@ -110,6 +122,7 @@ async fn full_lifecycle_register_heartbeat_control_stream_deregister() {
             tool_names: vec!["tool_a".into()],
             public_key: public_key.clone(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -243,7 +256,7 @@ async fn register_with_sdk_derived_did_key_is_accepted() {
             agent_id: Some(ProtoAgentId {
                 org_id: "org-test".into(),
                 team_id: "team-test".into(),
-                agent_id: did,
+                agent_id: did.clone(),
             }),
             name: "sdk-derived-agent".into(),
             framework: "custom".into(),
@@ -252,6 +265,7 @@ async fn register_with_sdk_derived_did_key_is_accepted() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof(&did),
             ..Default::default()
         })
         .await
@@ -281,6 +295,7 @@ async fn heartbeat_with_wrong_token_returns_unauthenticated() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -335,6 +350,7 @@ async fn duplicate_register_returns_already_exists() {
         tool_names: vec![],
         public_key: test_ed25519_public_key_hex(),
         metadata: Default::default(),
+        possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
         ..Default::default()
     };
 
@@ -368,6 +384,7 @@ async fn heartbeat_returns_should_suspend_true_for_suspended_agent() {
             tool_names: vec![],
             public_key,
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -418,6 +435,7 @@ async fn heartbeat_returns_should_suspend_false_for_active_agent() {
             tool_names: vec![],
             public_key,
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -465,6 +483,7 @@ async fn heartbeat_auto_resumes_budget_suspended_agent_when_budget_reset() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -520,6 +539,7 @@ async fn heartbeat_does_not_resume_manually_suspended_agent() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -574,6 +594,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T"),
             ..Default::default()
         })
         .await
@@ -596,6 +617,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T"),
             ..Default::default()
         })
         .await
@@ -635,6 +657,7 @@ async fn register_without_topology_returns_none_echo_fields() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -671,6 +694,7 @@ async fn root_agent_id_for_root_agent_is_set_to_self() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -712,6 +736,7 @@ async fn root_agent_id_chains_3_levels() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T"),
             ..Default::default()
         })
         .await
@@ -734,6 +759,7 @@ async fn root_agent_id_chains_3_levels() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T"),
             ..Default::default()
         })
         .await
@@ -756,6 +782,7 @@ async fn root_agent_id_chains_3_levels() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into()),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD4T"),
             ..Default::default()
         })
         .await
@@ -954,6 +981,7 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("does-not-exist".into()),
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
@@ -997,6 +1025,7 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             enforcement_mode: ProtoMode::Observe as i32,
+            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
         })
         .await
