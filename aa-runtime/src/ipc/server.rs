@@ -90,6 +90,8 @@ impl IpcServer {
         let max_connections = self.config.max_connections;
         // Monotonically increasing connection ID — unique per accepted connection.
         let next_conn_id = Arc::new(AtomicU64::new(0));
+        // AAASM-3579: the UID every accepted peer must match.
+        let runtime_uid = crate::ipc::peercred::current_runtime_uid();
 
         tracing::info!("IPC server accept loop started");
 
@@ -106,6 +108,34 @@ impl IpcServer {
                             continue;
                         }
                         Ok((stream, _addr)) => {
+                            // AAASM-3579: reject any peer whose process UID does
+                            // not match the runtime's own UID before doing any
+                            // work for it. Defence-in-depth over the 0600 socket
+                            // perms — closes the "other local process forges
+                            // events / impersonates the runtime" vector.
+                            match stream.peer_cred() {
+                                Ok(cred) => {
+                                    let peer_uid = cred.uid();
+                                    if !crate::ipc::peercred::peer_uid_is_allowed(peer_uid, runtime_uid) {
+                                        tracing::warn!(
+                                            peer_uid,
+                                            runtime_uid,
+                                            "rejecting IPC connection — peer UID does not match runtime UID"
+                                        );
+                                        drop(stream);
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "rejecting IPC connection — could not read peer credentials"
+                                    );
+                                    drop(stream);
+                                    continue;
+                                }
+                            }
+
                             // Acquire a connection permit (non-blocking try first).
                             let permit = match Arc::clone(&semaphore).try_acquire_owned() {
                                 Ok(p) => p,
