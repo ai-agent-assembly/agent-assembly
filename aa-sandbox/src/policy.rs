@@ -68,6 +68,44 @@ impl Default for SandboxLimits {
     }
 }
 
+/// Per-tenant call budget for host-function imports.
+///
+/// Host functions are the classic sandbox-escape conduit: an attacker fuzzes
+/// a weakly-validated import until it yields a memory-safety or
+/// path-traversal primitive. A per-tenant call rate-limit caps how many times
+/// a single invocation can drive any one host-function import, so a fuzzing
+/// loop cannot brute-force a weakness or DoS the host. The limit is enforced
+/// per [`crate::runtime::SandboxRuntime::run_tool`] call (AAASM-3617); this
+/// struct is the policy half (AAASM-3613).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostFnRateLimit {
+    /// Maximum number of host-function calls a single
+    /// [`crate::runtime::SandboxRuntime::run_tool`] invocation may make.
+    /// Counted across all validated host-function imports; the
+    /// `max_calls_per_call + 1`-th call is denied with
+    /// [`crate::error::SandboxError::HostFnRateLimited`].
+    pub max_calls_per_call: u32,
+    /// Optional finer-grained per-window cap. `None` (the [`Default`]) means
+    /// only `max_calls_per_call` applies; `Some(n)` reserves a tighter
+    /// rolling-window budget for a future windowed counter. Carried on the
+    /// policy now so the on-disk contract is stable before the windowed
+    /// enforcement lands.
+    pub window_calls: Option<u32>,
+}
+
+impl Default for HostFnRateLimit {
+    /// Conservative default: at most 1024 host-function calls per invocation,
+    /// no extra window cap. Modest enough that a fuzzing loop trips the limit
+    /// quickly, generous enough that a legitimate tool's handful of host-fn
+    /// calls is never throttled.
+    fn default() -> Self {
+        Self {
+            max_calls_per_call: 1_024,
+            window_calls: None,
+        }
+    }
+}
+
 /// Sandbox configuration consumed by [`crate::runtime::SandboxRuntime`].
 ///
 /// An empty `preopened_dirs` list is the most-restrictive case: the guest
