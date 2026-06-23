@@ -56,6 +56,7 @@
 
 - [Overview](security/overview.md)
 - [Threat model](security/threat-model.md)
+- [Release threat model](security/release-threat-model.md)
 - [Three-layer defense in depth](security/three-layer-defense.md)
 - [Protection and enforcement](security/protection-model.md)
 - [Trust boundaries](security/trust-boundaries.md)
