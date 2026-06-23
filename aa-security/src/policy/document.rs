@@ -55,3 +55,18 @@ pub struct PolicyDocument {
     pub tools: Vec<ToolRule>,
 }
 
+impl PolicyDocument {
+    /// Return the capability deny set, or an empty slice if unset.
+    pub fn denied_capabilities(&self) -> Vec<&super::capability::Capability> {
+        self.capabilities
+            .as_ref()
+            .map(|c| c.deny.iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// Return the network egress allowlist, or an empty slice if unset.
+    pub fn egress_allowlist(&self) -> &[String] {
+        self.network.as_ref().map(|n| n.allowlist.as_slice()).unwrap_or(&[])
+    }
+}
+
