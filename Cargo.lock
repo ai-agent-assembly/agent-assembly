@@ -340,6 +340,7 @@ dependencies = [
  "aa-proxy",
  "aa-runtime",
  "aa-sandbox",
+ "aa-sdk-client",
  "aa-security",
  "aa-storage-postgres",
  "aa-storage-sqlite-buffer",

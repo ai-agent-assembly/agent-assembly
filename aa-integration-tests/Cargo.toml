@@ -49,6 +49,7 @@ aa-proto    = { path = "../aa-proto" }
 aa-proxy    = { path = "../aa-proxy" }
 aa-runtime  = { path = "../aa-runtime" }
 aa-sandbox  = { path = "../aa-sandbox" }
+aa-sdk-client = { path = "../aa-sdk-client" }
 
 # AAASM-2394 audit-consumer verification (Docker-backed) test deps.
 async-nats  = { workspace = true }
