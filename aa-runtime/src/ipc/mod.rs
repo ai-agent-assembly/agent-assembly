@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod message;
+pub mod peercred;
 pub mod server;
 
 pub use message::{IpcFrame, IpcResponse};
