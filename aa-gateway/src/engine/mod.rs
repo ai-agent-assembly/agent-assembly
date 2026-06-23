@@ -511,6 +511,21 @@ impl PolicyEngine {
 
         for path in &entries {
             let yaml = std::fs::read_to_string(path).map_err(PolicyLoadError::Io)?;
+            // Fail closed on an empty (whitespace-only) document. On Linux
+            // (inotify), a truncate+write overwrite emits a Modify event for
+            // the 0-byte file *before* the new content lands; an empty YAML
+            // otherwise parses as a valid Global-scoped allow-all document,
+            // so re-reading the directory mid-truncation would silently drop
+            // a deny doc and degrade the live cascade to allow-all. Treat it
+            // as a parse error so the watcher preserves the current cascade —
+            // mirroring the single-file watcher's empty-file guard
+            // (`watcher::handle_fs_event`). (AAASM-3561)
+            if yaml.trim().is_empty() {
+                return Err(PolicyLoadError::Validation(vec![crate::policy::ValidationError::new(
+                    "(document)",
+                    format!("empty policy document: {}", path.display()),
+                )]));
+            }
             let output = PolicyValidator::from_yaml(&yaml).map_err(PolicyLoadError::Validation)?;
             let doc = output.document;
 
