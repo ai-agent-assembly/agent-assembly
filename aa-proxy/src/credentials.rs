@@ -30,13 +30,23 @@ use zeroize::Zeroize;
 /// outbound request buffer.
 pub struct Secret {
     bytes: Vec<u8>,
+    /// Whether the backing pages were successfully `mlock`ed (AAASM-3582), so
+    /// `Drop` knows to `munlock` them. Always `false` where mlock is
+    /// unavailable / unprivileged / unsupported.
+    mlocked: bool,
 }
 
 impl Secret {
     /// Wrap raw credential bytes. The caller's copy is the only other copy;
     /// this one is zeroized on drop.
+    ///
+    /// On Unix the backing pages are best-effort `mlock`ed (AAASM-3582) so the
+    /// plaintext is never written to swap. The `bytes` buffer is never mutated
+    /// or reallocated after this point (only zeroized in place on drop), so the
+    /// locked page range stays valid for the secret's whole lifetime.
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
+        let mlocked = lock_memory(&bytes);
+        Self { bytes, mlocked }
     }
 
     /// Borrow the plaintext credential bytes.
@@ -52,9 +62,61 @@ impl Secret {
 
 impl Drop for Secret {
     fn drop(&mut self) {
+        // Wipe the plaintext first, then release the lock on the (now-zero)
+        // pages. Order matters only for hygiene — both run unconditionally.
         self.bytes.zeroize();
+        if self.mlocked {
+            unlock_memory(&self.bytes);
+        }
     }
 }
+
+/// Best-effort `mlock` of the page range backing `buf` (AAASM-3582).
+///
+/// Returns `true` when the lock succeeded. Locking keeps the plaintext key out
+/// of disk-backed swap / hibernation images. This is hardening, not a hard
+/// requirement: an empty buffer, a non-Unix target, or an `EPERM`/`ENOMEM`
+/// (unprivileged / `RLIMIT_MEMLOCK` exhausted) failure logs a single warning
+/// and continues with `false`.
+#[cfg(unix)]
+fn lock_memory(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    // SAFETY: `buf` points to `buf.len()` valid, initialised bytes owned by the
+    // caller's `Vec`; `mlock` only pins those pages in RAM and never mutates or
+    // reads through the pointer.
+    let rc = unsafe { libc::mlock(buf.as_ptr() as *const libc::c_void, buf.len()) };
+    if rc == 0 {
+        true
+    } else {
+        tracing::warn!("mlock of credential pages failed (continuing without swap protection)");
+        false
+    }
+}
+
+/// Release a previously successful [`lock_memory`] (AAASM-3582).
+#[cfg(unix)]
+fn unlock_memory(buf: &[u8]) {
+    if buf.is_empty() {
+        return;
+    }
+    // SAFETY: same invariants as `lock_memory`; only called when the matching
+    // `mlock` succeeded for this exact range.
+    let _ = unsafe { libc::munlock(buf.as_ptr() as *const libc::c_void, buf.len()) };
+}
+
+/// Non-Unix fallback: mlock is unavailable, so secrets are not pinned. The
+/// zeroize + redaction protections still apply.
+#[cfg(not(unix))]
+fn lock_memory(_buf: &[u8]) -> bool {
+    tracing::debug!("mlock not available on this platform; credential pages not pinned");
+    false
+}
+
+/// Non-Unix fallback no-op counterpart to [`lock_memory`].
+#[cfg(not(unix))]
+fn unlock_memory(_buf: &[u8]) {}
 
 impl fmt::Debug for Secret {
     /// Redact the key material — never print the bytes.
@@ -231,6 +293,20 @@ mod tests {
             "zeroize left plaintext behind: {observed:?}"
         );
         drop(bytes);
+    }
+
+    #[test]
+    fn mlocked_secret_constructs_and_exposes_without_leaking() {
+        // AAASM-3582: a Secret built via `new` (which best-effort mlocks on
+        // Unix, no-ops elsewhere) must construct successfully, expose its bytes
+        // for injection, and still redact under Debug. mlock failures are
+        // tolerated, so this asserts behaviour holds regardless of outcome.
+        let secret = Secret::new(b"sk-mlock-me".to_vec());
+        assert_eq!(secret.expose(), b"sk-mlock-me");
+        let dbg = format!("{secret:?}");
+        assert!(!dbg.contains("sk-mlock-me"), "Debug leaked key: {dbg}");
+        // Dropping must unlock + zeroize without panicking.
+        drop(secret);
     }
 
     #[test]
