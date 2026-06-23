@@ -63,3 +63,26 @@ impl std::fmt::Display for PrivilegeError {
 
 impl std::error::Error for PrivilegeError {}
 
+/// Drop the forbidden capabilities from the bounding set, then assert none
+/// remain in the effective set. Fail-fast if the invariant is violated.
+///
+/// Returns `Ok(())` on success. On Linux, returns [`PrivilegeError`] if a
+/// forbidden capability is still effective after the drop. On non-Linux this is
+/// an unconditional `Ok(())`.
+pub fn enforce_least_privilege() -> Result<(), PrivilegeError> {
+    #[cfg(target_os = "linux")]
+    {
+        drop_forbidden_from_bounding_set();
+        let held = effective_forbidden_caps();
+        if !held.is_empty() {
+            return Err(PrivilegeError { held });
+        }
+        tracing::info!("least-privilege self-check passed: no CAP_BPF/CAP_PERFMON/CAP_SYS_ADMIN held");
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
+}
+
