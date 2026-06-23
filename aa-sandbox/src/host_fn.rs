@@ -109,3 +109,78 @@ pub fn read_guest_bytes(memory: &[u8], ptr: u64, len: u64, max_len: u64) -> Resu
     // is always in bounds.
     Ok(&memory[start..end])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX: u64 = 4096;
+
+    #[test]
+    fn in_range_read_succeeds() {
+        let mem = b"hello, sandbox";
+        let got = read_guest_bytes(mem, 7, 7, MAX).expect("in-range read must succeed");
+        assert_eq!(got, b"sandbox");
+    }
+
+    #[test]
+    fn out_of_range_ptr_is_rejected() {
+        let mem = [0u8; 16];
+        // ptr past the end of memory.
+        assert_eq!(read_guest_bytes(&mem, 17, 1, MAX), Err(HostFnError::OutOfBounds));
+        // ptr in range but ptr + len runs past the end.
+        assert_eq!(read_guest_bytes(&mem, 10, 10, MAX), Err(HostFnError::OutOfBounds));
+    }
+
+    #[test]
+    fn ptr_plus_len_overflow_is_rejected() {
+        let mem = [0u8; 16];
+        // ptr + len wraps u64; must be caught as overflow, never aliased low.
+        let res = validate_guest_ptr_len(mem.len(), u64::MAX, 5, u64::MAX);
+        assert_eq!(res, Err(HostFnError::LengthOverflow));
+    }
+
+    #[test]
+    fn oversized_len_is_rejected_before_bounds() {
+        let mem = [0u8; 16];
+        // len exceeds the per-call cap — rejected as too-large even though it
+        // would also be out of bounds.
+        assert_eq!(read_guest_bytes(&mem, 0, MAX + 1, MAX), Err(HostFnError::LengthTooLarge));
+    }
+
+    #[test]
+    fn zero_length_read_is_allowed_in_range() {
+        let mem = [1u8; 8];
+        assert_eq!(read_guest_bytes(&mem, 4, 0, MAX), Ok(&[][..]));
+        // Zero-length read at exactly one-past-the-end is also valid.
+        assert_eq!(read_guest_bytes(&mem, 8, 0, MAX), Ok(&[][..]));
+    }
+
+    #[test]
+    fn full_memory_read_succeeds() {
+        let mem = [9u8; 32];
+        let got = read_guest_bytes(&mem, 0, 32, MAX).expect("full read must succeed");
+        assert_eq!(got.len(), 32);
+    }
+
+    #[test]
+    fn validated_range_never_exceeds_memory() {
+        // Property-style spot check: any accepted range stays within memory.
+        let mem_len = 64usize;
+        for ptr in 0..70u64 {
+            for len in 0..70u64 {
+                if let Ok((start, end)) = validate_guest_ptr_len(mem_len, ptr, len, MAX) {
+                    assert!(start <= end);
+                    assert!(end <= mem_len);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn errno_mapping_is_deterministic() {
+        assert_eq!(HostFnError::OutOfBounds.errno(), 21);
+        assert_eq!(HostFnError::LengthOverflow.errno(), 21);
+        assert_eq!(HostFnError::LengthTooLarge.errno(), 28);
+    }
+}
