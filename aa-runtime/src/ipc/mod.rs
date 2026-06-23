@@ -1,6 +1,7 @@
 //! Unix domain socket IPC server for local SDK-to-runtime communication.
 
 pub mod codec;
+pub mod handshake;
 pub mod message;
 pub mod peercred;
 pub mod server;
