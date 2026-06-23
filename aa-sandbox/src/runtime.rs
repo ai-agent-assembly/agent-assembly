@@ -27,7 +27,7 @@ use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
 use crate::host_fn::HostFnCounter;
-use crate::policy::SandboxConfig;
+use crate::policy::{PreopenAccess, SandboxConfig};
 
 /// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
 /// when a `memory.grow` would exceed the configured byte cap. The
@@ -204,13 +204,15 @@ impl SandboxRuntime {
 
         let mut builder = WasiCtx::builder();
         for preopen in &self.config.preopened_dirs {
+            // Least-privilege grant: read-only unless the policy explicitly
+            // opted this mount into read-write. Avoids the DirPerms::all() /
+            // FilePerms::all() over-grant. (AAASM-3618.)
+            let (dir_perms, file_perms) = match preopen.access {
+                PreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
+                PreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            };
             builder
-                .preopened_dir(
-                    &preopen.host_path,
-                    &preopen.guest_path,
-                    DirPerms::all(),
-                    FilePerms::all(),
-                )
+                .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
