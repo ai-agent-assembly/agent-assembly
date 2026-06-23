@@ -14,11 +14,18 @@ gates, and downstream channel matrix live in
 
 ## Release-flow index (cut → fan-out → validate → tap-merge)
 
-A full release is a four-stage relay across three sibling skills. WHY this is
-split: each stage has a different write-authority and a different owner, so
-collapsing them invites an LLM to "fix" downstream channels from inside the
-cut. Run them in order:
+A full release is a relay across sibling skills. WHY this is split: each stage
+has a different write-authority and a different owner, so collapsing them invites
+an LLM to "fix" downstream channels from inside the cut. Run them in order:
 
+0. **`/release-security-gate <X>`** (stage 0, pre-cut gate) — run the release-gate
+   security review scaled by release type and commit the PASS sign-off artifact
+   under `docs/release/security-signoff/`. The gate wraps the built-in
+   `/security-review` scanner (and, at major tier, the
+   `anthropics/claude-code-security-review` Action). A **BLOCK** verdict (or any
+   unaddressed High/Critical) stops the release *before* this skill runs;
+   `scripts/release-readiness.sh` check 11 enforces it. See
+   [`release-security-gate/SKILL.md`](../release-security-gate/SKILL.md).
 1. **`release-tag-cut`** (this skill, write) — bump the workspace version, tag,
    push the tag. Ends the moment `git push remote v<X>` fires `release.yml`.
 2. **fan-out** (automatic, owned by `release.yml`) — the pushed tag triggers
@@ -73,6 +80,10 @@ specific. Pick a different path in any of the following cases:
   follow-up patch tag coordinated via the RUNBOOK; do not re-cut the same tag.
 - **Pre-conditions not met** — if `master` is dirty, behind `remote/master`,
   or has a red CI run, stop and surface the gap to the operator.
+- **No PASS security sign-off for `<X>`** — if
+  `docs/release/security-signoff/v<X>.md` is missing or its verdict is not
+  `PASS`, stop. Run `/release-security-gate <X>` (stage 0) first; do not cut a tag
+  past an unaddressed High/Critical finding.
 
 ## Downstream SDK coordination
 
@@ -121,6 +132,9 @@ remediate from inside this skill. Full detail in
 2. **On `master`, in sync with `remote/master`** (fetch first; zero ahead/behind).
 3. **Most recent CI run on master is green** (`gh run list --branch master …`).
 4. **Target version `<X>` provided** — the skill does not invent or bump it.
+5. **Security sign-off PASS for `<X>`** — `docs/release/security-signoff/v<X>.md`
+   exists and contains `Verdict: PASS` (stage 0, `/release-security-gate <X>`).
+   `scripts/release-readiness.sh` check 11 enforces this.
 
 ## Executable plan
 
