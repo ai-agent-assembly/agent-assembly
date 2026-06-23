@@ -21,6 +21,7 @@ use aa_runtime::pipeline::PipelineEvent;
 
 use crate::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry};
 use crate::config::ProxyConfig;
+use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
@@ -28,7 +29,8 @@ use crate::intercept::mcp::parse_mcp_request;
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
-    read_http_request, read_http_response, serialize_http_request, serialize_http_response, HttpRequest,
+    read_http_request, read_http_response, serialize_http_request, serialize_http_request_with_auth,
+    serialize_http_response, HttpRequest,
 };
 use crate::tls::{CaStore, CertCache};
 
@@ -112,6 +114,11 @@ pub struct ProxyServer {
     /// The outer `OnceCell` lets the connect step run inside `run()`'s
     /// async context without requiring an async constructor.
     gateway_client: OnceCell<Arc<Mutex<GatewayClient>>>,
+    /// Per-host real provider credentials, injected at egress (AAASM-3578).
+    /// Loaded from operator configuration at construction; the agent runtime
+    /// never sees these. Empty by default — when no key is configured for a
+    /// host the agent's own request is forwarded unchanged (backward compat).
+    credentials: Arc<CredentialStore>,
 }
 
 impl ProxyServer {
@@ -137,7 +144,26 @@ impl ProxyServer {
             interceptor: Interceptor::new(event_tx),
             audit_jsonl_tx,
             gateway_client: OnceCell::new(),
+            credentials: Arc::new(CredentialStore::from_env()),
         })
+    }
+
+    /// Replace the egress-injection credential store on an as-yet-unshared
+    /// `ProxyServer`. Intended for integration tests that need to inject a
+    /// known provider key without setting a process-wide env var; production
+    /// builds populate the store from `AA_PROXY_PROVIDER_KEYS` in the
+    /// constructors above.
+    ///
+    /// Returns the `Arc<Self>` unchanged when it is already shared (more than
+    /// one strong reference), since the store can only be swapped before the
+    /// accept loop starts.
+    pub fn with_credentials(mut self: Arc<Self>, credentials: CredentialStore) -> Arc<Self> {
+        if let Some(inner) = Arc::get_mut(&mut self) {
+            inner.credentials = Arc::new(credentials);
+        } else {
+            tracing::warn!("with_credentials called on a shared ProxyServer; ignoring");
+        }
+        self
     }
 
     /// Bind the TCP listener and enter the accept loop.
@@ -599,26 +625,43 @@ impl ProxyServer {
         // Dial upstream only after we have decided not to block.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
 
+        // AAASM-3578: credential injection. When a real provider key is
+        // configured for this host, build the egress `Authorization` value
+        // (`Bearer <key>`) so the serializer can strip the agent's own
+        // credential headers and inject the real one. The secret is expanded
+        // only into this local buffer, never logged. When no key is configured
+        // the agent's request is forwarded unchanged (backward compatible).
+        let injected_auth: Option<Vec<u8>> = self.credentials.secret_for(host).map(|secret| {
+            let mut buf = Vec::with_capacity(secret.expose().len() + 7);
+            buf.extend_from_slice(b"Bearer ");
+            buf.extend_from_slice(secret.expose());
+            buf
+        });
+        if injected_auth.is_some() {
+            tracing::debug!(%host, "injecting real provider credential at egress");
+        }
+        let injected_auth_ref = injected_auth.as_deref();
+
         let outgoing_bytes = match verdict.decision {
             VerdictDecision::ForwardRedacted => {
                 let body = verdict
                     .redacted_body
                     .as_deref()
                     .expect("ForwardRedacted always carries redacted_body");
-                let bytes = serialize_http_request(&req, body);
+                let bytes = serialize_http_request_with_auth(&req, body, injected_auth_ref);
                 self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
                     .await;
                 bytes
             }
             VerdictDecision::AlertAndForward => {
-                let bytes = serialize_http_request(&req, &req.body);
+                let bytes = serialize_http_request_with_auth(&req, &req.body, injected_auth_ref);
                 // Emit an audit entry so operators can see the alert-mode
                 // decision (findings are still recorded, body is not).
                 self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Forwarded)
                     .await;
                 bytes
             }
-            _ => serialize_http_request(&req, &req.body),
+            _ => serialize_http_request_with_auth(&req, &req.body, injected_auth_ref),
         };
 
         let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
