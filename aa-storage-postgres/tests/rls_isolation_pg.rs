@@ -3,13 +3,18 @@
 //! Proves the DB backstop holds even when the application layer misbehaves:
 //!   1. A raw query with the app-layer tenant predicate REMOVED still returns
 //!      zero of another tenant's rows (RLS filters them).
-//!   2. A connection with no `app.tenant_id` set returns zero rows (fail-closed).
+//!   2. A connection with no `app.tenant_id` set returns zero rows (fail-closed),
+//!      and an empty-string GUC residue is treated the same (NULLIF guard).
 //!   3. A pooled connection reused across tenants carries no stale GUC
 //!      (`set_config(..., is_local = true)` correctness).
 //!   4. A client-supplied org differing from the GUC cannot widen results.
 //!
-//! Each case runs against a real Postgres via `testcontainers-modules`, mirroring
-//! `conformance_pg.rs`. Requires a working Docker daemon.
+//! Critical harness note: the container's bootstrap superuser BYPASSES RLS
+//! (FORCE RLS binds the table *owner*, never a superuser). So the migrations are
+//! applied as the superuser, but the RLS assertions run through a second pool
+//! connected as a restricted, non-superuser, RLS-bound `app_user` role — exactly
+//! the role split the production deployment uses (privileged migrator vs.
+//! unprivileged row-access). Requires a working Docker daemon.
 
 use aa_storage_postgres::{PostgresPool, PostgresPoolConfig};
 use sqlx::Row;
@@ -21,8 +26,10 @@ use uuid::Uuid;
 const TENANT_A: Uuid = Uuid::from_u128(0x0a);
 const TENANT_B: Uuid = Uuid::from_u128(0x0b);
 
-/// Start a fresh Postgres 18 container, connect a pool, and run migrations.
-async fn setup_pg() -> (ContainerAsync<Postgres>, PostgresPool) {
+/// Start a fresh Postgres 18 container. Returns the container guard, the
+/// superuser pool (migrations + seeding, bypasses RLS), and an `app_user` pool
+/// (restricted, RLS-bound — the pool every assertion reads through).
+async fn setup_pg() -> (ContainerAsync<Postgres>, PostgresPool, PostgresPool) {
     let container = Postgres::default()
         .with_db_name("aasm")
         .with_user("aasm")
@@ -34,58 +41,79 @@ async fn setup_pg() -> (ContainerAsync<Postgres>, PostgresPool) {
 
     let host = container.get_host().await.expect("container host");
     let port = container.get_host_port_ipv4(5432).await.expect("container port");
-    let url = format!("postgres://aasm:secret@{host}:{port}/aasm");
 
-    let pool = PostgresPool::connect(&PostgresPoolConfig {
-        url,
-        // A single connection makes the pooled-reuse test deterministic: the
-        // second checkout is guaranteed to be the same physical connection.
+    // Superuser pool: applies migrations and seeds rows (RLS does not bind it).
+    let admin_url = format!("postgres://aasm:secret@{host}:{port}/aasm");
+    let admin = PostgresPool::connect(&PostgresPoolConfig {
+        url: admin_url,
+        max_connections: 5,
+        statement_timeout_ms: 0,
+    })
+    .await
+    .expect("connect admin pool");
+    admin.migrate().await.expect("run migrations");
+
+    // Create the restricted row-access role and grant it table DML.
+    for stmt in [
+        "CREATE ROLE app_user LOGIN PASSWORD 'app'",
+        "GRANT USAGE ON SCHEMA public TO app_user",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user",
+    ] {
+        sqlx::query(stmt)
+            .execute(admin.pool())
+            .await
+            .unwrap_or_else(|e| panic!("grant setup `{stmt}`: {e}"));
+    }
+
+    // app_user pool: non-superuser, so FORCE RLS applies — every assertion below
+    // runs through this pool, the way the runtime row-access role would.
+    let app_url = format!("postgres://app_user:app@{host}:{port}/aasm");
+    let app = PostgresPool::connect(&PostgresPoolConfig {
+        url: app_url,
+        // One connection makes the pooled-reuse test deterministic.
         max_connections: 1,
         statement_timeout_ms: 0,
     })
     .await
-    .expect("connect pool");
-    pool.migrate().await.expect("run migrations");
+    .expect("connect app_user pool");
 
-    (container, pool)
+    (container, admin, app)
 }
 
-/// Seed one org row plus one audit_logs row stamped with that org, under a
-/// tenant-scoped transaction so the RLS WITH CHECK admits the write.
-async fn seed_tenant_audit(pool: &PostgresPool, org: Uuid, agent: &str) {
-    // The org FK lives only on policies/credentials, not audit_logs, but seed the
-    // org so any future FK-bearing seed reuses the same helper. Insert it under a
-    // bypass path: orgs has no RLS, so the bare pool can write it.
+/// Seed an org + one audit row stamped with that org, AS the superuser (bypasses
+/// RLS, so the cross-tenant seed needs no per-row GUC dance).
+async fn seed_tenant_audit(admin: &PostgresPool, org: Uuid, agent: &str, event_id: Uuid) {
     sqlx::query("INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
         .bind(org)
         .bind(format!("tenant-{org}"))
-        .execute(pool.pool())
+        .execute(admin.pool())
         .await
         .expect("seed org");
-
-    let mut tx = pool.begin_for_tenant(org).await.expect("begin tenant tx");
     sqlx::query(
         "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, ts, org_id) \
          VALUES ($1, $2, 'fs.read', 'allow', now(), $3)",
     )
-    .bind(Uuid::new_v4())
+    .bind(event_id)
     .bind(agent)
     .bind(org)
-    .execute(&mut *tx)
+    .execute(admin.pool())
     .await
     .expect("seed audit row");
-    tx.commit().await.expect("commit seed");
+}
+
+async fn seed_two_tenants(admin: &PostgresPool) {
+    seed_tenant_audit(admin, TENANT_A, "agent-a", Uuid::from_u128(0xa1)).await;
+    seed_tenant_audit(admin, TENANT_B, "agent-b", Uuid::from_u128(0xb1)).await;
 }
 
 /// AC#1: a query with NO tenant predicate, run under tenant A's GUC, returns
 /// only A's rows — RLS filters B's even though the app forgot the WHERE.
 #[tokio::test]
 async fn dropped_filter_still_excludes_other_tenant_rows() {
-    let (_pg, pool) = setup_pg().await;
-    seed_tenant_audit(&pool, TENANT_A, "agent-a").await;
-    seed_tenant_audit(&pool, TENANT_B, "agent-b").await;
+    let (_pg, admin, app) = setup_pg().await;
+    seed_two_tenants(&admin).await;
 
-    let mut tx = pool.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
+    let mut tx = app.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
     // Deliberately NO `WHERE org_id = …` — the app-layer filter is dropped.
     let rows = sqlx::query("SELECT org_id, agent_id FROM audit_logs")
         .fetch_all(&mut *tx)
@@ -98,38 +126,48 @@ async fn dropped_filter_still_excludes_other_tenant_rows() {
     assert_eq!(org, TENANT_A, "the only visible row must belong to tenant A");
 }
 
-/// AC#1 (fail-closed): a connection with no `app.tenant_id` set sees zero rows
-/// from every tenant table — an unset tenant denies all, never dumps all.
+/// AC#1 (fail-closed): the restricted role with no `app.tenant_id` set sees zero
+/// rows; an empty-string GUC residue is treated identically (NULLIF guard).
 #[tokio::test]
-async fn unset_guc_returns_zero_rows() {
-    let (_pg, pool) = setup_pg().await;
-    seed_tenant_audit(&pool, TENANT_A, "agent-a").await;
-    seed_tenant_audit(&pool, TENANT_B, "agent-b").await;
+async fn unset_or_empty_guc_returns_zero_rows() {
+    let (_pg, admin, app) = setup_pg().await;
+    seed_two_tenants(&admin).await;
 
-    // The bare pool sets no app.tenant_id; FORCE RLS + missing_ok current_setting
-    // makes the policy predicate NULL → no row matches.
+    // Never-set GUC, via the bare app_user pool.
     for table in ["audit_logs", "agents", "policies", "credentials"] {
         let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(pool.pool())
+            .fetch_one(app.pool())
             .await
             .unwrap_or_else(|e| panic!("count {table}: {e}"));
         assert_eq!(count, 0, "unset app.tenant_id must see zero rows from {table}");
     }
+
+    // Empty-string GUC must also deny (the NULLIF(…, '') guard), not error on
+    // the `::uuid` cast.
+    let mut tx = app.pool().begin().await.expect("begin");
+    sqlx::query("SELECT set_config('app.tenant_id', '', true)")
+        .execute(&mut *tx)
+        .await
+        .expect("set empty guc");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count under empty guc");
+    tx.commit().await.expect("commit");
+    assert_eq!(count, 0, "empty-string app.tenant_id must see zero rows (fail-closed)");
 }
 
-/// AC#3 of the test plan: reusing a pooled connection across tenants must not
-/// carry tenant A's GUC into tenant B's checkout. With max_connections = 1 the
-/// second `begin_for_tenant` reuses the same physical connection, so a leak of
-/// `is_local = false` semantics would show A's row under B's scope.
+/// Reusing a pooled connection across tenants must not carry tenant A's GUC into
+/// tenant B's checkout. With max_connections = 1 the second `begin_for_tenant`
+/// reuses the same physical connection, so an `is_local = false` leak would show
+/// A's row under B's scope.
 #[tokio::test]
 async fn pooled_connection_reuse_does_not_bleed_guc() {
-    let (_pg, pool) = setup_pg().await;
-    seed_tenant_audit(&pool, TENANT_A, "agent-a").await;
-    seed_tenant_audit(&pool, TENANT_B, "agent-b").await;
+    let (_pg, admin, app) = setup_pg().await;
+    seed_two_tenants(&admin).await;
 
-    // First checkout: tenant A, then return the connection to the pool.
     {
-        let mut tx = pool.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
+        let mut tx = app.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs")
             .fetch_one(&mut *tx)
             .await
@@ -138,9 +176,7 @@ async fn pooled_connection_reuse_does_not_bleed_guc() {
         tx.commit().await.expect("commit A");
     }
 
-    // Second checkout: same physical connection, tenant B. It must see only B's
-    // row — never A's leftover GUC — and the count must be B's, not A's+B's.
-    let mut tx = pool.begin_for_tenant(TENANT_B).await.expect("tenant B tx");
+    let mut tx = app.begin_for_tenant(TENANT_B).await.expect("tenant B tx");
     let rows = sqlx::query("SELECT org_id FROM audit_logs")
         .fetch_all(&mut *tx)
         .await
@@ -156,12 +192,10 @@ async fn pooled_connection_reuse_does_not_bleed_guc() {
 /// id; RLS still returns nothing because the row is invisible under A's scope.
 #[tokio::test]
 async fn client_supplied_org_cannot_widen_past_guc() {
-    let (_pg, pool) = setup_pg().await;
-    seed_tenant_audit(&pool, TENANT_A, "agent-a").await;
-    seed_tenant_audit(&pool, TENANT_B, "agent-b").await;
+    let (_pg, admin, app) = setup_pg().await;
+    seed_two_tenants(&admin).await;
 
-    let mut tx = pool.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
-    // Tenant A explicitly asks for tenant B's rows (the spoof attempt).
+    let mut tx = app.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE org_id = $1")
         .bind(TENANT_B)
         .fetch_one(&mut *tx)
@@ -169,4 +203,35 @@ async fn client_supplied_org_cannot_widen_past_guc() {
         .expect("spoof query");
     tx.commit().await.expect("commit");
     assert_eq!(count, 0, "a client-chosen org cannot reach past the connection's GUC");
+}
+
+/// The RLS WITH CHECK rejects a write that would stamp a row with a tenant other
+/// than the connection's GUC — a forged-tenant INSERT cannot land.
+#[tokio::test]
+async fn write_with_mismatched_tenant_is_rejected() {
+    let (_pg, _admin, app) = setup_pg().await;
+
+    // orgs carries no RLS, so the app_user pool can seed tenant B's org row
+    // directly to satisfy any FK; audit_logs itself has no FK to orgs but this
+    // keeps the fixture honest for the cross-tenant write attempt.
+    sqlx::query("INSERT INTO orgs (id, name) VALUES ($1, 'B') ON CONFLICT (id) DO NOTHING")
+        .bind(TENANT_B)
+        .execute(app.pool())
+        .await
+        .expect("seed org B");
+
+    // Under tenant A's GUC, try to write a row tagged for tenant B.
+    let mut tx = app.begin_for_tenant(TENANT_A).await.expect("tenant A tx");
+    let result = sqlx::query(
+        "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, ts, org_id) \
+         VALUES ($1, 'x', 'y', 'allow', now(), $2)",
+    )
+    .bind(Uuid::from_u128(0xc1))
+    .bind(TENANT_B)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        result.is_err(),
+        "WITH CHECK must reject inserting a row for a tenant other than the GUC"
+    );
 }
