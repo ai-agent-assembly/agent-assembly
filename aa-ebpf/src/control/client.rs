@@ -65,3 +65,16 @@ impl LoaderControlClient {
         Self::into_result(resp)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_response_maps_to_err() {
+        let err = LoaderControlClient::into_result(ControlResponse::Error {
+            message: "unauthorized".into(),
+        });
+        assert!(err.is_err());
+    }
+
+}
