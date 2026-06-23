@@ -51,3 +51,48 @@ pub struct CapabilitySet {
     /// Capabilities explicitly denied.
     pub deny: BTreeSet<Capability>,
 }
+
+impl FromStr for Capability {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "file_read" => Ok(Capability::FileRead),
+            "file_write" => Ok(Capability::FileWrite),
+            "network_outbound" => Ok(Capability::NetworkOutbound),
+            "network_inbound" => Ok(Capability::NetworkInbound),
+            "terminal_exec" => Ok(Capability::TerminalExec),
+            "agent_spawn" => Ok(Capability::AgentSpawn),
+            _ => {
+                if let Some(name) = s.strip_prefix("mcp_tool:") {
+                    if name.is_empty() {
+                        return Err("mcp_tool: name must not be empty".to_string());
+                    }
+                    Ok(Capability::McpTool(name.to_string()))
+                } else if let Some(name) = s.strip_prefix("model:") {
+                    if name.is_empty() {
+                        return Err("model: name must not be empty".to_string());
+                    }
+                    Ok(Capability::Model(name.to_string()))
+                } else {
+                    Err(format!("unknown capability: '{s}'"))
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Display for Capability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Capability::FileRead => f.write_str("file_read"),
+            Capability::FileWrite => f.write_str("file_write"),
+            Capability::NetworkOutbound => f.write_str("network_outbound"),
+            Capability::NetworkInbound => f.write_str("network_inbound"),
+            Capability::TerminalExec => f.write_str("terminal_exec"),
+            Capability::AgentSpawn => f.write_str("agent_spawn"),
+            Capability::McpTool(name) => write!(f, "mcp_tool:{name}"),
+            Capability::Model(name) => write!(f, "model:{name}"),
+        }
+    }
+}
