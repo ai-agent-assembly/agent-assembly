@@ -112,6 +112,29 @@ where
 /// new value so the upstream sees one — and only one — accurate length.
 /// `Transfer-Encoding` is stripped to keep the framing unambiguous.
 pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
+    serialize_http_request_with_auth(req, new_body, None)
+}
+
+/// Re-serialise an [`HttpRequest`] with a replacement body, optionally
+/// **injecting** the real provider `Authorization` header at egress.
+///
+/// Behaves exactly like [`serialize_http_request`] for the request line,
+/// `Content-Length`, and `Transfer-Encoding` handling. In addition, when
+/// `injected_auth` is `Some(bytes)` (AAASM-3578):
+///
+/// * every inbound `Authorization` and `x-api-key` header (case-insensitive)
+///   the agent supplied is **dropped**, so the agent can never smuggle its own
+///   key upstream, and
+/// * a single `Authorization: <bytes>` header carrying the real provider
+///   credential is appended.
+///
+/// The secret bytes are written directly into the outbound buffer and are never
+/// copied into an owned `String` or logged — the agent runtime therefore never
+/// sees a real provider key.
+///
+/// When `injected_auth` is `None` the agent's own headers are forwarded
+/// verbatim (the historical, backward-compatible behaviour).
+pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], injected_auth: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::with_capacity(req.body.len() + new_body.len() + 256);
     out.extend_from_slice(req.method.as_bytes());
     out.push(b' ');
@@ -124,9 +147,19 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
         if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
             continue;
         }
+        // When injecting, strip any agent-supplied credential header so it
+        // cannot reach upstream — the real key is appended below instead.
+        if injected_auth.is_some() && (k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("x-api-key")) {
+            continue;
+        }
         out.extend_from_slice(k.as_bytes());
         out.extend_from_slice(b": ");
         out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    if let Some(auth) = injected_auth {
+        out.extend_from_slice(b"Authorization: ");
+        out.extend_from_slice(auth);
         out.extend_from_slice(b"\r\n");
     }
     out.extend_from_slice(b"Content-Length: ");
@@ -344,5 +377,62 @@ mod tests {
             "serialized request must drop Transfer-Encoding when replacing body, got: {text}",
         );
         assert!(text.contains("Content-Length: 2\r\n"));
+    }
+
+    #[tokio::test]
+    async fn inject_auth_strips_agent_header_and_appends_real_key() {
+        // AAASM-3578: an agent request carrying its own (bogus) Authorization
+        // and x-api-key must reach upstream with both stripped and the injected
+        // real key appended exactly once.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Authorization: Bearer agent-bogus-token\r\n\
+                    x-api-key: agent-bogus-key\r\n\
+                    Content-Length: 2\r\n\
+                    \r\n\
+                    hi";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+
+        let wire = serialize_http_request_with_auth(&req, &req.body, Some(b"Bearer sk-REAL-PROVIDER-KEY"));
+        let text = std::str::from_utf8(&wire).unwrap();
+
+        assert!(
+            !text.contains("agent-bogus-token"),
+            "agent Authorization must be stripped: {text}"
+        );
+        assert!(
+            !text.contains("agent-bogus-key"),
+            "agent x-api-key must be stripped: {text}"
+        );
+        assert_eq!(
+            text.matches("Authorization: Bearer sk-REAL-PROVIDER-KEY\r\n").count(),
+            1,
+            "injected Authorization must appear exactly once: {text}"
+        );
+        assert!(
+            text.contains("Host: api.openai.com\r\n"),
+            "non-credential headers preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_auth_none_forwards_agent_header_verbatim() {
+        // Backward compatibility: with no injected key the agent's own
+        // Authorization passes through unchanged (historical behaviour).
+        let raw = b"POST / HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Authorization: Bearer agent-token\r\n\
+                    Content-Length: 2\r\n\
+                    \r\n\
+                    hi";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+        let wire = serialize_http_request_with_auth(&req, &req.body, None);
+        let text = std::str::from_utf8(&wire).unwrap();
+        assert!(
+            text.contains("Authorization: Bearer agent-token\r\n"),
+            "agent header forwarded: {text}"
+        );
     }
 }
