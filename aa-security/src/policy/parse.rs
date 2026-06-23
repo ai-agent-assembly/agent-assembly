@@ -148,4 +148,26 @@ spec:
         assert!(caps.deny.contains(&Capability::TerminalExec));
         assert!(caps.deny.contains(&Capability::FileWrite));
     }
+    #[test]
+    fn parses_network_and_tools() {
+        let yaml = r#"
+spec:
+  network:
+    allowlist:
+      - api.openai.com
+  tools:
+    "*":
+      allow: false
+    write_file:
+      allow: true
+      requires_approval_if: "path starts_with \"/etc\""
+"#;
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        assert_eq!(doc.egress_allowlist(), ["api.openai.com"]);
+        let wildcard = doc.tools.iter().find(|t| t.name == "*").unwrap();
+        assert!(!wildcard.allow);
+        let write = doc.tools.iter().find(|t| t.name == "write_file").unwrap();
+        assert!(write.allow);
+        assert_eq!(write.requires_approval_if.as_deref(), Some("path starts_with \"/etc\""));
+    }
 }
