@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("topology.proto"),
         proto_root.join("secrets.proto"),
         proto_root.join("invalidation.proto"),
+        proto_root.join("ipc.proto"),
     ];
 
     println!("cargo:rerun-if-changed={}", proto_root.display());

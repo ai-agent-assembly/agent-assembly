@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package assembly.ipc.v1;
+
+// Local SDK ↔ aa-runtime Unix-domain-socket handshake (AAASM-3569).
+//
+// The IPC channel between the SDK (aa-sdk-client) and the runtime is a length-
+// framed binary protocol (see aa-runtime/src/ipc/codec.rs). Before any policy
+// query or event report is accepted, the runtime challenges the connecting SDK
+// to prove it holds the agent's Ed25519 private key — the same deterministic
+// key the agent registers with at the gateway (see aa-sdk-client/src/keypair.rs).
+//
+// This closes the "another local process connects to the runtime UDS and
+// answers allow for everything / floods forged audit events" vector: reaching
+// the socket is not enough; the peer must sign a fresh per-session nonce.
+//
+// These messages are carried as prost-encoded payloads behind dedicated wire
+// tags, not as a gRPC service — the IPC transport is the hand-rolled UDS codec.
+
+// HandshakeChallenge — runtime → SDK, the first frame the runtime emits on a
+// freshly accepted connection. Carries a random per-session nonce the SDK must
+// sign. A fresh nonce per session prevents replay of a captured proof.
+message HandshakeChallenge {
+  // 32 random bytes generated per connection by the runtime.
+  bytes nonce = 1;
+}
+
+// HandshakeProof — SDK → runtime, the SDK's reply proving key possession. The
+// runtime verifies `signature` over `nonce` against the Ed25519 verifying key
+// it derives for its configured agent id (and cross-checks `public_key`).
+message HandshakeProof {
+  // The agent's did:key identity (mirrors the gateway registration identity).
+  string agent_did = 1;
+  // The agent's Ed25519 verifying key, hex-encoded (64 lowercase hex chars) —
+  // the same value sent as `public_key` at gateway registration.
+  string public_key = 2;
+  // Ed25519 signature over the challenge nonce, raw 64 bytes.
+  bytes signature = 3;
+}
