@@ -3080,6 +3080,57 @@ mod tests {
         );
     }
 
+    /// A directory re-read must fail-CLOSED on an *empty* (whitespace-only)
+    /// `*.yaml`. On Linux (inotify), a truncate+write overwrite emits a Modify
+    /// event for the 0-byte file before the new content lands; an empty YAML
+    /// otherwise parses as a valid Global-scoped allow-all document. Without a
+    /// guard, `rebuild_cascade_state` would return `Ok` with a degraded cascade
+    /// and the watcher would silently drop a deny doc — a fail-OPEN. This
+    /// drives the rebuild directly so the assertion is deterministic (no
+    /// filesystem-watcher timing). (AAASM-3561)
+    #[test]
+    fn rebuild_cascade_state_fails_closed_on_empty_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: empty-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
+        std::fs::write(
+            &org_doc,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: empty-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:org-alpha\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+
+        // Healthy directory rebuilds cleanly.
+        assert!(
+            PolicyEngine::rebuild_cascade_state(tmp.path()).is_ok(),
+            "a well-formed cascade must rebuild"
+        );
+
+        // Mid-truncation: the deny doc is observed at 0 bytes. The rebuild must
+        // reject it rather than silently producing an allow-all cascade.
+        std::fs::write(&org_doc, "").unwrap();
+        assert!(
+            PolicyEngine::rebuild_cascade_state(tmp.path()).is_err(),
+            "an empty mid-edit document must fail closed, not degrade the cascade to allow-all"
+        );
+
+        // Whitespace-only content is treated identically.
+        std::fs::write(&org_doc, "   \n\t\n").unwrap();
+        assert!(
+            PolicyEngine::rebuild_cascade_state(tmp.path()).is_err(),
+            "a whitespace-only mid-edit document must fail closed"
+        );
+    }
+
     // ── approval_escalation_overrides tests ───────────────────────────────────
 
     #[test]
