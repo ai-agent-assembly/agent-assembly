@@ -21,6 +21,10 @@ use crate::ipc::ResponseRouter;
 pub struct IpcServerConfig {
     /// Absolute path to the Unix domain socket file.
     pub socket_path: PathBuf,
+    /// The agent identity (AA_AGENT_ID) this runtime serves. The socket path is
+    /// scoped to it, and the per-session handshake (AAASM-3585) verifies the
+    /// SDK's proof against the Ed25519 key deterministically derived from it.
+    pub agent_id: String,
     /// Maximum number of concurrent SDK connections.
     pub max_connections: usize,
     /// Channel capacity for decoded inbound frames.
@@ -32,6 +36,7 @@ impl IpcServerConfig {
     pub fn from_runtime_config(config: &crate::config::RuntimeConfig) -> Self {
         Self {
             socket_path: PathBuf::from(format!("/tmp/aa-runtime-{}.sock", config.agent_id)),
+            agent_id: config.agent_id.clone(),
             max_connections: config.ipc_max_connections,
             inbound_channel_capacity: 256,
         }
@@ -47,7 +52,12 @@ pub struct IpcServer {
 impl IpcServer {
     /// Bind the Unix domain socket, removing any stale socket file first.
     ///
-    /// Sets `0600` permissions on the socket file after binding.
+    /// The socket is created owner-only (`0600`) with **no permission window**:
+    /// a restrictive `umask(0o077)` is applied around `bind` so the file is never
+    /// group/world-accessible even momentarily (AAASM-3581). The previous
+    /// bind→`set_permissions(0o600)` sequence left a brief TOCTOU window during
+    /// which another local process could connect; the umask closes it. The
+    /// explicit `set_permissions` is kept as belt-and-suspenders.
     pub fn bind(config: IpcServerConfig) -> std::io::Result<Self> {
         let path = &config.socket_path;
 
@@ -57,13 +67,32 @@ impl IpcServer {
             tracing::info!(path = %path.display(), "removed stale socket file");
         }
 
-        let listener = UnixListener::bind(path)?;
+        // AAASM-3581: tighten the umask so the socket inode is created 0600 from
+        // the very first instant — no world/group-accessible window between bind
+        // and chmod. Restore the prior umask immediately after bind.
+        let listener = {
+            let prev_umask = unsafe { libc::umask(0o077) };
+            let result = UnixListener::bind(path);
+            // Restore regardless of bind outcome so we never leak the tightened
+            // umask into the rest of the process.
+            unsafe { libc::umask(prev_umask) };
+            result?
+        };
 
-        // Set owner-only permissions (0600).
+        // Belt-and-suspenders: assert the final owner-only mode explicitly.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+
+        // AAASM-3581: the socket path is derived from the configured agent id
+        // (AA_AGENT_ID) by `IpcServerConfig::from_runtime_config`; bind only the
+        // identity-scoped path so a different agent cannot squat it.
+        debug_assert!(
+            config.agent_id.is_empty() || path.to_string_lossy().contains(config.agent_id.as_str()),
+            "IPC socket path must contain the configured agent id"
+        );
 
         tracing::info!(
             path = %path.display(),
+            agent_id = %config.agent_id,
             max_connections = config.max_connections,
             "IPC server bound"
         );
@@ -343,6 +372,7 @@ mod tests {
     ) -> (mpsc::Receiver<(u64, IpcFrame)>, crate::ipc::ResponseRouter) {
         let config = IpcServerConfig {
             socket_path,
+            agent_id: "test-agent".to_string(),
             max_connections: 64,
             inbound_channel_capacity: 16,
         };
