@@ -394,6 +394,7 @@ dependencies = [
  "dirs",
  "hyper",
  "hyper-util",
+ "libc",
  "lru",
  "rcgen",
  "rustls",
@@ -407,6 +408,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
