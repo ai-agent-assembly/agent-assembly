@@ -58,6 +58,7 @@ where
     let msg = serde_json::from_slice(&body).map_err(|e| EbpfError::EventParse(format!("decode: {e}")))?;
     Ok(Some(msg))
 }
+
 #[cfg(test)]
 mod tests {
     use super::super::protocol::{ControlRequest, ControlResponse};
@@ -81,4 +82,13 @@ mod tests {
         assert_eq!(back, None);
     }
 
+    #[tokio::test]
+    async fn oversized_length_prefix_is_rejected() {
+        // 4-byte length of 2 MiB, no body — must be rejected before allocation.
+        let mut frame = ((2 * 1024 * 1024u32).to_be_bytes()).to_vec();
+        frame.extend_from_slice(b"{}");
+        let mut cursor = std::io::Cursor::new(frame);
+        let err = read_frame::<_, ControlResponse>(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, EbpfError::EventParse(_)));
+    }
 }
