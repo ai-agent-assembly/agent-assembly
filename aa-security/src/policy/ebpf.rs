@@ -152,3 +152,34 @@ pub fn lower_to_ebpf(doc: &PolicyDocument) -> EbpfRuleSet {
 }
 
 /// Push a rule only if no rule with the same pattern+verdict already exists,
+/// preserving insertion order for determinism.
+fn push_unique(rules: &mut Vec<PathRule>, rule: PathRule) {
+    if !rules.contains(&rule) {
+        rules.push(rule);
+    }
+}
+
+/// Extract path prefixes from a `requires_approval_if` predicate of the form
+/// `path starts_with "<prefix>"` (case-sensitive on the operator). Returns all
+/// matches in the expression so compound `… AND path starts_with "…"` clauses
+/// are covered. Non-path predicates yield nothing (they are L7-only).
+fn extract_path_prefixes(expr: &str) -> Vec<String> {
+    const NEEDLE: &str = "path starts_with";
+    let mut out = Vec::new();
+    let mut rest = expr;
+    while let Some(idx) = rest.find(NEEDLE) {
+        let after = &rest[idx + NEEDLE.len()..];
+        if let Some(prefix) = first_quoted(after) {
+            out.push(prefix);
+        }
+        rest = after;
+    }
+    out
+}
+
+/// Return the contents of the first double-quoted literal in `s`, if any.
+fn first_quoted(s: &str) -> Option<String> {
+    let start = s.find('"')? + 1;
+    let end = s[start..].find('"')? + start;
+    Some(s[start..end].to_string())
+}
