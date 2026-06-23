@@ -43,6 +43,12 @@ tokio          = { workspace = true, features = ["full"] }
 tracing        = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+# The privileged eBPF loader daemon (AAASM-3603): the sole CAP_BPF/CAP_PERFMON
+# holder. It is the only binary in this crate; nothing else loads BPF.
+[[bin]]
+name = "aa-ebpf-loaderd"
+path = "src/bin/loaderd.rs"
+
 # build.rs hashes the compiled BPF objects to emit per-object sha256 digests
 # (AAASM-3602) that the load-time integrity check pins against.
 [build-dependencies]
