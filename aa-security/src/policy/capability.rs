@@ -96,6 +96,7 @@ impl fmt::Display for Capability {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +133,22 @@ mod tests {
     #[test]
     fn rejects_unknown_capability() {
         assert!("teleport".parse::<Capability>().is_err());
+    }
+
+    #[test]
+    fn display_round_trips() {
+        for cap in [
+            Capability::FileRead,
+            Capability::FileWrite,
+            Capability::NetworkOutbound,
+            Capability::NetworkInbound,
+            Capability::TerminalExec,
+            Capability::AgentSpawn,
+            Capability::McpTool("bash".to_string()),
+            Capability::Model("claude".to_string()),
+        ] {
+            let rendered = cap.to_string();
+            assert_eq!(rendered.parse::<Capability>().unwrap(), cap);
+        }
     }
 }
