@@ -60,6 +60,7 @@
 - [Three-layer defense in depth](security/three-layer-defense.md)
 - [Protection and enforcement](security/protection-model.md)
 - [Trust boundaries](security/trust-boundaries.md)
+- [Trust-boundary review checklist](security/trust-boundary-review-checklist.md)
 - [Audit and assurance](security/audit-assurance.md)
 
 # Architecture

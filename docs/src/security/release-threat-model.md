@@ -87,5 +87,5 @@ this table a clean major-version history.
 - [Threat model](threat-model.md) — durable assets / adversaries / scenarios.
 - [Trust boundaries](trust-boundaries.md) — where trust is placed and why.
 - [Trust-boundary review checklist](trust-boundary-review-checklist.md) — the
-  per-release delta form.
+  per-release delta form keyed to this layer map.
 - [ADR 0002 — SDK Security Boundary](../adr/0002-sdk-security-boundary.md).
