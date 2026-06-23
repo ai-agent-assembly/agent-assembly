@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::pool::PostgresPool;
-use crate::support::{agent_id_to_text, backend_err};
+use crate::support::{agent_id_to_text, backend_err, SYSTEM_ORG};
 
 /// A fully-resolved `audit_logs` row, ready to INSERT verbatim.
 ///
@@ -52,16 +52,17 @@ impl PgAuditSink {
         Self { pool }
     }
 
-    /// INSERT a pre-resolved [`AuditLogRecord`], deduplicating on its primary key.
+    /// INSERT a pre-resolved [`AuditLogRecord`] under the verified tenant
+    /// `org_id`, via an RLS-scoped connection that stamps the row's `org_id`.
     ///
-    /// Returns `Ok(true)` when a new row was written and `Ok(false)` when the
-    /// `event_id` already existed (`ON CONFLICT (event_id) DO NOTHING` matched
-    /// zero rows). The async audit consumer uses the boolean to count duplicates
-    /// without a second round-trip.
-    pub async fn insert_audit_log(&self, record: &AuditLogRecord) -> Result<bool> {
+    /// `org_id` must be the verified tenant of the event (never client input).
+    /// Returns `Ok(true)` when a new row was written and `Ok(false)` on an
+    /// `event_id` conflict, matching [`Self::insert_audit_log`].
+    pub async fn insert_audit_log_for_tenant(&self, org_id: Uuid, record: &AuditLogRecord) -> Result<bool> {
+        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
         let result = sqlx::query(
-            "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+            "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts, org_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (event_id) DO NOTHING",
         )
         .bind(record.event_id)
@@ -70,10 +71,24 @@ impl PgAuditSink {
         .bind(&record.decision)
         .bind(record.latency_ms)
         .bind(record.ts)
-        .execute(self.pool.pool())
+        .bind(org_id)
+        .execute(&mut *tx)
         .await
         .map_err(backend_err)?;
+        tx.commit().await.map_err(backend_err)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// INSERT a pre-resolved [`AuditLogRecord`], deduplicating on its primary key.
+    ///
+    /// Returns `Ok(true)` when a new row was written and `Ok(false)` when the
+    /// `event_id` already existed (`ON CONFLICT (event_id) DO NOTHING` matched
+    /// zero rows). The async audit consumer uses the boolean to count duplicates
+    /// without a second round-trip.
+    pub async fn insert_audit_log(&self, record: &AuditLogRecord) -> Result<bool> {
+        // Org-less insert scopes to the reserved system org (org_id defaults to
+        // it); tenant callers use `insert_audit_log_for_tenant`.
+        self.insert_audit_log_for_tenant(SYSTEM_ORG, record).await
     }
 
     /// Batch-INSERT audit rows in a single multi-row statement, deduplicating by
@@ -107,7 +122,11 @@ impl PgAuditSink {
         });
         builder.push(" ON CONFLICT (event_id) DO NOTHING");
 
-        let result = builder.build().execute(self.pool.pool()).await.map_err(backend_err)?;
+        // Org-less batch scopes to the reserved system org (org_id column
+        // defaults to it); rows are written under that tenant.
+        let mut tx = self.pool.begin_for_tenant(SYSTEM_ORG).await.map_err(backend_err)?;
+        let result = builder.build().execute(&mut *tx).await.map_err(backend_err)?;
+        tx.commit().await.map_err(backend_err)?;
         Ok(result.rows_affected())
     }
 }
@@ -153,6 +172,11 @@ impl AuditSink for PgAuditSink {
         let ts = chrono::DateTime::from_timestamp((ns / 1_000_000_000) as i64, (ns % 1_000_000_000) as u32)
             .unwrap_or_default();
 
+        // The AuditSink trait carries no org; the event scopes to the reserved
+        // system org (org_id column defaults to it). Tenant-aware audit writes
+        // use `insert_audit_log_for_tenant`. Scoped through the system-org GUC so
+        // the write passes FORCE RLS.
+        let mut tx = self.pool.begin_for_tenant(SYSTEM_ORG).await.map_err(backend_err)?;
         sqlx::query(
             "INSERT INTO audit_logs (event_id, agent_id, tool_name, decision, latency_ms, ts) \
              VALUES ($1, $2, $3, $4, $5, $6) \
@@ -164,9 +188,10 @@ impl AuditSink for PgAuditSink {
         .bind(decision_label(event.event_type()))
         .bind(None::<i32>)
         .bind(ts)
-        .execute(self.pool.pool())
+        .execute(&mut *tx)
         .await
         .map_err(backend_err)?;
+        tx.commit().await.map_err(backend_err)?;
         Ok(())
     }
 }
