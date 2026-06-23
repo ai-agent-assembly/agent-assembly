@@ -24,8 +24,24 @@ CHANGED=$(git diff --name-only "${MERGE_BASE}"...HEAD)
 #   sdk/python/pyproject.toml
 #   sdk/node/package.json
 #   sdk/go/go.mod
-VERSION_FILES=$(echo "${CHANGED}" | grep -E "^(Cargo\.toml|crates/[^/]+/Cargo\.toml)$" || true)
+CANDIDATE_FILES=$(echo "${CHANGED}" | grep -E "^(Cargo\.toml|crates/[^/]+/Cargo\.toml)$" || true)
 COMPAT_CHANGED=$(echo "${CHANGED}" | grep -E "^docs/src/compatibility\.md$" || true)
+
+# Only a change to an actual `version` field requires a compatibility-matrix
+# update. Edits that merely add a workspace member, tweak features, or repoint a
+# path dependency leave the published versions untouched, so they must not trip
+# this gate. For each candidate manifest, diff the added/removed lines and keep
+# only those whose `version` field text actually changed.
+VERSION_FILES=""
+for f in ${CANDIDATE_FILES}; do
+  if git diff "${MERGE_BASE}"...HEAD -- "${f}" \
+      | grep -E "^[+-]" \
+      | grep -vE "^(\+\+\+|---)" \
+      | grep -qE "^[+-][[:space:]]*version[[:space:]]*="; then
+    VERSION_FILES="${VERSION_FILES}${f}"$'\n'
+  fi
+done
+VERSION_FILES=$(printf '%s' "${VERSION_FILES}" | sed '/^$/d')
 
 if [ -n "${VERSION_FILES}" ] && [ -z "${COMPAT_CHANGED}" ]; then
   echo "──────────────────────────────────────────────────────"
