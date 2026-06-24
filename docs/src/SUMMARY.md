@@ -137,3 +137,5 @@
   - [0003 - Cross-Repo Dependency Pinning](adr/0003-cross-repo-dependency-pinning.md)
   - [0004 - Governance Enforcement Flow](adr/0004-governance-enforcement-flow.md)
   - [0006 - Limited-Function Self-Host K8s/Terraform](adr/0006-limited-self-host-k8s-terraform.md)
+  - [0007 - Public Domain & URL Contract](adr/0007-public-domain-and-url-contract.md)
+  - [0008 - SaaS Host Routing, Auth & Cookie Boundaries](adr/0008-saas-host-routing-auth-cookie-boundaries.md)

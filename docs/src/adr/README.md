@@ -13,3 +13,5 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0003](0003-cross-repo-dependency-pinning.md) | Cross-Repo Dependency Pinning on the Core Crates | Accepted |
 | [0004](0004-governance-enforcement-flow.md) | Governance Enforcement Flow — SDK → `aa-sdk-client` → core (gRPC / UDS) | Accepted |
 | [0006](0006-limited-self-host-k8s-terraform.md) | Limited-Function Self-Host — Kubernetes (Helm) / Terraform Support | Accepted |
+| [0007](0007-public-domain-and-url-contract.md) | Public Domain & URL Contract | Proposed |
+| [0008](0008-saas-host-routing-auth-cookie-boundaries.md) | SaaS Host Routing, Auth & Cookie Boundaries | Proposed |
