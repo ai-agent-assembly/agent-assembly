@@ -1,6 +1,6 @@
 ---
 name: release-docs-sync
-description: Sync every version-dependent doc/content reference to a new agent-assembly release version (alpha / beta / rc / official). Use right before or as part of cutting a release — after release-tag-cut bumps the Cargo version literals but before/while the docs are published — to update the compatibility matrix, install examples, sample CLI output, and SDK README version refs so docs never go stale. Version-type-agnostic: the same checklist applies to any pre-release or official version.
+description: Sync every version-dependent doc/content reference to a new agent-assembly release version (alpha / beta / rc / official). Use right before or as part of cutting a release — after release-tag-cut bumps the Cargo version literals but before/while the docs are published — to update the compatibility matrix, install examples, sample CLI output, and the SDK version files + docs-site/README version refs (incl. new-feature example pins) so docs never go stale. Version-type-agnostic: the same checklist applies to any pre-release or official version.
 ---
 
 # release-docs-sync
@@ -125,26 +125,56 @@ uses **static** shields.io badges that do NOT self-update:
 > The hub lives in the sibling `agent-assembly-docs` repo. Make these edits in
 > that repo's own PR — do not edit it from the agent-assembly worktree.
 
-### Step 3 — SDK READMEs (read-only siblings; mostly self-updating)
+### Step 3 — SDK repos: version files, READMEs, AND docs sites
 
-- **python-sdk** — all version badges are **live** (`pypi/v`, GitHub release,
-  pyversions). Install snippets use `pip install agent-assembly` with **no
-  pinned version**. **Nothing to bump** on a normal release. Only touch if a
-  snippet ever hard-codes `==0.0.1bN`.
-- **node-sdk** — the npm badge is **live** (`npm/v/.../beta`). Install snippets
-  use the `@beta` dist-tag, not a pinned version. On a **channel promotion**
-  (e.g. beta→rc→latest), repoint the dist-tag in the badge URL, the
-  `pnpm add @agent-assembly/sdk@<tag>` snippet, and the "current release line is
-  `0.0.1-beta.x`" prose. Otherwise nothing to bump.
-- **go-sdk** — badges are static `docs-live` only; the install snippet is
-  `go get github.com/<org>/go-sdk` with no version. **Nothing version-bump to
-  do.** (Note: the canonical org id is lowercase `ai-agent-assembly`; if a
-  README's `go get` path ever uses mixed case, that is a casing fix tracked
-  separately, not part of version-sync.)
+> ⚠️ **SDKs are NOT "nothing to bump."** The README *badges* are mostly live, but
+> every SDK in the release cycle also has (a) a checked-in **version file** and
+> (b) a **docs site** with **pinned** install commands and per-example version
+> lines. The beta.4 wave bumped all three across python and node. **No SDK file
+> is covered by `check-docs-versions.sh`** — these are all manual. "Badges are
+> live" ≠ "the SDK needs no edits."
 
-**Net for SDKs:** on a same-channel forward-roll, the SDK READMEs need **no**
-edits (badges are live). Only a **channel change** requires the dist-tag /
-prose edits in node-sdk above.
+For each SDK being released this cycle, do all three of:
+
+**3a — canonical version file** (the SDK release PR carries this; the *published*
+version also comes from the release `workflow_dispatch` input — `pypi_version` /
+`npm_version` — but keep the checked-in file in sync for repo honesty + badges):
+
+- **python-sdk** — `pyproject.toml` `version` + `agent_assembly/__init__.py`
+  `__version__` → PyPI form (e.g. `0.0.1b5`); regenerate `uv.lock`.
+- **node-sdk** — root `package.json` `version` → e.g. `0.0.1-beta.5`. (The 4
+  runtime sub-package `package.json` files stay at their tree value;
+  `release-node.yml` rewrites all 5 at publish from `npm_version`. `pnpm-lock.yaml`
+  usually does not pin the root version — only touch if it does.)
+- **go-sdk** — `assembly/version.go` `Version` const, *if* go-sdk is part of the
+  cycle. go-sdk is tag-driven — **skip it entirely when it has no new commits**.
+
+**3b — README badges** — `pypi/v`, `npm/v/.../<tag>`, GitHub-release and
+`docs-live` badges are **live**; do **not** hand-edit them. Only on a **channel
+change** (alpha→beta→rc→latest) repoint the npm dist-tag in node-sdk's badge URL +
+the `pnpm add @agent-assembly/sdk@<tag>` snippet + the "current release line is
+`…`" prose.
+
+**3c — SDK docs site (the easily-missed part)** — these carry **pinned** version
+strings that are NOT live and NOT covered by the verifier:
+
+- **node-sdk `website/docs/`** — the quick-start **`npm install @agent-assembly/sdk@<X>`**
+  command IS pinned to an explicit version (not a bare `@beta`), and each
+  `09-examples/*.md` page states "depends only on `@agent-assembly/sdk` (version
+  `<X>`)". Bump **every** one to `X`. Leave `website/versions.json` /
+  `versionChannels.json` (auto-managed) and `website/versioned_docs/**` snapshots.
+- **python-sdk `docs/`** — example dependency tables pin `agent-assembly>=<…>`.
+  Bump current-version pins to `X`, and run **Step 3.5** for new-feature adapter
+  examples (forward-ref pins — this is where the agno/haystack/smolagents/
+  ms-agent-framework misses happened).
+- **go-sdk** — library install is `go get …@vX` with no in-repo pinned version;
+  nothing in-repo to bump. (Its examples live in `agent-assembly-examples` and
+  track the *published* go-sdk tag — bump them **post-publish** per the timing
+  rule, not here. The org id is lowercase `ai-agent-assembly`; a mixed-case
+  `go get` path is a separate casing fix.)
+
+> **Net for SDKs:** a release that ships SDK changes touches the **version file +
+> docs-site pins** in every SDK in the cycle. Only the *badges* are no-ops.
 
 ### Step 3.5 — example dependency pins for newly-added features (forward-refs)
 
@@ -210,6 +240,10 @@ you touched the script.
 - A new compat-matrix row for `X` exists in **both** the core and hub
   compatibility files.
 - The hub's **static** core/Go badges read `X`.
+- **Every SDK in the cycle** has its **version file** (pyproject + `__init__` /
+  root `package.json` / `version.go`) AND its **docs-site pinned versions**
+  (node quick-start `@X` install + `09-examples` "version" lines; python example
+  dependency tables) bumped to `X` — none of which the verifier checks.
 - Every new-feature example pin points at the release that ships it (Step 3.5),
   verified absent from the prior published tag — not downgraded to the last
   published version.
