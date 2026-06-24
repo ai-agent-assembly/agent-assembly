@@ -34,7 +34,7 @@ prost                       = { workspace = true }
 # Value-returning CSPRNG for the 32-byte per-session handshake nonce (AAASM-3585);
 # `rand::random` sources from a ChaCha-based, OS-seeded thread RNG and returns the
 # bytes directly, so no zero-initialized buffer literal enters the nonce data-flow.
-rand                        = "0.8"
+rand                        = "0.10"
 serde                       = { workspace = true }
 sha2                        = { workspace = true }
 serde_json                  = { workspace = true }
