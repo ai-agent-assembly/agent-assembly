@@ -200,12 +200,19 @@ async fn perform_handshake(stream: &mut UnixStream, agent_id: &str) {
     stream.read_exact(&mut buf).await.expect("read challenge payload");
     let challenge = HandshakeChallenge::decode(buf.as_ref()).expect("decode HandshakeChallenge");
 
-    // Sign the nonce with the agent's deterministic keypair.
+    // Sign `nonce || sdk_version` with the agent's deterministic keypair
+    // (AAASM-3666). This client sends no version (empty), so the signed payload
+    // reduces to the bare nonce — the backward-compat path — and the runtime
+    // verifies it exactly as before.
     let keypair = AgentKeypair::derive(agent_id);
+    let sdk_version = String::new();
+    let mut signed_payload = challenge.nonce.clone();
+    signed_payload.extend_from_slice(sdk_version.as_bytes());
     let proof = HandshakeProof {
         agent_did: keypair.did_key(),
         public_key: keypair.public_key_hex(),
-        signature: keypair.sign(&challenge.nonce).to_vec(),
+        signature: keypair.sign(&signed_payload).to_vec(),
+        sdk_version,
     };
 
     // Write the proof frame: [tag][varint len][HandshakeProof].
