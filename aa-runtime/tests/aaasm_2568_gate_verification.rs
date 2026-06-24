@@ -38,15 +38,24 @@ fn verify_config(batch_size: usize) -> PipelineConfig {
 }
 
 /// A ToolCall `AuditEvent` whose `args_json` embeds [`SECRET`].
+///
+/// Carries the reserved `aa.sdk_version` label so the run loop draws no
+/// AAASM-3571 tamper signal — this gate test asserts on the single forwarded
+/// (redacted) action event, not the tamper-observability path.
 fn tool_call_with_secret() -> AuditEvent {
-    AuditEvent {
+    let mut event = AuditEvent {
         action_type: ActionType::ToolCall as i32,
         detail: Some(Detail::ToolCall(ToolCallDetail {
             args_json: format!(r#"{{"api_key": "{SECRET}"}}"#).into_bytes(),
             ..Default::default()
         })),
         ..Default::default()
-    }
+    };
+    event.labels.insert(
+        aa_runtime::pipeline::event::SDK_VERSION_LABEL.to_string(),
+        "1.0.0".to_string(),
+    );
+    event
 }
 
 /// Assert that a forwarded pipeline event's `args_json` is redacted, not raw.

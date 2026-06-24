@@ -1081,11 +1081,19 @@ mod tests {
     }
 
     fn normal_event() -> AuditEvent {
-        AuditEvent::default()
+        // A well-behaved SDK presents its version, so the run loop draws no
+        // tamper signal (Unverifiable, not flagged) and forwards only the
+        // action event. Tamper-path behaviour is covered by the dedicated
+        // emit_tamper_signal tests and aaasm_3571_tamper_observability.
+        let mut event = AuditEvent::default();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     fn violation_event() -> AuditEvent {
-        AuditEvent {
+        let mut event = AuditEvent {
             detail: Some(Detail::Violation(PolicyViolation {
                 policy_rule: "rule".to_string(),
                 blocked_action: "action".to_string(),
@@ -1093,7 +1101,13 @@ mod tests {
                 latency_ms: 0,
             })),
             ..Default::default()
-        }
+        };
+        // Present SDK version → no tamper signal, so the violation path forwards
+        // only the violation event.
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     // -----------------------------------------------------------------------
@@ -1474,11 +1488,16 @@ mod tests {
         // send the event, so the first tick cannot race ahead and flush our event.
         tokio::task::yield_now().await;
 
-        // Build a TOOL_CALL event — not blocked by the policy
-        let event = AuditEvent {
+        // Build a TOOL_CALL event — not blocked by the policy. Carries the SDK
+        // version label so it draws no tamper signal (which would bypass the
+        // batch and break this batching assertion).
+        let mut event = AuditEvent {
             action_type: ActionType::ToolCall as i32,
             ..Default::default()
         };
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
         tx.send((0, IpcFrame::EventReport(event))).await.unwrap();
 
         // Wait until the run loop has enqueued the event into the batch.
@@ -2184,14 +2203,20 @@ mod tests {
     /// A ToolCall `AuditEvent` whose `args_json` embeds [`GATE_SECRET`].
     fn tool_call_with_secret() -> AuditEvent {
         use aa_proto::assembly::audit::v1::ToolCallDetail;
-        AuditEvent {
+        let mut event = AuditEvent {
             action_type: ActionType::ToolCall as i32,
             detail: Some(Detail::ToolCall(ToolCallDetail {
                 args_json: format!(r#"{{"api_key": "{GATE_SECRET}"}}"#).into_bytes(),
                 ..Default::default()
             })),
             ..Default::default()
-        }
+        };
+        // Present SDK version → no tamper event, so this redaction test sees only
+        // the single forwarded action event.
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     /// Assert an audited pipeline event's `args_json` was redacted, not raw.
