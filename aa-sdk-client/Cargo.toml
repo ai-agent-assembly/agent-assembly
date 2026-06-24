@@ -46,7 +46,7 @@ tokio-stream = { workspace = true }
 # CSPRNG for fresh per-test handshake challenge nonces. `rand` returns the
 # value directly (no `[0u8; 32]` buffer literal in the data-flow → CodeQL-clean),
 # used by every test that generates a nonce (unit + lifecycle_e2e fixture).
-rand = "0.8"
+rand = "0.10"
 
 [lints]
 workspace = true
