@@ -56,8 +56,12 @@ where
     let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
     let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
     assert_eq!(proof.public_key, hex::encode(vk.to_bytes()));
+    // AAASM-3666: the signature covers `nonce || sdk_version`; reconstruct that
+    // payload from the received nonce + the proof's claimed version.
+    let mut signed_payload = nonce.clone();
+    signed_payload.extend_from_slice(proof.sdk_version.as_bytes());
     let sig: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
-    vk.verify(&nonce, &Signature::from_bytes(&sig))
+    vk.verify(&signed_payload, &Signature::from_bytes(&sig))
         .expect("client handshake proof must verify");
 }
 

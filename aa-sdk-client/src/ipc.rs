@@ -191,21 +191,54 @@ async fn perform_handshake(
     agent_id: &str,
 ) -> Result<(), codec::CodecError> {
     let nonce = codec::read_handshake_challenge(reader).await?;
-    let proof = build_handshake_proof(agent_id, &nonce);
+    let proof = build_handshake_proof(agent_id, &nonce, sdk_version());
     codec::write_handshake_proof(writer, &proof).await?;
     tracing::debug!("IPC session handshake completed");
     Ok(())
 }
 
+/// The SDK build version this client reports in the handshake (AAASM-3666).
+///
+/// Sourced from `aa-sdk-client`'s own `CARGO_PKG_VERSION` — the single shared
+/// runtime-client crate every language FFI shim wraps, so it is the meaningful
+/// "SDK version" the runtime can apply a downgrade floor against. Propagating a
+/// language-specific SDK version (e.g. the python/node/go package version)
+/// through the FFI boundary is a future follow-up.
+fn sdk_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// Build a `HandshakeProof` for `agent_id` over the runtime-issued `nonce`,
 /// using the agent's deterministic Ed25519 keypair (AAASM-3587).
-fn build_handshake_proof(agent_id: &str, nonce: &[u8]) -> aa_proto::assembly::ipc::v1::HandshakeProof {
+///
+/// The signature covers `nonce || sdk_version` (AAASM-3666), so the version is
+/// authenticated rather than merely carried: a local tamperer cannot substitute
+/// a current version for a downgraded build's without invalidating the proof.
+fn build_handshake_proof(
+    agent_id: &str,
+    nonce: &[u8],
+    sdk_version: &str,
+) -> aa_proto::assembly::ipc::v1::HandshakeProof {
     let keypair = crate::keypair::AgentKeypair::derive(agent_id);
+    let signed_payload = handshake_signed_payload(nonce, sdk_version);
     aa_proto::assembly::ipc::v1::HandshakeProof {
         agent_did: keypair.did_key(),
         public_key: keypair.public_key_hex(),
-        signature: keypair.sign(nonce).to_vec(),
+        signature: keypair.sign(&signed_payload).to_vec(),
+        sdk_version: sdk_version.to_string(),
     }
+}
+
+/// The exact bytes the handshake signature covers: the raw `nonce` followed by
+/// the UTF-8 `sdk_version` bytes (AAASM-3666). The runtime reconstructs the same
+/// payload from the received nonce + proof `sdk_version` before verifying, so
+/// any version substitution breaks the signature. An empty `sdk_version` reduces
+/// the payload to the bare nonce (pre-AAASM-3666 behaviour).
+fn handshake_signed_payload(nonce: &[u8], sdk_version: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(nonce.len() + sdk_version.len());
+    payload.extend_from_slice(nonce);
+    payload.extend_from_slice(sdk_version.as_bytes());
+    payload
 }
 
 /// Read responses from the runtime: route each `PolicyResponse` to the oldest
@@ -260,6 +293,45 @@ mod tests {
     }
 
     #[test]
+    fn handshake_proof_carries_version_and_signs_over_nonce_and_version() {
+        // AAASM-3666: the proof carries the SDK version, and the signature must
+        // verify against `nonce || sdk_version` (not the bare nonce) under the
+        // agent's deterministic key.
+        use ed25519_dalek::{Signature, Verifier};
+
+        let nonce = random_nonce();
+        let proof = build_handshake_proof(TEST_AGENT_ID, &nonce, "1.2.3");
+
+        assert_eq!(proof.sdk_version, "1.2.3", "proof must carry the SDK version");
+
+        let vk = crate::keypair::AgentKeypair::derive(TEST_AGENT_ID);
+        let pk = ed25519_dalek::VerifyingKey::from_bytes(&vk.public_key_bytes()).unwrap();
+        let sig_bytes: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
+        let sig = Signature::from_bytes(&sig_bytes);
+
+        let signed = handshake_signed_payload(&nonce, "1.2.3");
+        assert!(pk.verify(&signed, &sig).is_ok(), "must verify over nonce || version");
+        // The bare nonce alone must NOT verify — proves the version is bound in.
+        assert!(
+            pk.verify(&nonce, &sig).is_err(),
+            "a non-empty version must make the bare-nonce payload fail to verify"
+        );
+    }
+
+    #[test]
+    fn empty_version_signed_payload_is_the_bare_nonce() {
+        // Backward-compat: with no version the signed payload reduces to the
+        // raw nonce, matching the pre-AAASM-3666 wire behaviour.
+        let nonce = random_nonce();
+        assert_eq!(handshake_signed_payload(&nonce, ""), nonce.to_vec());
+    }
+
+    #[test]
+    fn reported_sdk_version_is_the_crate_version() {
+        assert_eq!(sdk_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
     fn query_policy_debug_does_not_leak_credential_token() {
         // Redaction guard (AAASM-3634): the QueryPolicy variant carries the
         // gateway credential_token, but its Debug must never print it — only
@@ -288,6 +360,16 @@ mod tests {
 
     /// The agent id the mock-server tests handshake as.
     const TEST_AGENT_ID: &str = "test-agent";
+
+    /// A fresh 32-byte test nonce drawn from the OS CSPRNG. Returns the value
+    /// rather than zero-initializing a buffer in place, so no constant literal
+    /// flows into the signing payload (keeps the handshake tests off any
+    /// hard-coded-crypto-material code path).
+    fn random_nonce() -> [u8; 32] {
+        let mut nonce = [0u8; 32];
+        getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the test nonce");
+        nonce
+    }
 
     /// Server-side handshake (AAASM-3587): send a nonce challenge, read the
     /// client's proof, and verify it signs the nonce under the agent key. Mock
@@ -329,13 +411,17 @@ mod tests {
         stream.read_exact(&mut buf).await.unwrap();
         let proof = aa_proto::assembly::ipc::v1::HandshakeProof::decode(buf.as_ref()).unwrap();
 
-        // Verify the proof against the expected agent key.
+        // Verify the proof against the expected agent key. The signature covers
+        // `nonce || sdk_version` (AAASM-3666), so the server reconstructs that
+        // payload from the received nonce + the proof's claimed version.
         let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
         let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
         assert_eq!(proof.public_key, hex::encode(vk.to_bytes()));
+        let mut signed_payload = nonce.clone();
+        signed_payload.extend_from_slice(proof.sdk_version.as_bytes());
         let sig_bytes: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
         let vk2 = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
-        vk2.verify(&nonce, &Signature::from_bytes(&sig_bytes))
+        vk2.verify(&signed_payload, &Signature::from_bytes(&sig_bytes))
             .expect("client proof must verify");
     }
 
