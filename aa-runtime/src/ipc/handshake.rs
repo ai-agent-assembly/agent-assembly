@@ -16,6 +16,7 @@ use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use aa_proto::assembly::ipc::v1::HandshakeProof;
+use aa_security::sdk_identity::VerifiedSdkIdentity;
 
 /// Number of random bytes in a per-session challenge nonce.
 pub const NONCE_LEN: usize = 32;
@@ -41,30 +42,69 @@ pub fn generate_nonce() -> [u8; NONCE_LEN] {
     rand::random::<[u8; NONCE_LEN]>()
 }
 
-/// Verify a `HandshakeProof` against the challenge `nonce` and the expected
-/// verifying key for this agent.
+/// The exact bytes the handshake signature must cover: the raw `nonce` followed
+/// by the UTF-8 `sdk_version` bytes (AAASM-3666).
 ///
-/// Returns `true` only when the signature is a valid Ed25519 signature over the
-/// exact nonce bytes AND the proof's `public_key` matches the expected key (so a
-/// peer cannot present a different, self-controlled key it does hold). Any
-/// malformed field (wrong-length signature, non-hex / mismatched public key)
-/// fails closed.
-pub fn verify_proof(nonce: &[u8], proof: &HandshakeProof, expected: &VerifyingKey) -> bool {
+/// Both sides MUST construct this identically — the SDK signs it
+/// (`aa-sdk-client::ipc::handshake_signed_payload`) and the runtime
+/// reconstructs it from the received nonce + the proof's claimed version before
+/// verifying. Binding the version into the signed payload is what makes the
+/// version *authenticated*: a local tamperer cannot swap a downgraded build's
+/// version for a current one without invalidating the signature. An empty
+/// `sdk_version` reduces the payload to the bare nonce (pre-AAASM-3666
+/// behaviour).
+fn signed_payload(nonce: &[u8], sdk_version: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(nonce.len() + sdk_version.len());
+    payload.extend_from_slice(nonce);
+    payload.extend_from_slice(sdk_version.as_bytes());
+    payload
+}
+
+/// Verify a `HandshakeProof` against the challenge `nonce` and the expected
+/// verifying key for this agent, returning the **authenticated** SDK identity.
+///
+/// Returns `Some(VerifiedSdkIdentity)` only when the signature is a valid
+/// Ed25519 signature over `nonce || proof.sdk_version` AND the proof's
+/// `public_key` matches the expected key (so a peer cannot present a different,
+/// self-controlled key it does hold). Any malformed field (wrong-length
+/// signature, non-hex / mismatched public key, bad signature) returns `None`
+/// (fail closed).
+///
+/// Because the version is part of the verified payload, the returned identity's
+/// version is trustworthy: an empty version yields
+/// [`VerifiedSdkIdentity::none`] (present-without-version — the verdict stays
+/// `Unverifiable`, no regression for pre-AAASM-3666 SDKs), and a non-empty
+/// version yields [`VerifiedSdkIdentity::with_version`] which the classifier can
+/// flag as downgraded/forged (AAASM-3666 / AAASM-3571).
+pub fn verify_proof(nonce: &[u8], proof: &HandshakeProof, expected: &VerifyingKey) -> Option<VerifiedSdkIdentity> {
     // The presented public key must be the expected one — binds the channel to
     // the agent's registered identity, not just to "some key the peer holds".
     let expected_hex = hex::encode(expected.to_bytes());
     if proof.public_key != expected_hex {
-        return false;
+        return None;
     }
 
     // Signature must be exactly 64 bytes.
     let sig_bytes: [u8; 64] = match proof.signature.as_slice().try_into() {
         Ok(b) => b,
-        Err(_) => return false,
+        Err(_) => return None,
     };
     let signature = Signature::from_bytes(&sig_bytes);
 
-    expected.verify_strict(nonce, &signature).is_ok()
+    // Verify over `nonce || sdk_version` — the version is authenticated, not
+    // merely carried alongside the proof.
+    let payload = signed_payload(nonce, &proof.sdk_version);
+    if expected.verify_strict(&payload, &signature).is_err() {
+        return None;
+    }
+
+    // Authenticated. Carry the verified version through only when one was signed;
+    // an empty version stays present-without-version (Unverifiable).
+    Some(if proof.sdk_version.is_empty() {
+        VerifiedSdkIdentity::none()
+    } else {
+        VerifiedSdkIdentity::with_version(proof.sdk_version.clone())
+    })
 }
 
 #[cfg(test)]
@@ -80,12 +120,17 @@ mod tests {
     }
 
     fn valid_proof(agent_id: &str, nonce: &[u8]) -> HandshakeProof {
+        valid_proof_with_version(agent_id, nonce, "")
+    }
+
+    fn valid_proof_with_version(agent_id: &str, nonce: &[u8], sdk_version: &str) -> HandshakeProof {
         let sk = signing_key(agent_id);
-        let sig = sk.sign(nonce);
+        let sig = sk.sign(&signed_payload(nonce, sdk_version));
         HandshakeProof {
             agent_did: format!("did:key:{agent_id}"),
             public_key: hex::encode(sk.verifying_key().to_bytes()),
             signature: sig.to_bytes().to_vec(),
+            sdk_version: sdk_version.to_string(),
         }
     }
 
@@ -109,7 +154,31 @@ mod tests {
     fn valid_proof_verifies() {
         let nonce = generate_nonce();
         let proof = valid_proof("agent-x", &nonce);
-        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")));
+        // No version signed → authenticated but present-without-version.
+        let verified = verify_proof(&nonce, &proof, &expected_verifying_key("agent-x"));
+        assert_eq!(verified, Some(VerifiedSdkIdentity::none()));
+    }
+
+    #[test]
+    fn valid_proof_with_version_carries_the_verified_version() {
+        // AAASM-3666: a proof signing `nonce || version` verifies and the
+        // returned identity carries that authenticated version.
+        let nonce = generate_nonce();
+        let proof = valid_proof_with_version("agent-x", &nonce, "1.4.0");
+        let verified = verify_proof(&nonce, &proof, &expected_verifying_key("agent-x"));
+        assert_eq!(verified, Some(VerifiedSdkIdentity::with_version("1.4.0")));
+    }
+
+    #[test]
+    fn tampered_version_is_rejected() {
+        // AAASM-3666: the version is authenticated. A local tamperer who swaps
+        // the claimed version (e.g. a downgraded build presenting a current
+        // version string) without re-signing must fail — the signature no longer
+        // matches `nonce || version`.
+        let nonce = generate_nonce();
+        let mut proof = valid_proof_with_version("agent-x", &nonce, "0.1.0");
+        proof.sdk_version = "9.9.9".to_string(); // claim a newer version, same sig
+        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")).is_none());
     }
 
     #[test]
@@ -118,7 +187,7 @@ mod tests {
         let mut proof = valid_proof("agent-x", &nonce);
         // Flip a byte in the signature.
         proof.signature[0] ^= 0xFF;
-        assert!(!verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")));
+        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")).is_none());
     }
 
     #[test]
@@ -126,7 +195,7 @@ mod tests {
         let nonce = generate_nonce();
         let other = generate_nonce();
         let proof = valid_proof("agent-x", &other);
-        assert!(!verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")));
+        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")).is_none());
     }
 
     #[test]
@@ -134,7 +203,7 @@ mod tests {
         // A peer holds a real key, but not the expected agent's key.
         let nonce = generate_nonce();
         let proof = valid_proof("attacker-agent", &nonce);
-        assert!(!verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")));
+        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")).is_none());
     }
 
     #[test]
@@ -142,6 +211,6 @@ mod tests {
         let nonce = generate_nonce();
         let mut proof = valid_proof("agent-x", &nonce);
         proof.signature.truncate(10);
-        assert!(!verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")));
+        assert!(verify_proof(&nonce, &proof, &expected_verifying_key("agent-x")).is_none());
     }
 }
