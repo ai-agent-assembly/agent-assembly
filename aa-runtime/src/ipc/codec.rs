@@ -413,6 +413,7 @@ mod tests {
             agent_did: "did:key:z6MkExample".to_string(),
             public_key: "ab".repeat(32),
             signature: vec![7u8; 64],
+            sdk_version: "1.2.3".to_string(),
         };
 
         let mut buf: Vec<u8> = Vec::new();
@@ -429,6 +430,7 @@ mod tests {
                 assert_eq!(decoded.agent_did, "did:key:z6MkExample");
                 assert_eq!(decoded.public_key, "ab".repeat(32));
                 assert_eq!(decoded.signature, vec![7u8; 64]);
+                assert_eq!(decoded.sdk_version, "1.2.3");
             }
             other => panic!("expected HandshakeProof, got {other:?}"),
         }

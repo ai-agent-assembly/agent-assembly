@@ -317,12 +317,13 @@ pub(super) fn spawn_connection(
 /// await the SDK's `HandshakeProof`, and verify it against `expected_key`.
 ///
 /// Returns `Some(VerifiedSdkIdentity)` only on a valid proof — the identity the
-/// authenticated channel established (AAASM-3640 consumes it). The current
-/// handshake proof authenticates the agent's Ed25519 key possession but carries
-/// no SDK version on the wire, so the returned identity has `version: None`
-/// (a present-but-not-versioned attestation). Any I/O error, a non-handshake
-/// first frame, or a signature that does not verify returns `None`
-/// (fail-closed).
+/// authenticated channel established (AAASM-3640 consumes it). The proof now
+/// signs over `nonce || sdk_version` (AAASM-3666), so the returned identity
+/// carries the **authenticated** SDK version when the SDK supplied one; an SDK
+/// that predates AAASM-3666 sends an empty version and the identity stays
+/// present-without-version (`version: None`, verdict `Unverifiable`). Any I/O
+/// error, a non-handshake first frame, or a signature that does not verify (incl.
+/// a tampered version) returns `None` (fail-closed).
 pub(super) async fn perform_handshake(
     read_half: &mut tokio::net::unix::OwnedReadHalf,
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
@@ -344,13 +345,14 @@ pub(super) async fn perform_handshake(
     //    rejected without dispatch.
     match super::codec::read_frame(read_half).await {
         Ok(IpcFrame::HandshakeProof(proof)) => {
-            if handshake::verify_proof(&nonce, &proof, expected_key) {
-                // Authenticated. The proof carries no version, so the verified
-                // reference is present-without-version (version: None).
-                Some(aa_security::sdk_identity::VerifiedSdkIdentity::none())
-            } else {
-                tracing::warn!("handshake proof did not verify against the expected agent key");
-                None
+            // Returns the authenticated identity (carrying the signed-over SDK
+            // version when present) or None on any verification failure.
+            match handshake::verify_proof(&nonce, &proof, expected_key) {
+                Some(identity) => Some(identity),
+                None => {
+                    tracing::warn!("handshake proof did not verify against the expected agent key");
+                    None
+                }
             }
         }
         Ok(other) => {
@@ -488,14 +490,22 @@ mod tests {
         stream.read_exact(&mut buf).await.expect("read challenge payload");
         let challenge = HandshakeChallenge::decode(buf.as_ref()).expect("decode challenge");
 
-        // Sign the nonce with the deterministic agent key.
+        // Sign `nonce || sdk_version` with the deterministic agent key
+        // (AAASM-3666). These dispatch tests send no version (empty), so the
+        // signed payload reduces to the bare nonce — exercising the backward-
+        // compat path. Version-specific behaviour is covered by the handshake
+        // unit tests and the verified-identity store tests.
         let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
         let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let sig = sk.sign(&challenge.nonce);
+        let sdk_version = String::new();
+        let mut signed_payload = challenge.nonce.clone();
+        signed_payload.extend_from_slice(sdk_version.as_bytes());
+        let sig = sk.sign(&signed_payload);
         let proof = HandshakeProof {
             agent_did: format!("did:key:{agent_id}"),
             public_key: hex::encode(sk.verifying_key().to_bytes()),
             signature: sig.to_bytes().to_vec(),
+            sdk_version,
         };
 
         // Write the proof frame.
@@ -922,6 +932,76 @@ mod tests {
             map.len(),
             1,
             "verified-identity store should hold one entry after a handshake"
+        );
+        token.cancel();
+    }
+
+    /// AAASM-3666: a client that signs `nonce || version` has the authenticated
+    /// version recorded in the verified-identity store, so the pipeline can
+    /// classify a downgrade instead of `Unverifiable`.
+    #[tokio::test]
+    async fn verified_identity_carries_signed_sdk_version() {
+        use crate::ipc::codec::{TAG_HANDSHAKE_CHALLENGE, TAG_HANDSHAKE_PROOF};
+        use aa_proto::assembly::ipc::v1::{HandshakeChallenge, HandshakeProof};
+        use ed25519_dalek::Signer;
+        use sha2::{Digest, Sha256};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let socket_path = temp_socket_path("verified-version");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (_rx, _router, verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        // Connect and perform a handshake that signs over `nonce || "2.5.0"`.
+        let mut stream = {
+            let mut s = None;
+            for _ in 0..20 {
+                if let Ok(st) = UnixStream::connect(&socket_path).await {
+                    s = Some(st);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            s.expect("connect failed")
+        };
+
+        let tag = stream.read_u8().await.unwrap();
+        assert_eq!(tag, TAG_HANDSHAKE_CHALLENGE);
+        let clen = read_varint_stream(&mut stream).await;
+        let mut cbuf = vec![0u8; clen];
+        stream.read_exact(&mut cbuf).await.unwrap();
+        let challenge = HandshakeChallenge::decode(cbuf.as_ref()).unwrap();
+
+        let sdk_version = "2.5.0".to_string();
+        let seed: [u8; 32] = Sha256::digest(TEST_AGENT_ID.as_bytes()).into();
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let mut signed_payload = challenge.nonce.clone();
+        signed_payload.extend_from_slice(sdk_version.as_bytes());
+        let proof = HandshakeProof {
+            agent_did: format!("did:key:{TEST_AGENT_ID}"),
+            public_key: hex::encode(sk.verifying_key().to_bytes()),
+            signature: sk.sign(&signed_payload).to_bytes().to_vec(),
+            sdk_version: sdk_version.clone(),
+        };
+        let payload = proof.encode_to_vec();
+        stream.write_u8(TAG_HANDSHAKE_PROOF).await.unwrap();
+        write_varint_stream(&mut stream, payload.len() as u64).await;
+        stream.write_all(&payload).await.unwrap();
+        stream.flush().await.unwrap();
+
+        for _ in 0..50 {
+            if counter.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let map = verified.read().await;
+        let identity = map.values().next().expect("a verified identity must be recorded");
+        assert_eq!(
+            identity.version.as_deref(),
+            Some("2.5.0"),
+            "the signed SDK version must be recorded as the verified reference"
         );
         token.cancel();
     }
@@ -1390,6 +1470,7 @@ mod tests {
             agent_did: format!("did:key:{TEST_AGENT_ID}"),
             public_key: hex::encode(sk.verifying_key().to_bytes()),
             signature: sig,
+            sdk_version: String::new(),
         };
         let payload = proof.encode_to_vec();
         stream.write_u8(TAG_HANDSHAKE_PROOF).await.unwrap();

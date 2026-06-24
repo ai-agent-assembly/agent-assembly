@@ -26,14 +26,29 @@ message HandshakeChallenge {
 }
 
 // HandshakeProof — SDK → runtime, the SDK's reply proving key possession. The
-// runtime verifies `signature` over `nonce` against the Ed25519 verifying key
-// it derives for its configured agent id (and cross-checks `public_key`).
+// runtime verifies `signature` over `nonce || sdk_version` against the Ed25519
+// verifying key it derives for its configured agent id (and cross-checks
+// `public_key`).
 message HandshakeProof {
   // The agent's did:key identity (mirrors the gateway registration identity).
   string agent_did = 1;
   // The agent's Ed25519 verifying key, hex-encoded (64 lowercase hex chars) —
   // the same value sent as `public_key` at gateway registration.
   string public_key = 2;
-  // Ed25519 signature over the challenge nonce, raw 64 bytes.
+  // Ed25519 signature over the signed payload `nonce || sdk_version` (the raw
+  // nonce bytes followed by the UTF-8 `sdk_version` bytes), raw 64 bytes.
+  //
+  // The version is bound *into the signed payload* — not merely sent alongside
+  // it — so the runtime authenticates the version (AAASM-3666). An unsigned
+  // version next to the proof would be worthless for downgrade detection: a
+  // local tamperer could swap a downgraded build's version string for a current
+  // one. Signing `nonce || sdk_version` means any version substitution
+  // invalidates the signature. When `sdk_version` is empty the payload reduces
+  // to the bare nonce, preserving the pre-AAASM-3666 wire behaviour.
   bytes signature = 3;
+  // The SDK build version the connecting client claims, bound into `signature`
+  // above. Empty when the SDK predates AAASM-3666 (no version on the wire) — the
+  // runtime then treats the channel as present-without-version and the
+  // SDK-identity verdict stays `Unverifiable`, exactly as before this change.
+  string sdk_version = 4;
 }
