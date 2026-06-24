@@ -87,6 +87,7 @@ mod tests {
             gateway_endpoint: None,
             team_id: None,
             parent_agent_id: None,
+            sdk_version: None,
         }
     }
 
