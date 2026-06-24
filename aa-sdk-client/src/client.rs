@@ -443,6 +443,31 @@ mod tests {
         fn set_credential_token_for_test(&self, token: &str) {
             *self.credential_token.lock().unwrap() = Some(Zeroizing::new(token.to_string()));
         }
+
+        /// Test-only: clear the stored token, dropping (and thus zeroizing) the
+        /// `Zeroizing<String>` it held.
+        fn clear_credential_token_for_test(&self) {
+            *self.credential_token.lock().unwrap() = None;
+        }
+    }
+
+    #[test]
+    fn credential_token_is_zeroizing_and_clears_on_take() {
+        // The slot is backed by a zeroizing wrapper (AAASM-3629): on drop the
+        // plaintext heap copy is overwritten rather than lingering for a core
+        // dump. Functionally we assert the value round-trips while held and is
+        // gone once the slot is cleared (which drops/zeroizes the wrapper).
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test("tok-zero");
+        assert_eq!(client.credential_token().as_deref(), Some("tok-zero"));
+
+        client.clear_credential_token_for_test();
+        assert_eq!(client.credential_token(), None);
+
+        // Compile-time guard: the field is a `Zeroizing<String>`, so this
+        // type annotation must hold (a plain `String` would fail to compile).
+        let guard = client.credential_token.lock().unwrap();
+        let _typed: &Option<Zeroizing<String>> = &guard;
     }
 
     #[test]
