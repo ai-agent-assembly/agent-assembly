@@ -21,7 +21,7 @@ The one-line installer downloads the matching pre-built tarball plus its
 the `aasm` binary:
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+curl -fsSL https://agent-assembly.com/install.sh | sh
 ```
 
 By default the binary is installed to `/usr/local/bin` if that directory is
@@ -29,9 +29,19 @@ writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
 
-> A short hosted alias (`https://install.ai-agent-assembly.dev` — hosted install
-> script, coming soon) is planned but not yet live — use the
-> `raw.githubusercontent.com` URL above for now.
+> The canonical installer URL is `https://agent-assembly.com/install.sh`. The
+> alternate host `https://tool.agent-assembly.dev` serves the **same** script and
+> stays working:
+>
+> ```sh
+> curl -fsSL https://tool.agent-assembly.dev | sh
+> ```
+>
+> You can also fetch the raw script directly from GitHub:
+>
+> ```sh
+> curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+> ```
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
