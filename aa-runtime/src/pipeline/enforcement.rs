@@ -20,6 +20,19 @@ use aa_security::{CredentialFinding, CredentialScanner};
 use super::event::EnrichedEvent;
 use crate::config::RuntimeConfig;
 
+/// Reserved `labels` keys that assert a *trust grant* — values the runtime must
+/// compute itself, never the SDK (AAASM-3630).
+///
+/// The SDK controls the `labels` map, so any of these keys arriving on the wire
+/// is a forgery attempt: an agent trying to shorten enforcement by claiming the
+/// event was already trusted / scanned / allowed. The runtime strips them
+/// unconditionally and counts the attempt — it never honours them. This is the
+/// concrete realization of the AAASM-2569 "no SDK-supplied trust marker" threat.
+///
+/// `aa.sdk_version` is deliberately **not** in this set: it is a *claim to be
+/// verified* (read in AAASM-3625), not a trust grant, so it is preserved.
+pub const TRUST_MARKER_LABELS: &[&str] = &["aa.trusted", "aa.scanned", "aa.allow", "aa.bypass"];
+
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
 ///
@@ -90,10 +103,19 @@ pub struct EnforcementOutcome {
     pub oversized_fields: usize,
     /// Total bytes actually handed to the scanner across all fields.
     pub scanned_bytes: usize,
+    /// Number of SDK-supplied trust-marker labels (see [`TRUST_MARKER_LABELS`])
+    /// that were stripped from the event — i.e. forgery attempts the runtime
+    /// refused to honour (AAASM-3630). Read by the tamper audit / metric layer.
+    pub forged_trust_markers: usize,
 }
 
 impl EnforcementOutcome {
     /// `true` when nothing was redacted: no findings and no oversized fields.
+    ///
+    /// Forged trust markers do **not** affect this: they are a distinct tamper
+    /// signal (see [`has_forged_trust_markers`](Self::has_forged_trust_markers)),
+    /// not a payload redaction. Stripping a forged `aa.trusted` label from an
+    /// otherwise-clean event still leaves it clean.
     pub fn is_clean(&self) -> bool {
         self.findings.is_empty() && self.oversized_fields == 0
     }
@@ -101,6 +123,11 @@ impl EnforcementOutcome {
     /// Total number of redactions applied (findings + oversized fields).
     pub fn redaction_count(&self) -> usize {
         self.findings.len() + self.oversized_fields
+    }
+
+    /// `true` when at least one forged SDK trust-marker label was stripped.
+    pub fn has_forged_trust_markers(&self) -> bool {
+        self.forged_trust_markers > 0
     }
 }
 
@@ -145,10 +172,13 @@ impl RuntimeScanner {
     /// Runs **unconditionally** — no field of the event can request that
     /// scanning be skipped, and there is no SDK trust marker on the wire. Only
     /// the allowlisted secret-bearing fields are scanned; opaque numeric and
-    /// enumeration fields are left untouched.
+    /// enumeration fields are left untouched. Any SDK-supplied trust-marker
+    /// labels are stripped and counted (AAASM-3630) before the scan so a forged
+    /// marker can never shorten the work below.
     pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
         let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
+        strip_trust_markers(&mut event.inner.labels, &mut outcome);
         if let Some(detail) = event.inner.detail.as_mut() {
             self.scan_detail(detail, &mut outcome);
         }
@@ -236,6 +266,21 @@ impl RuntimeScanner {
                 *field = OVERSIZED_MARKER.as_bytes().to_vec();
                 outcome.oversized_fields += 1;
             }
+        }
+    }
+}
+
+/// Strip every reserved SDK trust-marker label (see [`TRUST_MARKER_LABELS`])
+/// from `labels` in place, counting each removal into
+/// [`EnforcementOutcome::forged_trust_markers`].
+///
+/// The runtime computes trust itself; an SDK-supplied trust grant is a forgery
+/// attempt that is dropped and flagged, never honoured. `aa.sdk_version` (a
+/// claim, not a grant) is intentionally not in the marker set and is preserved.
+fn strip_trust_markers(labels: &mut std::collections::HashMap<String, String>, outcome: &mut EnforcementOutcome) {
+    for key in TRUST_MARKER_LABELS {
+        if labels.remove(*key).is_some() {
+            outcome.forged_trust_markers += 1;
         }
     }
 }
