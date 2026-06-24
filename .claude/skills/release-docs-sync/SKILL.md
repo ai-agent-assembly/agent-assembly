@@ -24,7 +24,30 @@ not on `X`.
 > (latest / pre-release / stable labels, version dropdowns) is already fully
 > **release-workflow-driven** (AAASM-2741 / AAASM-2744). **Do NOT hand-edit
 > channel labels or the channel dropdown** — only update the in-content version
-> references listed below.
+> references listed below. (For **node-sdk**, `website/versions.json` and
+> `website/versionChannels.json` are that channel config — auto-managed by the
+> release docs-snapshot step; **do not hand-edit them**.)
+
+> **Principle — three kinds of version reference; only one gets bumped.** Before
+> changing any version string, classify it:
+> - **Current / canonical** — install snippets, sample CLI output, "captured
+>   against `vX`" provenance, the latest-release link, the *new* compat-matrix
+>   row → **bump to `X`**.
+> - **Historical** — CHANGELOG, `docs/release/*`, older compat-matrix rows,
+>   `versioned_docs/` snapshots, a security "last full refresh" marker → **leave**.
+>   They record the past; bumping a refresh marker without an actual re-review is
+>   a lie.
+> - **Forward-reference** — a dependency pin to the release that *ships a feature*
+>   (an example for an adapter/feature added after the last published tag, pinned
+>   `>=X`) → **correct, not stale; leave it / set to `X`**. Do NOT downgrade it to
+>   the last *published* version. This is the AAASM-3695 trap — see Step 3.5.
+
+> **Timing — consumer repos lag; the release repos lead.** Repos that **install
+> from registries** (`agent-assembly-examples`, the docs-hub live badges) must
+> reference the **currently-published** version. Do **not** bump them to `X`
+> *before* `X` is published — `pip install` / `npm i` / `go get` of an unpublished
+> `X` breaks. Bump those **after** the publish step. The release repos' own docs
+> (this skill) *describe* the upcoming release and may lead.
 
 ## When to use
 
@@ -123,6 +146,36 @@ uses **static** shields.io badges that do NOT self-update:
 edits (badges are live). Only a **channel change** requires the dist-tag /
 prose edits in node-sdk above.
 
+### Step 3.5 — example dependency pins for newly-added features (forward-refs)
+
+**Easy to miss, and NOT covered by `check-docs-versions.sh`.** When a release adds
+new SDK features/adapters, their example docs must pin the release that **ships**
+them — not the last published version. Pinning the older version means a reader
+installs a build that lacks the feature (`ImportError` / missing export). This is
+the AAASM-3695 class: the LlamaIndex example correctly pins `>=0.0.1b5` while only
+`b4` was published, because the adapter is **absent** from `b4`.
+
+1. Grep every example/doc dependency pin:
+   - python: `git grep -nE 'agent-assembly\s*[<>=]' docs/`
+   - node:   `git grep -nE '@agent-assembly/sdk@' docs/`
+2. For each pinned feature, check whether it exists in the **last published tag**:
+
+   ```sh
+   git cat-file -e <last-published-tag>:agent_assembly/adapters/<name>/__init__.py
+   ```
+
+   - **errors (absent)** → the feature is new in `X`; the pin **must** be the `X`
+     registry form (`>=0.0.1b5`, etc.).
+   - **succeeds (present)** → the existing lower pin is valid; **leave it**.
+3. Fix any pin naming a version that does not actually contain its feature. (The
+   beta.4 wave found four the QA pass missed: `agno` at `>=b4`, and `haystack` /
+   `microsoft-agent-framework` / `smolagents` at `>=b2` — all adapters that only
+   ship in `b5`.)
+
+> Do this for **every** new feature's example, not just the canonical version
+> files. A green `check-docs-versions.sh` does **not** catch these — it only
+> checks the core install examples + the compat-matrix row.
+
 ### Step 4 — verify
 
 From the agent-assembly worktree:
@@ -157,4 +210,9 @@ you touched the script.
 - A new compat-matrix row for `X` exists in **both** the core and hub
   compatibility files.
 - The hub's **static** core/Go badges read `X`.
-- Channel labels were **not** hand-edited (they're workflow-driven).
+- Every new-feature example pin points at the release that ships it (Step 3.5),
+  verified absent from the prior published tag — not downgraded to the last
+  published version.
+- Consumer / registry-install repos were **not** bumped ahead of publish.
+- Channel labels (incl. node-sdk `versions.json` / `versionChannels.json`) were
+  **not** hand-edited (they're workflow-driven).
