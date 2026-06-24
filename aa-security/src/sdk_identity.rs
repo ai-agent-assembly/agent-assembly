@@ -232,3 +232,123 @@ fn parse_components(v: &str) -> Option<Vec<u64>> {
     }
     v.split('.').map(|c| c.parse::<u64>().ok()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_when_not_present() {
+        let observed = ObservedSdkIdentity::missing();
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), Some("1.0.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::Missing);
+    }
+
+    #[test]
+    fn missing_takes_precedence_over_a_verified_reference() {
+        // No identity presented at all, even if a verified version exists.
+        let observed = ObservedSdkIdentity::missing();
+        let verified = VerifiedSdkIdentity::with_version("2.0.0");
+        assert_eq!(classify(&observed, &verified, None), SdkIdentityVerdict::Missing);
+    }
+
+    #[test]
+    fn forged_when_observed_version_mismatches_verified() {
+        let observed = ObservedSdkIdentity::present("9.9.9");
+        let verified = VerifiedSdkIdentity::with_version("1.2.3");
+        assert_eq!(classify(&observed, &verified, None), SdkIdentityVerdict::Forged);
+    }
+
+    #[test]
+    fn forged_beats_downgrade_when_both_apply() {
+        // Observed contradicts the verified reference AND is below the floor:
+        // the impersonation signal (Forged) is the more severe verdict.
+        let observed = ObservedSdkIdentity::present("0.1.0");
+        let verified = VerifiedSdkIdentity::with_version("2.0.0");
+        assert_eq!(
+            classify(&observed, &verified, Some("1.0.0")),
+            SdkIdentityVerdict::Forged
+        );
+    }
+
+    #[test]
+    fn ok_when_observed_matches_verified() {
+        let observed = ObservedSdkIdentity::present("1.2.3");
+        let verified = VerifiedSdkIdentity::with_version("1.2.3");
+        assert_eq!(classify(&observed, &verified, None), SdkIdentityVerdict::Ok);
+    }
+
+    #[test]
+    fn ok_when_observed_matches_verified_with_zero_padding() {
+        // "1.2" and "1.2.0" are equal under implicit-zero padding, so a match
+        // is not flagged as forged.
+        let observed = ObservedSdkIdentity::present("1.2");
+        let verified = VerifiedSdkIdentity::with_version("1.2.0");
+        assert_eq!(classify(&observed, &verified, None), SdkIdentityVerdict::Ok);
+    }
+
+    #[test]
+    fn version_downgraded_below_minimum() {
+        let observed = ObservedSdkIdentity::present("0.9.0");
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), Some("1.0.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::VersionDowngraded);
+    }
+
+    #[test]
+    fn ok_at_exactly_the_minimum() {
+        let observed = ObservedSdkIdentity::present("1.0.0");
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), Some("1.0.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::Ok);
+    }
+
+    #[test]
+    fn ok_above_the_minimum() {
+        let observed = ObservedSdkIdentity::present("1.5.2");
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), Some("1.0.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::Ok);
+    }
+
+    #[test]
+    fn unparseable_version_against_a_floor_fails_closed_as_downgrade() {
+        // A non-numeric claimed version must never silently pass a floor.
+        let observed = ObservedSdkIdentity::present("not-a-version");
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), Some("1.0.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::VersionDowngraded);
+    }
+
+    #[test]
+    fn unverifiable_when_present_but_no_verified_reference_and_no_floor() {
+        let observed = ObservedSdkIdentity::present("1.2.3");
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), None);
+        assert_eq!(verdict, SdkIdentityVerdict::Unverifiable);
+    }
+
+    #[test]
+    fn present_without_a_claimed_version_and_no_floor_is_unverifiable() {
+        // present == true but no version string and nothing to compare against.
+        let observed = ObservedSdkIdentity {
+            present: true,
+            version: None,
+        };
+        let verdict = classify(&observed, &VerifiedSdkIdentity::none(), None);
+        assert_eq!(verdict, SdkIdentityVerdict::Unverifiable);
+    }
+
+    #[test]
+    fn as_str_labels_are_stable() {
+        assert_eq!(SdkIdentityVerdict::Ok.as_str(), "ok");
+        assert_eq!(SdkIdentityVerdict::Missing.as_str(), "missing");
+        assert_eq!(SdkIdentityVerdict::VersionDowngraded.as_str(), "downgraded");
+        assert_eq!(SdkIdentityVerdict::Forged.as_str(), "forged");
+        assert_eq!(SdkIdentityVerdict::Unverifiable.as_str(), "unverifiable");
+    }
+
+    #[test]
+    fn only_missing_downgraded_forged_are_suspected_tamper() {
+        assert!(SdkIdentityVerdict::Missing.is_suspected_tamper());
+        assert!(SdkIdentityVerdict::VersionDowngraded.is_suspected_tamper());
+        assert!(SdkIdentityVerdict::Forged.is_suspected_tamper());
+        assert!(!SdkIdentityVerdict::Ok.is_suspected_tamper());
+        assert!(!SdkIdentityVerdict::Unverifiable.is_suspected_tamper());
+    }
+}
