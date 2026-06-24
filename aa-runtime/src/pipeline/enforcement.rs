@@ -573,4 +573,120 @@ mod tests {
             "oversized policy stays fail-closed"
         );
     }
+
+    /// Build a label-bearing event with no secret-bearing detail.
+    fn event_with_labels(labels: &[(&str, &str)]) -> EnrichedEvent {
+        let mut event = EnrichedEvent {
+            inner: AuditEvent::default(),
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+        };
+        for (k, v) in labels {
+            event.inner.labels.insert((*k).to_string(), (*v).to_string());
+        }
+        event
+    }
+
+    #[test]
+    fn forged_trust_marker_is_stripped_and_counted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.trusted", "true")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !event.inner.labels.contains_key("aa.trusted"),
+            "forged trust marker must be stripped"
+        );
+        assert_eq!(outcome.forged_trust_markers, 1);
+        assert!(outcome.has_forged_trust_markers());
+    }
+
+    #[test]
+    fn every_reserved_trust_marker_is_stripped() {
+        let scanner = RuntimeScanner::new();
+        let labels: Vec<(&str, &str)> = TRUST_MARKER_LABELS.iter().map(|k| (*k, "1")).collect();
+        let mut event = event_with_labels(&labels);
+
+        let outcome = scanner.enforce(&mut event);
+
+        for key in TRUST_MARKER_LABELS {
+            assert!(!event.inner.labels.contains_key(*key), "{key} must be stripped");
+        }
+        assert_eq!(outcome.forged_trust_markers, TRUST_MARKER_LABELS.len());
+    }
+
+    #[test]
+    fn sdk_version_label_is_preserved_not_a_trust_marker() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.sdk_version", "1.2.3"), ("aa.bypass", "1")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            event.inner.labels.get("aa.sdk_version").map(String::as_str),
+            Some("1.2.3"),
+            "the version claim is preserved for the classifier, not stripped"
+        );
+        assert!(!event.inner.labels.contains_key("aa.bypass"));
+        assert_eq!(outcome.forged_trust_markers, 1);
+    }
+
+    #[test]
+    fn stripping_a_marker_does_not_make_a_clean_event_dirty() {
+        // Forged markers are a distinct signal; they don't count as a redaction.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.trusted", "true")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(outcome.is_clean(), "no findings / oversized → still clean");
+        assert!(outcome.has_forged_trust_markers());
+    }
+
+    #[test]
+    fn forged_clean_marker_does_not_suppress_scanning() {
+        // The AAASM-2569 threat: an agent forges aa.scanned hoping the runtime
+        // skips the scan. The secret must still be redacted.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: format!(r#"{{"key": "{AWS_KEY}"}}"#).into_bytes(),
+            ..Default::default()
+        }));
+        event.inner.labels.insert("aa.scanned".to_string(), "true".to_string());
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        let body = String::from_utf8(tc.args_json).expect("utf-8");
+        assert!(
+            !body.contains(AWS_KEY),
+            "raw secret must not survive a forged scanned marker"
+        );
+        assert!(!event.inner.labels.contains_key("aa.scanned"), "forged marker stripped");
+        assert_eq!(outcome.forged_trust_markers, 1);
+        assert!(!outcome.is_clean(), "the secret was still found and redacted");
+    }
+
+    #[test]
+    fn no_trust_markers_leaves_outcome_unflagged() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("team", "payments")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            event.inner.labels.get("team").map(String::as_str),
+            Some("payments"),
+            "ordinary labels are untouched"
+        );
+        assert_eq!(outcome.forged_trust_markers, 0);
+        assert!(!outcome.has_forged_trust_markers());
+    }
 }
