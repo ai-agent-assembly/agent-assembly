@@ -92,9 +92,12 @@ describe('TopologyGraph', () => {
 
   it('does not fire onNodeClick when callback is omitted', async () => {
     render(<TopologyGraph nodes={[NODES[0]]} edges={[]} />)
-    // The handler should not even attach — clicks just no-op.
-    await userEvent.click(screen.getByTestId('topology-node'))
-    // No assertion target — absence of errors is the contract.
+    const node = screen.getByTestId('topology-node')
+    // With no callback the node must stay non-interactive: the click handler
+    // is never attached, so it carries neither role=button nor a tab stop.
+    await userEvent.click(node)
+    expect(node).not.toHaveAttribute('role')
+    expect(node).not.toHaveAttribute('tabindex')
   })
 
   // ── Team grouping (AAASM-1339) ─────────────────────────────────────────────
