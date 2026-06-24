@@ -174,20 +174,31 @@ fn parse_optional_agent_id(raw: &str) -> Option<AgentId> {
 /// only metadata fields (tool names, paths, hosts) — never raw `args_json`
 /// bytes, which the producer is contractually required to scan/redact and which
 /// this audit tier must not re-expand.
+///
+/// When the event carries a tamper signal (AAASM-3637), an `sdk_identity`
+/// section records the server-recomputed verdict and the count of stripped
+/// forged trust markers so the bypass/tamper trail is queryable.
 fn build_payload(event: &EnrichedEvent) -> String {
     let proto = &event.inner;
     let action = ActionType::try_from(proto.action_type)
         .unwrap_or(ActionType::ActionUnspecified)
         .as_str_name();
     let detail = detail_summary(&proto.detail);
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "event_id": proto.event_id,
         "action_type": action,
         "source": source_label(&event.source),
         "decision": proto.decision,
         "detail": detail,
-    })
-    .to_string()
+    });
+    if let Some(tamper) = &event.tamper {
+        payload["sdk_identity"] = serde_json::json!({
+            "tamper_suspected": true,
+            "verdict": tamper.verdict.as_str(),
+            "forged_trust_markers": tamper.forged_trust_markers,
+        });
+    }
+    payload.to_string()
 }
 
 /// Summarise the proto detail oneof as a small JSON object, copying only
@@ -274,6 +285,7 @@ mod tests {
             connection_id: 1,
             sequence_number: 7,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 

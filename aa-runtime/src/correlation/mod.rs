@@ -118,6 +118,7 @@ mod tests {
             connection_id: 1,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 

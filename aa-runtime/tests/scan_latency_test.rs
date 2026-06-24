@@ -145,6 +145,7 @@ fn tool_call_event(args_json: Vec<u8>) -> EnrichedEvent {
         connection_id: 0,
         sequence_number: 0,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }
 }
 

@@ -54,6 +54,7 @@ async fn ws_receives_pipeline_event() {
         connection_id: 0,
         sequence_number: 0,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -90,6 +91,7 @@ async fn ws_type_filter_excludes_non_matching() {
         connection_id: 0,
         sequence_number: 0,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -164,6 +166,7 @@ async fn ws_100_simultaneous_clients_all_receive_event() {
         connection_id: 0,
         sequence_number: 0,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -207,6 +210,7 @@ async fn ws_client_disconnect_cleanup() {
         connection_id: 0,
         sequence_number: 0,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     // send may return Err if no receivers remain, which is fine.
     let _ = tx.send(event);
@@ -223,6 +227,7 @@ async fn ws_client_disconnect_cleanup() {
         connection_id: 0,
         sequence_number: 1,
         observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event2).unwrap();
 
@@ -262,6 +267,7 @@ async fn ws_cli_logs_follow_integration() {
             connection_id: 1,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         })))
         .unwrap();
 

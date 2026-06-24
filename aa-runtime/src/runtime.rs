@@ -1002,6 +1002,7 @@ mod tests {
             connection_id: 1,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         // Build an eBPF/FILE_OPERATION action event.
@@ -1017,6 +1018,7 @@ mod tests {
             connection_id: 1,
             sequence_number: 1,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         // Simulate the subscriber loop: convert and ingest.
@@ -1154,6 +1156,7 @@ mod tests {
             connection_id: 1,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         tx.send(PipelineEvent::Audit(Box::new(enriched))).unwrap();
@@ -1385,6 +1388,7 @@ mod tests {
             connection_id: 1,
             sequence_number: seq,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         }))
     }
 

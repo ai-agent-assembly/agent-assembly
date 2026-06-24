@@ -328,6 +328,7 @@ mod tests {
             connection_id: 0,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -489,6 +490,7 @@ mod tests {
             connection_id: 0,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         let outcome = scanner.enforce(&mut event);
@@ -584,6 +586,7 @@ mod tests {
             connection_id: 0,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
         for (k, v) in labels {
             event.inner.labels.insert((*k).to_string(), (*v).to_string());

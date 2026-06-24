@@ -128,9 +128,12 @@ pub async fn run(
                             &verified,
                             config.min_sdk_version.as_deref(),
                         );
-                        // The audit event + metric for a flagged verdict / forged
-                        // markers is emitted in AAASM-3637.
-                        let _ = (&outcome, verdict);
+                        // AAASM-3637: a flagged verdict (Missing/Forged/Downgraded)
+                        // OR a forged trust marker is a distinct bypass/tamper
+                        // signal — emit its own audit record + metric, purely
+                        // observational (the enforcement decision below is
+                        // unchanged, runtime stays authoritative).
+                        emit_tamper_signal(verdict, &outcome, &enriched, &broadcast_tx, &seq);
                         tracing::debug!(sequence_number = enriched.sequence_number, connection_id, "event enriched");
                         metrics.record_processed(1);
                         ::metrics::counter!("aa_events_received_total").increment(1);
@@ -194,6 +197,8 @@ fn enrich(event: AuditEvent, agent_id: &str, connection_id: u64, seq: &AtomicU64
         connection_id,
         sequence_number,
         observed_sdk_identity,
+        // No tamper signal at ingest; set on the dedicated tamper event in run().
+        tamper: None,
     }
 }
 
@@ -234,6 +239,66 @@ async fn resolve_verified_identity(
         .get(&connection_id)
         .cloned()
         .unwrap_or_else(aa_security::sdk_identity::VerifiedSdkIdentity::none)
+}
+
+/// Emit a distinct "bypass/tamper suspected" audit event + metric (AAASM-3637).
+///
+/// Fires when the server-recomputed `verdict` is a tamper signal
+/// (Missing / Forged / VersionDowngraded) **or** the enforcement stage stripped
+/// forged trust markers. The emission is purely observational: it does not alter
+/// the allow/deny outcome for `source` (the runtime stays authoritative).
+///
+/// The record is a dedicated [`EnrichedEvent`] that preserves `source`'s agent
+/// identity and lineage (so the audit subject is keyed correctly) but carries no
+/// action `detail` — it is a tamper observation, not an intercepted action — and
+/// a `tamper` annotation the audit payload serialises into an `sdk_identity`
+/// section (AAASM-3637). The metric `aa_runtime_sdk_tamper_suspected_total` is
+/// labelled by the verdict kind for alerting.
+fn emit_tamper_signal(
+    verdict: aa_security::sdk_identity::SdkIdentityVerdict,
+    outcome: &enforcement::EnforcementOutcome,
+    source: &EnrichedEvent,
+    broadcast_tx: &broadcast::Sender<PipelineEvent>,
+    seq: &AtomicU64,
+) {
+    let forged = outcome.forged_trust_markers;
+    if !verdict.is_suspected_tamper() && forged == 0 {
+        return;
+    }
+
+    ::metrics::counter!("aa_runtime_sdk_tamper_suspected_total", "kind" => verdict.as_str()).increment(1);
+
+    // A tamper observation carries the originating agent's identity/lineage but
+    // no action detail — it records the bypass, not the action.
+    let mut tamper_inner = AuditEvent {
+        event_id: Uuid::new_v4().to_string(),
+        agent_id: source.inner.agent_id.clone(),
+        ..Default::default()
+    };
+    tamper_inner.session_id = source.inner.session_id.clone();
+    tamper_inner.team_id = source.inner.team_id.clone();
+
+    let tamper_event = EnrichedEvent {
+        inner: tamper_inner,
+        received_at_ms: source.received_at_ms,
+        source: source.source.clone(),
+        agent_id: source.agent_id.clone(),
+        connection_id: source.connection_id,
+        sequence_number: seq.fetch_add(1, Ordering::Relaxed),
+        observed_sdk_identity: source.observed_sdk_identity.clone(),
+        tamper: Some(event::TamperSignal {
+            verdict,
+            forged_trust_markers: forged,
+        }),
+    };
+
+    tracing::warn!(
+        verdict = verdict.as_str(),
+        forged_trust_markers = forged,
+        connection_id = source.connection_id,
+        "SDK bypass/tamper suspected"
+    );
+    let _ = broadcast_tx.send(PipelineEvent::Audit(Box::new(tamper_event)));
 }
 
 /// Returns `true` if this event should bypass batching and be emitted immediately.

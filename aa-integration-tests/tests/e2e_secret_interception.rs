@@ -1107,6 +1107,7 @@ mod runtime_bypass {
             connection_id: 0,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -1177,6 +1178,7 @@ mod runtime_bypass {
             connection_id: 0,
             sequence_number: 0,
             observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         let outcome = scanner.enforce(&mut event);
