@@ -1106,6 +1106,8 @@ mod runtime_bypass {
             agent_id: "bypass-test-agent".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -1175,6 +1177,8 @@ mod runtime_bypass {
             agent_id: "lying-sdk".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         let outcome = scanner.enforce(&mut event);

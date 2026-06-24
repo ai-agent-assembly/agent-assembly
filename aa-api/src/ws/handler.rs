@@ -540,6 +540,8 @@ mod tests {
             agent_id: "support-agent".into(),
             connection_id: 0,
             sequence_number: 42,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }))
     }
 
@@ -791,6 +793,8 @@ mod tests {
             agent_id: "support-agent".into(),
             connection_id: 0,
             sequence_number: 42,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }));
         let stack = extract_call_stack(build_violation_payload(&ev)).expect("call_stack");
         assert_eq!(stack.len(), 1);

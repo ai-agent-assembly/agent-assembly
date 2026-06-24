@@ -53,6 +53,8 @@ async fn ws_receives_pipeline_event() {
         agent_id: "agent-1".to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -88,6 +90,8 @@ async fn ws_type_filter_excludes_non_matching() {
         agent_id: "agent-1".to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -161,6 +165,8 @@ async fn ws_100_simultaneous_clients_all_receive_event() {
         agent_id: "fan-out-agent".to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event).unwrap();
 
@@ -203,6 +209,8 @@ async fn ws_client_disconnect_cleanup() {
         agent_id: "post-disconnect".to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     // send may return Err if no receivers remain, which is fine.
     let _ = tx.send(event);
@@ -218,6 +226,8 @@ async fn ws_client_disconnect_cleanup() {
         agent_id: "after-cleanup".to_string(),
         connection_id: 0,
         sequence_number: 1,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }));
     tx.send(event2).unwrap();
 
@@ -256,6 +266,8 @@ async fn ws_cli_logs_follow_integration() {
             agent_id: "agent-cli-test".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         })))
         .unwrap();
 

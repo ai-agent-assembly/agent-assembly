@@ -189,6 +189,9 @@ impl Interceptor {
             agent_id: String::new(),
             connection_id: 0,
             sequence_number: 0,
+            // Proxy-sourced events carry no SDK identity claim.
+            observed_sdk_identity: aa_security::sdk_identity::ObservedSdkIdentity::missing(),
+            tamper: None,
         };
 
         // send() returns Err only when there are zero receivers — normal for
@@ -293,6 +296,9 @@ impl Interceptor {
             agent_id: String::new(),
             connection_id: 0,
             sequence_number: 0,
+            // Proxy-sourced events carry no SDK identity claim.
+            observed_sdk_identity: aa_security::sdk_identity::ObservedSdkIdentity::missing(),
+            tamper: None,
         };
 
         let _ = self.event_tx.send(PipelineEvent::Audit(Box::new(enriched)));
@@ -398,6 +404,9 @@ impl Interceptor {
             agent_id: event.agent_id.clone().unwrap_or_default(),
             connection_id: 0,
             sequence_number: 0,
+            // Proxy-sourced events carry no SDK identity claim.
+            observed_sdk_identity: aa_security::sdk_identity::ObservedSdkIdentity::missing(),
+            tamper: None,
         };
 
         PipelineEvent::Audit(Box::new(enriched))

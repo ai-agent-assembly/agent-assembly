@@ -174,20 +174,31 @@ fn parse_optional_agent_id(raw: &str) -> Option<AgentId> {
 /// only metadata fields (tool names, paths, hosts) — never raw `args_json`
 /// bytes, which the producer is contractually required to scan/redact and which
 /// this audit tier must not re-expand.
+///
+/// When the event carries a tamper signal (AAASM-3637), an `sdk_identity`
+/// section records the server-recomputed verdict and the count of stripped
+/// forged trust markers so the bypass/tamper trail is queryable.
 fn build_payload(event: &EnrichedEvent) -> String {
     let proto = &event.inner;
     let action = ActionType::try_from(proto.action_type)
         .unwrap_or(ActionType::ActionUnspecified)
         .as_str_name();
     let detail = detail_summary(&proto.detail);
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "event_id": proto.event_id,
         "action_type": action,
         "source": source_label(&event.source),
         "decision": proto.decision,
         "detail": detail,
-    })
-    .to_string()
+    });
+    if let Some(tamper) = &event.tamper {
+        payload["sdk_identity"] = serde_json::json!({
+            "tamper_suspected": true,
+            "verdict": tamper.verdict.as_str(),
+            "forged_trust_markers": tamper.forged_trust_markers,
+        });
+    }
+    payload.to_string()
 }
 
 /// Summarise the proto detail oneof as a small JSON object, copying only
@@ -273,6 +284,8 @@ mod tests {
             agent_id: "test-agent".to_string(),
             connection_id: 1,
             sequence_number: 7,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -457,5 +470,30 @@ mod tests {
     fn entry_integrity_holds() {
         let entry = enriched_to_audit_entry(&enriched(ActionType::ToolCall, None, EventSource::Sdk));
         assert!(entry.verify_integrity());
+    }
+
+    #[test]
+    fn payload_has_no_sdk_identity_section_without_tamper() {
+        let entry = enriched_to_audit_entry(&enriched(ActionType::ToolCall, None, EventSource::Sdk));
+        let p = payload_json(&entry);
+        assert!(
+            p.get("sdk_identity").is_none(),
+            "ordinary events carry no sdk_identity section"
+        );
+    }
+
+    #[test]
+    fn payload_carries_tamper_verdict_and_forged_count() {
+        use crate::pipeline::event::TamperSignal;
+        let mut event = enriched(ActionType::ToolCall, None, EventSource::Sdk);
+        event.tamper = Some(TamperSignal {
+            verdict: aa_security::sdk_identity::SdkIdentityVerdict::Missing,
+            forged_trust_markers: 2,
+        });
+        let entry = enriched_to_audit_entry(&event);
+        let p = payload_json(&entry);
+        assert_eq!(p["sdk_identity"]["tamper_suspected"], true);
+        assert_eq!(p["sdk_identity"]["verdict"], "missing");
+        assert_eq!(p["sdk_identity"]["forged_trust_markers"], 2);
     }
 }

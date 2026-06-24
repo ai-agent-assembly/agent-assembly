@@ -20,6 +20,19 @@ use aa_security::{CredentialFinding, CredentialScanner};
 use super::event::EnrichedEvent;
 use crate::config::RuntimeConfig;
 
+/// Reserved `labels` keys that assert a *trust grant* — values the runtime must
+/// compute itself, never the SDK (AAASM-3630).
+///
+/// The SDK controls the `labels` map, so any of these keys arriving on the wire
+/// is a forgery attempt: an agent trying to shorten enforcement by claiming the
+/// event was already trusted / scanned / allowed. The runtime strips them
+/// unconditionally and counts the attempt — it never honours them. This is the
+/// concrete realization of the AAASM-2569 "no SDK-supplied trust marker" threat.
+///
+/// `aa.sdk_version` is deliberately **not** in this set: it is a *claim to be
+/// verified* (read in AAASM-3625), not a trust grant, so it is preserved.
+pub const TRUST_MARKER_LABELS: &[&str] = &["aa.trusted", "aa.scanned", "aa.allow", "aa.bypass"];
+
 /// Default upper bound, in bytes, on a single secret-bearing field handed to
 /// the scanner. Fields larger than this are handled per [`OversizedPolicy`].
 ///
@@ -90,10 +103,19 @@ pub struct EnforcementOutcome {
     pub oversized_fields: usize,
     /// Total bytes actually handed to the scanner across all fields.
     pub scanned_bytes: usize,
+    /// Number of SDK-supplied trust-marker labels (see [`TRUST_MARKER_LABELS`])
+    /// that were stripped from the event — i.e. forgery attempts the runtime
+    /// refused to honour (AAASM-3630). Read by the tamper audit / metric layer.
+    pub forged_trust_markers: usize,
 }
 
 impl EnforcementOutcome {
     /// `true` when nothing was redacted: no findings and no oversized fields.
+    ///
+    /// Forged trust markers do **not** affect this: they are a distinct tamper
+    /// signal (see [`has_forged_trust_markers`](Self::has_forged_trust_markers)),
+    /// not a payload redaction. Stripping a forged `aa.trusted` label from an
+    /// otherwise-clean event still leaves it clean.
     pub fn is_clean(&self) -> bool {
         self.findings.is_empty() && self.oversized_fields == 0
     }
@@ -101,6 +123,11 @@ impl EnforcementOutcome {
     /// Total number of redactions applied (findings + oversized fields).
     pub fn redaction_count(&self) -> usize {
         self.findings.len() + self.oversized_fields
+    }
+
+    /// `true` when at least one forged SDK trust-marker label was stripped.
+    pub fn has_forged_trust_markers(&self) -> bool {
+        self.forged_trust_markers > 0
     }
 }
 
@@ -145,10 +172,13 @@ impl RuntimeScanner {
     /// Runs **unconditionally** — no field of the event can request that
     /// scanning be skipped, and there is no SDK trust marker on the wire. Only
     /// the allowlisted secret-bearing fields are scanned; opaque numeric and
-    /// enumeration fields are left untouched.
+    /// enumeration fields are left untouched. Any SDK-supplied trust-marker
+    /// labels are stripped and counted (AAASM-3630) before the scan so a forged
+    /// marker can never shorten the work below.
     pub fn enforce(&self, event: &mut EnrichedEvent) -> EnforcementOutcome {
         let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
+        strip_trust_markers(&mut event.inner.labels, &mut outcome);
         if let Some(detail) = event.inner.detail.as_mut() {
             self.scan_detail(detail, &mut outcome);
         }
@@ -240,6 +270,21 @@ impl RuntimeScanner {
     }
 }
 
+/// Strip every reserved SDK trust-marker label (see [`TRUST_MARKER_LABELS`])
+/// from `labels` in place, counting each removal into
+/// [`EnforcementOutcome::forged_trust_markers`].
+///
+/// The runtime computes trust itself; an SDK-supplied trust grant is a forgery
+/// attempt that is dropped and flagged, never honoured. `aa.sdk_version` (a
+/// claim, not a grant) is intentionally not in the marker set and is preserved.
+fn strip_trust_markers(labels: &mut std::collections::HashMap<String, String>, outcome: &mut EnforcementOutcome) {
+    for key in TRUST_MARKER_LABELS {
+        if labels.remove(*key).is_some() {
+            outcome.forged_trust_markers += 1;
+        }
+    }
+}
+
 /// Emit scan observability metrics for one [`RuntimeScanner::enforce`] call.
 ///
 /// Latency is measured around the scan + redact work only. The finding
@@ -282,6 +327,8 @@ mod tests {
             agent_id: "test-agent".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -442,6 +489,8 @@ mod tests {
             agent_id: "test-agent".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         let outcome = scanner.enforce(&mut event);
@@ -525,5 +574,122 @@ mod tests {
             OversizedPolicy::RedactWhole,
             "oversized policy stays fail-closed"
         );
+    }
+
+    /// Build a label-bearing event with no secret-bearing detail.
+    fn event_with_labels(labels: &[(&str, &str)]) -> EnrichedEvent {
+        let mut event = EnrichedEvent {
+            inner: AuditEvent::default(),
+            received_at_ms: 0,
+            source: EventSource::Sdk,
+            agent_id: "test-agent".to_string(),
+            connection_id: 0,
+            sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
+        };
+        for (k, v) in labels {
+            event.inner.labels.insert((*k).to_string(), (*v).to_string());
+        }
+        event
+    }
+
+    #[test]
+    fn forged_trust_marker_is_stripped_and_counted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.trusted", "true")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !event.inner.labels.contains_key("aa.trusted"),
+            "forged trust marker must be stripped"
+        );
+        assert_eq!(outcome.forged_trust_markers, 1);
+        assert!(outcome.has_forged_trust_markers());
+    }
+
+    #[test]
+    fn every_reserved_trust_marker_is_stripped() {
+        let scanner = RuntimeScanner::new();
+        let labels: Vec<(&str, &str)> = TRUST_MARKER_LABELS.iter().map(|k| (*k, "1")).collect();
+        let mut event = event_with_labels(&labels);
+
+        let outcome = scanner.enforce(&mut event);
+
+        for key in TRUST_MARKER_LABELS {
+            assert!(!event.inner.labels.contains_key(*key), "{key} must be stripped");
+        }
+        assert_eq!(outcome.forged_trust_markers, TRUST_MARKER_LABELS.len());
+    }
+
+    #[test]
+    fn sdk_version_label_is_preserved_not_a_trust_marker() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.sdk_version", "1.2.3"), ("aa.bypass", "1")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            event.inner.labels.get("aa.sdk_version").map(String::as_str),
+            Some("1.2.3"),
+            "the version claim is preserved for the classifier, not stripped"
+        );
+        assert!(!event.inner.labels.contains_key("aa.bypass"));
+        assert_eq!(outcome.forged_trust_markers, 1);
+    }
+
+    #[test]
+    fn stripping_a_marker_does_not_make_a_clean_event_dirty() {
+        // Forged markers are a distinct signal; they don't count as a redaction.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("aa.trusted", "true")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(outcome.is_clean(), "no findings / oversized → still clean");
+        assert!(outcome.has_forged_trust_markers());
+    }
+
+    #[test]
+    fn forged_clean_marker_does_not_suppress_scanning() {
+        // The AAASM-2569 threat: an agent forges aa.scanned hoping the runtime
+        // skips the scan. The secret must still be redacted.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: format!(r#"{{"key": "{AWS_KEY}"}}"#).into_bytes(),
+            ..Default::default()
+        }));
+        event.inner.labels.insert("aa.scanned".to_string(), "true".to_string());
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        let body = String::from_utf8(tc.args_json).expect("utf-8");
+        assert!(
+            !body.contains(AWS_KEY),
+            "raw secret must not survive a forged scanned marker"
+        );
+        assert!(!event.inner.labels.contains_key("aa.scanned"), "forged marker stripped");
+        assert_eq!(outcome.forged_trust_markers, 1);
+        assert!(!outcome.is_clean(), "the secret was still found and redacted");
+    }
+
+    #[test]
+    fn no_trust_markers_leaves_outcome_unflagged() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("team", "payments")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            event.inner.labels.get("team").map(String::as_str),
+            Some("payments"),
+            "ordinary labels are untouched"
+        );
+        assert_eq!(outcome.forged_trust_markers, 0);
+        assert!(!outcome.has_forged_trust_markers());
     }
 }

@@ -10,7 +10,7 @@ pub use metrics::PipelineMetrics;
 use crate::approval::{ApprovalDecision as RuntimeApprovalDecision, ApprovalQueue, ApprovalRequest};
 use crate::config::RuntimeConfig;
 use crate::gateway_client::GatewayClient;
-use crate::ipc::{IpcFrame, IpcResponse, ResponseRouter};
+use crate::ipc::{IpcFrame, IpcResponse, ResponseRouter, VerifiedIdentityStore};
 use crate::policy::PolicyRules;
 use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
 use aa_proto::assembly::common::v1::{ActionType, Decision};
@@ -44,6 +44,9 @@ pub struct PipelineConfig {
     /// instead of falling back to permissive local evaluation (AAASM-3110).
     /// Copied from [`RuntimeConfig::gateway_fail_closed`]; defaults to `true`.
     pub gateway_fail_closed: bool,
+    /// Minimum supported SDK version. When set, an observed SDK version below it
+    /// is classified as a downgrade (AAASM-3640). `None` imposes no floor.
+    pub min_sdk_version: Option<String>,
 }
 
 impl PipelineConfig {
@@ -57,6 +60,9 @@ impl PipelineConfig {
             agent_id: c.agent_id.clone(),
             enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
             gateway_fail_closed: c.gateway_fail_closed,
+            // No operator-configurable SDK version floor yet; downgrade
+            // detection activates once a minimum is wired into RuntimeConfig.
+            min_sdk_version: None,
         }
     }
 }
@@ -80,6 +86,7 @@ pub async fn run(
     gateway_client: Option<Arc<Mutex<GatewayClient>>>,
     op_control: crate::op_control::OpControlStore,
     seq: Arc<AtomicU64>,
+    verified_identities: VerifiedIdentityStore,
 ) {
     let mut batch: Vec<EnrichedEvent> = Vec::with_capacity(config.batch_size);
     let mut ticker = tokio::time::interval(config.flush_interval);
@@ -109,8 +116,24 @@ pub async fn run(
                         let mut enriched = enrich(event, &config.agent_id, connection_id, &seq);
                         // GATE: scan + redact + normalize before any forward or
                         // audit, on every path. Unconditional — no SDK signal can
-                        // skip this.
-                        scanner.enforce(&mut enriched);
+                        // skip this. The outcome also reports any forged trust
+                        // markers stripped (AAASM-3630).
+                        let outcome = scanner.enforce(&mut enriched);
+                        // AAASM-3640: recompute the SDK-identity verdict against
+                        // the handshake-verified identity for this connection
+                        // (Unverifiable when the connection never authenticated).
+                        let verified = resolve_verified_identity(&verified_identities, connection_id).await;
+                        let verdict = aa_security::sdk_identity::classify(
+                            &enriched.observed_sdk_identity,
+                            &verified,
+                            config.min_sdk_version.as_deref(),
+                        );
+                        // AAASM-3637: a flagged verdict (Missing/Forged/Downgraded)
+                        // OR a forged trust marker is a distinct bypass/tamper
+                        // signal — emit its own audit record + metric, purely
+                        // observational (the enforcement decision below is
+                        // unchanged, runtime stays authoritative).
+                        emit_tamper_signal(verdict, &outcome, &enriched, &broadcast_tx, &seq);
                         tracing::debug!(sequence_number = enriched.sequence_number, connection_id, "event enriched");
                         metrics.record_processed(1);
                         ::metrics::counter!("aa_events_received_total").increment(1);
@@ -165,6 +188,7 @@ fn enrich(event: AuditEvent, agent_id: &str, connection_id: u64, seq: &AtomicU64
         .unwrap_or(Duration::ZERO)
         .as_millis() as i64;
     let sequence_number = seq.fetch_add(1, Ordering::Relaxed);
+    let observed_sdk_identity = observe_sdk_identity(&event);
     EnrichedEvent {
         inner: event,
         received_at_ms,
@@ -172,7 +196,109 @@ fn enrich(event: AuditEvent, agent_id: &str, connection_id: u64, seq: &AtomicU64
         agent_id: agent_id.to_string(),
         connection_id,
         sequence_number,
+        observed_sdk_identity,
+        // No tamper signal at ingest; set on the dedicated tamper event in run().
+        tamper: None,
     }
+}
+
+/// Read the SDK identity an agent *claimed* out of the (attacker-controlled)
+/// `labels` map (AAASM-3625).
+///
+/// `present` is set when the reserved [`event::SDK_VERSION_LABEL`] key exists;
+/// the label value is carried as the claimed version. This is an untrusted
+/// claim transported for server-side recomputation — the label is **not**
+/// removed here (that is sanitization's job) and is **never** honoured as a
+/// trust grant.
+fn observe_sdk_identity(event: &AuditEvent) -> aa_security::sdk_identity::ObservedSdkIdentity {
+    match event.labels.get(event::SDK_VERSION_LABEL) {
+        Some(version) => aa_security::sdk_identity::ObservedSdkIdentity {
+            present: true,
+            version: Some(version.clone()),
+        },
+        None => aa_security::sdk_identity::ObservedSdkIdentity::missing(),
+    }
+}
+
+/// Resolve the AAASM-3569 handshake-verified SDK identity for `connection_id`
+/// (AAASM-3640).
+///
+/// Returns the identity the authenticated handshake established for the
+/// connection, or [`VerifiedSdkIdentity::none`] when the connection has no
+/// entry — i.e. it never completed a handshake, or its source has no IPC
+/// handshake (eBPF / proxy events use `connection_id` 0). Falling back to
+/// `none` keeps the verdict at `Unverifiable` rather than guessing, so there is
+/// no regression for non-handshake paths.
+async fn resolve_verified_identity(
+    store: &VerifiedIdentityStore,
+    connection_id: u64,
+) -> aa_security::sdk_identity::VerifiedSdkIdentity {
+    store
+        .read()
+        .await
+        .get(&connection_id)
+        .cloned()
+        .unwrap_or_else(aa_security::sdk_identity::VerifiedSdkIdentity::none)
+}
+
+/// Emit a distinct "bypass/tamper suspected" audit event + metric (AAASM-3637).
+///
+/// Fires when the server-recomputed `verdict` is a tamper signal
+/// (Missing / Forged / VersionDowngraded) **or** the enforcement stage stripped
+/// forged trust markers. The emission is purely observational: it does not alter
+/// the allow/deny outcome for `source` (the runtime stays authoritative).
+///
+/// The record is a dedicated [`EnrichedEvent`] that preserves `source`'s agent
+/// identity and lineage (so the audit subject is keyed correctly) but carries no
+/// action `detail` — it is a tamper observation, not an intercepted action — and
+/// a `tamper` annotation the audit payload serialises into an `sdk_identity`
+/// section (AAASM-3637). The metric `aa_runtime_sdk_tamper_suspected_total` is
+/// labelled by the verdict kind for alerting.
+fn emit_tamper_signal(
+    verdict: aa_security::sdk_identity::SdkIdentityVerdict,
+    outcome: &enforcement::EnforcementOutcome,
+    source: &EnrichedEvent,
+    broadcast_tx: &broadcast::Sender<PipelineEvent>,
+    seq: &AtomicU64,
+) {
+    let forged = outcome.forged_trust_markers;
+    if !verdict.is_suspected_tamper() && forged == 0 {
+        return;
+    }
+
+    ::metrics::counter!("aa_runtime_sdk_tamper_suspected_total", "kind" => verdict.as_str()).increment(1);
+
+    // A tamper observation carries the originating agent's identity/lineage but
+    // no action detail — it records the bypass, not the action.
+    let mut tamper_inner = AuditEvent {
+        event_id: Uuid::new_v4().to_string(),
+        agent_id: source.inner.agent_id.clone(),
+        ..Default::default()
+    };
+    tamper_inner.session_id = source.inner.session_id.clone();
+    tamper_inner.team_id = source.inner.team_id.clone();
+
+    let tamper_event = EnrichedEvent {
+        inner: tamper_inner,
+        received_at_ms: source.received_at_ms,
+        source: source.source.clone(),
+        agent_id: source.agent_id.clone(),
+        connection_id: source.connection_id,
+        sequence_number: seq.fetch_add(1, Ordering::Relaxed),
+        observed_sdk_identity: source.observed_sdk_identity.clone(),
+        tamper: Some(event::TamperSignal {
+            verdict,
+            forged_trust_markers: forged,
+        }),
+    };
+
+    tracing::warn!(
+        verdict = verdict.as_str(),
+        forged_trust_markers = forged,
+        connection_id = source.connection_id,
+        "SDK bypass/tamper suspected"
+    );
+    let _ = broadcast_tx.send(PipelineEvent::Audit(Box::new(tamper_event)));
 }
 
 /// Returns `true` if this event should bypass batching and be emitted immediately.
@@ -780,6 +906,64 @@ mod tests {
     }
 
     #[test]
+    fn enrich_reads_claimed_sdk_version_from_label() {
+        let mut event = make_audit_event();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.4.0".to_string());
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert!(enriched.observed_sdk_identity.present);
+        assert_eq!(enriched.observed_sdk_identity.version.as_deref(), Some("1.4.0"));
+    }
+
+    #[test]
+    fn enrich_marks_missing_sdk_identity_when_label_absent() {
+        let event = make_audit_event();
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert!(!enriched.observed_sdk_identity.present);
+        assert!(enriched.observed_sdk_identity.version.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_verified_identity_returns_stored_entry() {
+        let store = crate::ipc::new_verified_identity_store();
+        store
+            .write()
+            .await
+            .insert(7, aa_security::sdk_identity::VerifiedSdkIdentity::with_version("1.2.3"));
+
+        let resolved = resolve_verified_identity(&store, 7).await;
+        assert_eq!(resolved.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[tokio::test]
+    async fn resolve_verified_identity_falls_back_to_none_when_absent() {
+        let store = crate::ipc::new_verified_identity_store();
+        // No handshake recorded for connection 99 → Unverifiable downstream.
+        let resolved = resolve_verified_identity(&store, 99).await;
+        assert!(resolved.version.is_none());
+        assert!(!resolved.is_available());
+    }
+
+    #[test]
+    fn enrich_preserves_the_claimed_sdk_version_label_on_the_event() {
+        // The claim is transported to the classifier, not consumed here —
+        // sanitization is a separate step (AAASM-3630).
+        let mut event = make_audit_event();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "2.0.0".to_string());
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert_eq!(
+            enriched.inner.labels.get(event::SDK_VERSION_LABEL).map(String::as_str),
+            Some("2.0.0")
+        );
+    }
+
+    #[test]
     fn is_policy_violation_true_for_violation_detail() {
         let event = make_policy_violation_event();
         let seq = AtomicU64::new(0);
@@ -871,6 +1055,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         };
 
         let cloned = pipeline_config.clone();
@@ -891,15 +1076,24 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         }
     }
 
     fn normal_event() -> AuditEvent {
-        AuditEvent::default()
+        // A well-behaved SDK presents its version, so the run loop draws no
+        // tamper signal (Unverifiable, not flagged) and forwards only the
+        // action event. Tamper-path behaviour is covered by the dedicated
+        // emit_tamper_signal tests and aaasm_3571_tamper_observability.
+        let mut event = AuditEvent::default();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     fn violation_event() -> AuditEvent {
-        AuditEvent {
+        let mut event = AuditEvent {
             detail: Some(Detail::Violation(PolicyViolation {
                 policy_rule: "rule".to_string(),
                 blocked_action: "action".to_string(),
@@ -907,7 +1101,13 @@ mod tests {
                 latency_ms: 0,
             })),
             ..Default::default()
-        }
+        };
+        // Present SDK version → no tamper signal, so the violation path forwards
+        // only the violation event.
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     // -----------------------------------------------------------------------
@@ -934,6 +1134,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 3 events — batch threshold reached, should flush before interval
@@ -950,6 +1151,76 @@ mod tests {
         }
         assert_eq!(metrics.processed(), 3);
         token.cancel();
+    }
+
+    #[test]
+    fn emit_tamper_signal_broadcasts_distinct_event_and_metric_for_missing() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+        use metrics_exporter_prometheus::PrometheusBuilder;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome::default();
+
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            emit_tamper_signal(SdkIdentityVerdict::Missing, &outcome, &source, &broadcast_tx, &seq);
+        });
+
+        // A distinct tamper audit event is broadcast.
+        let event = unwrap_audit(broadcast_rx.try_recv().expect("tamper event broadcast"));
+        let tamper = event.tamper.expect("tamper annotation present");
+        assert_eq!(tamper.verdict, SdkIdentityVerdict::Missing);
+        assert_eq!(tamper.forged_trust_markers, 0);
+        // It is a tamper observation, not an action.
+        assert!(event.inner.detail.is_none());
+
+        // The dedicated metric is incremented, labelled by kind.
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_sdk_tamper_suspected_total"));
+        assert!(rendered.contains("kind=\"missing\""));
+    }
+
+    #[test]
+    fn emit_tamper_signal_fires_for_forged_markers_even_when_verdict_ok() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome {
+            forged_trust_markers: 1,
+            ..Default::default()
+        };
+
+        emit_tamper_signal(SdkIdentityVerdict::Ok, &outcome, &source, &broadcast_tx, &seq);
+
+        let event = unwrap_audit(broadcast_rx.try_recv().expect("tamper event broadcast"));
+        let tamper = event.tamper.expect("tamper annotation present");
+        assert_eq!(tamper.verdict, SdkIdentityVerdict::Ok);
+        assert_eq!(tamper.forged_trust_markers, 1);
+    }
+
+    #[test]
+    fn emit_tamper_signal_is_silent_when_clean() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome::default();
+
+        // Ok verdict + no forged markers → no emission.
+        emit_tamper_signal(SdkIdentityVerdict::Ok, &outcome, &source, &broadcast_tx, &seq);
+        // Unverifiable is also not a tamper signal.
+        emit_tamper_signal(SdkIdentityVerdict::Unverifiable, &outcome, &source, &broadcast_tx, &seq);
+
+        assert!(
+            broadcast_rx.try_recv().is_err(),
+            "no tamper event for a clean/unverifiable event"
+        );
     }
 
     #[tokio::test]
@@ -972,6 +1243,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 5 events (less than batch_size=100) — should arrive after interval flush
@@ -1010,6 +1282,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send a violation — should arrive immediately, bypassing batch
@@ -1047,6 +1320,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 5 events (batch won't flush yet)
@@ -1103,6 +1377,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send non-event frames
@@ -1149,6 +1424,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Build an AuditEvent with action_type = FILE_OPERATION
@@ -1204,6 +1480,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // `tokio::time::interval` fires an immediate first tick on creation. With the
@@ -1211,11 +1488,16 @@ mod tests {
         // send the event, so the first tick cannot race ahead and flush our event.
         tokio::task::yield_now().await;
 
-        // Build a TOOL_CALL event — not blocked by the policy
-        let event = AuditEvent {
+        // Build a TOOL_CALL event — not blocked by the policy. Carries the SDK
+        // version label so it draws no tamper signal (which would bypass the
+        // batch and break this batching assertion).
+        let mut event = AuditEvent {
             action_type: ActionType::ToolCall as i32,
             ..Default::default()
         };
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
         tx.send((0, IpcFrame::EventReport(event))).await.unwrap();
 
         // Wait until the run loop has enqueued the event into the batch.
@@ -1255,6 +1537,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         for _ in 0..3 {
@@ -1302,6 +1585,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // First batch of 2
@@ -1373,6 +1657,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Spawn a receiver that drains the broadcast channel
@@ -1455,6 +1740,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1505,6 +1791,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1572,6 +1859,7 @@ mod tests {
             None,
             op_control,
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-1", "span-1")))
@@ -1627,6 +1915,7 @@ mod tests {
             None,
             op_control,
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-2", "span-2")))
@@ -1689,6 +1978,7 @@ mod tests {
             Some(gateway),
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1742,6 +2032,7 @@ mod tests {
             Some(gateway),
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1798,6 +2089,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1857,6 +2149,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send the query — get back PENDING with approval_id.
@@ -1910,14 +2203,20 @@ mod tests {
     /// A ToolCall `AuditEvent` whose `args_json` embeds [`GATE_SECRET`].
     fn tool_call_with_secret() -> AuditEvent {
         use aa_proto::assembly::audit::v1::ToolCallDetail;
-        AuditEvent {
+        let mut event = AuditEvent {
             action_type: ActionType::ToolCall as i32,
             detail: Some(Detail::ToolCall(ToolCallDetail {
                 args_json: format!(r#"{{"api_key": "{GATE_SECRET}"}}"#).into_bytes(),
                 ..Default::default()
             })),
             ..Default::default()
-        }
+        };
+        // Present SDK version → no tamper event, so this redaction test sees only
+        // the single forwarded action event.
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.0.0".to_string());
+        event
     }
 
     /// Assert an audited pipeline event's `args_json` was redacted, not raw.
@@ -1951,6 +2250,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
@@ -1999,6 +2299,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
