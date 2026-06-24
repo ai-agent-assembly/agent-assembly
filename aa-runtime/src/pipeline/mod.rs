@@ -10,7 +10,7 @@ pub use metrics::PipelineMetrics;
 use crate::approval::{ApprovalDecision as RuntimeApprovalDecision, ApprovalQueue, ApprovalRequest};
 use crate::config::RuntimeConfig;
 use crate::gateway_client::GatewayClient;
-use crate::ipc::{IpcFrame, IpcResponse, ResponseRouter};
+use crate::ipc::{IpcFrame, IpcResponse, ResponseRouter, VerifiedIdentityStore};
 use crate::policy::PolicyRules;
 use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
 use aa_proto::assembly::common::v1::{ActionType, Decision};
@@ -44,6 +44,9 @@ pub struct PipelineConfig {
     /// instead of falling back to permissive local evaluation (AAASM-3110).
     /// Copied from [`RuntimeConfig::gateway_fail_closed`]; defaults to `true`.
     pub gateway_fail_closed: bool,
+    /// Minimum supported SDK version. When set, an observed SDK version below it
+    /// is classified as a downgrade (AAASM-3640). `None` imposes no floor.
+    pub min_sdk_version: Option<String>,
 }
 
 impl PipelineConfig {
@@ -57,6 +60,9 @@ impl PipelineConfig {
             agent_id: c.agent_id.clone(),
             enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
             gateway_fail_closed: c.gateway_fail_closed,
+            // No operator-configurable SDK version floor yet; downgrade
+            // detection activates once a minimum is wired into RuntimeConfig.
+            min_sdk_version: None,
         }
     }
 }
@@ -80,6 +86,7 @@ pub async fn run(
     gateway_client: Option<Arc<Mutex<GatewayClient>>>,
     op_control: crate::op_control::OpControlStore,
     seq: Arc<AtomicU64>,
+    verified_identities: VerifiedIdentityStore,
 ) {
     let mut batch: Vec<EnrichedEvent> = Vec::with_capacity(config.batch_size);
     let mut ticker = tokio::time::interval(config.flush_interval);
@@ -109,8 +116,21 @@ pub async fn run(
                         let mut enriched = enrich(event, &config.agent_id, connection_id, &seq);
                         // GATE: scan + redact + normalize before any forward or
                         // audit, on every path. Unconditional — no SDK signal can
-                        // skip this.
-                        scanner.enforce(&mut enriched);
+                        // skip this. The outcome also reports any forged trust
+                        // markers stripped (AAASM-3630).
+                        let outcome = scanner.enforce(&mut enriched);
+                        // AAASM-3640: recompute the SDK-identity verdict against
+                        // the handshake-verified identity for this connection
+                        // (Unverifiable when the connection never authenticated).
+                        let verified = resolve_verified_identity(&verified_identities, connection_id).await;
+                        let verdict = aa_security::sdk_identity::classify(
+                            &enriched.observed_sdk_identity,
+                            &verified,
+                            config.min_sdk_version.as_deref(),
+                        );
+                        // The audit event + metric for a flagged verdict / forged
+                        // markers is emitted in AAASM-3637.
+                        let _ = (&outcome, verdict);
                         tracing::debug!(sequence_number = enriched.sequence_number, connection_id, "event enriched");
                         metrics.record_processed(1);
                         ::metrics::counter!("aa_events_received_total").increment(1);
@@ -193,6 +213,27 @@ fn observe_sdk_identity(event: &AuditEvent) -> aa_security::sdk_identity::Observ
         },
         None => aa_security::sdk_identity::ObservedSdkIdentity::missing(),
     }
+}
+
+/// Resolve the AAASM-3569 handshake-verified SDK identity for `connection_id`
+/// (AAASM-3640).
+///
+/// Returns the identity the authenticated handshake established for the
+/// connection, or [`VerifiedSdkIdentity::none`] when the connection has no
+/// entry — i.e. it never completed a handshake, or its source has no IPC
+/// handshake (eBPF / proxy events use `connection_id` 0). Falling back to
+/// `none` keeps the verdict at `Unverifiable` rather than guessing, so there is
+/// no regression for non-handshake paths.
+async fn resolve_verified_identity(
+    store: &VerifiedIdentityStore,
+    connection_id: u64,
+) -> aa_security::sdk_identity::VerifiedSdkIdentity {
+    store
+        .read()
+        .await
+        .get(&connection_id)
+        .cloned()
+        .unwrap_or_else(aa_security::sdk_identity::VerifiedSdkIdentity::none)
 }
 
 /// Returns `true` if this event should bypass batching and be emitted immediately.
@@ -928,6 +969,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         };
 
         let cloned = pipeline_config.clone();
@@ -948,6 +990,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         }
     }
 
@@ -991,6 +1034,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 3 events — batch threshold reached, should flush before interval
@@ -1029,6 +1073,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 5 events (less than batch_size=100) — should arrive after interval flush
@@ -1067,6 +1112,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send a violation — should arrive immediately, bypassing batch
@@ -1104,6 +1150,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send 5 events (batch won't flush yet)
@@ -1160,6 +1207,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send non-event frames
@@ -1206,6 +1254,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Build an AuditEvent with action_type = FILE_OPERATION
@@ -1261,6 +1310,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // `tokio::time::interval` fires an immediate first tick on creation. With the
@@ -1312,6 +1362,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         for _ in 0..3 {
@@ -1359,6 +1410,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // First batch of 2
@@ -1430,6 +1482,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Spawn a receiver that drains the broadcast channel
@@ -1512,6 +1565,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1562,6 +1616,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1629,6 +1684,7 @@ mod tests {
             None,
             op_control,
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-1", "span-1")))
@@ -1684,6 +1740,7 @@ mod tests {
             None,
             op_control,
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame_for_op(ActionType::ToolCall, "trace-2", "span-2")))
@@ -1746,6 +1803,7 @@ mod tests {
             Some(gateway),
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1799,6 +1857,7 @@ mod tests {
             Some(gateway),
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1855,6 +1914,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
@@ -1914,6 +1974,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         // Send the query — get back PENDING with approval_id.
@@ -2008,6 +2069,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
@@ -2056,6 +2118,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
         ));
 
         tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))

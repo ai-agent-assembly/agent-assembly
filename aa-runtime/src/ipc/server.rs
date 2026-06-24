@@ -111,6 +111,7 @@ impl IpcServer {
         inbound_tx: mpsc::Sender<(u64, IpcFrame)>,
         active_connections: Arc<AtomicI64>,
         response_router: ResponseRouter,
+        verified_identities: crate::ipc::VerifiedIdentityStore,
     ) {
         let semaphore = Arc::new(Semaphore::new(self.config.max_connections));
         let listener = self.listener;
@@ -193,6 +194,7 @@ impl IpcServer {
                             // succeeds — an unauthenticated peer is never wired
                             // into the dispatch path.
                             let conn_router = Arc::clone(&response_router);
+                            let conn_verified = Arc::clone(&verified_identities);
                             let conn_active = Arc::clone(&active_connections);
                             spawn_connection(
                                 &tracker,
@@ -203,6 +205,7 @@ impl IpcServer {
                                 conn_active,
                                 connection_id,
                                 conn_router,
+                                conn_verified,
                                 expected_key,
                                 inbound_channel_capacity,
                             );
@@ -243,6 +246,7 @@ pub(super) fn spawn_connection(
     active_connections: Arc<AtomicI64>,
     connection_id: u64,
     response_router: ResponseRouter,
+    verified_identities: crate::ipc::VerifiedIdentityStore,
     expected_key: ed25519_dalek::VerifyingKey,
     inbound_channel_capacity: usize,
 ) {
@@ -254,16 +258,17 @@ pub(super) fn spawn_connection(
 
         // AAASM-3585: challenge the peer and verify its signed proof before any
         // application frame is served. Bounded by HANDSHAKE_TIMEOUT.
-        match tokio::time::timeout(
+        let verified_identity = match tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
             perform_handshake(&mut read_half, &mut write_half, &expected_key),
         )
         .await
         {
-            Ok(true) => {
+            Ok(Some(identity)) => {
                 tracing::debug!(connection_id, "IPC handshake succeeded");
+                identity
             }
-            Ok(false) => {
+            Ok(None) => {
                 tracing::warn!(connection_id, "IPC handshake failed — dropping connection");
                 return;
             }
@@ -271,11 +276,17 @@ pub(super) fn spawn_connection(
                 tracing::warn!(connection_id, "IPC handshake timed out — dropping connection");
                 return;
             }
-        }
+        };
 
         // Handshake passed: now wire this connection into the dispatch path.
         let (resp_tx, resp_rx) = mpsc::channel::<IpcResponse>(inbound_channel_capacity);
         response_router.write().await.insert(connection_id, resp_tx.clone());
+        // AAASM-3640: record the handshake-verified identity for this connection
+        // so the pipeline can recompute the SDK-identity verdict against it.
+        verified_identities
+            .write()
+            .await
+            .insert(connection_id, verified_identity);
         active_connections.fetch_add(1, Ordering::Relaxed);
 
         // Reader task: decode frames from socket → inbound channel.
@@ -288,6 +299,7 @@ pub(super) fn spawn_connection(
                 active_connections,
                 connection_id,
                 response_router,
+                verified_identities,
             )
             .await;
         });
@@ -304,13 +316,18 @@ pub(super) fn spawn_connection(
 /// Run the runtime side of the session handshake: send a fresh nonce challenge,
 /// await the SDK's `HandshakeProof`, and verify it against `expected_key`.
 ///
-/// Returns `true` only on a valid proof. Any I/O error, a non-handshake first
-/// frame, or a signature that does not verify returns `false` (fail-closed).
+/// Returns `Some(VerifiedSdkIdentity)` only on a valid proof — the identity the
+/// authenticated channel established (AAASM-3640 consumes it). The current
+/// handshake proof authenticates the agent's Ed25519 key possession but carries
+/// no SDK version on the wire, so the returned identity has `version: None`
+/// (a present-but-not-versioned attestation). Any I/O error, a non-handshake
+/// first frame, or a signature that does not verify returns `None`
+/// (fail-closed).
 pub(super) async fn perform_handshake(
     read_half: &mut tokio::net::unix::OwnedReadHalf,
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     expected_key: &ed25519_dalek::VerifyingKey,
-) -> bool {
+) -> Option<aa_security::sdk_identity::VerifiedSdkIdentity> {
     use crate::ipc::handshake;
     use aa_proto::assembly::ipc::v1::HandshakeChallenge;
 
@@ -319,7 +336,7 @@ pub(super) async fn perform_handshake(
     let challenge = IpcResponse::HandshakeChallenge(HandshakeChallenge { nonce: nonce.to_vec() });
     if let Err(e) = super::codec::write_response(write_half, challenge).await {
         tracing::warn!(error = %e, "failed to send handshake challenge");
-        return false;
+        return None;
     }
 
     // 2. Await the proof. The first frame MUST be a HandshakeProof — anything
@@ -328,10 +345,12 @@ pub(super) async fn perform_handshake(
     match super::codec::read_frame(read_half).await {
         Ok(IpcFrame::HandshakeProof(proof)) => {
             if handshake::verify_proof(&nonce, &proof, expected_key) {
-                true
+                // Authenticated. The proof carries no version, so the verified
+                // reference is present-without-version (version: None).
+                Some(aa_security::sdk_identity::VerifiedSdkIdentity::none())
             } else {
                 tracing::warn!("handshake proof did not verify against the expected agent key");
-                false
+                None
             }
         }
         Ok(other) => {
@@ -339,11 +358,11 @@ pub(super) async fn perform_handshake(
                 frame = ?std::mem::discriminant(&other),
                 "first IPC frame was not a handshake proof — rejecting unauthenticated peer"
             );
-            false
+            None
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to read handshake proof");
-            false
+            None
         }
     }
 }
@@ -356,6 +375,7 @@ pub(super) async fn run_reader(
     active_connections: Arc<AtomicI64>,
     connection_id: u64,
     response_router: ResponseRouter,
+    verified_identities: crate::ipc::VerifiedIdentityStore,
 ) {
     loop {
         tokio::select! {
@@ -386,8 +406,10 @@ pub(super) async fn run_reader(
             }
         }
     }
-    // Remove this connection from the response router before signalling shutdown.
+    // Remove this connection from the response router and the verified-identity
+    // store before signalling shutdown.
     response_router.write().await.remove(&connection_id);
+    verified_identities.write().await.remove(&connection_id);
     token.cancel(); // Signal the paired writer to stop.
     active_connections.fetch_sub(1, Ordering::Relaxed);
 }
@@ -533,7 +555,11 @@ mod tests {
         socket_path: std::path::PathBuf,
         token: CancellationToken,
         active_connections: Arc<AtomicI64>,
-    ) -> (mpsc::Receiver<(u64, IpcFrame)>, crate::ipc::ResponseRouter) {
+    ) -> (
+        mpsc::Receiver<(u64, IpcFrame)>,
+        crate::ipc::ResponseRouter,
+        crate::ipc::VerifiedIdentityStore,
+    ) {
         let config = IpcServerConfig {
             socket_path,
             agent_id: "test-agent".to_string(),
@@ -544,14 +570,23 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let router = crate::ipc::new_response_router();
         let router_clone = Arc::clone(&router);
+        let verified = crate::ipc::new_verified_identity_store();
+        let verified_clone = Arc::clone(&verified);
         let tracker = TaskTracker::new();
         let tracker_clone = tracker.clone();
         tracker.spawn(async move {
             server
-                .run(tracker_clone, token, tx, active_connections, router_clone)
+                .run(
+                    tracker_clone,
+                    token,
+                    tx,
+                    active_connections,
+                    router_clone,
+                    verified_clone,
+                )
                 .await;
         });
-        (rx, router)
+        (rx, router, verified)
     }
 
     /// Write a raw inbound frame (tag + varint len + payload) to the socket.
@@ -603,7 +638,7 @@ mod tests {
         let socket_path = temp_socket_path("heartbeat");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
         let (_, mut write_half) = client.into_split();
@@ -627,7 +662,7 @@ mod tests {
         let socket_path = temp_socket_path("policy-query");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
         let (_, mut write_half) = client.into_split();
@@ -656,7 +691,7 @@ mod tests {
         let socket_path = temp_socket_path("event-report");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
         let (_, mut write_half) = client.into_split();
@@ -685,7 +720,7 @@ mod tests {
         let socket_path = temp_socket_path("concurrent");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (_rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (_rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         const CONN_COUNT: usize = 5;
         let mut clients = Vec::new();
@@ -705,7 +740,7 @@ mod tests {
         let socket_path = temp_socket_path("latency");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
         let (_, mut write_half) = client.into_split();
@@ -737,7 +772,7 @@ mod tests {
         let socket_path = temp_socket_path("counter-increment");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (_rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (_rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         const CONN_COUNT: usize = 3;
         let mut clients = Vec::new();
@@ -769,7 +804,7 @@ mod tests {
         let socket_path = temp_socket_path("counter-decrement");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (_rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (_rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
 
@@ -809,7 +844,7 @@ mod tests {
         let socket_path = temp_socket_path("router-insert");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (_rx, router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (_rx, router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let _client = connect_client(&socket_path).await;
 
@@ -831,7 +866,7 @@ mod tests {
         let socket_path = temp_socket_path("router-remove");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (_rx, router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (_rx, router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let client = connect_client(&socket_path).await;
 
@@ -879,7 +914,8 @@ mod tests {
         let socket_path = temp_socket_path("violation-alert");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (inbound_rx, router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (inbound_rx, router, verified) =
+            start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         // Spin up the pipeline.
         let pipeline_config = PipelineConfig {
@@ -890,6 +926,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);
@@ -907,6 +944,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::clone(&verified),
         ));
 
         // Connect a client.
@@ -974,7 +1012,8 @@ mod tests {
         let socket_path = temp_socket_path("no-alert");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (inbound_rx, router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (inbound_rx, router, verified) =
+            start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         // Spin up the pipeline.
         let pipeline_config = PipelineConfig {
@@ -985,6 +1024,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);
@@ -1002,6 +1042,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::clone(&verified),
         ));
 
         // Connect a client.
@@ -1064,7 +1105,8 @@ mod tests {
         let socket_path = temp_socket_path("approval-roundtrip");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (inbound_rx, router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (inbound_rx, router, verified) =
+            start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         // Policy: TOOL_CALL requires approval.
         let policy = Arc::new(PolicyRules {
@@ -1087,6 +1129,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
         let (broadcast_tx, _broadcast_rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(64);
@@ -1104,6 +1147,7 @@ mod tests {
             None,
             crate::op_control::OpControlStore::new(),
             Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::clone(&verified),
         ));
 
         // Connect a client.
@@ -1204,7 +1248,7 @@ mod tests {
         let socket_path = temp_socket_path("no-handshake-event");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         // Connect WITHOUT performing the handshake.
         let stream = {
@@ -1251,7 +1295,7 @@ mod tests {
         let socket_path = temp_socket_path("forged-handshake");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         let mut stream = {
             let mut s = None;
@@ -1328,7 +1372,7 @@ mod tests {
         let socket_path = temp_socket_path("valid-handshake-event");
         let token = CancellationToken::new();
         let counter = Arc::new(AtomicI64::new(0));
-        let (mut rx, _router) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+        let (mut rx, _router, _verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
 
         // connect_client performs the valid handshake as TEST_AGENT_ID.
         let client = connect_client(&socket_path).await;

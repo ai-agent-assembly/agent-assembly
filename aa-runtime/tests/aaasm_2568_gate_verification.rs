@@ -14,7 +14,7 @@ use std::time::Duration;
 use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, ToolCallDetail};
 use aa_proto::assembly::common::v1::ActionType;
 use aa_runtime::approval::ApprovalQueue;
-use aa_runtime::ipc::{new_response_router, IpcFrame};
+use aa_runtime::ipc::{new_response_router, new_verified_identity_store, IpcFrame};
 use aa_runtime::pipeline::enforcement::{EnforcementConfig, OVERSIZED_MARKER};
 use aa_runtime::pipeline::{run, PipelineConfig, PipelineEvent, PipelineMetrics};
 use aa_runtime::policy::{PolicyRule, PolicyRules};
@@ -33,6 +33,7 @@ fn verify_config(batch_size: usize) -> PipelineConfig {
         agent_id: "verify-agent".to_string(),
         enforcement: aa_runtime::pipeline::enforcement::EnforcementConfig::default(),
         gateway_fail_closed: true,
+        min_sdk_version: None,
     }
 }
 
@@ -81,6 +82,7 @@ async fn drive_one(policy: PolicyRules) -> PipelineEvent {
         None,
         aa_runtime::op_control::OpControlStore::new(),
         Arc::new(AtomicU64::new(0)),
+        new_verified_identity_store(),
     ));
 
     tx.send((0, IpcFrame::EventReport(tool_call_with_secret())))
@@ -149,6 +151,7 @@ async fn configured_size_cap_redacts_oversized_field_through_run() {
         None,
         aa_runtime::op_control::OpControlStore::new(),
         Arc::new(AtomicU64::new(0)),
+        new_verified_identity_store(),
     ));
 
     // tool_call_with_secret()'s args_json is ~37 bytes, exceeding the 16-byte cap.

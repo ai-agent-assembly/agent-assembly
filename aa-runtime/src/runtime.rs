@@ -578,6 +578,9 @@ pub async fn run(config: RuntimeConfig) {
 
     // Shared response router — maps connection_id → per-connection IpcResponse sender.
     let response_router = crate::ipc::new_response_router();
+    // Shared verified-identity store (AAASM-3640) — maps connection_id → the SDK
+    // identity the AAASM-3569 handshake authenticated for that connection.
+    let verified_identities = crate::ipc::new_verified_identity_store();
 
     // Audit publisher (AAASM-2547): when [gateway.nats] is configured, the
     // approval queue's governance AuditEntry stream is drained to NATS; when
@@ -624,9 +627,17 @@ pub async fn run(config: RuntimeConfig) {
             let ipc_token = token.clone();
             let ipc_active_connections = std::sync::Arc::clone(&active_connections);
             let ipc_router = std::sync::Arc::clone(&response_router);
+            let ipc_verified = std::sync::Arc::clone(&verified_identities);
             tracker.spawn(async move {
                 ipc_server
-                    .run(ipc_tracker, ipc_token, inbound_tx, ipc_active_connections, ipc_router)
+                    .run(
+                        ipc_tracker,
+                        ipc_token,
+                        inbound_tx,
+                        ipc_active_connections,
+                        ipc_router,
+                        ipc_verified,
+                    )
                     .await;
             });
             tracing::info!("IPC server task spawned");
@@ -709,6 +720,7 @@ pub async fn run(config: RuntimeConfig) {
         let pipeline_approval_queue = std::sync::Arc::clone(&approval_queue);
         let pipeline_seq = std::sync::Arc::clone(&seq);
         let pipeline_op_control = op_control.clone();
+        let pipeline_verified = std::sync::Arc::clone(&verified_identities);
         tracker.spawn(async move {
             crate::pipeline::run(
                 inbound_rx,
@@ -722,6 +734,7 @@ pub async fn run(config: RuntimeConfig) {
                 gateway_client,
                 pipeline_op_control,
                 pipeline_seq,
+                pipeline_verified,
             )
             .await;
         });
