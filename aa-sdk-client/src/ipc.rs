@@ -78,7 +78,18 @@ pub struct IpcHandle {
 /// `agent_id` is the agent identity (AA_AGENT_ID); the loop derives the
 /// deterministic Ed25519 keypair from it to complete the runtime's session
 /// handshake before sending any traffic (AAASM-3587).
-pub fn spawn_ipc_thread(socket_path: PathBuf, agent_id: String) -> Result<IpcHandle, std::io::Error> {
+///
+/// `sdk_version` is the SDK version signed into the handshake (AAASM-3666). The
+/// FFI shims forward the user-facing language-package version here via
+/// [`AssemblyConfig::resolved_sdk_version`](crate::config::AssemblyConfig::resolved_sdk_version),
+/// which falls back to this crate's `CARGO_PKG_VERSION` when none is supplied
+/// (AAASM-3683). An empty string reduces the signed payload to the bare nonce
+/// (pre-AAASM-3666 behaviour).
+pub fn spawn_ipc_thread(
+    socket_path: PathBuf,
+    agent_id: String,
+    sdk_version: String,
+) -> Result<IpcHandle, std::io::Error> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<IpcCommand>(256);
 
     let thread = std::thread::Builder::new().name("aa-ipc".to_string()).spawn(move || {
@@ -86,7 +97,7 @@ pub fn spawn_ipc_thread(socket_path: PathBuf, agent_id: String) -> Result<IpcHan
             .enable_all()
             .build()
             .expect("failed to build Tokio runtime for IPC thread");
-        rt.block_on(ipc_loop(socket_path, agent_id, cmd_rx));
+        rt.block_on(ipc_loop(socket_path, agent_id, sdk_version, cmd_rx));
     })?;
 
     Ok(IpcHandle {
@@ -104,7 +115,7 @@ pub fn spawn_ipc_thread(socket_path: PathBuf, agent_id: String) -> Result<IpcHan
 /// decisions), which a dedicated reader task drains so the socket never backs
 /// up. Blocking on an ack the runtime never sends would deadlock this loop and
 /// hang `shutdown()` (AAASM-3000).
-async fn ipc_loop(socket_path: PathBuf, agent_id: String, mut cmd_rx: mpsc::Receiver<IpcCommand>) {
+async fn ipc_loop(socket_path: PathBuf, agent_id: String, sdk_version: String, mut cmd_rx: mpsc::Receiver<IpcCommand>) {
     use tokio::net::UnixStream;
 
     let stream = match UnixStream::connect(&socket_path).await {
@@ -126,7 +137,7 @@ async fn ipc_loop(socket_path: PathBuf, agent_id: String, mut cmd_rx: mpsc::Rece
     // the runtime's nonce challenge, sign it with the agent's key, and send the
     // proof. Fail-closed — if the handshake fails, abort the loop rather than
     // leak heartbeats/events onto an unauthenticated channel.
-    if let Err(e) = perform_handshake(&mut reader, &mut writer, &agent_id).await {
+    if let Err(e) = perform_handshake(&mut reader, &mut writer, &agent_id, &sdk_version).await {
         tracing::error!(error = %e, "IPC handshake failed — aborting (fail-closed)");
         return;
     }
@@ -185,27 +196,21 @@ async fn ipc_loop(socket_path: PathBuf, agent_id: String, mut cmd_rx: mpsc::Rece
 /// Ed25519 key, and writes back a `HandshakeProof`. Returns an error if the
 /// challenge cannot be read or the proof cannot be sent — the caller treats this
 /// as fail-closed and aborts the loop.
+///
+/// `sdk_version` is the already-resolved version to sign (the FFI-forwarded
+/// language-package version, or this crate's `CARGO_PKG_VERSION` fallback;
+/// AAASM-3683). It is bound into the signature, not merely carried (AAASM-3666).
 async fn perform_handshake(
     reader: &mut tokio::net::unix::OwnedReadHalf,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     agent_id: &str,
+    sdk_version: &str,
 ) -> Result<(), codec::CodecError> {
     let nonce = codec::read_handshake_challenge(reader).await?;
-    let proof = build_handshake_proof(agent_id, &nonce, sdk_version());
+    let proof = build_handshake_proof(agent_id, &nonce, sdk_version);
     codec::write_handshake_proof(writer, &proof).await?;
     tracing::debug!("IPC session handshake completed");
     Ok(())
-}
-
-/// The SDK build version this client reports in the handshake (AAASM-3666).
-///
-/// Sourced from `aa-sdk-client`'s own `CARGO_PKG_VERSION` — the single shared
-/// runtime-client crate every language FFI shim wraps, so it is the meaningful
-/// "SDK version" the runtime can apply a downgrade floor against. Propagating a
-/// language-specific SDK version (e.g. the python/node/go package version)
-/// through the FFI boundary is a future follow-up.
-fn sdk_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
 }
 
 /// Build a `HandshakeProof` for `agent_id` over the runtime-issued `nonce`,
@@ -327,11 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn reported_sdk_version_is_the_crate_version() {
-        assert_eq!(sdk_version(), env!("CARGO_PKG_VERSION"));
-    }
-
-    #[test]
     fn query_policy_debug_does_not_leak_credential_token() {
         // Redaction guard (AAASM-3634): the QueryPolicy variant carries the
         // gateway credential_token, but its Debug must never print it — only
@@ -361,6 +361,11 @@ mod tests {
     /// The agent id the mock-server tests handshake as.
     const TEST_AGENT_ID: &str = "test-agent";
 
+    /// A distinctive language-package version the mock-server tests forward into
+    /// `spawn_ipc_thread`, so they can assert the *FFI-passed* version (not the
+    /// crate version) is what reaches the signed handshake (AAASM-3683).
+    const TEST_SDK_VERSION: &str = "py-99.88.77";
+
     /// A fresh 32-byte test nonce from a value-returning CSPRNG. `rand::random`
     /// returns the bytes directly, so no constant literal (e.g. `[0u8; 32]`) ever
     /// flows into the signing payload — CodeQL's hard-coded-crypto rule does not
@@ -372,7 +377,10 @@ mod tests {
     /// Server-side handshake (AAASM-3587): send a nonce challenge, read the
     /// client's proof, and verify it signs the nonce under the agent key. Mock
     /// servers call this first so the now-handshaking client can proceed.
-    async fn server_handshake<S>(stream: &mut S, agent_id: &str)
+    ///
+    /// Returns the `sdk_version` the client signed into the proof so callers can
+    /// assert the FFI-forwarded version reached the handshake (AAASM-3683).
+    async fn server_handshake<S>(stream: &mut S, agent_id: &str) -> String
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
@@ -421,6 +429,8 @@ mod tests {
         let vk2 = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
         vk2.verify(&signed_payload, &Signature::from_bytes(&sig_bytes))
             .expect("client proof must verify");
+
+        proof.sdk_version
     }
 
     #[tokio::test]
@@ -430,6 +440,7 @@ mod tests {
         let handle = spawn_ipc_thread(
             PathBuf::from("/tmp/nonexistent-aa-test.sock"),
             TEST_AGENT_ID.to_string(),
+            TEST_SDK_VERSION.to_string(),
         );
         assert!(handle.is_ok());
         let mut handle = handle.unwrap();
@@ -450,14 +461,26 @@ mod tests {
 
         let listener = UnixListener::bind(&socket_path).unwrap();
 
-        // Spawn the IPC client thread.
-        let handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
+        // Spawn the IPC client thread, forwarding a distinctive language-package
+        // version (AAASM-3683).
+        let handle = spawn_ipc_thread(
+            PathBuf::from(&socket_path),
+            TEST_AGENT_ID.to_string(),
+            TEST_SDK_VERSION.to_string(),
+        )
+        .unwrap();
 
         // Accept the connection on the mock server side.
         let (mut stream, _) = listener.accept().await.unwrap();
 
         // AAASM-3587: the client completes the handshake before any heartbeat.
-        server_handshake(&mut stream, TEST_AGENT_ID).await;
+        // AAASM-3683: the FFI-forwarded version (not the crate version) is what
+        // the client signs into the proof.
+        let signed_version = server_handshake(&mut stream, TEST_AGENT_ID).await;
+        assert_eq!(
+            signed_version, TEST_SDK_VERSION,
+            "the FFI-passed sdk_version must reach the signed handshake"
+        );
 
         let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -506,7 +529,12 @@ mod tests {
             }
         });
 
-        let mut handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
+        let mut handle = spawn_ipc_thread(
+            PathBuf::from(&socket_path),
+            TEST_AGENT_ID.to_string(),
+            TEST_SDK_VERSION.to_string(),
+        )
+        .unwrap();
 
         // Ship several events — fire-and-forget, must not block.
         for i in 0..5 {
@@ -588,7 +616,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        let handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
+        let handle = spawn_ipc_thread(
+            PathBuf::from(&socket_path),
+            TEST_AGENT_ID.to_string(),
+            TEST_SDK_VERSION.to_string(),
+        )
+        .unwrap();
         let client = AssemblyClient::new(handle, Vec::new());
 
         // query_policy blocks the calling thread, so run it off the async runtime.

@@ -44,10 +44,9 @@ tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "s
 # Mock gateway gRPC server for the with-core register+check test (AAASM-3398).
 tokio-stream = { workspace = true }
 # CSPRNG for fresh per-test handshake challenge nonces. `rand` returns the
-# value directly (no `[0u8; 32]` buffer literal in the data-flow → CodeQL-clean);
-# getrandom kept for the lifecycle_e2e fixture.
+# value directly (no `[0u8; 32]` buffer literal in the data-flow → CodeQL-clean),
+# used by every test that generates a nonce (unit + lifecycle_e2e fixture).
 rand = "0.8"
-getrandom = "0.2"
 
 [lints]
 workspace = true

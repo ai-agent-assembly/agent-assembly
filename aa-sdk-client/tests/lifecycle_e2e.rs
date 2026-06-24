@@ -14,6 +14,11 @@ use tokio::net::UnixListener;
 /// The agent id the e2e client handshakes as.
 const TEST_AGENT_ID: &str = "e2e-agent";
 
+/// A distinctive language-package version forwarded into `spawn_ipc_thread`, so
+/// the e2e asserts the FFI-passed version (not the crate version) reaches the
+/// signed handshake (AAASM-3683).
+const TEST_SDK_VERSION: &str = "node-1.2.3-rc.4";
+
 /// Read a prost varint length prefix from `reader`.
 async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
     let mut result: u64 = 0;
@@ -31,15 +36,20 @@ async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
 
 /// Server side of the AAASM-3587 session handshake: send a nonce challenge, read
 /// the client's signed proof, and verify it under the agent's deterministic key.
-async fn server_handshake<S>(stream: &mut S, agent_id: &str)
+///
+/// Returns the `sdk_version` the client signed into the proof so the caller can
+/// assert the FFI-forwarded version reached the handshake (AAASM-3683).
+async fn server_handshake<S>(stream: &mut S, agent_id: &str) -> String
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use ed25519_dalek::{Signature, Verifier};
     use sha2::{Digest, Sha256};
 
-    let mut nonce = vec![0u8; 32];
-    getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
+    // Value-returning CSPRNG so no constant literal (e.g. `[0u8; 32]`) flows
+    // into the signed nonce — CodeQL's hard-coded-crypto rule does not model
+    // getrandom's in-place `&mut` fill as sanitizing the zero-init buffer.
+    let nonce = rand::random::<[u8; 32]>().to_vec();
     let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
     let payload = challenge.encode_to_vec();
     stream.write_u8(TAG_HANDSHAKE_CHALLENGE).await.unwrap();
@@ -63,6 +73,8 @@ where
     let sig: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
     vk.verify(&signed_payload, &Signature::from_bytes(&sig))
         .expect("client handshake proof must verify");
+
+    proof.sdk_version
 }
 
 #[tokio::test]
@@ -71,14 +83,24 @@ async fn client_ships_event_to_mock_runtime_and_shuts_down() {
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).unwrap();
 
-    let ipc = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
+    let ipc = spawn_ipc_thread(
+        PathBuf::from(&socket_path),
+        TEST_AGENT_ID.to_string(),
+        TEST_SDK_VERSION.to_string(),
+    )
+    .unwrap();
     let client = Arc::new(AssemblyClient::new(ipc, vec!["openai".to_string()]));
     assert_eq!(client.detected_frameworks(), vec!["openai".to_string()]);
 
     let (mut stream, _) = listener.accept().await.unwrap();
 
     // 0. AAASM-3587: complete the session handshake before any application frame.
-    server_handshake(&mut stream, TEST_AGENT_ID).await;
+    //    AAASM-3683: the FFI-forwarded version reaches the signed proof.
+    let signed_version = server_handshake(&mut stream, TEST_AGENT_ID).await;
+    assert_eq!(
+        signed_version, TEST_SDK_VERSION,
+        "the FFI-passed sdk_version must reach the signed handshake"
+    );
 
     let (mut reader, mut writer) = tokio::io::split(stream);
 

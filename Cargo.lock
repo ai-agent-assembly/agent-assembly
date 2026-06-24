@@ -484,7 +484,6 @@ dependencies = [
  "aa-security",
  "bs58",
  "ed25519-dalek",
- "getrandom 0.2.17",
  "hex",
  "prost",
  "rand 0.8.6",
