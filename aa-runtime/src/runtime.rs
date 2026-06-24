@@ -504,6 +504,59 @@ fn spawn_pipeline_audit_publisher(
     });
 }
 
+/// AAASM-3430: build the gateway client used to forward per-tool policy checks
+/// to the authoritative governance gateway.
+///
+/// Returns `None` only when no endpoint is configured (the pipeline then
+/// evaluates policy locally). A configured-but-unreachable endpoint yields a
+/// lazy client so the pipeline's fail-closed path (AAASM-3110) governs the
+/// unreachable case at check time — a connect failure must never silently
+/// degrade to a permissive local allow.
+async fn build_gateway_client(
+    config: &RuntimeConfig,
+) -> Option<std::sync::Arc<tokio::sync::Mutex<crate::gateway_client::GatewayClient>>> {
+    let Some(endpoint) = &config.gateway_endpoint else {
+        tracing::info!("no gateway endpoint configured — policy checks evaluated locally");
+        return None;
+    };
+    match crate::gateway_client::GatewayClient::connect(endpoint).await {
+        Ok(client) => {
+            tracing::info!(endpoint, "gateway client connected — forwarding policy checks");
+            Some(std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+        }
+        Err(e) => {
+            tracing::warn!(
+                endpoint,
+                error = %e,
+                "gateway client initial connect failed — using lazy channel (checks fail-closed when unreachable)"
+            );
+            crate::gateway_client::GatewayClient::connect_lazy_owned(endpoint)
+                .map(|client| std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+        }
+    }
+}
+
+/// AAASM-3491: start the op-control subscriber when a gateway endpoint is
+/// configured, so the gateway's pause/resume/terminate signals reach the shared
+/// [`OpControlStore`]. Without an endpoint there is no kill-switch channel, so
+/// the store stays empty and this is a no-op.
+fn spawn_op_control(tracker: &TaskTracker, config: &RuntimeConfig, op_control: &crate::op_control::OpControlStore) {
+    let Some(endpoint) = &config.gateway_endpoint else {
+        tracing::info!("no gateway endpoint configured — op-control kill switch inactive");
+        return;
+    };
+    let subscriber_agent = aa_proto::assembly::common::v1::AgentId {
+        org_id: config.agent_org_id.clone(),
+        team_id: config.agent_team_id.clone(),
+        agent_id: config.agent_id.clone(),
+    };
+    let handle = crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, op_control.clone());
+    tracker.spawn(async move {
+        let _ = handle.await;
+    });
+    tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -662,33 +715,8 @@ pub async fn run(config: RuntimeConfig) {
 
     // AAASM-3430: build the gateway client when an endpoint is configured so
     // policy checks are forwarded to the authoritative governance gateway. When
-    // no endpoint is set the pipeline falls back to local evaluation. Without
-    // this, the pipeline always received `None` and every per-tool deny held by
-    // the gateway was silently dropped to a permissive local allow.
-    let gateway_client = match &config.gateway_endpoint {
-        Some(endpoint) => match crate::gateway_client::GatewayClient::connect(endpoint).await {
-            Ok(client) => {
-                tracing::info!(endpoint, "gateway client connected — forwarding policy checks");
-                Some(std::sync::Arc::new(tokio::sync::Mutex::new(client)))
-            }
-            Err(e) => {
-                // Construction failure must not silently degrade to local allow.
-                // Build a lazy client so the pipeline's fail-closed path
-                // (AAASM-3110) governs the unreachable case at check time.
-                tracing::warn!(
-                    endpoint,
-                    error = %e,
-                    "gateway client initial connect failed — using lazy channel (checks fail-closed when unreachable)"
-                );
-                crate::gateway_client::GatewayClient::connect_lazy_owned(endpoint)
-                    .map(|client| std::sync::Arc::new(tokio::sync::Mutex::new(client)))
-            }
-        },
-        None => {
-            tracing::info!("no gateway endpoint configured — policy checks evaluated locally");
-            None
-        }
-    };
+    // no endpoint is set the pipeline falls back to local evaluation.
+    let gateway_client = build_gateway_client(&config).await;
 
     // AAASM-3491: shared op-control store + subscriber. The store records the
     // gateway's pause/resume/terminate signals; the pipeline consults it on
@@ -696,20 +724,7 @@ pub async fn run(config: RuntimeConfig) {
     // running agent. Without a configured gateway there is no kill-switch
     // channel to subscribe to, so the store simply stays empty (no op control).
     let op_control = crate::op_control::OpControlStore::new();
-    if let Some(endpoint) = &config.gateway_endpoint {
-        let subscriber_agent = aa_proto::assembly::common::v1::AgentId {
-            org_id: config.agent_org_id.clone(),
-            team_id: config.agent_team_id.clone(),
-            agent_id: config.agent_id.clone(),
-        };
-        let handle = crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, op_control.clone());
-        tracker.spawn(async move {
-            let _ = handle.await;
-        });
-        tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
-    } else {
-        tracing::info!("no gateway endpoint configured — op-control kill switch inactive");
-    }
+    spawn_op_control(&tracker, &config, &op_control);
 
     // Spawn the event aggregation pipeline task.
     {
