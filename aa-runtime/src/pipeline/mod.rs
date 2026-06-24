@@ -1139,6 +1139,76 @@ mod tests {
         token.cancel();
     }
 
+    #[test]
+    fn emit_tamper_signal_broadcasts_distinct_event_and_metric_for_missing() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+        use metrics_exporter_prometheus::PrometheusBuilder;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome::default();
+
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            emit_tamper_signal(SdkIdentityVerdict::Missing, &outcome, &source, &broadcast_tx, &seq);
+        });
+
+        // A distinct tamper audit event is broadcast.
+        let event = unwrap_audit(broadcast_rx.try_recv().expect("tamper event broadcast"));
+        let tamper = event.tamper.expect("tamper annotation present");
+        assert_eq!(tamper.verdict, SdkIdentityVerdict::Missing);
+        assert_eq!(tamper.forged_trust_markers, 0);
+        // It is a tamper observation, not an action.
+        assert!(event.inner.detail.is_none());
+
+        // The dedicated metric is incremented, labelled by kind.
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_sdk_tamper_suspected_total"));
+        assert!(rendered.contains("kind=\"missing\""));
+    }
+
+    #[test]
+    fn emit_tamper_signal_fires_for_forged_markers_even_when_verdict_ok() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome {
+            forged_trust_markers: 1,
+            ..Default::default()
+        };
+
+        emit_tamper_signal(SdkIdentityVerdict::Ok, &outcome, &source, &broadcast_tx, &seq);
+
+        let event = unwrap_audit(broadcast_rx.try_recv().expect("tamper event broadcast"));
+        let tamper = event.tamper.expect("tamper annotation present");
+        assert_eq!(tamper.verdict, SdkIdentityVerdict::Ok);
+        assert_eq!(tamper.forged_trust_markers, 1);
+    }
+
+    #[test]
+    fn emit_tamper_signal_is_silent_when_clean() {
+        use aa_security::sdk_identity::SdkIdentityVerdict;
+
+        let (broadcast_tx, mut broadcast_rx) = broadcast::channel::<PipelineEvent>(8);
+        let seq = AtomicU64::new(0);
+        let source = enrich(normal_event(), "agent", 0, &seq);
+        let outcome = enforcement::EnforcementOutcome::default();
+
+        // Ok verdict + no forged markers → no emission.
+        emit_tamper_signal(SdkIdentityVerdict::Ok, &outcome, &source, &broadcast_tx, &seq);
+        // Unverifiable is also not a tamper signal.
+        emit_tamper_signal(SdkIdentityVerdict::Unverifiable, &outcome, &source, &broadcast_tx, &seq);
+
+        assert!(
+            broadcast_rx.try_recv().is_err(),
+            "no tamper event for a clean/unverifiable event"
+        );
+    }
+
     #[tokio::test]
     async fn batch_flushes_on_interval() {
         let config = test_config(100, 50); // batch_size=100 (won't reach), interval=50ms

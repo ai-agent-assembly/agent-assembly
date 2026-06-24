@@ -471,4 +471,29 @@ mod tests {
         let entry = enriched_to_audit_entry(&enriched(ActionType::ToolCall, None, EventSource::Sdk));
         assert!(entry.verify_integrity());
     }
+
+    #[test]
+    fn payload_has_no_sdk_identity_section_without_tamper() {
+        let entry = enriched_to_audit_entry(&enriched(ActionType::ToolCall, None, EventSource::Sdk));
+        let p = payload_json(&entry);
+        assert!(
+            p.get("sdk_identity").is_none(),
+            "ordinary events carry no sdk_identity section"
+        );
+    }
+
+    #[test]
+    fn payload_carries_tamper_verdict_and_forged_count() {
+        use crate::pipeline::event::TamperSignal;
+        let mut event = enriched(ActionType::ToolCall, None, EventSource::Sdk);
+        event.tamper = Some(TamperSignal {
+            verdict: aa_security::sdk_identity::SdkIdentityVerdict::Missing,
+            forged_trust_markers: 2,
+        });
+        let entry = enriched_to_audit_entry(&event);
+        let p = payload_json(&entry);
+        assert_eq!(p["sdk_identity"]["tamper_suspected"], true);
+        assert_eq!(p["sdk_identity"]["verdict"], "missing");
+        assert_eq!(p["sdk_identity"]["forged_trust_markers"], 2);
+    }
 }
