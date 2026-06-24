@@ -861,6 +861,27 @@ mod tests {
         assert!(enriched.observed_sdk_identity.version.is_none());
     }
 
+    #[tokio::test]
+    async fn resolve_verified_identity_returns_stored_entry() {
+        let store = crate::ipc::new_verified_identity_store();
+        store
+            .write()
+            .await
+            .insert(7, aa_security::sdk_identity::VerifiedSdkIdentity::with_version("1.2.3"));
+
+        let resolved = resolve_verified_identity(&store, 7).await;
+        assert_eq!(resolved.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[tokio::test]
+    async fn resolve_verified_identity_falls_back_to_none_when_absent() {
+        let store = crate::ipc::new_verified_identity_store();
+        // No handshake recorded for connection 99 → Unverifiable downstream.
+        let resolved = resolve_verified_identity(&store, 99).await;
+        assert!(resolved.version.is_none());
+        assert!(!resolved.is_available());
+    }
+
     #[test]
     fn enrich_preserves_the_claimed_sdk_version_label_on_the_event() {
         // The claim is transported to the classifier, not consumed here —

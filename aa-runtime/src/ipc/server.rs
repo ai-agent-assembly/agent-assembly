@@ -899,6 +899,68 @@ mod tests {
         token.cancel();
     }
 
+    #[tokio::test]
+    async fn verified_identity_recorded_after_handshake() {
+        // AAASM-3640: a connection that completes the authenticated handshake
+        // has its verified identity recorded in the store, keyed by connection_id.
+        let socket_path = temp_socket_path("verified-insert");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (_rx, _router, verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        let _client = connect_client(&socket_path).await;
+
+        for _ in 0..50 {
+            if counter.load(Ordering::Relaxed) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let map = verified.read().await;
+        assert_eq!(
+            map.len(),
+            1,
+            "verified-identity store should hold one entry after a handshake"
+        );
+        token.cancel();
+    }
+
+    #[tokio::test]
+    async fn verified_identity_removed_after_disconnect() {
+        let socket_path = temp_socket_path("verified-remove");
+        let token = CancellationToken::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let (_rx, _router, verified) = start_server(socket_path.clone(), token.clone(), Arc::clone(&counter)).await;
+
+        let client = connect_client(&socket_path).await;
+
+        for _ in 0..50 {
+            if verified.read().await.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(verified.read().await.len(), 1);
+
+        drop(client);
+
+        let mut observed_len = 1usize;
+        for _ in 0..100 {
+            observed_len = verified.read().await.len();
+            if observed_len == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            observed_len, 0,
+            "verified-identity entry should be removed after client disconnects"
+        );
+
+        token.cancel();
+    }
+
     /// Spin up an IPC server + pipeline and verify that a violation EventReport
     /// results in a ViolationAlert (tag 4) arriving on the same connection
     /// within 100 ms.
