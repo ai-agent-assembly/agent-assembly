@@ -45,7 +45,7 @@
   margin: 0.125rem 0 0;
   font-size: 1rem;
   font-weight: 700;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .node-detail-panel__head-right {
