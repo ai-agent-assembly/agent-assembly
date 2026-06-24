@@ -343,6 +343,40 @@ mod tests {
         assert_eq!(SdkIdentityVerdict::Unverifiable.as_str(), "unverifiable");
     }
 
+    // ── AAASM-3666: with a handshake-verified version, downgrade is now
+    //    classifiable instead of resolving to `Unverifiable` ──────────────────
+
+    #[test]
+    fn downgrade_flagged_against_a_verified_version_and_floor() {
+        // The authenticated channel established 2.0.0, the operator floor is
+        // 1.5.0, and the agent claims an old 1.0.0 build. Before AAASM-3666 the
+        // handshake carried no version, so the verified reference was absent and
+        // this resolved to `Unverifiable`; now it is a clean `VersionDowngraded`.
+        let observed = ObservedSdkIdentity::present("1.0.0");
+        let verified = VerifiedSdkIdentity::with_version("1.0.0");
+        let verdict = classify(&observed, &verified, Some("1.5.0"));
+        assert_eq!(verdict, SdkIdentityVerdict::VersionDowngraded);
+    }
+
+    #[test]
+    fn ok_when_verified_current_version_clears_the_floor() {
+        // A current, handshake-verified version at/above the floor is OK — the
+        // happy path AAASM-3666 enables.
+        let observed = ObservedSdkIdentity::present("2.0.0");
+        let verified = VerifiedSdkIdentity::with_version("2.0.0");
+        assert_eq!(classify(&observed, &verified, Some("1.5.0")), SdkIdentityVerdict::Ok);
+    }
+
+    #[test]
+    fn forged_when_observed_contradicts_the_verified_version() {
+        // The authenticated channel proved 2.0.0 but the agent's audit labels
+        // claim a different version — an impersonation/forgery, now detectable
+        // because the verified reference is no longer absent.
+        let observed = ObservedSdkIdentity::present("1.0.0");
+        let verified = VerifiedSdkIdentity::with_version("2.0.0");
+        assert_eq!(classify(&observed, &verified, None), SdkIdentityVerdict::Forged);
+    }
+
     #[test]
     fn only_missing_downgraded_forged_are_suspected_tamper() {
         assert!(SdkIdentityVerdict::Missing.is_suspected_tamper());
