@@ -471,6 +471,44 @@ mod tests {
     }
 
     #[test]
+    fn credential_token_never_appears_in_any_debug_output() {
+        // Regression guard for the token-hygiene contract (AAASM-3638): a unique
+        // sentinel token set on the client must not surface in the Debug output
+        // of the client or any IpcCommand carrying it, while the public accessor
+        // still round-trips it (positive control).
+        use aa_proto::assembly::policy::v1::CheckActionRequest;
+
+        const SENTINEL: &str = "SENTINEL-TOK-DO-NOT-LOG";
+
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test(SENTINEL);
+
+        // (1) `AssemblyClient` deliberately derives no `Debug`, so there is no
+        // `{:?}` path on the client itself that could print the token. The IPC
+        // command below is the only structured path the token reaches.
+        //
+        // (2) An IpcCommand carrying the token must not leak it via Debug.
+        let request = CheckActionRequest {
+            credential_token: client.credential_token().unwrap(),
+            ..Default::default()
+        };
+        let (resp_tx, _resp_rx) = std::sync::mpsc::channel();
+        let cmd = IpcCommand::QueryPolicy {
+            request: Box::new(request),
+            resp: resp_tx,
+        };
+        let cmd_debug = format!("{cmd:?}");
+        assert!(
+            !cmd_debug.contains(SENTINEL),
+            "IpcCommand Debug must not contain the sentinel token, got: {cmd_debug}"
+        );
+
+        // (3) Positive control: the accessor still returns the real token, so
+        // the redaction above is not a false pass from the value being absent.
+        assert_eq!(client.credential_token().as_deref(), Some(SENTINEL));
+    }
+
+    #[test]
     fn query_policy_attaches_stored_credential_token() {
         use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
 
