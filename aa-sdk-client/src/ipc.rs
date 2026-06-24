@@ -43,9 +43,7 @@ impl std::fmt::Debug for IpcCommand {
     /// (AAASM-3634).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IpcCommand::SendEvent(event) => {
-                f.debug_tuple("SendEvent").field(&event.event_id).finish()
-            }
+            IpcCommand::SendEvent(event) => f.debug_tuple("SendEvent").field(&event.event_id).finish(),
             IpcCommand::QueryPolicy { request, .. } => f
                 .debug_struct("QueryPolicy")
                 .field("action_type", &request.action_type)
