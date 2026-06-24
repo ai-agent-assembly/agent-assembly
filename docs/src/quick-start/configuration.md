@@ -120,7 +120,7 @@ $ aasm version --output json
 [
   {
     "component": "cli",
-    "version": "0.0.1-beta.3",
+    "version": "0.0.1-beta.4",
     "status": "-"
   },
   ...
