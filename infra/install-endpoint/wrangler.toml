@@ -2,10 +2,17 @@ name = "aasm-install-endpoint"
 main = "src/worker.js"
 compatibility_date = "2026-05-01"
 
-# Bind the Worker to the install one-liner host. Requires the `agent-assembly.dev`
-# zone to exist in this Cloudflare account. `custom_domain = true` provisions and
-# manages the DNS + cert for tool.agent-assembly.dev automatically on first deploy.
+# Bind the Worker to the install one-liner hosts.
+#
+# 1. Canonical installer (ADR 0007): a PATH route on the `.com` apex. It is a plain
+#    route — NOT `custom_domain` — because `agent-assembly.com` also hosts the
+#    marketing site; the Worker only handles `/install.sh*` and passes every other
+#    apex path through to the marketing origin. Requires the `agent-assembly.com`
+#    zone in this Cloudflare account and the apex DNS record proxied (infra/dns/).
+# 2. Legacy installer host (kept, ADR 0007): `custom_domain = true` provisions and
+#    manages the DNS + cert for tool.agent-assembly.dev automatically on deploy.
 routes = [
+  { pattern = "agent-assembly.com/install.sh*", zone_name = "agent-assembly.com" },
   { pattern = "tool.agent-assembly.dev", custom_domain = true },
 ]
 
