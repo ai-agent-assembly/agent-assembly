@@ -3,19 +3,19 @@
 This page tells you where to find a published build, which channels it ships to,
 and how the release is cut.
 
-`agent-assembly` is in the **`v0.0.1` alpha pre-release series**. The public API
+`agent-assembly` is in the **`v0.0.1` pre-release series**. The public API
 and wire protocol are not yet stable.
 
-> **Warning:** every published tag is a pre-release. Do not run `v0.0.1-alpha.*`
-> in production — the wire protocol can change between alphas.
+> **Warning:** every published tag is a pre-release. Do not run `v0.0.1-*`
+> in production — the wire protocol can change between pre-releases.
 
 ## Where releases live
 
 - **GitHub Releases:** <https://github.com/ai-agent-assembly/agent-assembly/releases>
   — the source of truth for published tags and changelogs. The latest tag is a
-  pre-release (`v0.0.1-beta.2`, 2026-06-15).
+  pre-release (`v0.0.1-beta.3`, 2026-06-20).
 - **Per-tag notes:** the source-controlled release notes live under
-  `docs/release/` (one file per tag, e.g. `docs/release/v0.0.1-beta.2.md`).
+  `docs/release/` (one file per tag, e.g. `docs/release/v0.0.1-beta.3.md`).
 - **Top-level changelog:** [`CHANGELOG.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CHANGELOG.md).
 
 ## Distribution channels
