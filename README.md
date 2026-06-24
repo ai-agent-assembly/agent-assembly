@@ -27,7 +27,7 @@ The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-beta.3 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-beta.4 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 
 # Custom install directory
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
@@ -121,7 +121,7 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target â
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases â€” latest
-[`v0.0.1-beta.3`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-beta.3)
+[`v0.0.1-beta.4`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-beta.4)
 (2026-06-20). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
