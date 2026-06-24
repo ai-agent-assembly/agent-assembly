@@ -125,4 +125,13 @@ describe('ApprovalAnalyticsPanel', () => {
     expect(screen.getByText('124')).toBeInTheDocument()
     expect(screen.getByText('33')).toBeInTheDocument()
   })
+
+  it('renders without crashing when byOutcome is missing on a partial response', async () => {
+    // A 200 with a partial object (no `byOutcome`) must not crash the panel.
+    mockFetch({ volume: 0, medianTta: 0, approvalRate: 0 } as ApprovalAnalyticsResponse)
+    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
+    expect(await screen.findByTestId('approval-donut')).toBeInTheDocument()
+    // The legend falls back to zeroed outcome counts rather than throwing.
+    expect(screen.getByText('Approved')).toBeInTheDocument()
+  })
 })

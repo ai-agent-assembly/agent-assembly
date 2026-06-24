@@ -163,6 +163,11 @@ describe('joinTeamRows', () => {
     expect(joinTeamRows(undefined, MOCK_COSTS)).toEqual([])
   })
 
+  it('returns an empty list when overview is missing the teams field', () => {
+    // A 200 response with a partial object (no `teams` array) must not throw.
+    expect(joinTeamRows({} as TopologyOverview, MOCK_COSTS)).toEqual([])
+  })
+
   it('joins overview rows with parsed cost data and computes burn percentage', () => {
     const rows = joinTeamRows(MOCK_OVERVIEW, MOCK_COSTS)
     expect(rows).toHaveLength(2)

@@ -58,6 +58,15 @@ describe('TopologyPage', () => {
     expect(screen.getByTestId('topology-meta')).toHaveTextContent('0 agents · 0 teams')
   })
 
+  it('falls back to "0 agents · 0 teams" on a partial object missing the nodes field', () => {
+    // A 200 with a partial object (no `nodes` array) must not crash the page.
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: {} as TopologyGraph, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    expect(screen.getByTestId('topology-meta')).toHaveTextContent('0 agents · 0 teams')
+  })
+
   it('renders skeleton rows while loading and hides the body', () => {
     vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
       mockQuery({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() }),
