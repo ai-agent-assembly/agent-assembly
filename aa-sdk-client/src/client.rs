@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use zeroize::Zeroizing;
+
 use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
 use crate::gateway::{build_register_request, GatewayRegistrationClient};
@@ -33,7 +35,12 @@ pub struct AssemblyClient {
     /// Credential token issued by the gateway at [`register`](Self::register).
     /// `None` until registration succeeds; attached to every `CheckActionRequest`
     /// so the gateway's `validate_credential_token` does not deny the call.
-    credential_token: Mutex<Option<String>>,
+    ///
+    /// Held in [`Zeroizing`] so the plaintext heap copy is overwritten when the
+    /// client drops (or the token is replaced) rather than lingering in a core
+    /// dump readable by a host attacker (AAASM-3629). The plaintext is only
+    /// cloned out transiently when attached to an outgoing request.
+    credential_token: Mutex<Option<Zeroizing<String>>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -111,15 +118,22 @@ impl AssemblyClient {
 
         {
             let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;
-            *guard = Some(response.credential_token);
+            *guard = Some(Zeroizing::new(response.credential_token));
         }
 
         Ok(response.assigned_policy)
     }
 
     /// Return the stored gateway credential token, if registration has run.
+    ///
+    /// Clones the plaintext out of its zeroizing wrapper transiently for the
+    /// caller — used only to attach the token to an outgoing `CheckActionRequest`
+    /// immediately before send (AAASM-3629).
     pub fn credential_token(&self) -> Option<String> {
-        self.credential_token.lock().ok().and_then(|g| g.clone())
+        self.credential_token
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|t| t.to_string()))
     }
 
     /// Enqueue an already-built event onto the IPC command channel.
@@ -427,7 +441,7 @@ mod tests {
     /// The end-to-end registered path is covered by the with-core gateway test.
     impl AssemblyClient {
         fn set_credential_token_for_test(&self, token: &str) {
-            *self.credential_token.lock().unwrap() = Some(token.to_string());
+            *self.credential_token.lock().unwrap() = Some(Zeroizing::new(token.to_string()));
         }
     }
 
