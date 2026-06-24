@@ -1,7 +1,7 @@
 # Troubleshooting
 
 Common local issues and the real diagnostics to resolve them. Every error
-message below is reproduced verbatim from the `0.0.1-alpha.5` build.
+message below is reproduced verbatim from the `0.0.1-beta.3` build.
 
 ## `aasm start` fails: "failed to spawn aa-gateway"
 
@@ -37,7 +37,7 @@ dashboard, you want **local mode**, which does not.
 
 ```console
 $ aa-gateway --mode local
-Agent Assembly [local mode] v0.0.1-alpha.5
+Agent Assembly [local mode] v0.0.1-beta.3
   Listening:  http://127.0.0.1:7391
   Dashboard:  http://127.0.0.1:7391/
   Storage:    /Users/you/.aasm/local.db (SQLite)
@@ -66,7 +66,7 @@ $ aasm version
 +-----------+---------------+-------------+
 | COMPONENT | VERSION       | STATUS      |
 +=========================================+
-| cli       | 0.0.1-alpha.5 | -           |
+| cli       | 0.0.1-beta.3  | -           |
 |-----------+---------------+-------------|
 | gateway   | -             | unreachable |
 |-----------+---------------+-------------|
@@ -87,7 +87,7 @@ Agent Assembly Status
   Mode:      local
   Gateway:   http://127.0.0.1:7391
   Storage:   sqlite
-  Version:   0.0.1-alpha.5
+  Version:   0.0.1-beta.3
   Uptime:    2m 24s
   Health:    ✓ ok
 ─────────────────────────────────────

@@ -3,7 +3,7 @@
 This guide walks through the real, day-to-day tasks an operator performs with
 Agent Assembly, using the `aasm` CLI, the governance gateway, the three
 interception layers, and the dashboard. Every command and every screenshot on
-these pages was produced against the actual `0.0.1-alpha.5` build — where a
+these pages was produced against the actual `0.0.1-beta.3` build — where a
 scenario needs a platform Agent Assembly does not target locally (for example
 the Linux-only eBPF layer, or the SaaS control-plane API the web dashboard
 talks to), the page says so explicitly rather than showing a mock-up.
