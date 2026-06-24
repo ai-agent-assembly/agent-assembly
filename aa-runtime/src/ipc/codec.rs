@@ -436,7 +436,8 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_challenge_outbound_round_trip() {
-        let challenge = HandshakeChallenge { nonce: vec![3u8; 32] };
+        let nonce = crate::ipc::handshake::generate_nonce().to_vec();
+        let challenge = HandshakeChallenge { nonce: nonce.clone() };
 
         let bytes = encode_response(IpcResponse::HandshakeChallenge(challenge)).await;
         assert_eq!(bytes[0], TAG_HANDSHAKE_CHALLENGE);
@@ -448,7 +449,7 @@ mod tests {
         let payload_start = 1 + varint_bytes;
         let payload = &bytes[payload_start..payload_start + len];
         let decoded = HandshakeChallenge::decode(payload).unwrap();
-        assert_eq!(decoded.nonce, vec![3u8; 32]);
+        assert_eq!(decoded.nonce, nonce);
     }
 
     #[tokio::test]
