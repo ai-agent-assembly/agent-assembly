@@ -980,35 +980,52 @@ mod tests {
         let _ = second.shutdown_tx.send(());
     }
 
-    /// AAASM-1576 AC #5: wall-clock from `start_local()` call to a
-    /// successful `/healthz` round-trip must be **under 500 ms** on a
-    /// standard developer laptop. The ceiling is generous against the
-    /// real expected latency (single-digit ms locally) so we catch
-    /// genuine regressions — e.g. someone adding a blocking migration
-    /// step to `open_storage` — without flaking on slow CI runners.
+    /// AAASM-1576 AC #5 (de-flaked per AAASM-3650): `start_local()`
+    /// brings the gateway up and a `/healthz` round-trip succeeds with a
+    /// ready response. The required assertion is **functional** — the
+    /// round-trip completes and reports `mode == "local"` — not a
+    /// wall-clock latency bound.
+    ///
+    /// The original test asserted the round-trip finished in under
+    /// **500 ms** to catch a regression such as a blocking migration
+    /// added to `open_storage`. On loaded/shared CI runners that hard
+    /// bound was exceeded even when the code was correct (observed p99
+    /// 1.2–2.7 s under concurrent test load), so a busy runner could
+    /// fail this *correctness* gate purely on latency. We removed the
+    /// performance assertion from the required gate and keep only a
+    /// generous deadline that bounds a true hang (start-up wedged /
+    /// server never binds), never normal slow-runner jitter. The
+    /// latency-regression signal lives in the non-gating `Benchmark`
+    /// job and the `policy_*` benches, not here.
     #[tokio::test]
-    async fn start_local_healthz_round_trip_completes_within_500ms() {
+    async fn start_local_healthz_round_trip_succeeds() {
         let (config, _tmp, port) = test_config_with_ephemeral_port().await;
         let pid_path = _tmp.path().join("gateway.pid");
 
-        let started = std::time::Instant::now();
-        let handle = start_local_with_pid_path(&config, &pid_path)
-            .await
-            .expect("start_local");
-        let _ = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
-            .await
-            .expect("GET /healthz")
-            .json::<serde_json::Value>()
-            .await
-            .expect("parse json");
-        let elapsed = started.elapsed();
+        // Generous ceiling — large enough that a healthy gateway on the
+        // slowest CI runner clears it comfortably; small enough to fail
+        // fast on a genuine hang instead of waiting on the test harness
+        // timeout.
+        let body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let handle = start_local_with_pid_path(&config, &pid_path)
+                .await
+                .expect("start_local");
+            let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+                .await
+                .expect("GET /healthz")
+                .json::<serde_json::Value>()
+                .await
+                .expect("parse json");
+            (handle, body)
+        })
+        .await
+        .map(|(handle, body)| {
+            let _ = handle.shutdown_tx.send(());
+            body
+        })
+        .expect("start_local → /healthz round-trip must complete (a timeout here means a true hang)");
 
-        assert!(
-            elapsed < std::time::Duration::from_millis(500),
-            "AAASM-1576 AC #5: start_local → /healthz round-trip must be < 500 ms, took {elapsed:?}"
-        );
-
-        let _ = handle.shutdown_tx.send(());
+        assert_eq!(body["mode"], "local", "healthz must report a ready local-mode gateway");
     }
 
     /// AAASM-1576 AC #8 (server stops accepting connections): after
