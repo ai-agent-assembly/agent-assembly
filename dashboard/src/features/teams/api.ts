@@ -102,7 +102,7 @@ export function joinTeamRows(overview: TopologyOverview | undefined, costs: Cost
   const dailyLimit = parseUsd(costs?.daily_limit_usd)
   const costByTeam = new Map<string, TeamCostEntry>()
   for (const entry of costs?.per_team ?? []) costByTeam.set(entry.team_id, entry)
-  return overview.teams.map((team): TeamListRow => {
+  return (overview?.teams ?? []).map((team): TeamListRow => {
     const cost = costByTeam.get(team.team_id)
     const dailySpend = parseUsd(cost?.daily_spend_usd)
     const burnPct = dailySpend != null && dailyLimit != null && dailyLimit > 0

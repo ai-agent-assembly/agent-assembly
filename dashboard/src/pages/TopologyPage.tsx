@@ -24,9 +24,9 @@ export function TopologyPage() {
   const { open: openTraceDrawer } = useTraceDrawer()
   const teamCount = useMemo(() => {
     if (!data) return 0
-    return new Set(data.nodes.map(n => n.team)).size
+    return new Set((data?.nodes ?? []).map(n => n.team)).size
   }, [data])
-  const agentCount = data?.nodes.length ?? 0
+  const agentCount = data?.nodes?.length ?? 0
 
   const handleViewTrace = (agentId: string, sessionId: string) => {
     openTraceDrawer(agentId, sessionId)
