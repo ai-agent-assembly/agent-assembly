@@ -114,6 +114,8 @@ pub fn enrich_ebpf(event: AuditEvent, agent_id: &str, seq: &Arc<AtomicU64>) -> E
         agent_id: agent_id.to_string(),
         connection_id: 0,
         sequence_number,
+        // eBPF-sourced events carry no SDK identity claim.
+        observed_sdk_identity: aa_security::sdk_identity::ObservedSdkIdentity::missing(),
     }
 }
 

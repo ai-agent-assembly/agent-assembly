@@ -117,6 +117,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
         }
     }
 

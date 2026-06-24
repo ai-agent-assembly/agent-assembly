@@ -165,6 +165,7 @@ fn enrich(event: AuditEvent, agent_id: &str, connection_id: u64, seq: &AtomicU64
         .unwrap_or(Duration::ZERO)
         .as_millis() as i64;
     let sequence_number = seq.fetch_add(1, Ordering::Relaxed);
+    let observed_sdk_identity = observe_sdk_identity(&event);
     EnrichedEvent {
         inner: event,
         received_at_ms,
@@ -172,6 +173,25 @@ fn enrich(event: AuditEvent, agent_id: &str, connection_id: u64, seq: &AtomicU64
         agent_id: agent_id.to_string(),
         connection_id,
         sequence_number,
+        observed_sdk_identity,
+    }
+}
+
+/// Read the SDK identity an agent *claimed* out of the (attacker-controlled)
+/// `labels` map (AAASM-3625).
+///
+/// `present` is set when the reserved [`event::SDK_VERSION_LABEL`] key exists;
+/// the label value is carried as the claimed version. This is an untrusted
+/// claim transported for server-side recomputation — the label is **not**
+/// removed here (that is sanitization's job) and is **never** honoured as a
+/// trust grant.
+fn observe_sdk_identity(event: &AuditEvent) -> aa_security::sdk_identity::ObservedSdkIdentity {
+    match event.labels.get(event::SDK_VERSION_LABEL) {
+        Some(version) => aa_security::sdk_identity::ObservedSdkIdentity {
+            present: true,
+            version: Some(version.clone()),
+        },
+        None => aa_security::sdk_identity::ObservedSdkIdentity::missing(),
     }
 }
 
@@ -777,6 +797,43 @@ mod tests {
         let seq = AtomicU64::new(0);
         let enriched = enrich(event, "agent", 0, &seq);
         assert_eq!(enriched.source, EventSource::Sdk);
+    }
+
+    #[test]
+    fn enrich_reads_claimed_sdk_version_from_label() {
+        let mut event = make_audit_event();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "1.4.0".to_string());
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert!(enriched.observed_sdk_identity.present);
+        assert_eq!(enriched.observed_sdk_identity.version.as_deref(), Some("1.4.0"));
+    }
+
+    #[test]
+    fn enrich_marks_missing_sdk_identity_when_label_absent() {
+        let event = make_audit_event();
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert!(!enriched.observed_sdk_identity.present);
+        assert!(enriched.observed_sdk_identity.version.is_none());
+    }
+
+    #[test]
+    fn enrich_preserves_the_claimed_sdk_version_label_on_the_event() {
+        // The claim is transported to the classifier, not consumed here —
+        // sanitization is a separate step (AAASM-3630).
+        let mut event = make_audit_event();
+        event
+            .labels
+            .insert(event::SDK_VERSION_LABEL.to_string(), "2.0.0".to_string());
+        let seq = AtomicU64::new(0);
+        let enriched = enrich(event, "agent", 0, &seq);
+        assert_eq!(
+            enriched.inner.labels.get(event::SDK_VERSION_LABEL).map(String::as_str),
+            Some("2.0.0")
+        );
     }
 
     #[test]

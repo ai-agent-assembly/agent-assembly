@@ -144,6 +144,7 @@ fn tool_call_event(args_json: Vec<u8>) -> EnrichedEvent {
         agent_id: "bench-agent".to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
     }
 }
 

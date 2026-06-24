@@ -988,6 +988,7 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
         };
 
         // Build an eBPF/FILE_OPERATION action event.
@@ -1002,6 +1003,7 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 1,
+            observed_sdk_identity: Default::default(),
         };
 
         // Simulate the subscriber loop: convert and ingest.
@@ -1138,6 +1140,7 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
         };
 
         tx.send(PipelineEvent::Audit(Box::new(enriched))).unwrap();
@@ -1368,6 +1371,7 @@ mod tests {
             agent_id: "pipe-agent".to_string(),
             connection_id: 1,
             sequence_number: seq,
+            observed_sdk_identity: Default::default(),
         }))
     }
 

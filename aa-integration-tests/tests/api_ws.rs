@@ -54,6 +54,7 @@ fn make_pipeline_event(agent_id: &str) -> PipelineEvent {
         agent_id: agent_id.to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
     }))
 }
 
