@@ -1,0 +1,16 @@
+# cargo-nextest configuration.
+#
+# AAASM-3650: a modest global retry absorbs residual runner-starvation
+# flakes (e.g. a healthz round-trip that is slow on a noisy-neighbour
+# GitHub-hosted runner) without masking real regressions:
+#
+#   * Retries only rescue NON-deterministic failures. A deterministic
+#     regression fails all 3 attempts and is still reported as failed.
+#   * nextest reports any test that passed only after a retry as FLAKY,
+#     so the noise stays visible instead of being silently swallowed.
+#
+# CI invokes nextest with the default profile (`cargo nextest run
+# --workspace ...`, `-p aa-gateway`, etc. — no `--profile ci`), so the
+# retry policy belongs under `[profile.default]`.
+[profile.default]
+retries = 2
