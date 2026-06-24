@@ -60,7 +60,7 @@ sha2 = { workspace = true }
 # BPF compilation call inside build.rs is gated with #[cfg(target_os = "linux")].
 [target.'cfg(target_os = "linux")'.dependencies]
 aya     = { workspace = true }
-aya-log = "0.2"
+aya-log = "0.3"
 
 [lints]
 workspace = true
