@@ -696,91 +696,48 @@ fn eval_string_field(field: &FieldRef, op: &OpKind, literal: &LiteralVal, action
     let lhs = field_value(field, action);
 
     match op {
-        OpKind::Contains => {
-            if let LiteralVal::Str(rhs) = literal {
-                lhs.contains(rhs.as_str())
-            } else {
-                false
-            }
-        }
-        OpKind::StartsWith => {
-            if let LiteralVal::Str(rhs) = literal {
-                lhs.starts_with(rhs.as_str())
-            } else {
-                false
-            }
-        }
-        OpKind::In => {
-            if let LiteralVal::StrList(list) = literal {
-                list.iter().any(|s| s.as_str() == lhs)
-            } else {
-                false
-            }
-        }
-        OpKind::NotIn => {
-            if let LiteralVal::StrList(list) = literal {
-                !list.iter().any(|s| s.as_str() == lhs)
-            } else {
-                false
-            }
-        }
-        OpKind::Eq => match literal {
-            LiteralVal::Num(rhs) => {
-                if let Ok(lhs_num) = lhs.parse::<f64>() {
-                    lhs_num == *rhs
-                } else {
-                    false
-                }
-            }
-            LiteralVal::Str(rhs) => lhs == rhs.as_str(),
-            // A level/tier/list/duration literal against a generic string field cannot match.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => false,
-        },
-        OpKind::Ne => match literal {
-            LiteralVal::Num(rhs) => {
-                if let Ok(lhs_num) = lhs.parse::<f64>() {
-                    lhs_num != *rhs
-                } else {
-                    true // can't parse as number, so not equal numerically
-                }
-            }
-            LiteralVal::Str(rhs) => lhs != rhs.as_str(),
-            // A level/tier/list/duration literal against a generic string field is unconditionally
-            // not-equal — matches the symmetric `Eq` handling above.
-            LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => true,
-        },
-        OpKind::Gt => {
-            let rhs = numeric_literal(literal);
-            let lhs_n = lhs.parse::<f64>().ok();
-            match (lhs_n, rhs) {
-                (Some(l), Some(r)) => l > r,
-                _ => false,
-            }
-        }
-        OpKind::Gte => {
-            let rhs = numeric_literal(literal);
-            let lhs_n = lhs.parse::<f64>().ok();
-            match (lhs_n, rhs) {
-                (Some(l), Some(r)) => l >= r,
-                _ => false,
-            }
-        }
-        OpKind::Lt => {
-            let rhs = numeric_literal(literal);
-            let lhs_n = lhs.parse::<f64>().ok();
-            match (lhs_n, rhs) {
-                (Some(l), Some(r)) => l < r,
-                _ => false,
-            }
-        }
-        OpKind::Lte => {
-            let rhs = numeric_literal(literal);
-            let lhs_n = lhs.parse::<f64>().ok();
-            match (lhs_n, rhs) {
-                (Some(l), Some(r)) => l <= r,
-                _ => false,
-            }
-        }
+        OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => eval_string_membership(lhs, op, literal),
+        OpKind::Eq | OpKind::Ne => eval_string_equality(lhs, op, literal),
+        OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => eval_string_numeric(lhs, op, literal),
+    }
+}
+
+/// Substring / prefix / list-membership operators on a generic string field.
+/// A literal of the wrong shape (e.g. `contains` against a non-string) is a
+/// null-safe no-match (`false`).
+fn eval_string_membership(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (op, literal) {
+        (OpKind::Contains, LiteralVal::Str(rhs)) => lhs.contains(rhs.as_str()),
+        (OpKind::StartsWith, LiteralVal::Str(rhs)) => lhs.starts_with(rhs.as_str()),
+        (OpKind::In, LiteralVal::StrList(list)) => list.iter().any(|s| s.as_str() == lhs),
+        (OpKind::NotIn, LiteralVal::StrList(list)) => !list.iter().any(|s| s.as_str() == lhs),
+        _ => false,
+    }
+}
+
+/// Equality / inequality on a generic string field. A numeric literal compares
+/// numerically (after parsing `lhs`); a string literal compares textually. A
+/// level/tier/list/duration literal can never equal a generic string field, so
+/// `Eq` is `false` and `Ne` is the symmetric `true`.
+fn eval_string_equality(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let eq = match literal {
+        LiteralVal::Num(rhs) => lhs.parse::<f64>().map(|n| n == *rhs).unwrap_or(false),
+        LiteralVal::Str(rhs) => lhs == rhs.as_str(),
+        LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => false,
+    };
+    match op {
+        OpKind::Ne => !eq,
+        _ => eq,
+    }
+}
+
+/// Ordered numeric operators on a generic string field. Both sides must resolve
+/// to a number (`lhs` parsed from the string, `rhs` via [`numeric_literal`]);
+/// otherwise the comparison is a null-safe no-match (`false`).
+fn eval_string_numeric(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (lhs.parse::<f64>().ok(), numeric_literal(literal)) {
+        (Some(l), Some(r)) => compare_ord(l, r, op),
+        _ => false,
     }
 }
 
