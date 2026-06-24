@@ -57,7 +57,7 @@ Agent Assembly Status
   Mode:      local
   Gateway:   http://127.0.0.1:7391
   Storage:   sqlite
-  Version:   0.0.1-beta.3
+  Version:   0.0.1-beta.4
   Uptime:    2m 24s
   Health:    ✓ ok
 ─────────────────────────────────────
