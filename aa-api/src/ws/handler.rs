@@ -140,58 +140,18 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
 
     // Main event dispatch loop.
     loop {
-        let event = tokio::select! {
-            Ok(pipeline_ev) = pipeline_rx.recv() => {
-                Some(build_governance_event(
-                    &next_id,
-                    EventType::Violation,
-                    extract_pipeline_agent_id(&pipeline_ev),
-                    EventPayload::Violation(build_violation_payload(&pipeline_ev)),
-                ))
-            }
-            Ok(approval_ev) = approval_rx.recv() => {
-                Some(build_governance_event(
-                    &next_id,
-                    EventType::Approval,
-                    approval_ev.agent_id.clone(),
-                    EventPayload::Approval(build_approval_payload(&approval_ev)),
-                ))
-            }
-            Ok(expired_ev) = approval_expiry_rx.recv() => {
-                // AAASM-1453: a pending request's per-request timeout
-                // elapsed without a human decision. Propagate as an
-                // `approval` event with `status: "expired"` so the
-                // dashboard can move the row to the Expired section.
-                Some(build_governance_event(
-                    &next_id,
-                    EventType::Approval,
-                    expired_ev.agent_id.clone(),
-                    EventPayload::Approval(build_expired_approval_payload(&expired_ev)),
-                ))
-            }
-            Ok(budget_ev) = budget_rx.recv() => {
-                Some(build_governance_event(
-                    &next_id,
-                    EventType::Budget,
-                    format!("{:02x?}", budget_ev.agent_id.as_bytes()),
-                    EventPayload::Budget(build_budget_alert_payload(&budget_ev)),
-                ))
-            }
-            Ok(ops_ev) = ops_change_rx.recv() => {
-                // AAASM-1657 PR-H: forward operator-driven ops registry
-                // transitions to the dashboard so it can clear optimistic
-                // overrides and update the row in place by op_id.
-                Some(build_governance_event(
-                    &next_id,
-                    EventType::OpsChange,
-                    ops_ev.agent_id,
-                    EventPayload::OpsChange(ops_ev.payload),
-                ))
-            }
-            else => None,
+        let Some(event) = next_governance_event(
+            &next_id,
+            &mut pipeline_rx,
+            &mut approval_rx,
+            &mut approval_expiry_rx,
+            &mut budget_rx,
+            &mut ops_change_rx,
+        )
+        .await
+        else {
+            break;
         };
-
-        let Some(event) = event else { break };
 
         // Store in replay buffer before filtering.
         state.replay_buffer.push(event.clone());
@@ -207,6 +167,70 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
 
     ping_handle.abort();
     reader_handle.abort();
+}
+
+/// Await the next event from any of the five live broadcast channels and map it
+/// onto a [`GovernanceEvent`]. Returns `None` only when every channel has closed
+/// (the `else` arm), which signals the dispatch loop to terminate.
+#[allow(clippy::too_many_arguments)]
+async fn next_governance_event(
+    next_id: &std::sync::atomic::AtomicU64,
+    pipeline_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::pipeline::event::PipelineEvent>,
+    approval_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    approval_expiry_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    budget_rx: &mut tokio::sync::broadcast::Receiver<aa_gateway::budget::types::BudgetAlert>,
+    ops_change_rx: &mut tokio::sync::broadcast::Receiver<crate::events::OpsChangeBroadcast>,
+) -> Option<GovernanceEvent> {
+    tokio::select! {
+        Ok(pipeline_ev) = pipeline_rx.recv() => {
+            Some(build_governance_event(
+                next_id,
+                EventType::Violation,
+                extract_pipeline_agent_id(&pipeline_ev),
+                EventPayload::Violation(build_violation_payload(&pipeline_ev)),
+            ))
+        }
+        Ok(approval_ev) = approval_rx.recv() => {
+            Some(build_governance_event(
+                next_id,
+                EventType::Approval,
+                approval_ev.agent_id.clone(),
+                EventPayload::Approval(build_approval_payload(&approval_ev)),
+            ))
+        }
+        Ok(expired_ev) = approval_expiry_rx.recv() => {
+            // AAASM-1453: a pending request's per-request timeout
+            // elapsed without a human decision. Propagate as an
+            // `approval` event with `status: "expired"` so the
+            // dashboard can move the row to the Expired section.
+            Some(build_governance_event(
+                next_id,
+                EventType::Approval,
+                expired_ev.agent_id.clone(),
+                EventPayload::Approval(build_expired_approval_payload(&expired_ev)),
+            ))
+        }
+        Ok(budget_ev) = budget_rx.recv() => {
+            Some(build_governance_event(
+                next_id,
+                EventType::Budget,
+                format!("{:02x?}", budget_ev.agent_id.as_bytes()),
+                EventPayload::Budget(build_budget_alert_payload(&budget_ev)),
+            ))
+        }
+        Ok(ops_ev) = ops_change_rx.recv() => {
+            // AAASM-1657 PR-H: forward operator-driven ops registry
+            // transitions to the dashboard so it can clear optimistic
+            // overrides and update the row in place by op_id.
+            Some(build_governance_event(
+                next_id,
+                EventType::OpsChange,
+                ops_ev.agent_id,
+                EventPayload::OpsChange(ops_ev.payload),
+            ))
+        }
+        else => None,
+    }
 }
 
 /// Assemble a [`GovernanceEvent`] with the next monotonic id and current
