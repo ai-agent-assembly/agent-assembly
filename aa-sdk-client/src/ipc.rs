@@ -261,6 +261,33 @@ mod tests {
         assert_eq!(format!("{:?}", cmd), "Shutdown");
     }
 
+    #[test]
+    fn query_policy_debug_does_not_leak_credential_token() {
+        // Redaction guard (AAASM-3634): the QueryPolicy variant carries the
+        // gateway credential_token, but its Debug must never print it — only
+        // the variant name + non-sensitive action_type shape.
+        let sentinel = "SENTINEL-TOK-DO-NOT-LOG";
+        let request = CheckActionRequest {
+            credential_token: sentinel.to_string(),
+            ..Default::default()
+        };
+        let (resp_tx, _resp_rx) = blocking_mpsc::channel();
+        let cmd = IpcCommand::QueryPolicy {
+            request: Box::new(request),
+            resp: resp_tx,
+        };
+
+        let debug = format!("{cmd:?}");
+        assert!(
+            !debug.contains(sentinel),
+            "IpcCommand Debug must not contain the credential token, got: {debug}"
+        );
+        assert!(
+            debug.contains("QueryPolicy"),
+            "Debug should still name the variant, got: {debug}"
+        );
+    }
+
     /// The agent id the mock-server tests handshake as.
     const TEST_AGENT_ID: &str = "test-agent";
 
