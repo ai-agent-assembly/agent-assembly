@@ -70,7 +70,7 @@ Here is the Overview route in dark mode:
 ![Dashboard in dark mode — Overview route with the dark theme applied](images/dashboard-overview-dark.png)
 
 > **Honest caveat — what renders locally vs. what needs the hosted backend.**
-> The screenshots above are all real captures of the `0.0.1-alpha.5` SPA
+> The screenshots above are all real captures of the `0.0.1-beta.3` SPA
 > served by the local-mode gateway. The data panels are empty (zero policies,
 > zero agents, "not implemented yet" on some routes) because the dashboard's
 > data API — `/api/v1/fleet`, `/api/v1/policies`, `/api/v1/capability/matrix`,
