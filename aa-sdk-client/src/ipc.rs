@@ -17,7 +17,12 @@ use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
 use crate::codec;
 
 /// Commands sent from the calling thread to the background IPC thread.
-#[derive(Debug)]
+///
+/// `Debug` is hand-written (not derived) so the `QueryPolicy` variant never
+/// prints its `CheckActionRequest.credential_token` — a derived `Debug` would
+/// emit the gateway auth token verbatim into any `{:?}`/`tracing` log at
+/// `RUST_LOG=debug` (AAASM-3634). Only the non-sensitive `action_type` shape is
+/// shown; the token (and the rest of the request body) is elided.
 pub enum IpcCommand {
     /// Send an audit event to the runtime.
     SendEvent(Box<aa_proto::assembly::audit::v1::AuditEvent>),
@@ -30,6 +35,22 @@ pub enum IpcCommand {
     },
     /// Gracefully shut down the IPC connection.
     Shutdown,
+}
+
+impl std::fmt::Debug for IpcCommand {
+    /// Scrubbing `Debug`: prints the variant + non-sensitive shape only and
+    /// never the `credential_token` carried by the `QueryPolicy` request
+    /// (AAASM-3634).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IpcCommand::SendEvent(event) => f.debug_tuple("SendEvent").field(&event.event_id).finish(),
+            IpcCommand::QueryPolicy { request, .. } => f
+                .debug_struct("QueryPolicy")
+                .field("action_type", &request.action_type)
+                .finish_non_exhaustive(),
+            IpcCommand::Shutdown => f.write_str("Shutdown"),
+        }
+    }
 }
 
 /// Response senders awaiting a synchronous policy decision, in FIFO order.
@@ -236,6 +257,33 @@ mod tests {
     fn ipc_command_shutdown_is_debug() {
         let cmd = IpcCommand::Shutdown;
         assert_eq!(format!("{:?}", cmd), "Shutdown");
+    }
+
+    #[test]
+    fn query_policy_debug_does_not_leak_credential_token() {
+        // Redaction guard (AAASM-3634): the QueryPolicy variant carries the
+        // gateway credential_token, but its Debug must never print it — only
+        // the variant name + non-sensitive action_type shape.
+        let sentinel = "SENTINEL-TOK-DO-NOT-LOG";
+        let request = CheckActionRequest {
+            credential_token: sentinel.to_string(),
+            ..Default::default()
+        };
+        let (resp_tx, _resp_rx) = blocking_mpsc::channel();
+        let cmd = IpcCommand::QueryPolicy {
+            request: Box::new(request),
+            resp: resp_tx,
+        };
+
+        let debug = format!("{cmd:?}");
+        assert!(
+            !debug.contains(sentinel),
+            "IpcCommand Debug must not contain the credential token, got: {debug}"
+        );
+        assert!(
+            debug.contains("QueryPolicy"),
+            "Debug should still name the variant, got: {debug}"
+        );
     }
 
     /// The agent id the mock-server tests handshake as.

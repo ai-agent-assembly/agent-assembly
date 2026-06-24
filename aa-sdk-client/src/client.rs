@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use zeroize::Zeroizing;
+
 use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
 use crate::gateway::{build_register_request, GatewayRegistrationClient};
@@ -33,7 +35,12 @@ pub struct AssemblyClient {
     /// Credential token issued by the gateway at [`register`](Self::register).
     /// `None` until registration succeeds; attached to every `CheckActionRequest`
     /// so the gateway's `validate_credential_token` does not deny the call.
-    credential_token: Mutex<Option<String>>,
+    ///
+    /// Held in [`Zeroizing`] so the plaintext heap copy is overwritten when the
+    /// client drops (or the token is replaced) rather than lingering in a core
+    /// dump readable by a host attacker (AAASM-3629). The plaintext is only
+    /// cloned out transiently when attached to an outgoing request.
+    credential_token: Mutex<Option<Zeroizing<String>>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -111,15 +118,22 @@ impl AssemblyClient {
 
         {
             let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;
-            *guard = Some(response.credential_token);
+            *guard = Some(Zeroizing::new(response.credential_token));
         }
 
         Ok(response.assigned_policy)
     }
 
     /// Return the stored gateway credential token, if registration has run.
+    ///
+    /// Clones the plaintext out of its zeroizing wrapper transiently for the
+    /// caller — used only to attach the token to an outgoing `CheckActionRequest`
+    /// immediately before send (AAASM-3629).
     pub fn credential_token(&self) -> Option<String> {
-        self.credential_token.lock().ok().and_then(|g| g.clone())
+        self.credential_token
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|t| t.to_string()))
     }
 
     /// Enqueue an already-built event onto the IPC command channel.
@@ -427,8 +441,71 @@ mod tests {
     /// The end-to-end registered path is covered by the with-core gateway test.
     impl AssemblyClient {
         fn set_credential_token_for_test(&self, token: &str) {
-            *self.credential_token.lock().unwrap() = Some(token.to_string());
+            *self.credential_token.lock().unwrap() = Some(Zeroizing::new(token.to_string()));
         }
+
+        /// Test-only: clear the stored token, dropping (and thus zeroizing) the
+        /// `Zeroizing<String>` it held.
+        fn clear_credential_token_for_test(&self) {
+            *self.credential_token.lock().unwrap() = None;
+        }
+    }
+
+    #[test]
+    fn credential_token_is_zeroizing_and_clears_on_take() {
+        // The slot is backed by a zeroizing wrapper (AAASM-3629): on drop the
+        // plaintext heap copy is overwritten rather than lingering for a core
+        // dump. Functionally we assert the value round-trips while held and is
+        // gone once the slot is cleared (which drops/zeroizes the wrapper).
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test("tok-zero");
+        assert_eq!(client.credential_token().as_deref(), Some("tok-zero"));
+
+        client.clear_credential_token_for_test();
+        assert_eq!(client.credential_token(), None);
+
+        // Compile-time guard: the field is a `Zeroizing<String>`, so this
+        // type annotation must hold (a plain `String` would fail to compile).
+        let guard = client.credential_token.lock().unwrap();
+        let _typed: &Option<Zeroizing<String>> = &guard;
+    }
+
+    #[test]
+    fn credential_token_never_appears_in_any_debug_output() {
+        // Regression guard for the token-hygiene contract (AAASM-3638): a unique
+        // sentinel token set on the client must not surface in the Debug output
+        // of the client or any IpcCommand carrying it, while the public accessor
+        // still round-trips it (positive control).
+        use aa_proto::assembly::policy::v1::CheckActionRequest;
+
+        const SENTINEL: &str = "SENTINEL-TOK-DO-NOT-LOG";
+
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test(SENTINEL);
+
+        // (1) `AssemblyClient` deliberately derives no `Debug`, so there is no
+        // `{:?}` path on the client itself that could print the token. The IPC
+        // command below is the only structured path the token reaches.
+        //
+        // (2) An IpcCommand carrying the token must not leak it via Debug.
+        let request = CheckActionRequest {
+            credential_token: client.credential_token().unwrap(),
+            ..Default::default()
+        };
+        let (resp_tx, _resp_rx) = std::sync::mpsc::channel();
+        let cmd = IpcCommand::QueryPolicy {
+            request: Box::new(request),
+            resp: resp_tx,
+        };
+        let cmd_debug = format!("{cmd:?}");
+        assert!(
+            !cmd_debug.contains(SENTINEL),
+            "IpcCommand Debug must not contain the sentinel token, got: {cmd_debug}"
+        );
+
+        // (3) Positive control: the accessor still returns the real token, so
+        // the redaction above is not a false pass from the value being absent.
+        assert_eq!(client.credential_token().as_deref(), Some(SENTINEL));
     }
 
     #[test]

@@ -27,6 +27,9 @@ sha2 = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
 tracing = { workspace = true }
+# Zeroizes the gateway `credential_token` from process memory on drop so it does
+# not linger in a heap/core-dump readable by a host attacker (AAASM-3629).
+zeroize = { workspace = true }
 
 [features]
 default = ["preflight"]
