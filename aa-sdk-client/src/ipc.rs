@@ -254,7 +254,8 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         // Send HandshakeChallenge{nonce}.
-        let nonce = vec![42u8; 32];
+        let mut nonce = vec![0u8; 32];
+        getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
         let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
         let payload = challenge.encode_to_vec();
         stream.write_u8(codec::TAG_HANDSHAKE_CHALLENGE).await.unwrap();

@@ -38,7 +38,8 @@ where
     use ed25519_dalek::{Signature, Verifier};
     use sha2::{Digest, Sha256};
 
-    let nonce = vec![9u8; 32];
+    let mut nonce = vec![0u8; 32];
+    getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
     let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
     let payload = challenge.encode_to_vec();
     stream.write_u8(TAG_HANDSHAKE_CHALLENGE).await.unwrap();
