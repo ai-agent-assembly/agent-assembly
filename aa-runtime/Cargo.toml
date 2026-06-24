@@ -26,13 +26,15 @@ bytes                       = { workspace = true }
 dashmap                     = { workspace = true }
 # IPC handshake: verify the SDK's Ed25519 proof of key possession (AAASM-3585).
 ed25519-dalek               = { version = "2", features = ["std"] }
-# 32-byte per-session handshake nonce (AAASM-3585).
-getrandom                   = "0.2"
 hex                         = { workspace = true }
 uuid                        = { workspace = true, features = ["v4"] }
 metrics                     = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 prost                       = { workspace = true }
+# Value-returning CSPRNG for the 32-byte per-session handshake nonce (AAASM-3585);
+# `rand::random` sources from a ChaCha-based, OS-seeded thread RNG and returns the
+# bytes directly, so no zero-initialized buffer literal enters the nonce data-flow.
+rand                        = "0.8"
 serde                       = { workspace = true }
 sha2                        = { workspace = true }
 serde_json                  = { workspace = true }

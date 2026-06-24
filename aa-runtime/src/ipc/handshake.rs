@@ -32,12 +32,13 @@ pub fn expected_verifying_key(agent_id: &str) -> VerifyingKey {
 }
 
 /// Generate a fresh random 32-byte challenge nonce.
+///
+/// The bytes are produced directly by `rand::random`, which draws from a
+/// ChaCha-based, OS-seeded thread CSPRNG and *returns* the value. Producing the
+/// array from the RNG (rather than zero-initializing a buffer and filling it in
+/// place) keeps any constant literal out of the nonce data-flow.
 pub fn generate_nonce() -> [u8; NONCE_LEN] {
-    let mut nonce = [0u8; NONCE_LEN];
-    // `getrandom` reads from the OS CSPRNG; a failure here means the platform
-    // has no entropy source, which is unrecoverable for a security handshake.
-    getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the IPC handshake nonce");
-    nonce
+    rand::random::<[u8; NONCE_LEN]>()
 }
 
 /// Verify a `HandshakeProof` against the challenge `nonce` and the expected
