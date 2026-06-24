@@ -43,8 +43,10 @@ preflight = ["dep:aa-security"]
 tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "sync", "macros", "net", "io-util"] }
 # Mock gateway gRPC server for the with-core register+check test (AAASM-3398).
 tokio-stream = { workspace = true }
-# CSPRNG for fresh per-test handshake challenge nonces (mirrors the runtime's
-# getrandom-backed generate_nonce so tests never embed a hard-coded nonce).
+# CSPRNG for fresh per-test handshake challenge nonces. `rand` returns the
+# value directly (no `[0u8; 32]` buffer literal in the data-flow → CodeQL-clean);
+# getrandom kept for the lifecycle_e2e fixture.
+rand = "0.8"
 getrandom = "0.2"
 
 [lints]

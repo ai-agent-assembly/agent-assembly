@@ -361,14 +361,12 @@ mod tests {
     /// The agent id the mock-server tests handshake as.
     const TEST_AGENT_ID: &str = "test-agent";
 
-    /// A fresh 32-byte test nonce drawn from the OS CSPRNG. Returns the value
-    /// rather than zero-initializing a buffer in place, so no constant literal
-    /// flows into the signing payload (keeps the handshake tests off any
-    /// hard-coded-crypto-material code path).
+    /// A fresh 32-byte test nonce from a value-returning CSPRNG. `rand::random`
+    /// returns the bytes directly, so no constant literal (e.g. `[0u8; 32]`) ever
+    /// flows into the signing payload — CodeQL's hard-coded-crypto rule does not
+    /// model getrandom's in-place `&mut` fill as sanitizing the zero-init buffer.
     fn random_nonce() -> [u8; 32] {
-        let mut nonce = [0u8; 32];
-        getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the test nonce");
-        nonce
+        rand::random()
     }
 
     /// Server-side handshake (AAASM-3587): send a nonce challenge, read the
@@ -383,9 +381,9 @@ mod tests {
         use sha2::{Digest, Sha256};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // Send HandshakeChallenge{nonce}.
-        let mut nonce = vec![0u8; 32];
-        getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
+        // Send HandshakeChallenge{nonce}. Value-returning CSPRNG so no constant
+        // literal flows into the signed nonce (CodeQL hard-coded-crypto).
+        let nonce = rand::random::<[u8; 32]>().to_vec();
         let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
         let payload = challenge.encode_to_vec();
         stream.write_u8(codec::TAG_HANDSHAKE_CHALLENGE).await.unwrap();
