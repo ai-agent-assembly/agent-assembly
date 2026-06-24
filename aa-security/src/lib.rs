@@ -20,6 +20,8 @@
 pub mod policy;
 pub mod redaction;
 pub mod scanner;
+pub mod sdk_identity;
 
 pub use redaction::Redaction;
 pub use scanner::{CredentialFinding, CredentialKind, CredentialScanner, ScanResult, ScannerConfig};
+pub use sdk_identity::{ObservedSdkIdentity, SdkIdentityVerdict, VerifiedSdkIdentity};
