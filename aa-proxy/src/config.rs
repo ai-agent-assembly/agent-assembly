@@ -169,28 +169,11 @@ impl ProxyConfig {
             Err(_) => true,
         };
 
-        let denied_hosts = match std::env::var("AA_PROXY_DENIED_HOSTS") {
-            Ok(val) if !val.is_empty() => val
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            _ => Vec::new(),
-        };
+        let denied_hosts = env_csv("AA_PROXY_DENIED_HOSTS");
 
-        let network_allowlist = match std::env::var("AA_PROXY_NETWORK_ALLOWLIST") {
-            Ok(val) if !val.is_empty() => val
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            _ => Vec::new(),
-        };
+        let network_allowlist = env_csv("AA_PROXY_NETWORK_ALLOWLIST");
 
-        let skip_upstream_tls_verify_requested = match std::env::var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY") {
-            Ok(val) => val == "1" || val.to_lowercase() == "true",
-            Err(_) => false,
-        };
+        let skip_upstream_tls_verify_requested = env_truthy("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         // AAASM-3131: this flag disables upstream certificate verification and
         // is for integration tests only. In a release (production) build it must
         // be unreachable — silently ignore the request and shout, so a stray env
@@ -220,10 +203,7 @@ impl ProxyConfig {
 
         // AAASM-3357: default fail-closed. Only an explicit truthy value
         // opts into the historical fail-open soft-degradation behaviour.
-        let mcp_fail_open = match std::env::var("AA_PROXY_MCP_FAIL_OPEN") {
-            Ok(val) => val == "1" || val.to_lowercase() == "true",
-            Err(_) => false,
-        };
+        let mcp_fail_open = env_truthy("AA_PROXY_MCP_FAIL_OPEN");
 
         Ok(Self {
             bind_addr,
@@ -240,6 +220,29 @@ impl ProxyConfig {
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
         })
+    }
+}
+
+/// Read an env var as an opt-in boolean: `true` only for an explicit `1`/`true`
+/// (case-insensitive). Unset or any other value is `false` — these flags relax
+/// a security default, so they must fail closed unless deliberately enabled.
+fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(val) => val == "1" || val.to_lowercase() == "true",
+        Err(_) => false,
+    }
+}
+
+/// Read an env var as a comma-separated list, trimming each entry and dropping
+/// empties. An unset or empty var yields an empty `Vec`.
+fn env_csv(name: &str) -> Vec<String> {
+    match std::env::var(name) {
+        Ok(val) if !val.is_empty() => val
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

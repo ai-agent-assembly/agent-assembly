@@ -204,7 +204,7 @@
 
 .onb-term-line {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .onb-term-prompt { color: var(--term-prompt); user-select: none; }
