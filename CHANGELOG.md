@@ -5,6 +5,56 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-beta.4] — 2026-06-24 (pre-release)
+
+> **Not for production use.** Fourth pre-release in the v0.0.1 beta
+> channel — a forward-roll cut on top of `0.0.1-beta.3` carrying the
+> org-wide security-hardening initiative, the SDK version handshake, and
+> the 2026-06-24 pre-release QA pass. No API, ABI, or wire-protocol
+> stability commitment.
+
+### Added
+
+- **AAASM-3560** (Epic) — core defense-in-depth security hardening across
+  the enforcement stack: eBPF bytecode integrity + least privilege
+  (AAASM-3561), proxy credential isolation (AAASM-3562), sandbox
+  defense-in-depth (AAASM-3563), multi-tenant Postgres row-level-security
+  isolation (AAASM-3564), devtool supply-chain hardening (AAASM-3565),
+  and a release-gated security sign-off process (AAASM-3566).
+- **AAASM-3567** (Epic) — SDK security hardening: distribution
+  supply-chain (AAASM-3568), SDK↔runtime Ed25519 IPC authentication
+  (AAASM-3569), token hygiene (AAASM-3570), and bypass observability
+  (AAASM-3571).
+- **AAASM-3666 / AAASM-3683** — the language-SDK version is now signed
+  into the SDK↔runtime handshake and passed through to the gateway.
+- **AAASM-3508 / AAASM-3509 / AAASM-3510** — dashboard Overview, Costs,
+  and Audit-log pages.
+- **AAASM-3519 / AAASM-3517 / AAASM-3521** — limited-function self-host
+  Docker Compose example, infra dataflow diagram, and self-host /
+  Kubernetes ADR (research-spike only).
+
+### Fixed
+
+- **AAASM-3702 / AAASM-3703** — dashboard defensive guards for
+  partial/missing data (mermaid null guard, partial-data guards).
+- **AAASM-3506 / AAASM-3507** — dashboard dark-theme heatmap tooltip and
+  Monaco theme fixes.
+- **AAASM-3526 / AAASM-3527 / AAASM-3467** — Docker registry-org
+  correction, runtime image entrypoint fix, and node images.
+- **AAASM-3650** — fixed a flaky `healthz` timing test.
+- **AAASM-3677** — resolved SonarCloud code smells.
+- 2026-06-24 pre-release QA pass — docs accuracy, dashboard defensive
+  guards, and example/harness fixes.
+
+### Changed
+
+- **AAASM (release)** — bumped the workspace `[workspace.package].version`
+  from `0.0.1-beta.3` to `0.0.1-beta.4` (all crates inherit via
+  `version.workspace = true`) and regenerated `Cargo.lock`. Coordinated
+  release across agent-assembly + python-sdk + node-sdk + go-sdk; drives
+  `@agent-assembly/sdk@0.0.1-beta.4`, `agent-assembly==0.0.1b4`, and
+  `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.4` downstream.
+
 ## [0.0.1-beta.2] — 2026-06-15 (pre-release)
 
 > **Not for production use.** Second pre-release in the v0.0.1 beta
