@@ -53,9 +53,7 @@ Commands:
   cost        Query cost summary and forecast spending
   dashboard   Open an interactive TUI dashboard for real-time governance monitoring
   gateway     Manage the aa-gateway governance daemon
-  run         Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring
   sandbox     Run a WebAssembly tool inside the Agent Assembly sandbox
-  tools       List and manage AI dev tools on this system
   topology    Visualize agent topology, trees, lineage, and statistics
   proxy       Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing
   start       Start the locally-managed Agent Assembly gateway process
