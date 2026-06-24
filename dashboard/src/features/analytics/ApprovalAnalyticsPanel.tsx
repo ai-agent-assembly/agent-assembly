@@ -21,9 +21,9 @@ function formatRate(rate: number): string {
 
 function buildDonutData(data: ApprovalAnalyticsResponse) {
   return [
-    { name: 'Approved', value: data.byOutcome.approved },
-    { name: 'Rejected', value: data.byOutcome.rejected },
-    { name: 'Expired',  value: data.byOutcome.expired  },
+    { name: 'Approved', value: data?.byOutcome?.approved ?? 0 },
+    { name: 'Rejected', value: data?.byOutcome?.rejected ?? 0 },
+    { name: 'Expired',  value: data?.byOutcome?.expired  ?? 0 },
   ]
 }
 
