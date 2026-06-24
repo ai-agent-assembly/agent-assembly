@@ -29,7 +29,7 @@ const FILLED_STATE: WizardState = {
 describe('useWizardSession storage helpers', () => {
   it('returns null when no session is persisted', () => {
     const s = new MemoryStorage()
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('round-trips step + state through save / load', () => {
@@ -43,13 +43,13 @@ describe('useWizardSession storage helpers', () => {
     const s = new MemoryStorage()
     saveWizardSession({ step: 'install', state: EMPTY_STATE }, s)
     clearWizardSession(s)
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null for malformed JSON', () => {
     const s = new MemoryStorage()
     s.setItem(ONBOARDING_SESSION_KEY, '{not json')
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null when the persisted step id is unknown', () => {
@@ -58,7 +58,7 @@ describe('useWizardSession storage helpers', () => {
       ONBOARDING_SESSION_KEY,
       JSON.stringify({ step: 'unknown-step', state: EMPTY_STATE }),
     )
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null when state is missing required slice keys', () => {
@@ -67,7 +67,7 @@ describe('useWizardSession storage helpers', () => {
       ONBOARDING_SESSION_KEY,
       JSON.stringify({ step: 'framework', state: { framework: 'langchain' } }),
     )
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('resolveInitialSession falls back to step framework + EMPTY_STATE when nothing persisted', () => {

@@ -44,7 +44,7 @@ describe('wizardState helpers', () => {
     })
 
     it('returns null past the final step', () => {
-      expect(nextStep('enroll')).toBe(null)
+      expect(nextStep('enroll')).toBeNull()
     })
 
     it('walks backward through the 5 steps', () => {
@@ -55,7 +55,7 @@ describe('wizardState helpers', () => {
     })
 
     it('returns null before the first step', () => {
-      expect(prevStep('framework')).toBe(null)
+      expect(prevStep('framework')).toBeNull()
     })
   })
 

@@ -151,7 +151,7 @@ describe('SubtreeBurnChart — tooltip content', () => {
     const tooltip = screen.getByTestId('subtree-burn-tooltip')
     // Only one per-child row — the `total` entry must be filtered out.
     const rows = tooltip.querySelectorAll('.sbc__tooltip-row')
-    expect(rows.length).toBe(1)
+    expect(rows).toHaveLength(1)
     expect(tooltip).toHaveTextContent('Total:')
   })
 

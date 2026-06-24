@@ -67,10 +67,10 @@ describe('OnboardingPage', () => {
     renderAt('/onboarding')
     // The wizard mounts and immediately persists its initial snapshot,
     // so the session key is present.
-    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).not.toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).not.toBeNull()
     fireEvent.click(screen.getByTestId('onboarding-skip-all'))
     expect(globalThis.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
-    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBeNull()
     expect(screen.getByTestId('root-page')).toBeInTheDocument()
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Onboarding skipped/i)
   })
@@ -94,7 +94,7 @@ describe('OnboardingPage', () => {
     renderAt('/onboarding')
     fireEvent.click(screen.getByTestId('onboarding-continue'))
     expect(globalThis.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
-    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBe(null)
+    expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBeNull()
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Setup complete/i)
   })
 })

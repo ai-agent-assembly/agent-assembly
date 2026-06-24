@@ -351,7 +351,7 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
   it('filters the events table down to dry-run rows when the toggle is on', async () => {
     mockWithMixedEvents()
     renderApp('/agents/abc123')
-    expect((await screen.findAllByTestId('event-row')).length).toBe(2)
+    expect(await screen.findAllByTestId('event-row')).toHaveLength(2)
     fireEvent.click(screen.getByTestId('agent-events-sandbox-toggle'))
     const filtered = screen.getAllByTestId('event-row')
     expect(filtered).toHaveLength(1)
