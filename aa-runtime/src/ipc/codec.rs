@@ -7,12 +7,14 @@
 //!   2 = EventReport  (AuditEvent)
 //!   3 = ApprovalResponse (ApprovalDecision)
 //!   4 = Heartbeat    (no payload)
+//!   5 = HandshakeProof (HandshakeProof) — AAASM-3583
 //!
 //! Outbound tags (runtime → SDK):
 //!   1 = PolicyResponse   (CheckActionResponse)
 //!   2 = ApprovalDecision (ApprovalDecision)
 //!   3 = Ack              (zero-length varint + empty body: [0x03][0x00])
 //!   4 = ViolationAlert   (PolicyViolation)
+//!   5 = HandshakeChallenge (HandshakeChallenge) — AAASM-3583
 
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,6 +24,9 @@ use aa_proto::assembly::audit::v1::AuditEvent;
 #[cfg(test)]
 use aa_proto::assembly::audit::v1::PolicyViolation;
 use aa_proto::assembly::event::v1::ApprovalDecision;
+#[cfg(test)]
+use aa_proto::assembly::ipc::v1::HandshakeChallenge;
+use aa_proto::assembly::ipc::v1::HandshakeProof;
 use aa_proto::assembly::policy::v1::CheckActionRequest;
 #[cfg(test)]
 use aa_proto::assembly::policy::v1::CheckActionResponse;
@@ -32,6 +37,8 @@ pub const TAG_POLICY_QUERY: u8 = 1;
 pub const TAG_EVENT_REPORT: u8 = 2;
 pub const TAG_APPROVAL_RESPONSE: u8 = 3;
 pub const TAG_HEARTBEAT: u8 = 4;
+/// SDK → runtime signed handshake proof (AAASM-3583).
+pub const TAG_HANDSHAKE_PROOF: u8 = 5;
 
 // ── Outbound tag constants ────────────────────────────────────────────────────
 
@@ -39,6 +46,8 @@ pub const TAG_POLICY_RESPONSE: u8 = 1;
 pub const TAG_APPROVAL_DECISION: u8 = 2;
 pub const TAG_ACK: u8 = 3;
 pub const TAG_VIOLATION_ALERT: u8 = 4;
+/// runtime → SDK per-session nonce challenge (AAASM-3583).
+pub const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
 /// Maximum accepted length-delimited payload size, in bytes (8 MiB).
 ///
@@ -117,6 +126,11 @@ where
             let msg = ApprovalDecision::decode(bytes.as_ref())?;
             Ok(IpcFrame::ApprovalResponse(msg))
         }
+        TAG_HANDSHAKE_PROOF => {
+            let bytes = read_length_delimited(reader).await?;
+            let msg = HandshakeProof::decode(bytes.as_ref())?;
+            Ok(IpcFrame::HandshakeProof(msg))
+        }
         other => Err(CodecError::UnknownTag(other)),
     }
 }
@@ -143,6 +157,11 @@ where
         }
         IpcResponse::ViolationAlert(msg) => {
             writer.write_u8(TAG_VIOLATION_ALERT).await?;
+            let bytes = msg.encode_to_vec();
+            write_length_delimited(writer, &bytes).await?;
+        }
+        IpcResponse::HandshakeChallenge(msg) => {
+            writer.write_u8(TAG_HANDSHAKE_CHALLENGE).await?;
             let bytes = msg.encode_to_vec();
             write_length_delimited(writer, &bytes).await?;
         }
@@ -386,6 +405,51 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let result = read_frame(&mut cursor).await;
         assert!(matches!(result, Err(CodecError::UnknownTag(99))));
+    }
+
+    #[tokio::test]
+    async fn handshake_proof_inbound_round_trip() {
+        let proof = HandshakeProof {
+            agent_did: "did:key:z6MkExample".to_string(),
+            public_key: "ab".repeat(32),
+            signature: vec![7u8; 64],
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(TAG_HANDSHAKE_PROOF);
+        let payload = proof.encode_to_vec();
+        write_varint(&mut buf, payload.len() as u64).await.unwrap();
+        buf.extend_from_slice(&payload);
+
+        let mut cursor = Cursor::new(buf);
+        let frame = read_frame(&mut cursor).await.unwrap();
+
+        match frame {
+            IpcFrame::HandshakeProof(decoded) => {
+                assert_eq!(decoded.agent_did, "did:key:z6MkExample");
+                assert_eq!(decoded.public_key, "ab".repeat(32));
+                assert_eq!(decoded.signature, vec![7u8; 64]);
+            }
+            other => panic!("expected HandshakeProof, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_challenge_outbound_round_trip() {
+        let nonce = crate::ipc::handshake::generate_nonce().to_vec();
+        let challenge = HandshakeChallenge { nonce: nonce.clone() };
+
+        let bytes = encode_response(IpcResponse::HandshakeChallenge(challenge)).await;
+        assert_eq!(bytes[0], TAG_HANDSHAKE_CHALLENGE);
+
+        // Decode payload back.
+        let mut cursor = Cursor::new(&bytes[1..]);
+        let len = read_varint(&mut cursor).await.unwrap() as usize;
+        let varint_bytes = cursor.position() as usize;
+        let payload_start = 1 + varint_bytes;
+        let payload = &bytes[payload_start..payload_start + len];
+        let decoded = HandshakeChallenge::decode(payload).unwrap();
+        assert_eq!(decoded.nonce, nonce);
     }
 
     #[tokio::test]

@@ -30,6 +30,32 @@ use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, Regi
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
 
+/// Verify an agent's proof of possession of its registering key (AAASM-3591).
+///
+/// `proof` must be a raw 64-byte Ed25519 signature over `challenge` that
+/// verifies under `verifying_key`. Returns `Status::unauthenticated` when the
+/// proof is missing, malformed, or does not verify — so no `credential_token`
+/// is minted for a caller that merely presents a public key it does not hold.
+fn verify_possession_proof(
+    verifying_key: &ed25519_dalek::VerifyingKey,
+    challenge: &[u8],
+    proof: &[u8],
+) -> Result<(), Status> {
+    if proof.is_empty() {
+        return Err(Status::unauthenticated(
+            "missing possession_proof — credential_token requires proof of key possession",
+        ));
+    }
+    let sig_bytes: [u8; 64] = proof
+        .try_into()
+        .map_err(|_| Status::unauthenticated("possession_proof must be a 64-byte Ed25519 signature"))?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+    verifying_key
+        .verify_strict(challenge, &signature)
+        .map_err(|_| Status::unauthenticated("possession_proof did not verify against public_key"))?;
+    Ok(())
+}
+
 /// gRPC service implementation wiring `Register` / `Heartbeat` / `Deregister` /
 /// `ControlStream` to the in-memory [`AgentRegistry`].
 pub struct AgentLifecycleServiceImpl {
@@ -96,13 +122,25 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // Validate that public_key is a valid Ed25519 public key (32 bytes, hex-encoded).
         let pk_bytes =
             hex::decode(&req.public_key).map_err(|_| Status::invalid_argument("public_key is not valid hex"))?;
-        ed25519_dalek::VerifyingKey::from_bytes(
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(
             pk_bytes
                 .as_slice()
                 .try_into()
                 .map_err(|_| Status::invalid_argument("public_key must be 32 bytes (64 hex chars)"))?,
         )
         .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
+
+        // AAASM-3591: prove the caller actually HOLDS the private key for
+        // `public_key` before minting a credential_token. Without this, anyone
+        // who can reach the unauthenticated gRPC port can present any valid
+        // Ed25519 public key and mint a token. The proof is an Ed25519 signature
+        // over the registering did:key (`proto_id.agent_id`) bytes; it both
+        // proves possession and binds the key to the claimed identity.
+        //
+        // Coordinates with AAASM-3416 (broad per-endpoint authn): this is the
+        // minimal credential_token possession gate; a future authn interceptor
+        // layers on top of (does not replace) it.
+        verify_possession_proof(&verifying_key, proto_id.agent_id.as_bytes(), &req.possession_proof)?;
 
         let agent_key = proto_agent_id_to_key(proto_id);
         let credential_token = generate_credential_token();
@@ -335,5 +373,55 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(stream) as Self::ControlStreamStream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    #[test]
+    fn valid_possession_proof_is_accepted() {
+        let sk = key();
+        let challenge = b"did:key:z6MkExampleAgent";
+        let proof = sk.sign(challenge).to_bytes().to_vec();
+        assert!(verify_possession_proof(&sk.verifying_key(), challenge, &proof).is_ok());
+    }
+
+    #[test]
+    fn missing_possession_proof_is_unauthenticated() {
+        let sk = key();
+        let err = verify_possession_proof(&sk.verifying_key(), b"did", &[]).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn forged_possession_proof_is_unauthenticated() {
+        let sk = key();
+        let challenge = b"did:key:z6MkExampleAgent";
+        let mut proof = sk.sign(challenge).to_bytes().to_vec();
+        proof[0] ^= 0xFF;
+        let err = verify_possession_proof(&sk.verifying_key(), challenge, &proof).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn proof_signed_over_a_different_challenge_is_unauthenticated() {
+        let sk = key();
+        let proof = sk.sign(b"other-did").to_bytes().to_vec();
+        let err = verify_possession_proof(&sk.verifying_key(), b"did:key:expected", &proof).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn wrong_length_possession_proof_is_unauthenticated() {
+        let sk = key();
+        let err = verify_possession_proof(&sk.verifying_key(), b"did", &[1, 2, 3]).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 }

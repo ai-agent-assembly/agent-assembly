@@ -28,8 +28,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use aa_proto::assembly::common::v1::{ActionType, AgentId, Decision};
+use aa_proto::assembly::ipc::v1::{HandshakeChallenge, HandshakeProof};
 use aa_proto::assembly::policy::v1::action_context::Action;
 use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, CheckActionResponse, ToolCallContext};
+use aa_sdk_client::AgentKeypair;
 use common::live_gateway::{gateway_binary_locatable, LiveGateway};
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -56,9 +58,15 @@ spec:
 /// Inbound IPC tag for a policy query (SDK → runtime). Mirrors
 /// `aa-runtime::ipc::codec::TAG_POLICY_QUERY`.
 const TAG_POLICY_QUERY: u8 = 1;
+/// Inbound IPC tag for the signed handshake proof (SDK → runtime). Mirrors
+/// `aa-runtime::ipc::codec::TAG_HANDSHAKE_PROOF` (AAASM-3585).
+const TAG_HANDSHAKE_PROOF: u8 = 5;
 /// Outbound IPC tag for a policy response (runtime → SDK). Mirrors
 /// `aa-runtime::ipc::codec::TAG_POLICY_RESPONSE`.
 const TAG_POLICY_RESPONSE: u8 = 1;
+/// Outbound IPC tag for the per-session nonce challenge (runtime → SDK). Mirrors
+/// `aa-runtime::ipc::codec::TAG_HANDSHAKE_CHALLENGE` (AAASM-3585).
+const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
 /// Locate the `aa-runtime` binary the same way `live_gateway` finds the gateway.
 fn locate_runtime_binary() -> Option<PathBuf> {
@@ -174,10 +182,50 @@ async fn read_varint(stream: &mut UnixStream) -> std::io::Result<u64> {
     }
 }
 
+/// Complete the AAASM-3585 session handshake the runtime now requires before it
+/// serves any application frame: read its nonce challenge, sign it with the
+/// agent's deterministic Ed25519 key, and send back a `HandshakeProof`.
+///
+/// This mirrors exactly what the real `aa-sdk-client` does on connect (see
+/// `aa-sdk-client::ipc::perform_handshake`), reusing the production
+/// [`AgentKeypair`] so the proof verifies against the runtime's expected key.
+/// Skipping it makes the runtime drop the connection, so the test must perform
+/// it on every fresh connection.
+async fn perform_handshake(stream: &mut UnixStream, agent_id: &str) {
+    // Read the challenge frame: [tag][varint len][HandshakeChallenge].
+    let tag = stream.read_u8().await.expect("read handshake challenge tag");
+    assert_eq!(tag, TAG_HANDSHAKE_CHALLENGE, "expected a HandshakeChallenge frame");
+    let len = read_varint(stream).await.expect("read challenge len") as usize;
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await.expect("read challenge payload");
+    let challenge = HandshakeChallenge::decode(buf.as_ref()).expect("decode HandshakeChallenge");
+
+    // Sign the nonce with the agent's deterministic keypair.
+    let keypair = AgentKeypair::derive(agent_id);
+    let proof = HandshakeProof {
+        agent_did: keypair.did_key(),
+        public_key: keypair.public_key_hex(),
+        signature: keypair.sign(&challenge.nonce).to_vec(),
+    };
+
+    // Write the proof frame: [tag][varint len][HandshakeProof].
+    let payload = proof.encode_to_vec();
+    stream.write_u8(TAG_HANDSHAKE_PROOF).await.expect("write proof tag");
+    write_varint(stream, payload.len() as u64)
+        .await
+        .expect("write proof len");
+    stream.write_all(&payload).await.expect("write proof payload");
+    stream.flush().await.expect("flush proof");
+}
+
 /// Send one `CheckActionRequest` over the runtime UDS and return the gateway's
 /// decision as relayed back in the `CheckActionResponse`.
-async fn check_tool(socket_path: &Path, req: &CheckActionRequest) -> CheckActionResponse {
+async fn check_tool(socket_path: &Path, agent_id: &str, req: &CheckActionRequest) -> CheckActionResponse {
     let mut stream = UnixStream::connect(socket_path).await.expect("connect to runtime UDS");
+
+    // AAASM-3585: the runtime requires a signed session handshake before it will
+    // serve any PolicyQuery — perform it first, exactly as the real SDK does.
+    perform_handshake(&mut stream, agent_id).await;
 
     let payload = req.encode_to_vec();
     stream.write_u8(TAG_POLICY_QUERY).await.expect("write tag");
@@ -220,7 +268,12 @@ async fn runtime_forwards_per_tool_deny_to_gateway() {
     );
 
     // Allow path: the gateway permits `read_file`.
-    let allow = check_tool(&runtime.socket_path, &tool_call_request(&agent_id, "read_file")).await;
+    let allow = check_tool(
+        &runtime.socket_path,
+        &agent_id,
+        &tool_call_request(&agent_id, "read_file"),
+    )
+    .await;
     assert_eq!(
         allow.decision,
         Decision::Allow as i32,
@@ -231,7 +284,12 @@ async fn runtime_forwards_per_tool_deny_to_gateway() {
     // Deny path (the regression): the gateway denies `delete_file`, and the
     // runtime MUST forward the check and relay the Deny — not short-circuit to
     // a local allow.
-    let deny = check_tool(&runtime.socket_path, &tool_call_request(&agent_id, "delete_file")).await;
+    let deny = check_tool(
+        &runtime.socket_path,
+        &agent_id,
+        &tool_call_request(&agent_id, "delete_file"),
+    )
+    .await;
     assert_eq!(
         deny.decision,
         Decision::Deny as i32,

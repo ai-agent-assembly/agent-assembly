@@ -53,7 +53,11 @@ pub struct IpcHandle {
 /// Creates an mpsc channel, spawns an OS thread running a Tokio
 /// current-thread runtime, connects to the runtime socket, and runs
 /// the event loop. Returns an `IpcHandle` for the caller.
-pub fn spawn_ipc_thread(socket_path: PathBuf) -> Result<IpcHandle, std::io::Error> {
+///
+/// `agent_id` is the agent identity (AA_AGENT_ID); the loop derives the
+/// deterministic Ed25519 keypair from it to complete the runtime's session
+/// handshake before sending any traffic (AAASM-3587).
+pub fn spawn_ipc_thread(socket_path: PathBuf, agent_id: String) -> Result<IpcHandle, std::io::Error> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<IpcCommand>(256);
 
     let thread = std::thread::Builder::new().name("aa-ipc".to_string()).spawn(move || {
@@ -61,7 +65,7 @@ pub fn spawn_ipc_thread(socket_path: PathBuf) -> Result<IpcHandle, std::io::Erro
             .enable_all()
             .build()
             .expect("failed to build Tokio runtime for IPC thread");
-        rt.block_on(ipc_loop(socket_path, cmd_rx));
+        rt.block_on(ipc_loop(socket_path, agent_id, cmd_rx));
     })?;
 
     Ok(IpcHandle {
@@ -79,7 +83,7 @@ pub fn spawn_ipc_thread(socket_path: PathBuf) -> Result<IpcHandle, std::io::Erro
 /// decisions), which a dedicated reader task drains so the socket never backs
 /// up. Blocking on an ack the runtime never sends would deadlock this loop and
 /// hang `shutdown()` (AAASM-3000).
-async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) {
+async fn ipc_loop(socket_path: PathBuf, agent_id: String, mut cmd_rx: mpsc::Receiver<IpcCommand>) {
     use tokio::net::UnixStream;
 
     let stream = match UnixStream::connect(&socket_path).await {
@@ -95,7 +99,16 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
     };
 
     // Owned halves let the reader run on its own task without racing the writer.
-    let (reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = stream.into_split();
+
+    // AAASM-3587: complete the session handshake BEFORE any other traffic. Read
+    // the runtime's nonce challenge, sign it with the agent's key, and send the
+    // proof. Fail-closed — if the handshake fails, abort the loop rather than
+    // leak heartbeats/events onto an unauthenticated channel.
+    if let Err(e) = perform_handshake(&mut reader, &mut writer, &agent_id).await {
+        tracing::error!(error = %e, "IPC handshake failed — aborting (fail-closed)");
+        return;
+    }
 
     // Send the initial heartbeat (fire-and-forget — the runtime does not ack it).
     if let Err(e) = codec::write_heartbeat(&mut writer).await {
@@ -143,6 +156,35 @@ async fn ipc_loop(socket_path: PathBuf, mut cmd_rx: mpsc::Receiver<IpcCommand>) 
     }
 
     reader_task.abort();
+}
+
+/// Complete the SDK side of the runtime session handshake (AAASM-3587).
+///
+/// Reads the runtime's nonce challenge, signs it with the agent's deterministic
+/// Ed25519 key, and writes back a `HandshakeProof`. Returns an error if the
+/// challenge cannot be read or the proof cannot be sent — the caller treats this
+/// as fail-closed and aborts the loop.
+async fn perform_handshake(
+    reader: &mut tokio::net::unix::OwnedReadHalf,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    agent_id: &str,
+) -> Result<(), codec::CodecError> {
+    let nonce = codec::read_handshake_challenge(reader).await?;
+    let proof = build_handshake_proof(agent_id, &nonce);
+    codec::write_handshake_proof(writer, &proof).await?;
+    tracing::debug!("IPC session handshake completed");
+    Ok(())
+}
+
+/// Build a `HandshakeProof` for `agent_id` over the runtime-issued `nonce`,
+/// using the agent's deterministic Ed25519 keypair (AAASM-3587).
+fn build_handshake_proof(agent_id: &str, nonce: &[u8]) -> aa_proto::assembly::ipc::v1::HandshakeProof {
+    let keypair = crate::keypair::AgentKeypair::derive(agent_id);
+    aa_proto::assembly::ipc::v1::HandshakeProof {
+        agent_did: keypair.did_key(),
+        public_key: keypair.public_key_hex(),
+        signature: keypair.sign(nonce).to_vec(),
+    }
 }
 
 /// Read responses from the runtime: route each `PolicyResponse` to the oldest
@@ -196,11 +238,67 @@ mod tests {
         assert_eq!(format!("{:?}", cmd), "Shutdown");
     }
 
+    /// The agent id the mock-server tests handshake as.
+    const TEST_AGENT_ID: &str = "test-agent";
+
+    /// Server-side handshake (AAASM-3587): send a nonce challenge, read the
+    /// client's proof, and verify it signs the nonce under the agent key. Mock
+    /// servers call this first so the now-handshaking client can proceed.
+    async fn server_handshake<S>(stream: &mut S, agent_id: &str)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use prost::Message;
+        use sha2::{Digest, Sha256};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Send HandshakeChallenge{nonce}.
+        let mut nonce = vec![0u8; 32];
+        getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
+        let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
+        let payload = challenge.encode_to_vec();
+        stream.write_u8(codec::TAG_HANDSHAKE_CHALLENGE).await.unwrap();
+        assert!(payload.len() < 128);
+        stream.write_u8(payload.len() as u8).await.unwrap();
+        stream.write_all(&payload).await.unwrap();
+        stream.flush().await.unwrap();
+
+        // Read the proof frame. The proof payload exceeds 127 bytes (did:key +
+        // 64-char pubkey hex + 64-byte sig), so the length prefix is a varint.
+        assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_HANDSHAKE_PROOF);
+        let mut len: u64 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = stream.read_u8().await.unwrap();
+            len |= ((byte & 0x7F) as u64) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        let mut buf = vec![0u8; len as usize];
+        stream.read_exact(&mut buf).await.unwrap();
+        let proof = aa_proto::assembly::ipc::v1::HandshakeProof::decode(buf.as_ref()).unwrap();
+
+        // Verify the proof against the expected agent key.
+        let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
+        let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+        assert_eq!(proof.public_key, hex::encode(vk.to_bytes()));
+        let sig_bytes: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
+        let vk2 = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
+        vk2.verify(&nonce, &Signature::from_bytes(&sig_bytes))
+            .expect("client proof must verify");
+    }
+
     #[tokio::test]
     async fn spawn_ipc_thread_fails_on_nonexistent_socket() {
         // spawn_ipc_thread should succeed (thread spawns), but the thread
         // will fail to connect and exit. We verify the handle is returned.
-        let handle = spawn_ipc_thread(PathBuf::from("/tmp/nonexistent-aa-test.sock"));
+        let handle = spawn_ipc_thread(
+            PathBuf::from("/tmp/nonexistent-aa-test.sock"),
+            TEST_AGENT_ID.to_string(),
+        );
         assert!(handle.is_ok());
         let mut handle = handle.unwrap();
         // Send shutdown to cleanly stop the thread (it may have already exited
@@ -221,13 +319,17 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).unwrap();
 
         // Spawn the IPC client thread.
-        let handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+        let handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
 
         // Accept the connection on the mock server side.
-        let (stream, _) = listener.accept().await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        // AAASM-3587: the client completes the handshake before any heartbeat.
+        server_handshake(&mut stream, TEST_AGENT_ID).await;
+
         let (mut reader, mut writer) = tokio::io::split(stream);
 
-        // The client sends a heartbeat first — read the tag byte.
+        // The client sends a heartbeat next — read the tag byte.
         use tokio::io::AsyncReadExt;
         let tag = reader.read_u8().await.unwrap();
         assert_eq!(tag, codec::TAG_HEARTBEAT);
@@ -259,10 +361,11 @@ mod tests {
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path).unwrap();
 
-        // Mock runtime mimicking the real one: read whatever the client sends
-        // and never reply with an ack.
+        // Mock runtime mimicking the real one: complete the handshake, then read
+        // whatever the client sends and never reply with an ack.
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
+            server_handshake(&mut stream, TEST_AGENT_ID).await;
             let mut buf = [0u8; 1024];
             while let Ok(n) = stream.read(&mut buf).await {
                 if n == 0 {
@@ -271,7 +374,7 @@ mod tests {
             }
         });
 
-        let mut handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+        let mut handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
 
         // Ship several events — fire-and-forget, must not block.
         for i in 0..5 {
@@ -329,6 +432,7 @@ mod tests {
         // length-delimiter varint is a single byte.
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
+            server_handshake(&mut stream, TEST_AGENT_ID).await;
             assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_HEARTBEAT);
             assert_eq!(stream.read_u8().await.unwrap(), codec::TAG_POLICY_QUERY);
             let len = stream.read_u8().await.unwrap() as usize;
@@ -352,7 +456,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        let handle = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+        let handle = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
         let client = AssemblyClient::new(handle, Vec::new());
 
         // query_policy blocks the calling thread, so run it off the async runtime.

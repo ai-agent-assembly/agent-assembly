@@ -54,18 +54,24 @@ impl GatewayRegistrationClient {
 /// key — both of which the gateway validates at registration.
 pub fn build_register_request(config: &AssemblyConfig, name: String, framework: String) -> RegisterRequest {
     let keypair = AgentKeypair::derive(&config.agent_id);
+    let registration_did = config.registration_did();
+
+    // AAASM-3591: prove possession of the private key by signing the registering
+    // did:key. The gateway verifies this before minting a credential_token.
+    let possession_proof = keypair.sign(registration_did.as_bytes()).to_vec();
 
     RegisterRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
             team_id: config.team_id.clone().unwrap_or_default(),
-            agent_id: config.registration_did(),
+            agent_id: registration_did,
         }),
         name,
         framework,
         version: env!("CARGO_PKG_VERSION").to_string(),
         public_key: keypair.public_key_hex(),
         parent_agent_id: config.parent_agent_id.clone(),
+        possession_proof,
         ..Default::default()
     }
 }

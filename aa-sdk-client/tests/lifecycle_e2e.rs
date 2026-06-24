@@ -4,11 +4,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aa_sdk_client::codec::{TAG_ACK, TAG_EVENT_REPORT, TAG_HEARTBEAT};
+use aa_sdk_client::codec::{TAG_ACK, TAG_EVENT_REPORT, TAG_HANDSHAKE_CHALLENGE, TAG_HANDSHAKE_PROOF, TAG_HEARTBEAT};
 use aa_sdk_client::ipc::spawn_ipc_thread;
 use aa_sdk_client::AssemblyClient;
+use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
+
+/// The agent id the e2e client handshakes as.
+const TEST_AGENT_ID: &str = "e2e-agent";
 
 /// Read a prost varint length prefix from `reader`.
 async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
@@ -25,20 +29,56 @@ async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
     result as usize
 }
 
+/// Server side of the AAASM-3587 session handshake: send a nonce challenge, read
+/// the client's signed proof, and verify it under the agent's deterministic key.
+async fn server_handshake<S>(stream: &mut S, agent_id: &str)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use ed25519_dalek::{Signature, Verifier};
+    use sha2::{Digest, Sha256};
+
+    let mut nonce = vec![0u8; 32];
+    getrandom::getrandom(&mut nonce).expect("OS RNG must be available for the handshake nonce");
+    let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
+    let payload = challenge.encode_to_vec();
+    stream.write_u8(TAG_HANDSHAKE_CHALLENGE).await.unwrap();
+    stream.write_u8(payload.len() as u8).await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.flush().await.unwrap();
+
+    assert_eq!(stream.read_u8().await.unwrap(), TAG_HANDSHAKE_PROOF);
+    let len = read_varint(stream).await;
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await.unwrap();
+    let proof = aa_proto::assembly::ipc::v1::HandshakeProof::decode(buf.as_ref()).unwrap();
+
+    let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
+    let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    assert_eq!(proof.public_key, hex::encode(vk.to_bytes()));
+    let sig: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
+    vk.verify(&nonce, &Signature::from_bytes(&sig))
+        .expect("client handshake proof must verify");
+}
+
 #[tokio::test]
 async fn client_ships_event_to_mock_runtime_and_shuts_down() {
     let socket_path = format!("/tmp/aa-sdk-client-e2e-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).unwrap();
 
-    let ipc = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+    let ipc = spawn_ipc_thread(PathBuf::from(&socket_path), TEST_AGENT_ID.to_string()).unwrap();
     let client = Arc::new(AssemblyClient::new(ipc, vec!["openai".to_string()]));
     assert_eq!(client.detected_frameworks(), vec!["openai".to_string()]);
 
-    let (stream, _) = listener.accept().await.unwrap();
+    let (mut stream, _) = listener.accept().await.unwrap();
+
+    // 0. AAASM-3587: complete the session handshake before any application frame.
+    server_handshake(&mut stream, TEST_AGENT_ID).await;
+
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Heartbeat handshake.
+    // 1. Heartbeat.
     assert_eq!(reader.read_u8().await.unwrap(), TAG_HEARTBEAT);
     writer.write_all(&[TAG_ACK, 0x00]).await.unwrap();
     writer.flush().await.unwrap();
