@@ -30,6 +30,13 @@ pub struct AssemblyConfig {
     /// registration so the gateway can build the topology / delegation graph.
     /// `None` marks the agent as a root agent.
     pub parent_agent_id: Option<String>,
+    /// User-facing language-package version of the SDK that opened this session
+    /// (the PyPI / npm / go-module version), passed down through the FFI at init.
+    /// Signed into the IPC handshake (AAASM-3666) so AAASM-3571 downgrade
+    /// detection reflects the *installed SDK release* the customer runs, not the
+    /// shared `aa-sdk-client` crate version. `None` falls back to the crate's
+    /// `CARGO_PKG_VERSION` (AAASM-3683), preserving the pre-passthrough behaviour.
+    pub sdk_version: Option<String>,
 }
 
 impl AssemblyConfig {
@@ -79,6 +86,29 @@ impl AssemblyConfig {
         DEFAULT_GATEWAY_ENDPOINT.to_string()
     }
 
+    /// Resolve the SDK version string to sign into the IPC handshake.
+    ///
+    /// Resolution order (mirrors the explicit-overrides-ambient precedence used
+    /// for `gateway_endpoint`):
+    /// 1. Explicit non-empty `sdk_version` — the language-package version the FFI
+    ///    forwards at init (PyPI / npm / go-module version, AAASM-3683).
+    /// 2. Fallback: this crate's `CARGO_PKG_VERSION` (the pre-AAASM-3683
+    ///    behaviour from AAASM-3666, so there is no regression when the FFI does
+    ///    not supply a version).
+    ///
+    /// The result authenticates the version under the handshake signature
+    /// (`nonce || sdk_version`, AAASM-3666); an empty explicit value is treated
+    /// as absent rather than signing an empty version.
+    pub fn resolved_sdk_version(&self) -> String {
+        if let Some(ref version) = self.sdk_version {
+            if !version.is_empty() {
+                return version.clone();
+            }
+        }
+
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
     /// Return the agent identity to send on gateway registration.
     ///
     /// The gateway's `AgentLifecycleService.Register` rejects a plain
@@ -102,6 +132,7 @@ mod tests {
             gateway_endpoint: None,
             team_id: None,
             parent_agent_id: None,
+            sdk_version: None,
         }
     }
 
@@ -130,6 +161,7 @@ mod tests {
             gateway_endpoint: Some("http://gw.example:50051".into()),
             team_id: None,
             parent_agent_id: None,
+            sdk_version: None,
         };
         assert_eq!(config.resolve_gateway_endpoint(), "http://gw.example:50051");
     }
@@ -139,6 +171,30 @@ mod tests {
         env::remove_var("AA_GATEWAY_ENDPOINT");
         let config = make_config("a", None);
         assert_eq!(config.resolve_gateway_endpoint(), DEFAULT_GATEWAY_ENDPOINT);
+    }
+
+    #[test]
+    fn resolved_sdk_version_prefers_explicit_language_version() {
+        let mut config = make_config("a", None);
+        config.sdk_version = Some("9.9.9".into());
+        // The FFI-forwarded language-package version wins over the crate version.
+        assert_eq!(config.resolved_sdk_version(), "9.9.9");
+    }
+
+    #[test]
+    fn resolved_sdk_version_falls_back_to_crate_version_when_none() {
+        // AAASM-3683: no FFI-supplied version → fall back to CARGO_PKG_VERSION
+        // (the AAASM-3666 behaviour), so there is no regression.
+        let config = make_config("a", None);
+        assert_eq!(config.resolved_sdk_version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn resolved_sdk_version_treats_empty_explicit_as_absent() {
+        let mut config = make_config("a", None);
+        config.sdk_version = Some(String::new());
+        // An empty explicit value must not sign an empty version — fall back.
+        assert_eq!(config.resolved_sdk_version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
