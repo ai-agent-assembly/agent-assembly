@@ -28,6 +28,17 @@ fn agent_with_team(id_byte: u8, team: &str) -> AgentRecord {
     agent_with_tenant(id_byte, Some(team), None)
 }
 
+/// Build a request with an explicit method, URI, bearer token, and JSON body.
+fn json_bearer(method: &str, uri: &str, token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 /// Build a root `AgentRecord` tagged with an optional team and org (AAASM-3483).
 fn agent_with_tenant(id_byte: u8, team: Option<&str>, org: Option<&str>) -> AgentRecord {
     AgentRecord {
@@ -373,4 +384,132 @@ async fn logs_cross_org_explicit_filter_is_empty() {
         "an acme-scoped caller must not read globex's audit via ?org_id=globex"
     );
     assert!(json["items"].as_array().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-3726 — agent lifecycle (delete/suspend/resume) require write-scope +
+// tenant ownership. AAASM-3687 — subtree-burn requires read-scope + tenant
+// ownership. A read-only token and a cross-tenant token must each be denied.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn delete_agent_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xA1, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // Read-only token scoped to the agent's own team — still denied (no write).
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}", hex_id(0xA1));
+    let response = app.oneshot(json_bearer("DELETE", &uri, &token, "")).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not delete an agent"
+    );
+}
+
+#[tokio::test]
+async fn delete_agent_cross_tenant_write_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xB1, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // Write token scoped to "alpha" must not delete a "beta" agent.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/agents/{}", hex_id(0xB1));
+    let response = app.oneshot(json_bearer("DELETE", &uri, &token, "")).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant agent delete is denied"
+    );
+}
+
+#[tokio::test]
+async fn suspend_agent_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xA2, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/suspend", hex_id(0xA2));
+    let response = app
+        .oneshot(json_bearer("POST", &uri, &token, r#"{"reason":"x"}"#))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn suspend_agent_cross_tenant_write_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xB2, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/agents/{}/suspend", hex_id(0xB2));
+    let response = app
+        .oneshot(json_bearer("POST", &uri, &token, r#"{"reason":"x"}"#))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn resume_agent_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xA3, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/resume", hex_id(0xA3));
+    let response = app.oneshot(json_bearer("POST", &uri, &token, "")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn resume_agent_cross_tenant_write_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xB3, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/agents/{}/resume", hex_id(0xB3));
+    let response = app.oneshot(json_bearer("POST", &uri, &token, "")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn delete_agent_own_team_write_token_is_allowed() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xA4, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to the agent's own team may delete it.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/agents/{}", hex_id(0xA4));
+    let response = app.oneshot(json_bearer("DELETE", &uri, &token, "")).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "an own-team write caller may delete its agent"
+    );
+}
+
+#[tokio::test]
+async fn subtree_burn_cross_tenant_read_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xC1, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // An alpha-scoped read caller must not read a beta agent's subtree burn.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/subtree-burn", hex_id(0xC1));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant subtree-burn read is denied"
+    );
 }
