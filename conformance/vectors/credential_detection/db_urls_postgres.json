@@ -6,5 +6,5 @@
     { "kind": "GenericHighEntropy", "offset": 0 },
     { "kind": "PostgresUrl", "offset": 13 }
   ],
-  "expected_redacted": "[REDACTED:EmailAddress]"
+  "expected_redacted": "[REDACTED:PostgresUrl]"
 }
