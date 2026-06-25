@@ -17,24 +17,24 @@
 ## Install the CLI
 
 ```sh
-curl -fsSL https://agent-assembly.com/install.sh | sh
+curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
 [published release](https://github.com/ai-agent-assembly/agent-assembly/releases).
 The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
-The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-beta.4 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-beta.4 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Custom install directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
-> The raw `raw.githubusercontent.com/.../install-cli.sh` URL also works if you
-> prefer to fetch the script directly from GitHub.
+> Prefer not to pipe from the hosted endpoint? The installer is also available
+> directly from the repo at
+> `https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh`.
 
 ### Homebrew (macOS / Linux)
 
@@ -121,7 +121,7 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target â
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases â€” latest
-[`v0.0.1-beta.4`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-beta.4)
+[`v0.0.1-beta.3`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-beta.3)
 (2026-06-20). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
