@@ -609,6 +609,57 @@ mod tests {
             .any(|f| f.kind == CredentialKind::GcpServiceAccount));
     }
 
+    // --- AAASM-3727: case / whitespace bypass variants ---
+
+    #[test]
+    fn detects_gcp_service_account_compact_json() {
+        // Compact serializer output (no space after the colon) must be caught.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{"type":"service_account","project_id":"p"}"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "compact GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_gcp_service_account_spaces_around_colon() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{ "type" : "service_account" }"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "spaced-colon GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_postgres_url_uppercase_scheme() {
+        // RFC 3986 schemes are case-insensitive; an upper-case scheme must not bypass.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("DATABASE_URL=POSTGRES://user:password@host:5432/db");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::PostgresUrl),
+            "upper-case POSTGRES:// scheme must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_lowercase_pem_private_key_header() {
+        let scanner = CredentialScanner::new();
+        let result =
+            scanner.scan("-----begin rsa private key-----\nMIIEpAIBAAKCAQEA...\n-----end rsa private key-----");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::RsaPrivateKey),
+            "lower-case PEM header must be detected"
+        );
+    }
+
     // --- Auth token patterns ---
 
     #[test]
