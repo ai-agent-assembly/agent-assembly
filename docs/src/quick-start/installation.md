@@ -29,10 +29,13 @@ writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
 
-> Prefer not to pipe from the hosted endpoint? The installer is also available
-> directly from the repo at
-> [`scripts/install-cli.sh`](https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh)
-> — both serve the identical, reviewed installer.
+> **Hosted installer endpoint.** The one-liner above fetches from the canonical
+> `https://agent-assembly.com/install.sh` (served by the official website — see
+> [ADR 0007](../adr/0007-public-domain-and-url-contract.md)); `https://tool.agent-assembly.dev`
+> is a kept alternate that serves the same script. Prefer to fetch the installer
+> straight from GitHub? The
+> [`raw.githubusercontent.com`](https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh)
+> URL serves the identical script.
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
@@ -97,7 +100,7 @@ publishes per-platform tarballs plus a `SHA256SUMS` file and a
 To install and verify by hand:
 
 ```sh
-VERSION=v0.0.1-beta.3
+VERSION=v0.0.1-beta.4
 ASSET=aasm-aarch64-apple-darwin.tar.gz   # adjust for your platform
 BASE="https://github.com/ai-agent-assembly/agent-assembly/releases/download/${VERSION}"
 
@@ -148,7 +151,7 @@ Confirm the binary is on your `PATH` and runs:
 
 ```console
 $ aasm --version
-aasm 0.0.1-beta.3
+aasm 0.0.1-beta.4
 ```
 
 A fuller report — the CLI version plus whether a gateway and API are reachable —
@@ -160,7 +163,7 @@ $ aasm version
 +-----------+---------------+-------------+
 | COMPONENT | VERSION       | STATUS      |
 +=========================================+
-| cli       | 0.0.1-beta.3  | -           |
+| cli       | 0.0.1-beta.4  | -           |
 |-----------+---------------+-------------|
 | gateway   | -             | unreachable |
 |-----------+---------------+-------------|
