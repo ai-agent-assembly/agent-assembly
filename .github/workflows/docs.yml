@@ -244,6 +244,20 @@ jobs:
           mkdir -p "_site/$VERSION"
           cp -R docs/book/. "_site/$VERSION/"
 
+          # 1b. Always materialise the `latest/` channel directory (AAASM-3733).
+          #     `latest` is a guaranteed channel in versions.json and the root
+          #     redirect's final fallback target, but it was only written on a
+          #     master-push cut (VERSION=latest). A release-only deploy (the only
+          #     kind this site has had) left `latest/` as a dangling target, so
+          #     the documented entry point /latest/ 404'd. On a release cut the
+          #     freshly built book is the newest live docs, so it is the correct
+          #     content for `latest/` too; on a master cut this is a no-op copy.
+          if [ "$VERSION" != "latest" ]; then
+            rm -rf "_site/latest"
+            mkdir -p "_site/latest"
+            cp -R docs/book/. "_site/latest/"
+          fi
+
           # 2. Recompute versions.json via the testable channel module
           #    (docs/ci/channels.py), which applies the pre-release semver
           #    gate and unions extra-archived.txt (written by the rebuild
