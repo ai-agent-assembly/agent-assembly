@@ -853,27 +853,13 @@ impl PolicyEngine {
             return None;
         };
         let np = policy.network.as_ref()?;
-        if np.allowlist.is_empty() {
-            return None;
-        }
-        let host_port = url
-            .split_once("://")
-            .map(|x| x.1)
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
-        // authority extracted above still carries the `:port` suffix. Allowlist
-        // entries are bare hosts (`api.openai.com`), so comparing `host:port`
-        // against them always failed and every allowlisted host was denied on
-        // the live `evaluate`/`eval_network_stage` path. Strip a trailing
-        // numeric `:port` before the allowlist compare (mirrors `decision.rs`).
-        let host = match host_port.rsplit_once(':') {
-            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-            _ => host_port,
-        };
-        if !np.allowlist.iter().any(|entry| entry == host) {
+        // AAASM-3728: this single-file path previously failed OPEN — an empty
+        // allowlist returned `None` (allow-all) and matching was exact-only
+        // (`entry == host`), so wildcard entries never matched and a blank
+        // allowlist disabled egress control entirely, while the hardened
+        // cascade path (`decision::stage_network`) already denied. Route both
+        // through the one shared helper so they cannot diverge again.
+        if !crate::engine::decision::network_request_url_allowed(url, np) {
             return Some(EvaluationResult::deny("host not in network allowlist"));
         }
         None
