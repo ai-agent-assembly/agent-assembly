@@ -21,7 +21,7 @@ The one-line installer downloads the matching pre-built tarball plus its
 the `aasm` binary:
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 By default the binary is installed to `/usr/local/bin` if that directory is
@@ -29,13 +29,13 @@ writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
 
-> **Short installer URLs (not yet live).** The shorter hosts
-> `https://agent-assembly.com/install.sh` and `https://tool.agent-assembly.dev`
-> are the planned canonical/alternate installer URLs
-> ([ADR 0007](../adr/0007-public-domain-and-url-contract.md)), served by the
-> Cloudflare Worker in [`infra/install-endpoint/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/infra/install-endpoint).
-> That endpoint is not deployed yet, so until it goes live use the
-> `raw.githubusercontent.com` command above (it serves the identical script).
+> **Hosted installer endpoint.** The one-liner above fetches from the canonical
+> `https://agent-assembly.com/install.sh` (served by the official website — see
+> [ADR 0007](../adr/0007-public-domain-and-url-contract.md)); `https://tool.agent-assembly.dev`
+> is a kept alternate that serves the same script. Prefer to fetch the installer
+> straight from GitHub? The
+> [`raw.githubusercontent.com`](https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh)
+> URL serves the identical script.
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
@@ -50,10 +50,10 @@ The installer honors these environment variables:
 
 ```sh
 # Install a specific release tag (default: latest)
-AASM_VERSION=v0.0.1-beta.4 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-beta.4 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Install to a custom directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 | Variable | Default | Purpose |
@@ -73,7 +73,7 @@ installer verifies that signature against the release workflow's identity before
 trusting the checksums. To make a missing/unverifiable signature fatal:
 
 ```sh
-AASM_REQUIRE_SIGNATURE=1 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 > Releases published before signing was added carry no cosign bundle; with the

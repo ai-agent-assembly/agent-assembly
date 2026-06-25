@@ -27,10 +27,10 @@ The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-beta.4 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-beta.4 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Custom install directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 > The raw `raw.githubusercontent.com/.../install-cli.sh` URL also works if you
