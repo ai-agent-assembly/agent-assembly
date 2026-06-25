@@ -30,9 +30,9 @@ RUN apk add --no-cache musl-dev protobuf-dev openssl-dev pkgconfig
 WORKDIR /build
 
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=aasm-builder-cargo-registry-node-24,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,id=aasm-builder-cargo-git-node-24,sharing=locked \
+    --mount=type=cache,target=/build/target,id=aasm-builder-target-node-24,sharing=locked \
     cargo build --release -p aa-cli --bin aasm \
  && cp /build/target/release/aasm /usr/local/bin/aasm
 
