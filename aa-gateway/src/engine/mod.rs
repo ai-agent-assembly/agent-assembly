@@ -802,25 +802,17 @@ impl PolicyEngine {
     /// single-policy pipeline (`evaluate_primary`) when no scoped policies are
     /// present, preserving full backward compatibility.
     pub fn evaluate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
-        // AAASM-2023 — resolve lineage from ctx FIRST (convert.rs already
-        // deposits proto.org_id / proto.team_id into ctx.metadata) before
-        // falling back to a registry lookup. The registry-keyed-by-composite
-        // path doesn't match `ctx.agent_id` (which is hashed from just the
-        // agent_id string), so without this preference org-scoped cascades
-        // would never see the agent's org_id.
-        let ctx_lineage = crate::registry::Lineage {
-            org_id: ctx.metadata.get("org_id").cloned(),
-            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
-            ..Default::default()
-        };
-        let lineage = if ctx_lineage.org_id.is_some() || ctx_lineage.team_id.is_some() {
-            ctx_lineage
-        } else {
-            self.registry
-                .as_ref()
-                .and_then(|r| r.lineage(ctx.agent_id.as_bytes()))
-                .unwrap_or_default()
-        };
+        // AAASM-3729: the policy cascade is selected by the agent's (org, team)
+        // lineage, so that lineage MUST be authoritative tenancy — the agent's
+        // *registered* owner — not values the client asserted in the request.
+        // Trusting client-supplied `org_id` / `team_id` lets a caller name a
+        // tenant whose scoped policy is more permissive (e.g. an org with no
+        // deny rules) and thereby DOWNGRADE the policy that applies to it.
+        // Resolve from the registry by agent_id first; fall back to the
+        // ctx-supplied lineage only when no registry is attached or the agent
+        // is unregistered (untenanted / pre-registry deployments, and the
+        // convert.rs path where the agent isn't keyed in the registry).
+        let lineage = self.authoritative_lineage(ctx);
         let cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
 
         // Backward-compat: no scoped policies loaded → use primary policy only.
@@ -853,27 +845,13 @@ impl PolicyEngine {
             return None;
         };
         let np = policy.network.as_ref()?;
-        if np.allowlist.is_empty() {
-            return None;
-        }
-        let host_port = url
-            .split_once("://")
-            .map(|x| x.1)
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        // AAASM-3350: `convert.rs` builds the URL as `proto://host:port`, so the
-        // authority extracted above still carries the `:port` suffix. Allowlist
-        // entries are bare hosts (`api.openai.com`), so comparing `host:port`
-        // against them always failed and every allowlisted host was denied on
-        // the live `evaluate`/`eval_network_stage` path. Strip a trailing
-        // numeric `:port` before the allowlist compare (mirrors `decision.rs`).
-        let host = match host_port.rsplit_once(':') {
-            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-            _ => host_port,
-        };
-        if !np.allowlist.iter().any(|entry| entry == host) {
+        // AAASM-3728: this single-file path previously failed OPEN — an empty
+        // allowlist returned `None` (allow-all) and matching was exact-only
+        // (`entry == host`), so wildcard entries never matched and a blank
+        // allowlist disabled egress control entirely, while the hardened
+        // cascade path (`decision::stage_network`) already denied. Route both
+        // through the one shared helper so they cannot diverge again.
+        if !crate::engine::decision::network_request_url_allowed(url, np) {
             return Some(EvaluationResult::deny("host not in network allowlist"));
         }
         None
@@ -1393,6 +1371,29 @@ impl PolicyEngine {
         (team_id, org_id)
     }
 
+    /// Resolve the policy-cascade lineage (`org_id` / `team_id` + delegation
+    /// chain) for `ctx` from the authoritative agent registry, falling back to
+    /// the client-supplied `ctx` lineage only when no registry is attached or
+    /// the agent is not registered.
+    ///
+    /// AAASM-3729: the registered owner is the trust anchor for cascade
+    /// *selection* — a client must not be able to point evaluation at a more
+    /// permissive tenant's policy by forging `org_id` / `team_id` in the
+    /// request context. Mirrors [`Self::authoritative_tenancy`] (AAASM-3138),
+    /// which already keys budget spend on the registered owner.
+    fn authoritative_lineage(&self, ctx: &aa_core::AgentContext) -> crate::registry::Lineage {
+        if let Some(registry) = self.registry.as_ref() {
+            if let Some(lineage) = registry.lineage(ctx.agent_id.as_bytes()) {
+                return lineage;
+            }
+        }
+        crate::registry::Lineage {
+            org_id: ctx.metadata.get("org_id").cloned(),
+            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
+            ..Default::default()
+        }
+    }
+
     /// Check whether an agent is within both daily and monthly budget limits.
     ///
     /// Returns `true` if the agent has not exceeded any configured budget limit
@@ -1877,6 +1878,55 @@ mod tests {
             PolicyResult::Deny {
                 reason: "host not in network allowlist".into()
             }
+        );
+    }
+
+    #[test]
+    fn network_empty_allowlist_denies_all_egress() {
+        // AAASM-3728: the single-file path failed OPEN on an empty allowlist
+        // (returned None ⇒ allow-all). A configured `network:` clause with an
+        // empty allowlist must deny ALL egress (fail-closed).
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy { allowlist: vec![] });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://api.openai.com/v1");
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            },
+            "empty allowlist must deny all egress, not allow it"
+        );
+    }
+
+    #[test]
+    fn network_wildcard_allows_subdomain_on_single_file_path() {
+        // AAASM-3728: the single-file path used exact-match only (`entry ==
+        // host`), so a `*.openai.com` allowlist entry never matched and denied
+        // traffic the operator believed allowed. It must now honour the
+        // wildcard-aware shared matcher, like the cascade path.
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["*.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine
+                .evaluate(&ctx, &network_req("https://chat.openai.com/v1"))
+                .decision,
+            PolicyResult::Allow,
+            "wildcard *.openai.com must match chat.openai.com"
+        );
+        assert_eq!(
+            engine
+                .evaluate(&ctx, &network_req("https://evil.attacker.net/x"))
+                .decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            },
+            "a non-matching host must still be denied"
         );
     }
 
@@ -3357,5 +3407,81 @@ mod tests {
         engine.record_spend(&ctx, 3.0);
 
         assert!(engine.budget.team_state("ctx-team").is_some());
+    }
+
+    // ── AAASM-3729: cascade selected by registered owner, not client claim ───
+
+    /// Build a cascade engine: a Global allow-all baseline plus an
+    /// `org:owner-org`-scoped deny of `bash`.
+    fn cascade_engine_owner_org_denies_bash() -> PolicyEngine {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: t-global-allow\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org-owner-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: t-owner-deny-bash\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:owner-org\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads")
+    }
+
+    #[test]
+    fn cascade_uses_registered_org_not_client_forged_org() {
+        // AAASM-3729: an agent registered in `owner-org` (which denies `bash`)
+        // must not escape that policy by forging a different, more permissive
+        // org_id in the request context. The cascade must select the registered
+        // owner's org-scoped deny.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        registry
+            .register(registry_record([0xaa; 16], "owner-team", Some("owner-org")))
+            .expect("register");
+        let engine = cascade_engine_owner_org_denies_bash().with_registry(registry);
+
+        // ctx carries a forged org_id pointing at an org with no deny rules.
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xaa; 16]);
+        ctx.metadata.insert("org_id".to_string(), "permissive-org".to_string());
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "registered owner-org deny must apply despite the client-forged org_id"
+        );
+    }
+
+    #[test]
+    fn cascade_falls_back_to_ctx_org_when_agent_unregistered() {
+        // With no registry record for the agent, the ctx-supplied lineage is
+        // used (untenanted / convert.rs path). An agent claiming owner-org sees
+        // that org's deny; this preserves the pre-registry behaviour.
+        let engine = cascade_engine_owner_org_denies_bash();
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xcc; 16]);
+        ctx.metadata.insert("org_id".to_string(), "owner-org".to_string());
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "unregistered agent falls back to ctx-supplied org lineage"
+        );
     }
 }

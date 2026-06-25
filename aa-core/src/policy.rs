@@ -512,6 +512,31 @@ pub fn is_host_allowed_by_egress_allowlist(host: &str, allowlist: &[alloc::strin
     false
 }
 
+/// Fail-closed egress decision: like [`is_host_allowed_by_egress_allowlist`],
+/// but an **empty** allowlist denies all hosts instead of allowing them.
+///
+/// AAASM-3730: the policy layer (`aa-gateway` cascade + single-file engine, and
+/// the `aa-proxy` L2 egress gate) treats the presence of a `network:` clause as
+/// "egress is governed". A governed-but-empty allowlist is the most restrictive
+/// posture — "permit nothing" — not "permit everything". Defaulting an empty
+/// allowlist to allow-all silently disabled the entire egress control whenever
+/// an operator wrote an empty list, the canonical fail-open footgun.
+///
+/// Callers that genuinely mean "no allowlist configured ⇒ no restriction" must
+/// gate on the *absence* of the network policy before reaching this matcher, not
+/// on the allowlist being empty.
+///
+/// Non-empty allowlists match identically to
+/// [`is_host_allowed_by_egress_allowlist`] (exact, leftmost-label wildcard,
+/// universal `*`, case-insensitive).
+#[cfg(feature = "alloc")]
+pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[alloc::string::String]) -> bool {
+    if allowlist.is_empty() {
+        return false;
+    }
+    is_host_allowed_by_egress_allowlist(host, allowlist)
+}
+
 #[cfg(feature = "alloc")]
 fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
     let pattern_lower = pattern.to_ascii_lowercase();
@@ -596,5 +621,29 @@ mod egress_tests {
         assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
         assert!(is_host_allowed_by_egress_allowlist("api.anthropic.com", &list));
         assert!(!is_host_allowed_by_egress_allowlist("api.cohere.com", &list));
+    }
+
+    // AAASM-3730: fail-closed matcher — empty allowlist DENIES all hosts.
+    use super::is_host_allowed_by_egress_allowlist_fail_closed as fail_closed;
+
+    #[test]
+    fn fail_closed_empty_allowlist_denies_every_host() {
+        assert!(!fail_closed("api.openai.com", &[]));
+        assert!(!fail_closed("evil.attacker.net", &[]));
+    }
+
+    #[test]
+    fn fail_closed_non_empty_matches_like_default_matcher() {
+        let list = vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("chat.anthropic.com", &list));
+        assert!(!fail_closed("evil.attacker.net", &list));
+    }
+
+    #[test]
+    fn fail_closed_universal_wildcard_still_allows_any_host() {
+        let list = vec!["*".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("evil.attacker.net", &list));
     }
 }
