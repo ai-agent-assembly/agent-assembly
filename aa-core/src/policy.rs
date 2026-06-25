@@ -512,6 +512,31 @@ pub fn is_host_allowed_by_egress_allowlist(host: &str, allowlist: &[alloc::strin
     false
 }
 
+/// Fail-closed egress decision: like [`is_host_allowed_by_egress_allowlist`],
+/// but an **empty** allowlist denies all hosts instead of allowing them.
+///
+/// AAASM-3730: the policy layer (`aa-gateway` cascade + single-file engine, and
+/// the `aa-proxy` L2 egress gate) treats the presence of a `network:` clause as
+/// "egress is governed". A governed-but-empty allowlist is the most restrictive
+/// posture — "permit nothing" — not "permit everything". Defaulting an empty
+/// allowlist to allow-all silently disabled the entire egress control whenever
+/// an operator wrote an empty list, the canonical fail-open footgun.
+///
+/// Callers that genuinely mean "no allowlist configured ⇒ no restriction" must
+/// gate on the *absence* of the network policy before reaching this matcher, not
+/// on the allowlist being empty.
+///
+/// Non-empty allowlists match identically to
+/// [`is_host_allowed_by_egress_allowlist`] (exact, leftmost-label wildcard,
+/// universal `*`, case-insensitive).
+#[cfg(feature = "alloc")]
+pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[alloc::string::String]) -> bool {
+    if allowlist.is_empty() {
+        return false;
+    }
+    is_host_allowed_by_egress_allowlist(host, allowlist)
+}
+
 #[cfg(feature = "alloc")]
 fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
     let pattern_lower = pattern.to_ascii_lowercase();
