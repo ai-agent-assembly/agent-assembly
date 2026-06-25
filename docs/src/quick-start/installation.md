@@ -21,7 +21,7 @@ The one-line installer downloads the matching pre-built tarball plus its
 the `aasm` binary:
 
 ```sh
-curl -fsSL https://agent-assembly.com/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
 ```
 
 By default the binary is installed to `/usr/local/bin` if that directory is
@@ -29,19 +29,13 @@ writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
 
-> The canonical installer URL is `https://agent-assembly.com/install.sh`. The
-> alternate host `https://tool.agent-assembly.dev` serves the **same** script and
-> stays working:
->
-> ```sh
-> curl -fsSL https://tool.agent-assembly.dev | sh
-> ```
->
-> You can also fetch the raw script directly from GitHub:
->
-> ```sh
-> curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
-> ```
+> **Short installer URLs (not yet live).** The shorter hosts
+> `https://agent-assembly.com/install.sh` and `https://tool.agent-assembly.dev`
+> are the planned canonical/alternate installer URLs
+> ([ADR 0007](../adr/0007-public-domain-and-url-contract.md)), served by the
+> Cloudflare Worker in [`infra/install-endpoint/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/infra/install-endpoint).
+> That endpoint is not deployed yet, so until it goes live use the
+> `raw.githubusercontent.com` command above (it serves the identical script).
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
