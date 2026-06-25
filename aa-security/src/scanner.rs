@@ -30,6 +30,13 @@ const AC_PATTERNS: &[&str] = &[
     "-----BEGIN OPENSSH PRIVATE KEY-----",   // 15 OpensshPrivateKey
     "-----BEGIN PRIVATE KEY-----",           // 16 PrivateKey
     "-----BEGIN PGP PRIVATE KEY BLOCK-----", // 17 PgpPrivateKey
+    // AAASM-3727: GCP service-account JSON whitespace variants. A compact
+    // serializer emits no space after the colon, and some emit a space before
+    // it; index 3's single-space literal misses both. These map to the same
+    // GcpServiceAccount kind so the realistic serialized forms are all caught.
+    "\"type\":\"service_account\"",   // 18 GcpServiceAccount (compact, no space)
+    "\"type\" :\"service_account\"",  // 19 GcpServiceAccount (space before colon)
+    "\"type\" : \"service_account\"", // 20 GcpServiceAccount (spaces around colon)
 ];
 
 /// Maps AC pattern index → [`CredentialKind`].
@@ -52,6 +59,9 @@ const AC_KINDS: &[CredentialKind] = &[
     CredentialKind::OpensshPrivateKey,     // 15
     CredentialKind::PrivateKey,            // 16
     CredentialKind::PgpPrivateKey,         // 17
+    CredentialKind::GcpServiceAccount,     // 18 (compact JSON)
+    CredentialKind::GcpServiceAccount,     // 19 (space before colon)
+    CredentialKind::GcpServiceAccount,     // 20 (spaces around colon)
 ];
 
 // ---------------------------------------------------------------------------
@@ -293,6 +303,11 @@ impl CredentialScanner {
 
         let ac = AhoCorasick::builder()
             .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+            // AAASM-3727: scheme prefixes (postgres://), PEM headers, and the
+            // GCP JSON key are case-insensitive in the wild (RFC 3986 schemes,
+            // lower/mixed-case PEM). Match case-insensitively so case variants
+            // cannot bypass detection. Prefixes like AKIA / ghp_ stay high-signal.
+            .ascii_case_insensitive(true)
             .build(&all_patterns)
             .expect("AC patterns are always valid");
 
@@ -895,7 +910,10 @@ mod tests {
         assert!(!redacted.contains("ghp_"), "raw GitHub PAT prefix leaked: {redacted}");
         assert!(!redacted.contains("postgres://"), "raw postgres URL leaked: {redacted}");
         assert!(!redacted.contains("tokenAAAA"), "raw token body leaked: {redacted}");
-        assert!(!redacted.contains("stgresUrl"), "mangled-splice secret fragment leaked: {redacted}");
+        assert!(
+            !redacted.contains("stgresUrl"),
+            "mangled-splice secret fragment leaked: {redacted}"
+        );
         // Output contains only well-formed redaction labels — no mangled splices.
         assert!(redacted.contains("[REDACTED:"));
         assert!(!redacted.contains("]]"), "malformed nested label produced: {redacted}");
@@ -931,7 +949,10 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("ghp_"));
         assert!(!redacted.contains("abcdefABCDEF"), "raw token body leaked: {redacted}");
-        assert!(redacted.contains(" done"), "trailing context must be preserved: {redacted}");
+        assert!(
+            redacted.contains(" done"),
+            "trailing context must be preserved: {redacted}"
+        );
     }
 
     // --- CredentialKind::Custom and CredentialFinding::from_regex_match ---
