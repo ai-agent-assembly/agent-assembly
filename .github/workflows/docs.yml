@@ -34,10 +34,14 @@ jobs:
     name: Build mdBook
     runs-on: ubuntu-latest
     # PR + master-push always build. A workflow_run only proceeds when the
-    # upstream Release succeeded AND it was a release tag (vX.Y.Z[-pre]).
+    # upstream Release succeeded, was a TAG PUSH (not a pull_request / dispatch
+    # dry-run — AAASM-3714; our branch names also start with 'v', so the
+    # head_branch check alone is insufficient), and the tag looks like a release
+    # version (vX.Y.Z[-pre]).
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - uses: actions/checkout@v7.0.0
