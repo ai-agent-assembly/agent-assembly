@@ -7,6 +7,17 @@ on:
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
+  # Dry-run on PRs that can affect the release build (AAASM-3713). Every publish
+  # job is gated `if: github.event_name == 'push'`, so a pull_request only runs the
+  # build matrix + eBPF-integrity step and never publishes — surfacing release-build
+  # regressions (e.g. AAASM-3712) before tag time instead of at release.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/build-ebpf-probes.sh"
+      - "aa-ebpf*/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
   workflow_dispatch:
 
 env:
