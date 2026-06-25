@@ -127,6 +127,8 @@ jobs:
             ebpf:
               - 'aa-ebpf*/**'
               - '.github/workflows/ci.yml'
+              - 'scripts/build-ebpf-probes.sh'
+              - '.github/workflows/release.yml'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -753,7 +755,13 @@ jobs:
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
         run: cargo install bpf-linker
       - name: Build eBPF probes
-        run: cargo build --release
+        # AAASM-3712: build via the shared script — the SINGLE SOURCE OF TRUTH
+        # also used by release.yml's AAASM-3601 step, so the two recipes can
+        # never diverge again. Run from the repo root (overriding this job's
+        # working-directory: aa-ebpf-probes default) so the scripts/ path
+        # resolves; the script then cd's into aa-ebpf-probes/ itself.
+        working-directory: .
+        run: bash scripts/build-ebpf-probes.sh
       - name: Clippy on eBPF probes
         # --all-targets would try to build test harness binaries, which require the
         # `test` crate — unavailable on the no_std bpfel-unknown-none target.
