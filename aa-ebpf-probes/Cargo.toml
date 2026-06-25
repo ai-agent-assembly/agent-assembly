@@ -29,3 +29,9 @@ path = "src/syscall_guard.rs"
 # Declare this crate as its own standalone workspace so Cargo does not
 # attempt to include it in the parent agent-assembly workspace.
 [workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
