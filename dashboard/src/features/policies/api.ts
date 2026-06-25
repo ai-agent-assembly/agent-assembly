@@ -38,8 +38,22 @@ interface OptimisticContext {
  * the YAML is empty or doesn't have a metadata.name line.
  */
 function nameFromYaml(yaml: string): string {
-  const match = /^[^\S\n]*name:[^\S\n]*"?([^"\n]+)"?/m.exec(yaml)
-  return match ? match[1].trim() : '(new policy)'
+  // Linear, backtracking-free parse (no regex): scan each line for a top-level
+  // `name:` key and return its value. Replaces a `/m` regex that SonarCloud
+  // flagged for super-linear runtime (S8786). Behaviour is identical to the
+  // old pattern: leading whitespace is skipped, an optional pair of wrapping
+  // double-quotes is stripped, and the value is trimmed.
+  for (const line of yaml.split('\n')) {
+    const trimmed = line.trimStart()
+    if (!trimmed.startsWith('name:')) continue
+    let value = trimmed.slice('name:'.length).trim()
+    if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+      value = value.slice(1, -1)
+    }
+    value = value.trim()
+    if (value) return value
+  }
+  return '(new policy)'
 }
 
 export function useCreatePolicy() {
