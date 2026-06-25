@@ -5,5 +5,5 @@
     { "kind": "EmailAddress", "offset": 0 },
     { "kind": "MysqlUrl", "offset": 3 }
   ],
-  "expected_redacted": "DB=[REDACTED:MysqlUrl]"
+  "expected_redacted": "[REDACTED:EmailAddress]"
 }

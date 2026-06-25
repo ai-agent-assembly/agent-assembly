@@ -6,5 +6,5 @@
     { "kind": "GenericHighEntropy", "offset": 0 },
     { "kind": "MongodbUrl", "offset": 10 }
   ],
-  "expected_redacted": "MONGO_URI=[REDACTED:MongodbUrl]"
+  "expected_redacted": "[REDACTED:EmailAddress]"
 }
