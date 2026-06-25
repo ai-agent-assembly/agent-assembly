@@ -126,6 +126,20 @@ describe('ApprovalAnalyticsPanel', () => {
     expect(screen.getByText('33')).toBeInTheDocument()
   })
 
+  it('degrades to a zero-state when scalar fields are missing on a partial response', async () => {
+    // A 200 with an empty body (no volume/medianTta/approvalRate/byOutcome) must
+    // render a zero-state instead of crashing the route into the error boundary.
+    mockFetch({} as ApprovalAnalyticsResponse)
+    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
+    // Panel body renders (donut present) rather than the error boundary taking over.
+    expect(await screen.findByTestId('approval-donut')).toBeInTheDocument()
+    // Each unguarded scalar falls back to its zero formatting.
+    expect(screen.getAllByText('0').length).toBeGreaterThan(0) // volume → 0
+    expect(screen.getByText('0s')).toBeInTheDocument() // medianTta → 0s
+    expect(screen.getByText('0.0%')).toBeInTheDocument() // approvalRate → 0.0%
+    expect(screen.getByText('Total volume')).toBeInTheDocument()
+  })
+
   it('renders without crashing when byOutcome is missing on a partial response', async () => {
     // A 200 with a partial object (no `byOutcome`) must not crash the panel.
     mockFetch({ volume: 0, medianTta: 0, approvalRate: 0 } as ApprovalAnalyticsResponse)

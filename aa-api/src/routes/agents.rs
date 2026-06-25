@@ -10,10 +10,51 @@ use utoipa::ToSchema;
 
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
-use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
+
+/// Enforce tenant ownership of an agent for a caller that already cleared the
+/// scope gate (AAASM-3726 / AAASM-3687).
+///
+/// Mirrors the per-tenant authz of [`get_agent_budget`]: an admin may act on any
+/// agent; a tenant-scoped caller may act only on agents in its own team; a
+/// caller with neither admin scope nor any team scope is denied up front so it
+/// cannot enumerate agents via a 403-vs-404 oracle. Returns `Ok(())` when the
+/// caller is authorized and the agent exists, otherwise the appropriate
+/// `ProblemDetail` (403 for an unauthorized caller, 404 when the agent is
+/// unknown to an authorized caller).
+fn authorize_agent_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    agent_id_bytes: &[u8; 16],
+    id: &str,
+) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope"));
+    }
+
+    if state.agent_registry.get(agent_id_bytes).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
+    }
+
+    let lineage = state.agent_registry.lineage(agent_id_bytes);
+    let team_id = lineage.as_ref().and_then(|l| l.team_id.as_deref());
+    let authorized = match team_id {
+        Some(team) => caller.can_access_team(team),
+        // The agent has no team — only an admin may act on it.
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the agent's team"));
+    }
+    Ok(())
+}
 
 /// Parse a hex-encoded agent ID string into a 16-byte array.
 fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
@@ -262,10 +303,14 @@ pub async fn get_agent(
     tag = "agents"
 )]
 pub async fn delete_agent(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3726: write-scope + tenant ownership before any state change.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     state
         .agent_registry
@@ -292,11 +337,15 @@ pub async fn delete_agent(
     tag = "agents"
 )]
 pub async fn suspend_agent(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<SuspendRequest>,
 ) -> Result<(StatusCode, Json<SuspendResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3726: write-scope + tenant ownership before suspending.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     let previous_status = state
         .agent_registry
@@ -336,10 +385,14 @@ pub async fn suspend_agent(
     tag = "agents"
 )]
 pub async fn resume_agent(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<ResumeResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3726: write-scope + tenant ownership before resuming.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     let current_status = state
         .agent_registry
@@ -643,6 +696,7 @@ fn parse_subtree_burn_period(s: Option<&str>) -> (&'static str, u32) {
     tag = "agents"
 )]
 pub async fn get_agent_subtree_burn(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<SubtreeBurnParams>,
@@ -650,9 +704,10 @@ pub async fn get_agent_subtree_burn(
     let agent_id_bytes = parse_agent_id(&id)?;
     let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
 
-    if state.agent_registry.get(&agent_id_bytes).is_none() {
-        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
-    }
+    // AAASM-3687: read-scope + tenant ownership — the subtree-burn series
+    // exposes per-child spend / topology, so a cross-tenant caller must not
+    // read another team's agent. Mirrors get_agent_budget.
+    authorize_agent_access(&caller, &state, &agent_id_bytes, &id)?;
 
     let (period_label, period_days) = parse_subtree_burn_period(params.period.as_deref());
 

@@ -375,3 +375,141 @@ async fn test_webhook_returns_502_connector_failed() {
     assert_eq!(body["connector_body"], "Invalid token");
     mock.assert();
 }
+
+// ---------------------------------------------------------------------------
+// AAASM-3688 — destination handlers require read/write scope, and the webhook
+// secret_header is never returned in cleartext.
+// ---------------------------------------------------------------------------
+
+use aa_api::auth::config::AuthMode;
+use aa_api::auth::scope::Scope;
+
+fn bearer_json(method: &str, uri: &str, token: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
+fn bearer_empty(method: &str, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token,
+            webhook_payload("hook", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not create a destination"
+    );
+}
+
+#[tokio::test]
+async fn delete_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_empty("DELETE", "/api/v1/alerts/destinations/dst_x", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not delete a destination"
+    );
+}
+
+#[tokio::test]
+async fn update_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_json(
+            "PUT",
+            "/api/v1/alerts/destinations/dst_x",
+            &token,
+            json!({ "enabled": false }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not update a destination"
+    );
+}
+
+#[tokio::test]
+async fn webhook_secret_header_is_not_returned_in_cleartext() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    // A write caller creates a webhook destination with a secret.
+    let write_token = common::generate_test_jwt("w", &[Scope::Write]);
+    let payload = json!({
+        "name": "hook",
+        "kind": "webhook",
+        "config": { "url": "https://example.com/hook", "secret_header": "shh" },
+        "enabled": true,
+    });
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &write_token,
+            payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    // The create response must not echo the raw secret.
+    assert_ne!(
+        created["config"]["secret_header"], "shh",
+        "create response leaked the raw webhook secret"
+    );
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // A read caller fetching the destination must not receive the raw secret.
+    let read_token = common::generate_test_jwt("r", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            &read_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fetched = body_json(resp).await;
+    assert_ne!(
+        fetched["config"]["secret_header"], "shh",
+        "GET response leaked the raw webhook secret in cleartext"
+    );
+}
