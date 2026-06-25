@@ -337,11 +337,15 @@ pub async fn delete_agent(
     tag = "agents"
 )]
 pub async fn suspend_agent(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<SuspendRequest>,
 ) -> Result<(StatusCode, Json<SuspendResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3726: write-scope + tenant ownership before suspending.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     let previous_status = state
         .agent_registry
