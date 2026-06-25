@@ -127,6 +127,8 @@ jobs:
             ebpf:
               - 'aa-ebpf*/**'
               - '.github/workflows/ci.yml'
+              - 'scripts/build-ebpf-probes.sh'
+              - '.github/workflows/release.yml'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
