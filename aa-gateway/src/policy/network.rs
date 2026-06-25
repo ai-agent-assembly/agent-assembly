@@ -80,11 +80,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_allowlist_allows_any_host() {
+    fn empty_allowlist_denies_any_host() {
+        // AAASM-3728/AAASM-3730: a configured-but-empty allowlist is deny-all.
         let np = list(&[]);
         let d = check_network_egress("evil.attacker.net", Some(&np));
-        assert!(d.allowed);
-        assert!(d.reason.contains("empty"));
+        assert!(!d.allowed);
+        assert!(d.reason.contains("deny all egress"));
     }
 
     #[test]
