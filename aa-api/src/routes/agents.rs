@@ -385,10 +385,14 @@ pub async fn suspend_agent(
     tag = "agents"
 )]
 pub async fn resume_agent(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<ResumeResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3726: write-scope + tenant ownership before resuming.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     let current_status = state
         .agent_registry
