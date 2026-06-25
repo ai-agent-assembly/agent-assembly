@@ -696,6 +696,7 @@ fn parse_subtree_burn_period(s: Option<&str>) -> (&'static str, u32) {
     tag = "agents"
 )]
 pub async fn get_agent_subtree_burn(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<SubtreeBurnParams>,
@@ -703,9 +704,10 @@ pub async fn get_agent_subtree_burn(
     let agent_id_bytes = parse_agent_id(&id)?;
     let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
 
-    if state.agent_registry.get(&agent_id_bytes).is_none() {
-        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
-    }
+    // AAASM-3687: read-scope + tenant ownership — the subtree-burn series
+    // exposes per-child spend / topology, so a cross-tenant caller must not
+    // read another team's agent. Mirrors get_agent_budget.
+    authorize_agent_access(&caller, &state, &agent_id_bytes, &id)?;
 
     let (period_label, period_days) = parse_subtree_burn_period(params.period.as_deref());
 
