@@ -157,6 +157,47 @@ impl CredentialKind {
             Self::Custom => "Custom",
         }
     }
+
+    /// Relative confidence of this kind when two overlapping findings are
+    /// coalesced into one span.
+    ///
+    /// When several detectors match the same byte region (e.g. a GitHub PAT is
+    /// also flagged as a `GenericHighEntropy` token, or a database URL embeds an
+    /// `EmailAddress`), the merged span must carry the label of the most
+    /// specific, highest-confidence detector — never a generic backstop. A
+    /// higher number wins. Specific literal-prefix and PEM detectors and
+    /// policy-defined `Custom` patterns outrank the generic
+    /// `GenericHighEntropy` / `EmailAddress` heuristics.
+    fn priority(&self) -> u8 {
+        match self {
+            // Generic / heuristic backstops — lowest confidence.
+            Self::GenericHighEntropy => 0,
+            Self::EmailAddress => 1,
+            // Specific, high-signal detectors — they identify the exact
+            // credential kind and must win over the generic backstops above.
+            Self::AnthropicKey
+            | Self::AwsAccessKey
+            | Self::AzureConnectionString
+            | Self::CreditCardLuhn
+            | Self::EcPrivateKey
+            | Self::GcpServiceAccount
+            | Self::GitHubAppToken
+            | Self::GitHubPat
+            | Self::MongodbUrl
+            | Self::MysqlUrl
+            | Self::OpenAiKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PostgresUrl
+            | Self::PrivateKey
+            | Self::RsaPrivateKey
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackUserToken
+            | Self::SsnPattern
+            | Self::Custom => 2,
+        }
+    }
 }
 
 /// A single detected credential finding.
@@ -365,17 +406,23 @@ struct MergedSpan {
     offset: usize,
     end: usize,
     label: String,
+    /// Kind whose `label` the span currently carries — retained so a later
+    /// overlapping finding of higher [`CredentialKind::priority`] can claim the
+    /// merged span's label.
+    kind: CredentialKind,
 }
 
 /// Coalesce findings into non-overlapping, offset-ordered spans.
 ///
 /// Findings are sorted by `(offset, end)` and any subsequent finding whose
 /// `offset` falls before the current span's `end` is merged into it (extending
-/// the span's `end` to the maximum). The merged span keeps the label of the
-/// earliest finding in the run — the highest-priority kind, since `scan` orders
-/// the literal-prefix passes ahead of the generic high-entropy backstop and
-/// `AC_PATTERNS` is itself priority-ordered. This guarantees `redact` never
-/// leaves a region partially replaced, so no raw secret fragment can survive.
+/// the span's `end` to the maximum, i.e. the union of overlapping spans so no
+/// raw secret fragment can survive). The merged span carries the label of the
+/// highest-[`CredentialKind::priority`] finding in the run, so a specific,
+/// high-confidence detector (e.g. `GitHubPat`, `PostgresUrl`) always wins over a
+/// generic backstop (`GenericHighEntropy`, `EmailAddress`) regardless of byte
+/// offset. This guarantees `redact` never leaves a region partially replaced and
+/// never downgrades a credential's label to a less specific kind.
 fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
     let mut sorted: Vec<&CredentialFinding> = findings.iter().collect();
     sorted.sort_by_key(|f| (f.offset, f.end));
@@ -383,15 +430,20 @@ fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
     let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
     for f in sorted {
         match merged.last_mut() {
-            // Overlapping (or touching) the current span — extend it, keep the
-            // earliest finding's label.
+            // Overlapping (or touching) the current span — extend it to the
+            // union and adopt the higher-priority kind's label.
             Some(last) if f.offset < last.end => {
                 last.end = last.end.max(f.end);
+                if f.kind.priority() > last.kind.priority() {
+                    last.label = f.matched.clone();
+                    last.kind = f.kind.clone();
+                }
             }
             _ => merged.push(MergedSpan {
                 offset: f.offset,
                 end: f.end,
                 label: f.matched.clone(),
+                kind: f.kind.clone(),
             }),
         }
     }
