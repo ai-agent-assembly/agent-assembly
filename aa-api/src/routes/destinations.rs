@@ -366,7 +366,7 @@ pub async fn update_destination(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
-    let req = parse_update_body(&body)?;
+    let mut req = parse_update_body(&body)?;
     if let Some(cfg) = &req.config {
         validate_config(cfg).map_err(validation_error_to_problem)?;
     }
@@ -375,6 +375,27 @@ pub async fn update_destination(
             return Err(validation_error_to_problem(ValidationError::InvalidConfig(
                 "name must be non-empty",
             )));
+        }
+    }
+
+    // AAASM-3751: `get_destination` masks the webhook `secret_header` to
+    // `SECRET_MASK`. A GET → edit → PUT round-trip would otherwise write that
+    // literal sentinel back, clobbering the real stored secret. When the
+    // incoming secret equals the mask, preserve the existing stored secret
+    // instead of overwriting it.
+    if let Some(DestinationConfig::Webhook {
+        secret_header: Some(incoming),
+        ..
+    }) = &req.config
+    {
+        if incoming == SECRET_MASK {
+            let stored_secret = match state.destination_store.get(&id).map(|d| d.config) {
+                Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
+                _ => None,
+            };
+            if let Some(DestinationConfig::Webhook { secret_header, .. }) = &mut req.config {
+                *secret_header = stored_secret;
+            }
         }
     }
 
