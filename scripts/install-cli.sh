@@ -135,8 +135,17 @@ verify_signature() {
 
 latest_release() {
   need curl
-  tag=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" \
+  # Prefer the latest stable (non-prerelease) release. Stderr is silenced because a
+  # 404 here is expected (and benign) when no stable release exists yet — see fallback.
+  tag=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+  # Fall back to the newest release overall when no stable release exists yet:
+  # the 0.0.1 series ships entirely as pre-releases, which /releases/latest skips
+  # (it 404s when every release is a pre-release), so resolve the newest from the list.
+  if [ -z "$tag" ]; then
+    tag=$(curl -sSf "https://api.github.com/repos/${REPO}/releases?per_page=1" \
+      | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+  fi
   [ -n "$tag" ] || err "could not determine latest release — does ${REPO} have a published release?"
   echo "$tag"
 }
