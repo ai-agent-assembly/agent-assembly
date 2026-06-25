@@ -12,6 +12,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::auth::scope::{RequireRead, RequireWrite};
 use crate::destinations::connectors::slack::SlackConnector;
 use crate::destinations::connectors::webhook::WebhookConnector;
 use crate::destinations::connectors::{ConnectorError, DispatchRequest, NotificationConnector};
@@ -49,12 +50,29 @@ pub struct DestinationResponse {
     pub updated_at: String,
 }
 
+/// Sentinel returned in place of a configured webhook secret. The real value is
+/// write-only (accepted on create/update, never returned).
+const SECRET_MASK: &str = "********";
+
 impl From<Destination> for DestinationResponse {
     fn from(d: Destination) -> Self {
+        // AAASM-3688: never return the webhook `secret_header` in cleartext.
+        // Mask it to a fixed sentinel when set so the response still signals
+        // that a secret is configured, without leaking the value.
+        let config = match d.config {
+            DestinationConfig::Webhook {
+                url,
+                secret_header: Some(_),
+            } => DestinationConfig::Webhook {
+                url,
+                secret_header: Some(SECRET_MASK.to_string()),
+            },
+            other => other,
+        };
         Self {
             id: d.id,
             name: d.name,
-            config: d.config,
+            config,
             enabled: d.enabled,
             created_at: d.created_at,
             updated_at: d.updated_at,
@@ -257,6 +275,7 @@ impl IntoResponse for TestDestinationFailure {
     tag = "alert-destinations"
 )]
 pub async fn list_destinations(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Query(filter): Query<DestinationListFilter>,
 ) -> Json<Vec<DestinationResponse>> {
@@ -285,6 +304,7 @@ pub async fn list_destinations(
     tag = "alert-destinations"
 )]
 pub async fn create_destination(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<DestinationResponse>), ProblemDetail> {
@@ -315,6 +335,7 @@ pub async fn create_destination(
     tag = "alert-destinations"
 )]
 pub async fn get_destination(
+    _auth: RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
@@ -340,6 +361,7 @@ pub async fn get_destination(
     tag = "alert-destinations"
 )]
 pub async fn update_destination(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Bytes,
@@ -383,6 +405,7 @@ pub async fn update_destination(
     tag = "alert-destinations"
 )]
 pub async fn delete_destination(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
@@ -412,6 +435,7 @@ pub async fn delete_destination(
     tag = "alert-destinations"
 )]
 pub async fn test_destination(
+    _auth: RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Option<Json<TestDestinationRequest>>,
