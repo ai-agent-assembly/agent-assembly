@@ -513,3 +513,85 @@ async fn webhook_secret_header_is_not_returned_in_cleartext() {
         "GET response leaked the raw webhook secret in cleartext"
     );
 }
+
+#[tokio::test]
+async fn update_with_masked_secret_preserves_stored_secret() {
+    // AAASM-3751: GET masks `secret_header` to a fixed sentinel. A
+    // GET → edit → PUT round-trip resubmits that sentinel; the update must
+    // PRESERVE the real stored secret rather than clobber it with the mask.
+    // Verified end-to-end: after the masked round-trip, a test-fire must still
+    // ship the ORIGINAL secret in the `X-AAASM-Token` header.
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(MOCK_POST).path("/hook").header("X-AAASM-Token", "shh");
+        then.status(200).body("ok");
+    });
+
+    let app = common::test_app();
+
+    // Create a webhook destination carrying a real secret.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({
+                "name": "hook",
+                "kind": "webhook",
+                "config": { "url": server.url("/hook"), "secret_header": "shh" },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // GET returns the secret masked to the sentinel.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/alerts/destinations/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let fetched = body_json(resp).await;
+    let masked = fetched["config"]["secret_header"].as_str().unwrap().to_string();
+    assert_eq!(masked, "********", "GET should mask the secret to the sentinel");
+
+    // PUT the fetched config back verbatim (the classic edit-in-place flow):
+    // the masked sentinel is resubmitted alongside an unrelated name change.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            json!({
+                "name": "hook-renamed",
+                "kind": "webhook",
+                "config": { "url": server.url("/hook"), "secret_header": masked },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Fire a test notification: the connector must send the ORIGINAL secret,
+    // proving the masked round-trip did not overwrite it with the sentinel.
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/alerts/destinations/{id}/test"),
+            json!({ "severity": "LOW" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // The mock only matches when `X-AAASM-Token: shh` is present — asserting it
+    // was hit proves the real secret survived the masked update.
+    mock.assert();
+}
