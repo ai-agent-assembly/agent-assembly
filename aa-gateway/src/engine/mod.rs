@@ -3408,4 +3408,80 @@ mod tests {
 
         assert!(engine.budget.team_state("ctx-team").is_some());
     }
+
+    // ── AAASM-3729: cascade selected by registered owner, not client claim ───
+
+    /// Build a cascade engine: a Global allow-all baseline plus an
+    /// `org:owner-org`-scoped deny of `bash`.
+    fn cascade_engine_owner_org_denies_bash() -> PolicyEngine {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global-allow-all.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: t-global-allow\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org-owner-deny-bash.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: t-owner-deny-bash\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:owner-org\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads")
+    }
+
+    #[test]
+    fn cascade_uses_registered_org_not_client_forged_org() {
+        // AAASM-3729: an agent registered in `owner-org` (which denies `bash`)
+        // must not escape that policy by forging a different, more permissive
+        // org_id in the request context. The cascade must select the registered
+        // owner's org-scoped deny.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        registry
+            .register(registry_record([0xaa; 16], "owner-team", Some("owner-org")))
+            .expect("register");
+        let engine = cascade_engine_owner_org_denies_bash().with_registry(registry);
+
+        // ctx carries a forged org_id pointing at an org with no deny rules.
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xaa; 16]);
+        ctx.metadata.insert("org_id".to_string(), "permissive-org".to_string());
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "registered owner-org deny must apply despite the client-forged org_id"
+        );
+    }
+
+    #[test]
+    fn cascade_falls_back_to_ctx_org_when_agent_unregistered() {
+        // With no registry record for the agent, the ctx-supplied lineage is
+        // used (untenanted / convert.rs path). An agent claiming owner-org sees
+        // that org's deny; this preserves the pre-registry behaviour.
+        let engine = cascade_engine_owner_org_denies_bash();
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xcc; 16]);
+        ctx.metadata.insert("org_id".to_string(), "owner-org".to_string());
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "unregistered agent falls back to ctx-supplied org lineage"
+        );
+    }
 }
