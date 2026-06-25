@@ -206,16 +206,24 @@ impl ScanResult {
 
     /// Returns a copy of `text` with every finding replaced by its redacted label.
     ///
-    /// Replacements are applied in reverse offset order so earlier byte positions
-    /// remain valid after each splice. The `end` field of each finding records the
-    /// original match boundary and is used here without being exposed in the public API.
+    /// Overlapping findings are first coalesced into non-overlapping byte spans so
+    /// no region is ever partially redacted (which previously left raw secret
+    /// fragments and mangled labels in the output). The merged spans are then
+    /// spliced in reverse offset order so earlier byte positions remain valid
+    /// after each replacement. Spans whose boundaries do not fall on UTF-8
+    /// character boundaries are skipped rather than spliced, making the former
+    /// mid-codepoint panic structurally impossible.
     pub fn redact(&self, text: &str) -> String {
-        let mut sorted: Vec<&CredentialFinding> = self.findings.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.offset));
+        let merged = coalesce_findings(&self.findings);
         let mut result = text.to_string();
-        for finding in sorted {
-            if finding.end <= result.len() && finding.offset <= finding.end {
-                result.replace_range(finding.offset..finding.end, &finding.matched);
+        // Splice merged spans in reverse offset order so earlier positions stay valid.
+        for span in merged.iter().rev() {
+            if span.end <= result.len()
+                && span.offset <= span.end
+                && result.is_char_boundary(span.offset)
+                && result.is_char_boundary(span.end)
+            {
+                result.replace_range(span.offset..span.end, &span.label);
             }
         }
         result
@@ -336,6 +344,44 @@ impl CredentialScanner {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// A single non-overlapping byte span to be replaced by `redact`.
+struct MergedSpan {
+    offset: usize,
+    end: usize,
+    label: String,
+}
+
+/// Coalesce findings into non-overlapping, offset-ordered spans.
+///
+/// Findings are sorted by `(offset, end)` and any subsequent finding whose
+/// `offset` falls before the current span's `end` is merged into it (extending
+/// the span's `end` to the maximum). The merged span keeps the label of the
+/// earliest finding in the run — the highest-priority kind, since `scan` orders
+/// the literal-prefix passes ahead of the generic high-entropy backstop and
+/// `AC_PATTERNS` is itself priority-ordered. This guarantees `redact` never
+/// leaves a region partially replaced, so no raw secret fragment can survive.
+fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
+    let mut sorted: Vec<&CredentialFinding> = findings.iter().collect();
+    sorted.sort_by_key(|f| (f.offset, f.end));
+
+    let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
+    for f in sorted {
+        match merged.last_mut() {
+            // Overlapping (or touching) the current span — extend it, keep the
+            // earliest finding's label.
+            Some(last) if f.offset < last.end => {
+                last.end = last.end.max(f.end);
+            }
+            _ => merged.push(MergedSpan {
+                offset: f.offset,
+                end: f.end,
+                label: f.matched.clone(),
+            }),
+        }
+    }
+    merged
+}
 
 /// Returns the byte index of the first token-terminating character at or after
 /// `from`. Token terminators are whitespace and common delimiters.
