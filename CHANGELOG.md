@@ -5,6 +5,35 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.1] — 2026-06-26 (pre-release)
+
+> **Not for production use.** First **release candidate** in the v0.0.1 series,
+> promoting the channel from `0.0.1-beta.4`. A security-hardening + release-QA
+> cut; no API, ABI, or wire-protocol stability commitment at `0.x.y`.
+
+### Security
+
+- **AAASM-3726** — REST agent-lifecycle handlers (delete/suspend/resume +
+  subtree-burn) gated with write-scope + tenant ownership (IDOR closed).
+- **AAASM-3728** — network egress fails closed on an empty allowlist (cascade
+  and single-file paths share one fail-closed helper).
+- **AAASM-3689** — credential scanner / redaction hardening (case/whitespace
+  variant detection, overlapping-finding coalescing, no fragment leaks).
+- **AAASM-3751** — policy cascade + budget lineage anchored to the credential
+  token's registered owner (defense-in-depth); webhook `secret_header` masked
+  in destination responses and preserved on masked round-trip.
+
+### Fixed
+
+- **AAASM-3732** install script, **AAASM-3733** `latest/` channel alias,
+  **AAASM-3736** dashboard partial-data guards, **AAASM-3719** SonarCloud
+  residuals.
+
+### Changed
+
+- Workspace + inter-crate path-dependency versions bumped `0.0.1-beta.4` →
+  `0.0.1-rc.1` (path-dep pins realigned to the release version).
+
 ## [0.0.1-beta.4] — 2026-06-24 (pre-release)
 
 > **Not for production use.** Fourth pre-release in the v0.0.1 beta
