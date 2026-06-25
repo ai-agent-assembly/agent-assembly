@@ -1058,6 +1058,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coalesce_keeps_specific_kind_label_over_generic() {
+        // A GitHub PAT is also flagged as GenericHighEntropy over the same token.
+        // The GenericHighEntropy finding starts at the earlier offset, but the
+        // merged span must carry the specific GitHubPat label, not the generic
+        // backstop — kind priority wins over offset order.
+        let scanner = CredentialScanner::new();
+        let text = "token=ghp_abcdefABCDEF0123456789ABCDEF0123456789";
+        let result = scanner.scan(text);
+        // Sanity: both detectors fired over the same region.
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat),
+            "expected a GitHubPat finding: {:?}",
+            result.findings
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "expected a GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(text);
+        assert!(
+            redacted.contains("[REDACTED:GitHubPat]"),
+            "merged label must be the specific GitHubPat kind, not GenericHighEntropy: {redacted}"
+        );
+        assert!(
+            !redacted.contains("GenericHighEntropy"),
+            "generic backstop label must not win over a specific detector: {redacted}"
+        );
+        assert!(!redacted.contains("ghp_"), "raw token survived: {redacted}");
+    }
+
+    #[test]
+    fn coalesce_keeps_db_url_label_over_embedded_email() {
+        // A database URL embeds an EmailAddress-shaped span (user@host). The
+        // merged span must keep the specific PostgresUrl label, not collapse to
+        // the generic EmailAddress backstop.
+        let scanner = CredentialScanner::new();
+        let text = "DATABASE_URL=postgres://user:password@db.internal:5432/mydb";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert_eq!(
+            redacted, "[REDACTED:PostgresUrl]",
+            "db-url region must redact to the specific PostgresUrl label: {redacted}"
+        );
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
+    }
+
     // --- CredentialKind::Custom and CredentialFinding::from_regex_match ---
 
     #[test]
