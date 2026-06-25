@@ -353,6 +353,43 @@ impl PolicyServiceImpl {
             let agent_key = proto_agent_id_to_key(proto_agent);
             if let Some(record) = registry.get(&agent_key) {
                 ctx.governance_level = record.governance_level;
+
+                // AAASM-3751: anchor the policy-cascade lineage AND budget
+                // tenancy to the registered owner. The engine's
+                // `authoritative_lineage` / `authoritative_tenancy` look the
+                // owner up by `registry.lineage(ctx.agent_id.as_bytes())` /
+                // `registry.get(ctx.agent_id.as_bytes())`, but `ctx.agent_id`
+                // is the BARE `hash_to_16(agent_id)` (left intact so
+                // `PolicyScope::Agent` matching + the eval cache key stay
+                // correct), not the composite registry key. So those lookups
+                // miss and the engine falls back to the client-supplied
+                // `ctx` values — which are forgeable. The engine cannot
+                // recompute the composite key from `ctx` alone, so we deposit
+                // the registered owner's lineage HERE, where both the
+                // composite key and the record are available, overwriting any
+                // client-supplied `org_id` / `team_id`. This anchors both the
+                // cascade (AAASM-3729) and budget tenancy (AAASM-3138) to the
+                // registered owner. (For UNREGISTERED agents — no record — the
+                // existing client-supplied fallback is intentionally preserved
+                // to support untenanted deployments.)
+                match record.org_id {
+                    Some(org) => {
+                        ctx.metadata.insert("org_id".into(), org);
+                    }
+                    None => {
+                        ctx.metadata.remove("org_id");
+                    }
+                }
+                match record.team_id {
+                    Some(team) => {
+                        ctx.team_id = Some(team.clone());
+                        ctx.metadata.insert("team_id".into(), team);
+                    }
+                    None => {
+                        ctx.team_id = None;
+                        ctx.metadata.remove("team_id");
+                    }
+                }
             }
         }
 
