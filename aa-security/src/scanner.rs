@@ -563,16 +563,25 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     let mut offset = 0usize;
     for token in text.split_whitespace() {
         let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
-        let token_end_pos = token_offset + token.len();
+        let whitespace_end = token_offset + token.len();
         let len = token.len();
         if (20..=64).contains(&len) && shannon_entropy(token) > 4.5 {
+            // The whitespace token can still carry trailing delimiters when a
+            // secret is embedded in structured text (e.g. `...key"}]}` in compact
+            // JSON). Clamp the finding's `end` at the first token-terminating
+            // character so the span covers only the credential — matching how the
+            // AC literal scan derives its `end`. Detection (offset, count, kind)
+            // is unchanged; only the span boundary is tightened so that once
+            // `redact` coalesces this with an overlapping specific finding, the
+            // merged span no longer swallows valid trailing bytes.
+            let end = token_end(text, token_offset);
             findings.push(CredentialFinding::new(
                 CredentialKind::GenericHighEntropy,
                 token_offset,
-                token_end_pos,
+                end,
             ));
         }
-        offset = token_end_pos;
+        offset = whitespace_end;
     }
 }
 
