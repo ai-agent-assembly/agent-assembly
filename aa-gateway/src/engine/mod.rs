@@ -1867,6 +1867,55 @@ mod tests {
     }
 
     #[test]
+    fn network_empty_allowlist_denies_all_egress() {
+        // AAASM-3728: the single-file path failed OPEN on an empty allowlist
+        // (returned None ⇒ allow-all). A configured `network:` clause with an
+        // empty allowlist must deny ALL egress (fail-closed).
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy { allowlist: vec![] });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = network_req("https://api.openai.com/v1");
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            },
+            "empty allowlist must deny all egress, not allow it"
+        );
+    }
+
+    #[test]
+    fn network_wildcard_allows_subdomain_on_single_file_path() {
+        // AAASM-3728: the single-file path used exact-match only (`entry ==
+        // host`), so a `*.openai.com` allowlist entry never matched and denied
+        // traffic the operator believed allowed. It must now honour the
+        // wildcard-aware shared matcher, like the cascade path.
+        let mut doc = empty_doc();
+        doc.network = Some(NetworkPolicy {
+            allowlist: vec!["*.openai.com".to_string()],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine
+                .evaluate(&ctx, &network_req("https://chat.openai.com/v1"))
+                .decision,
+            PolicyResult::Allow,
+            "wildcard *.openai.com must match chat.openai.com"
+        );
+        assert_eq!(
+            engine
+                .evaluate(&ctx, &network_req("https://evil.attacker.net/x"))
+                .decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            },
+            "a non-matching host must still be denied"
+        );
+    }
+
+    #[test]
     fn tool_deny_blocks_call() {
         let mut doc = empty_doc();
         doc.tools.insert(
