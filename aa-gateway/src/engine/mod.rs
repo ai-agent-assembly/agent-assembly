@@ -3413,7 +3413,16 @@ mod tests {
 
     /// Build a cascade engine: a Global allow-all baseline plus an
     /// `org:owner-org`-scoped deny of `bash`.
-    fn cascade_engine_owner_org_denies_bash() -> PolicyEngine {
+    ///
+    /// Returns the owning [`tempfile::TempDir`] alongside the engine: the
+    /// directory MUST outlive the engine. `load_cascade_from_dir_with_budget`
+    /// starts a live filesystem watcher on the directory, and dropping the
+    /// `TempDir` deletes those `*.yaml` files. If the guard were dropped at the
+    /// helper boundary, the watcher would race to re-read the now-empty
+    /// directory and atomically swap in an empty (allow-all) cascade — making
+    /// `evaluate` nondeterministically see Allow instead of the org-scoped Deny
+    /// under CI parallelism (AAASM-3729 follow-up).
+    fn cascade_engine_owner_org_denies_bash() -> (PolicyEngine, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("000-global-allow-all.yaml"),
@@ -3437,7 +3446,8 @@ mod tests {
             None,
             chrono_tz::UTC,
         ));
-        PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads")
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("cascade loads");
+        (engine, tmp)
     }
 
     #[test]
@@ -3450,7 +3460,10 @@ mod tests {
         registry
             .register(registry_record([0xaa; 16], "owner-team", Some("owner-org")))
             .expect("register");
-        let engine = cascade_engine_owner_org_denies_bash().with_registry(registry);
+        // `_tmp` keeps the cascade directory alive for the whole test so the
+        // live watcher never re-reads a deleted dir mid-evaluate (AAASM-3729).
+        let (engine, _tmp) = cascade_engine_owner_org_denies_bash();
+        let engine = engine.with_registry(registry);
 
         // ctx carries a forged org_id pointing at an org with no deny rules.
         let mut ctx = make_ctx();
@@ -3471,7 +3484,9 @@ mod tests {
         // With no registry record for the agent, the ctx-supplied lineage is
         // used (untenanted / convert.rs path). An agent claiming owner-org sees
         // that org's deny; this preserves the pre-registry behaviour.
-        let engine = cascade_engine_owner_org_denies_bash();
+        // `_tmp` keeps the cascade directory alive for the whole test so the
+        // live watcher never re-reads a deleted dir mid-evaluate (AAASM-3729).
+        let (engine, _tmp) = cascade_engine_owner_org_denies_bash();
         let mut ctx = make_ctx();
         ctx.agent_id = AgentId::from_bytes([0xcc; 16]);
         ctx.metadata.insert("org_id".to_string(), "owner-org".to_string());
