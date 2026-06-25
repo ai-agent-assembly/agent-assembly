@@ -150,16 +150,11 @@ jobs:
           rustup component add rust-src --toolchain nightly
           OUT="$GITHUB_WORKSPACE/ebpf-objects"
           mkdir -p "$OUT"
-          rustup run nightly cargo build --release \
-            --manifest-path aa-ebpf-probes/Cargo.toml \
-            --target-dir "$OUT/target" || {
-              echo "::error::eBPF probe compilation failed — cannot produce integrity manifest"
-              exit 1
-            }
-          REL="$OUT/target/bpfel-unknown-none/release"
-          for obj in aa-file-io aa-exec-probes aa-tls-probes; do
-            cp "$REL/$obj" "$OUT/$obj"
-          done
+          # AAASM-3712: build + stage via the shared script (single source of
+          # truth with ci.yml's ebpf-build job). The script builds from inside
+          # aa-ebpf-probes/ so .cargo/config.toml (bpfel-unknown-none target +
+          # build-std=core) applies, and installs bpf-linker if missing.
+          bash scripts/build-ebpf-probes.sh "$OUT"
           ls -l "$OUT"
 
       - name: Upload eBPF probe objects (Linux x86_64 — AAASM-3601)
