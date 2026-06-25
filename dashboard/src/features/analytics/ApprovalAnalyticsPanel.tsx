@@ -54,19 +54,19 @@ export function ApprovalAnalyticsPanel() {
           <div className="approval-analytics-panel__stats">
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {data.volume.toLocaleString()}
+                {(data.volume ?? 0).toLocaleString()}
               </span>
               <span className="approval-analytics-panel__stat-label">Total volume</span>
             </div>
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {formatTta(data.medianTta)}
+                {formatTta(data.medianTta ?? 0)}
               </span>
               <span className="approval-analytics-panel__stat-label">Median TTA</span>
             </div>
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {formatRate(data.approvalRate)}
+                {formatRate(data.approvalRate ?? 0)}
               </span>
               <span className="approval-analytics-panel__stat-label">Approval rate</span>
             </div>
