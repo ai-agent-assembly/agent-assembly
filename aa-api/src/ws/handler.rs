@@ -68,7 +68,7 @@ pub async fn ws_events_handler(
 
 /// Drive a single WebSocket connection: replay, then stream live events.
 async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState) {
-    let (sender, mut receiver) = socket.split();
+    let (sender, receiver) = socket.split();
     let sender = std::sync::Arc::new(tokio::sync::Mutex::new(sender));
 
     let allowed_types = params.event_types();
@@ -93,60 +93,102 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     let mut ops_change_rx = state.events.subscribe_ops_change();
 
     let live_sender = sender.clone();
-    let ping_sender = sender.clone();
 
-    // Spawn ping/pong keep-alive task.
+    // Spawn ping/pong keep-alive + reader tasks. `pong_received` is shared:
+    // the reader sets it on each Pong, the ping task checks-and-clears it.
     let pong_received = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let pong_flag = pong_received.clone();
-
-    let ping_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(PING_INTERVAL).await;
-            // Check that client responded to the previous ping.
-            if !pong_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::debug!("pong timeout — closing WebSocket");
-                let _ = ping_sender.lock().await.close().await;
-                return;
-            }
-            pong_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-            if ping_sender
-                .lock()
-                .await
-                .send(Message::Ping(Bytes::new()))
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-
-    // Spawn reader task to track pong responses and detect client close.
-    let reader_pong = pong_received.clone();
-    let reader_handle = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
-                Message::Pong(_) => {
-                    reader_pong.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    });
+    let ping_handle = tokio::spawn(ping_loop(sender.clone(), pong_received.clone()));
+    let reader_handle = tokio::spawn(reader_loop(receiver, pong_received));
 
     // Event sequence counter for GovernanceEvent ids.
     let next_id = state.next_event_id.clone();
 
-    // Main event dispatch loop.
+    // Main event dispatch loop. Drains live channels until one of them closes
+    // or the client goes away; the keep-alive/reader tasks run alongside.
+    dispatch_live_events(DispatchCtx {
+        state: &state,
+        sender: &live_sender,
+        next_id: &next_id,
+        allowed_types: &allowed_types,
+        agent_filter: agent_filter.as_deref(),
+        pipeline_rx: &mut pipeline_rx,
+        approval_rx: &mut approval_rx,
+        approval_expiry_rx: &mut approval_expiry_rx,
+        budget_rx: &mut budget_rx,
+        ops_change_rx: &mut ops_change_rx,
+    })
+    .await;
+
+    ping_handle.abort();
+    reader_handle.abort();
+}
+
+/// Shared sink handle for the WebSocket: an `Arc<Mutex<…>>` so the ping task,
+/// the dispatch loop, and the replay path can all send frames concurrently.
+type SharedSender = std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>;
+
+/// Server-initiated keep-alive task. Every [`PING_INTERVAL`] it verifies the
+/// client answered the previous ping (closing the socket on timeout), then
+/// clears the flag and sends a fresh ping. Returns when the socket closes or a
+/// send fails — i.e. the client is gone.
+async fn ping_loop(sender: SharedSender, pong_flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    loop {
+        tokio::time::sleep(PING_INTERVAL).await;
+        // Check that client responded to the previous ping.
+        if !pong_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!("pong timeout — closing WebSocket");
+            let _ = sender.lock().await.close().await;
+            return;
+        }
+        pong_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        if sender.lock().await.send(Message::Ping(Bytes::new())).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Reader task: records each client Pong (so [`ping_loop`] sees the connection
+/// is alive) and stops on a client Close frame. Other inbound frames are ignored.
+async fn reader_loop(
+    mut receiver: futures::stream::SplitStream<WebSocket>,
+    pong_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    while let Some(Ok(msg)) = receiver.next().await {
+        match msg {
+            Message::Pong(_) => pong_flag.store(true, std::sync::atomic::Ordering::Relaxed),
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+}
+
+/// Borrowed context for [`dispatch_live_events`]. Bundles the per-connection
+/// state and the five live receivers so the dispatch loop has a flat signature.
+struct DispatchCtx<'a> {
+    state: &'a AppState,
+    sender: &'a SharedSender,
+    next_id: &'a std::sync::atomic::AtomicU64,
+    allowed_types: &'a [EventType],
+    agent_filter: Option<&'a str>,
+    pipeline_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::pipeline::event::PipelineEvent>,
+    approval_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    approval_expiry_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    budget_rx: &'a mut tokio::sync::broadcast::Receiver<aa_gateway::budget::types::BudgetAlert>,
+    ops_change_rx: &'a mut tokio::sync::broadcast::Receiver<crate::events::OpsChangeBroadcast>,
+}
+
+/// Main live-event dispatch loop: pulls the next event from any channel, buffers
+/// it for replay, applies the client's filters, and sends it. Terminates when
+/// every channel has closed or a send fails (the client is gone).
+async fn dispatch_live_events(ctx: DispatchCtx<'_>) {
     loop {
         let Some(event) = next_governance_event(
-            &next_id,
-            &mut pipeline_rx,
-            &mut approval_rx,
-            &mut approval_expiry_rx,
-            &mut budget_rx,
-            &mut ops_change_rx,
+            ctx.next_id,
+            ctx.pipeline_rx,
+            ctx.approval_rx,
+            ctx.approval_expiry_rx,
+            ctx.budget_rx,
+            ctx.ops_change_rx,
         )
         .await
         else {
@@ -154,19 +196,16 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
         };
 
         // Store in replay buffer before filtering.
-        state.replay_buffer.push(event.clone());
+        ctx.state.replay_buffer.push(event.clone());
 
-        if !matches_filter(&event, &allowed_types, agent_filter.as_deref()) {
+        if !matches_filter(&event, ctx.allowed_types, ctx.agent_filter) {
             continue;
         }
 
-        if send_event(&live_sender, &event).await.is_err() {
+        if send_event(ctx.sender, &event).await.is_err() {
             break;
         }
     }
-
-    ping_handle.abort();
-    reader_handle.abort();
 }
 
 /// Await the next event from any of the five live broadcast channels and map it
