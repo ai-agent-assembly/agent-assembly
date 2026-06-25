@@ -878,6 +878,62 @@ mod tests {
         assert!(scanner.scan("Hello, world! No secrets here.").is_clean());
     }
 
+    // --- AAASM-3689: overlapping-findings redaction must not leak fragments ---
+
+    #[test]
+    fn redact_overlapping_findings_leaks_no_secret_fragment() {
+        // A GitHub PAT embedded in an email-shaped string, adjacent to a
+        // postgres URL — the AC-prefix, email, and high-entropy passes produce
+        // overlapping byte ranges over the same region. Pre-fix this spliced
+        // mangled labels and left raw secret bytes (e.g. "stgresUrl]]").
+        let scanner = CredentialScanner::new();
+        let text = "user@ghp_tokenAAAAAAAAAAAAAAAAAAAAAAAA.example.com_postgres://x:y@h/d";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+
+        // No raw secret fragment from a matched region survives.
+        assert!(!redacted.contains("ghp_"), "raw GitHub PAT prefix leaked: {redacted}");
+        assert!(!redacted.contains("postgres://"), "raw postgres URL leaked: {redacted}");
+        assert!(!redacted.contains("tokenAAAA"), "raw token body leaked: {redacted}");
+        assert!(!redacted.contains("stgresUrl"), "mangled-splice secret fragment leaked: {redacted}");
+        // Output contains only well-formed redaction labels — no mangled splices.
+        assert!(redacted.contains("[REDACTED:"));
+        assert!(!redacted.contains("]]"), "malformed nested label produced: {redacted}");
+        // Every '[REDACTED:' opener has a matching ']' closer with a known kind —
+        // a mangled splice would have left an opener without a clean close.
+        for label in redacted.match_indices("[REDACTED:").map(|(i, _)| &redacted[i..]) {
+            let close = label.find(']').expect("redaction label must be closed");
+            let kind = &label["[REDACTED:".len()..close];
+            assert!(!kind.is_empty(), "empty/mangled redaction kind in: {redacted}");
+        }
+    }
+
+    #[test]
+    fn redact_overlap_at_multibyte_boundary_does_not_panic() {
+        // Overlapping matches whose region spans multi-byte UTF-8 codepoints.
+        // Pre-fix, an overlap boundary landing mid-codepoint panicked in
+        // replace_range; the char-boundary guard now makes this impossible.
+        let scanner = CredentialScanner::new();
+        let text = "postgres://é:é@hosté.com sk-ant-éXXXXXXXXXXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        // Must not panic, and must not leave the raw scheme behind.
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
+    }
+
+    #[test]
+    fn redact_adjacent_overlapping_findings_merge_into_one_span() {
+        // Two findings sharing an offset (prefix + high-entropy over the same
+        // token) coalesce so the token is replaced exactly once, not double-spliced.
+        let scanner = CredentialScanner::new();
+        let text = "tok=ghp_abcdefABCDEF0123456789ABCDEF0123456789 done";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghp_"));
+        assert!(!redacted.contains("abcdefABCDEF"), "raw token body leaked: {redacted}");
+        assert!(redacted.contains(" done"), "trailing context must be preserved: {redacted}");
+    }
+
     // --- CredentialKind::Custom and CredentialFinding::from_regex_match ---
 
     #[test]
