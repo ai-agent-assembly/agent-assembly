@@ -49,12 +49,29 @@ pub struct DestinationResponse {
     pub updated_at: String,
 }
 
+/// Sentinel returned in place of a configured webhook secret. The real value is
+/// write-only (accepted on create/update, never returned).
+const SECRET_MASK: &str = "********";
+
 impl From<Destination> for DestinationResponse {
     fn from(d: Destination) -> Self {
+        // AAASM-3688: never return the webhook `secret_header` in cleartext.
+        // Mask it to a fixed sentinel when set so the response still signals
+        // that a secret is configured, without leaking the value.
+        let config = match d.config {
+            DestinationConfig::Webhook {
+                url,
+                secret_header: Some(_),
+            } => DestinationConfig::Webhook {
+                url,
+                secret_header: Some(SECRET_MASK.to_string()),
+            },
+            other => other,
+        };
         Self {
             id: d.id,
             name: d.name,
-            config: d.config,
+            config,
             enabled: d.enabled,
             created_at: d.created_at,
             updated_at: d.updated_at,
