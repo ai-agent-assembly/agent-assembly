@@ -802,25 +802,17 @@ impl PolicyEngine {
     /// single-policy pipeline (`evaluate_primary`) when no scoped policies are
     /// present, preserving full backward compatibility.
     pub fn evaluate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
-        // AAASM-2023 — resolve lineage from ctx FIRST (convert.rs already
-        // deposits proto.org_id / proto.team_id into ctx.metadata) before
-        // falling back to a registry lookup. The registry-keyed-by-composite
-        // path doesn't match `ctx.agent_id` (which is hashed from just the
-        // agent_id string), so without this preference org-scoped cascades
-        // would never see the agent's org_id.
-        let ctx_lineage = crate::registry::Lineage {
-            org_id: ctx.metadata.get("org_id").cloned(),
-            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
-            ..Default::default()
-        };
-        let lineage = if ctx_lineage.org_id.is_some() || ctx_lineage.team_id.is_some() {
-            ctx_lineage
-        } else {
-            self.registry
-                .as_ref()
-                .and_then(|r| r.lineage(ctx.agent_id.as_bytes()))
-                .unwrap_or_default()
-        };
+        // AAASM-3729: the policy cascade is selected by the agent's (org, team)
+        // lineage, so that lineage MUST be authoritative tenancy — the agent's
+        // *registered* owner — not values the client asserted in the request.
+        // Trusting client-supplied `org_id` / `team_id` lets a caller name a
+        // tenant whose scoped policy is more permissive (e.g. an org with no
+        // deny rules) and thereby DOWNGRADE the policy that applies to it.
+        // Resolve from the registry by agent_id first; fall back to the
+        // ctx-supplied lineage only when no registry is attached or the agent
+        // is unregistered (untenanted / pre-registry deployments, and the
+        // convert.rs path where the agent isn't keyed in the registry).
+        let lineage = self.authoritative_lineage(ctx);
         let cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
 
         // Backward-compat: no scoped policies loaded → use primary policy only.
@@ -1377,6 +1369,29 @@ impl PolicyEngine {
         let team_id = ctx.team_id.clone();
         let org_id = ctx.metadata.get("org_id").cloned();
         (team_id, org_id)
+    }
+
+    /// Resolve the policy-cascade lineage (`org_id` / `team_id` + delegation
+    /// chain) for `ctx` from the authoritative agent registry, falling back to
+    /// the client-supplied `ctx` lineage only when no registry is attached or
+    /// the agent is not registered.
+    ///
+    /// AAASM-3729: the registered owner is the trust anchor for cascade
+    /// *selection* — a client must not be able to point evaluation at a more
+    /// permissive tenant's policy by forging `org_id` / `team_id` in the
+    /// request context. Mirrors [`Self::authoritative_tenancy`] (AAASM-3138),
+    /// which already keys budget spend on the registered owner.
+    fn authoritative_lineage(&self, ctx: &aa_core::AgentContext) -> crate::registry::Lineage {
+        if let Some(registry) = self.registry.as_ref() {
+            if let Some(lineage) = registry.lineage(ctx.agent_id.as_bytes()) {
+                return lineage;
+            }
+        }
+        crate::registry::Lineage {
+            org_id: ctx.metadata.get("org_id").cloned(),
+            team_id: ctx.team_id.clone().or_else(|| ctx.metadata.get("team_id").cloned()),
+            ..Default::default()
+        }
     }
 
     /// Check whether an agent is within both daily and monthly budget limits.
