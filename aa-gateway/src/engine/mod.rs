@@ -3456,6 +3456,15 @@ mod tests {
         // must not escape that policy by forging a different, more permissive
         // org_id in the request context. The cascade must select the registered
         // owner's org-scoped deny.
+        //
+        // NOTE (AAASM-3751): this test registers the record at the *bare*
+        // `ctx.agent_id` key so the engine's `authoritative_lineage` registry
+        // lookup hits directly — it verifies the engine's registry-first
+        // *preference* in isolation. In production the registry is keyed by the
+        // COMPOSITE `proto_agent_id_to_key`, which the engine cannot recompute
+        // from `ctx`; that wiring (the actual cross-tenant bug) is covered by
+        // the service-level `forged_org_cannot_downgrade_to_permissive_cascade`
+        // test in `tests/cascade_forged_org_test.rs`.
         let registry = Arc::new(crate::registry::AgentRegistry::new());
         registry
             .register(registry_record([0xaa; 16], "owner-team", Some("owner-org")))
