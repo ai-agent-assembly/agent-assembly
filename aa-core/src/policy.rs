@@ -622,4 +622,28 @@ mod egress_tests {
         assert!(is_host_allowed_by_egress_allowlist("api.anthropic.com", &list));
         assert!(!is_host_allowed_by_egress_allowlist("api.cohere.com", &list));
     }
+
+    // AAASM-3730: fail-closed matcher — empty allowlist DENIES all hosts.
+    use super::is_host_allowed_by_egress_allowlist_fail_closed as fail_closed;
+
+    #[test]
+    fn fail_closed_empty_allowlist_denies_every_host() {
+        assert!(!fail_closed("api.openai.com", &[]));
+        assert!(!fail_closed("evil.attacker.net", &[]));
+    }
+
+    #[test]
+    fn fail_closed_non_empty_matches_like_default_matcher() {
+        let list = vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("chat.anthropic.com", &list));
+        assert!(!fail_closed("evil.attacker.net", &list));
+    }
+
+    #[test]
+    fn fail_closed_universal_wildcard_still_allows_any_host() {
+        let list = vec!["*".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("evil.attacker.net", &list));
+    }
 }
