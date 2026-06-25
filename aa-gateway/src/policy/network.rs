@@ -23,9 +23,15 @@ pub struct EgressDecision {
 /// Evaluate `host` against the network policy's allowlist.
 ///
 /// When `policy` is `None` (no `network:` clause in the YAML), the host is
-/// allowed — the caller's default-open posture wins. When the policy is set
-/// but the allowlist is empty, the host is also allowed (an empty list means
-/// "no restriction").
+/// allowed — the caller's default-open posture wins.
+///
+/// AAASM-3728/AAASM-3730: when the policy IS set but the allowlist is empty,
+/// the host is **denied**. A configured `network:` clause means egress is
+/// governed; an empty allowlist is the most restrictive posture ("permit
+/// nothing"), not "no restriction". This wrapper must agree with the live
+/// enforcement paths (`engine::decision::stage_network` /
+/// `PolicyEngine::eval_network_stage`) so the dashboard/REST/CLI "would this
+/// host be allowed?" answer never disagrees with what the engine actually does.
 ///
 /// Glob semantics match `aa_core::policy::is_host_allowed_by_egress_allowlist`:
 /// exact case-insensitive match, leftmost-label wildcard (`*.example.com`),
@@ -37,11 +43,11 @@ pub fn check_network_egress(host: &str, policy: Option<&NetworkPolicy>) -> Egres
             reason: "no network policy configured".into(),
         },
         Some(np) if np.allowlist.is_empty() => EgressDecision {
-            allowed: true,
-            reason: "network allowlist empty (no restriction)".into(),
+            allowed: false,
+            reason: "network allowlist empty (deny all egress)".into(),
         },
         Some(np) => {
-            if aa_core::policy::is_host_allowed_by_egress_allowlist(host, &np.allowlist) {
+            if aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(host, &np.allowlist) {
                 EgressDecision {
                     allowed: true,
                     reason: format!("host matches network allowlist ({} pattern(s))", np.allowlist.len()),
