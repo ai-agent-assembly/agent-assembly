@@ -55,7 +55,7 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-axum-test = "20"
+axum-test = "21"
 futures = { workspace = true }
 hmac = { workspace = true }
 httpmock = "0.8"
