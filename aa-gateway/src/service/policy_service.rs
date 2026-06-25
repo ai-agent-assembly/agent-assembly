@@ -344,50 +344,55 @@ impl PolicyServiceImpl {
             Status::invalid_argument(e.to_string())
         })?;
 
-        // Populate `ctx.governance_level` from the registered `AgentRecord`
-        // so level-conditional policy rules (e.g. `governance_level >= L2`)
-        // see the agent's actual level instead of the proto-default. Falls
-        // back to whatever default `request_to_core` produced when the
-        // registry is not attached or the agent is not registered.
-        if let (Some(registry), Some(proto_agent)) = (&self.registry, req.agent_id.as_ref()) {
-            let agent_key = proto_agent_id_to_key(proto_agent);
-            if let Some(record) = registry.get(&agent_key) {
-                ctx.governance_level = record.governance_level;
-
-                // AAASM-3751: anchor the policy-cascade lineage AND budget
-                // tenancy to the registered owner. The engine's
-                // `authoritative_lineage` / `authoritative_tenancy` look the
-                // owner up by `registry.lineage(ctx.agent_id.as_bytes())` /
-                // `registry.get(ctx.agent_id.as_bytes())`, but `ctx.agent_id`
-                // is the BARE `hash_to_16(agent_id)` (left intact so
-                // `PolicyScope::Agent` matching + the eval cache key stay
-                // correct), not the composite registry key. So those lookups
-                // miss and the engine falls back to the client-supplied
-                // `ctx` values — which are forgeable. The engine cannot
-                // recompute the composite key from `ctx` alone, so we deposit
-                // the registered owner's lineage HERE, where both the
-                // composite key and the record are available, overwriting any
-                // client-supplied `org_id` / `team_id`. This anchors both the
-                // cascade (AAASM-3729) and budget tenancy (AAASM-3138) to the
-                // registered owner. (For UNREGISTERED agents — no record — the
-                // existing client-supplied fallback is intentionally preserved
-                // to support untenanted deployments.)
-                match record.org_id {
-                    Some(org) => {
-                        ctx.metadata.insert("org_id".into(), org);
+        // AAASM-3751: anchor `ctx.governance_level` AND the policy-cascade /
+        // budget lineage to the agent that OWNS the presented credential token,
+        // never to the client-supplied (forgeable) `agent_id` triple.
+        //
+        // Looking the record up by the *claimed* composite key
+        // (`proto_agent_id_to_key`) is useless against forgery: a forged
+        // `org_id` changes the key and simply misses the registry, while a
+        // key-HIT means the claimed org already equals the registered org
+        // (tautological). Either way the engine's `authoritative_lineage` /
+        // `authoritative_tenancy` fall back to the client-supplied `ctx`
+        // values. `validate_credential_token` (run before evaluation) already
+        // rejects a forged triple presented with a valid token as
+        // impersonation, so the reported cross-tenant downgrade is not
+        // exploitable by a credentialed caller. This deposit is therefore
+        // DEFENSE-IN-DEPTH: resolve the owner from the credential token and
+        // deposit ITS registered `governance_level` / `org_id` / `team_id`,
+        // overwriting any client-supplied lineage, so a credentialed agent is
+        // always evaluated against its registered owner's cascade (AAASM-3729)
+        // and budget tenancy (AAASM-3138).
+        //
+        // `ctx.agent_id` is left untouched so `PolicyScope::Agent` matching and
+        // the eval cache key stay correct. A tokenless request, or one whose
+        // token owns no registered agent, keeps the existing client-supplied
+        // fallback (untenanted / unregistered deployments — the parked
+        // AAASM-3416 residual); it is NOT denied here.
+        if let Some(registry) = &self.registry {
+            if !req.credential_token.is_empty() {
+                if let Some(record) = registry
+                    .find_by_credential_token(&req.credential_token)
+                    .and_then(|owner_key| registry.get(&owner_key))
+                {
+                    ctx.governance_level = record.governance_level;
+                    match record.org_id {
+                        Some(org) => {
+                            ctx.metadata.insert("org_id".into(), org);
+                        }
+                        None => {
+                            ctx.metadata.remove("org_id");
+                        }
                     }
-                    None => {
-                        ctx.metadata.remove("org_id");
-                    }
-                }
-                match record.team_id {
-                    Some(team) => {
-                        ctx.team_id = Some(team.clone());
-                        ctx.metadata.insert("team_id".into(), team);
-                    }
-                    None => {
-                        ctx.team_id = None;
-                        ctx.metadata.remove("team_id");
+                    match record.team_id {
+                        Some(team) => {
+                            ctx.team_id = Some(team.clone());
+                            ctx.metadata.insert("team_id".into(), team);
+                        }
+                        None => {
+                            ctx.team_id = None;
+                            ctx.metadata.remove("team_id");
+                        }
                     }
                 }
             }
