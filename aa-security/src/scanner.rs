@@ -30,6 +30,13 @@ const AC_PATTERNS: &[&str] = &[
     "-----BEGIN OPENSSH PRIVATE KEY-----",   // 15 OpensshPrivateKey
     "-----BEGIN PRIVATE KEY-----",           // 16 PrivateKey
     "-----BEGIN PGP PRIVATE KEY BLOCK-----", // 17 PgpPrivateKey
+    // AAASM-3727: GCP service-account JSON whitespace variants. A compact
+    // serializer emits no space after the colon, and some emit a space before
+    // it; index 3's single-space literal misses both. These map to the same
+    // GcpServiceAccount kind so the realistic serialized forms are all caught.
+    "\"type\":\"service_account\"",   // 18 GcpServiceAccount (compact, no space)
+    "\"type\" :\"service_account\"",  // 19 GcpServiceAccount (space before colon)
+    "\"type\" : \"service_account\"", // 20 GcpServiceAccount (spaces around colon)
 ];
 
 /// Maps AC pattern index → [`CredentialKind`].
@@ -52,6 +59,9 @@ const AC_KINDS: &[CredentialKind] = &[
     CredentialKind::OpensshPrivateKey,     // 15
     CredentialKind::PrivateKey,            // 16
     CredentialKind::PgpPrivateKey,         // 17
+    CredentialKind::GcpServiceAccount,     // 18 (compact JSON)
+    CredentialKind::GcpServiceAccount,     // 19 (space before colon)
+    CredentialKind::GcpServiceAccount,     // 20 (spaces around colon)
 ];
 
 // ---------------------------------------------------------------------------
@@ -147,6 +157,47 @@ impl CredentialKind {
             Self::Custom => "Custom",
         }
     }
+
+    /// Relative confidence of this kind when two overlapping findings are
+    /// coalesced into one span.
+    ///
+    /// When several detectors match the same byte region (e.g. a GitHub PAT is
+    /// also flagged as a `GenericHighEntropy` token, or a database URL embeds an
+    /// `EmailAddress`), the merged span must carry the label of the most
+    /// specific, highest-confidence detector — never a generic backstop. A
+    /// higher number wins. Specific literal-prefix and PEM detectors and
+    /// policy-defined `Custom` patterns outrank the generic
+    /// `GenericHighEntropy` / `EmailAddress` heuristics.
+    fn priority(&self) -> u8 {
+        match self {
+            // Generic / heuristic backstops — lowest confidence.
+            Self::GenericHighEntropy => 0,
+            Self::EmailAddress => 1,
+            // Specific, high-signal detectors — they identify the exact
+            // credential kind and must win over the generic backstops above.
+            Self::AnthropicKey
+            | Self::AwsAccessKey
+            | Self::AzureConnectionString
+            | Self::CreditCardLuhn
+            | Self::EcPrivateKey
+            | Self::GcpServiceAccount
+            | Self::GitHubAppToken
+            | Self::GitHubPat
+            | Self::MongodbUrl
+            | Self::MysqlUrl
+            | Self::OpenAiKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PostgresUrl
+            | Self::PrivateKey
+            | Self::RsaPrivateKey
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackUserToken
+            | Self::SsnPattern
+            | Self::Custom => 2,
+        }
+    }
 }
 
 /// A single detected credential finding.
@@ -206,16 +257,24 @@ impl ScanResult {
 
     /// Returns a copy of `text` with every finding replaced by its redacted label.
     ///
-    /// Replacements are applied in reverse offset order so earlier byte positions
-    /// remain valid after each splice. The `end` field of each finding records the
-    /// original match boundary and is used here without being exposed in the public API.
+    /// Overlapping findings are first coalesced into non-overlapping byte spans so
+    /// no region is ever partially redacted (which previously left raw secret
+    /// fragments and mangled labels in the output). The merged spans are then
+    /// spliced in reverse offset order so earlier byte positions remain valid
+    /// after each replacement. Spans whose boundaries do not fall on UTF-8
+    /// character boundaries are skipped rather than spliced, making the former
+    /// mid-codepoint panic structurally impossible.
     pub fn redact(&self, text: &str) -> String {
-        let mut sorted: Vec<&CredentialFinding> = self.findings.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.offset));
+        let merged = coalesce_findings(&self.findings);
         let mut result = text.to_string();
-        for finding in sorted {
-            if finding.end <= result.len() && finding.offset <= finding.end {
-                result.replace_range(finding.offset..finding.end, &finding.matched);
+        // Splice merged spans in reverse offset order so earlier positions stay valid.
+        for span in merged.iter().rev() {
+            if span.end <= result.len()
+                && span.offset <= span.end
+                && result.is_char_boundary(span.offset)
+                && result.is_char_boundary(span.end)
+            {
+                result.replace_range(span.offset..span.end, &span.label);
             }
         }
         result
@@ -285,6 +344,11 @@ impl CredentialScanner {
 
         let ac = AhoCorasick::builder()
             .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+            // AAASM-3727: scheme prefixes (postgres://), PEM headers, and the
+            // GCP JSON key are case-insensitive in the wild (RFC 3986 schemes,
+            // lower/mixed-case PEM). Match case-insensitively so case variants
+            // cannot bypass detection. Prefixes like AKIA / ghp_ stay high-signal.
+            .ascii_case_insensitive(true)
             .build(&all_patterns)
             .expect("AC patterns are always valid");
 
@@ -336,6 +400,55 @@ impl CredentialScanner {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// A single non-overlapping byte span to be replaced by `redact`.
+struct MergedSpan {
+    offset: usize,
+    end: usize,
+    label: String,
+    /// Kind whose `label` the span currently carries — retained so a later
+    /// overlapping finding of higher [`CredentialKind::priority`] can claim the
+    /// merged span's label.
+    kind: CredentialKind,
+}
+
+/// Coalesce findings into non-overlapping, offset-ordered spans.
+///
+/// Findings are sorted by `(offset, end)` and any subsequent finding whose
+/// `offset` falls before the current span's `end` is merged into it (extending
+/// the span's `end` to the maximum, i.e. the union of overlapping spans so no
+/// raw secret fragment can survive). The merged span carries the label of the
+/// highest-[`CredentialKind::priority`] finding in the run, so a specific,
+/// high-confidence detector (e.g. `GitHubPat`, `PostgresUrl`) always wins over a
+/// generic backstop (`GenericHighEntropy`, `EmailAddress`) regardless of byte
+/// offset. This guarantees `redact` never leaves a region partially replaced and
+/// never downgrades a credential's label to a less specific kind.
+fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
+    let mut sorted: Vec<&CredentialFinding> = findings.iter().collect();
+    sorted.sort_by_key(|f| (f.offset, f.end));
+
+    let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
+    for f in sorted {
+        match merged.last_mut() {
+            // Overlapping (or touching) the current span — extend it to the
+            // union and adopt the higher-priority kind's label.
+            Some(last) if f.offset < last.end => {
+                last.end = last.end.max(f.end);
+                if f.kind.priority() > last.kind.priority() {
+                    last.label = f.matched.clone();
+                    last.kind = f.kind.clone();
+                }
+            }
+            _ => merged.push(MergedSpan {
+                offset: f.offset,
+                end: f.end,
+                label: f.matched.clone(),
+                kind: f.kind.clone(),
+            }),
+        }
+    }
+    merged
+}
 
 /// Returns the byte index of the first token-terminating character at or after
 /// `from`. Token terminators are whitespace and common delimiters.
@@ -450,16 +563,25 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     let mut offset = 0usize;
     for token in text.split_whitespace() {
         let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
-        let token_end_pos = token_offset + token.len();
+        let whitespace_end = token_offset + token.len();
         let len = token.len();
         if (20..=64).contains(&len) && shannon_entropy(token) > 4.5 {
+            // The whitespace token can still carry trailing delimiters when a
+            // secret is embedded in structured text (e.g. `...key"}]}` in compact
+            // JSON). Clamp the finding's `end` at the first token-terminating
+            // character so the span covers only the credential — matching how the
+            // AC literal scan derives its `end`. Detection (offset, count, kind)
+            // is unchanged; only the span boundary is tightened so that once
+            // `redact` coalesces this with an overlapping specific finding, the
+            // merged span no longer swallows valid trailing bytes.
+            let end = token_end(text, token_offset);
             findings.push(CredentialFinding::new(
                 CredentialKind::GenericHighEntropy,
                 token_offset,
-                token_end_pos,
+                end,
             ));
         }
-        offset = token_end_pos;
+        offset = whitespace_end;
     }
 }
 
@@ -546,6 +668,57 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::GcpServiceAccount));
+    }
+
+    // --- AAASM-3727: case / whitespace bypass variants ---
+
+    #[test]
+    fn detects_gcp_service_account_compact_json() {
+        // Compact serializer output (no space after the colon) must be caught.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{"type":"service_account","project_id":"p"}"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "compact GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_gcp_service_account_spaces_around_colon() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{ "type" : "service_account" }"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "spaced-colon GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_postgres_url_uppercase_scheme() {
+        // RFC 3986 schemes are case-insensitive; an upper-case scheme must not bypass.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("DATABASE_URL=POSTGRES://user:password@host:5432/db");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::PostgresUrl),
+            "upper-case POSTGRES:// scheme must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_lowercase_pem_private_key_header() {
+        let scanner = CredentialScanner::new();
+        let result =
+            scanner.scan("-----begin rsa private key-----\nMIIEpAIBAAKCAQEA...\n-----end rsa private key-----");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::RsaPrivateKey),
+            "lower-case PEM header must be detected"
+        );
     }
 
     // --- Auth token patterns ---
@@ -830,6 +1003,119 @@ mod tests {
     fn is_clean_true_for_benign_text() {
         let scanner = CredentialScanner::new();
         assert!(scanner.scan("Hello, world! No secrets here.").is_clean());
+    }
+
+    // --- AAASM-3689: overlapping-findings redaction must not leak fragments ---
+
+    #[test]
+    fn redact_overlapping_findings_leaks_no_secret_fragment() {
+        // A GitHub PAT embedded in an email-shaped string, adjacent to a
+        // postgres URL — the AC-prefix, email, and high-entropy passes produce
+        // overlapping byte ranges over the same region. Pre-fix this spliced
+        // mangled labels and left raw secret bytes (e.g. "stgresUrl]]").
+        let scanner = CredentialScanner::new();
+        let text = "user@ghp_tokenAAAAAAAAAAAAAAAAAAAAAAAA.example.com_postgres://x:y@h/d";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+
+        // No raw secret fragment from a matched region survives.
+        assert!(!redacted.contains("ghp_"), "raw GitHub PAT prefix leaked: {redacted}");
+        assert!(!redacted.contains("postgres://"), "raw postgres URL leaked: {redacted}");
+        assert!(!redacted.contains("tokenAAAA"), "raw token body leaked: {redacted}");
+        assert!(
+            !redacted.contains("stgresUrl"),
+            "mangled-splice secret fragment leaked: {redacted}"
+        );
+        // Output contains only well-formed redaction labels — no mangled splices.
+        assert!(redacted.contains("[REDACTED:"));
+        assert!(!redacted.contains("]]"), "malformed nested label produced: {redacted}");
+        // Every '[REDACTED:' opener has a matching ']' closer with a known kind —
+        // a mangled splice would have left an opener without a clean close.
+        for label in redacted.match_indices("[REDACTED:").map(|(i, _)| &redacted[i..]) {
+            let close = label.find(']').expect("redaction label must be closed");
+            let kind = &label["[REDACTED:".len()..close];
+            assert!(!kind.is_empty(), "empty/mangled redaction kind in: {redacted}");
+        }
+    }
+
+    #[test]
+    fn redact_overlap_at_multibyte_boundary_does_not_panic() {
+        // Overlapping matches whose region spans multi-byte UTF-8 codepoints.
+        // Pre-fix, an overlap boundary landing mid-codepoint panicked in
+        // replace_range; the char-boundary guard now makes this impossible.
+        let scanner = CredentialScanner::new();
+        let text = "postgres://é:é@hosté.com sk-ant-éXXXXXXXXXXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        // Must not panic, and must not leave the raw scheme behind.
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
+    }
+
+    #[test]
+    fn redact_adjacent_overlapping_findings_merge_into_one_span() {
+        // Two findings sharing an offset (prefix + high-entropy over the same
+        // token) coalesce so the token is replaced exactly once, not double-spliced.
+        let scanner = CredentialScanner::new();
+        let text = "tok=ghp_abcdefABCDEF0123456789ABCDEF0123456789 done";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghp_"));
+        assert!(!redacted.contains("abcdefABCDEF"), "raw token body leaked: {redacted}");
+        assert!(
+            redacted.contains(" done"),
+            "trailing context must be preserved: {redacted}"
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_specific_kind_label_over_generic() {
+        // A GitHub PAT is also flagged as GenericHighEntropy over the same token.
+        // The GenericHighEntropy finding starts at the earlier offset, but the
+        // merged span must carry the specific GitHubPat label, not the generic
+        // backstop — kind priority wins over offset order.
+        let scanner = CredentialScanner::new();
+        let text = "token=ghp_abcdefABCDEF0123456789ABCDEF0123456789";
+        let result = scanner.scan(text);
+        // Sanity: both detectors fired over the same region.
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat),
+            "expected a GitHubPat finding: {:?}",
+            result.findings
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "expected a GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(text);
+        assert!(
+            redacted.contains("[REDACTED:GitHubPat]"),
+            "merged label must be the specific GitHubPat kind, not GenericHighEntropy: {redacted}"
+        );
+        assert!(
+            !redacted.contains("GenericHighEntropy"),
+            "generic backstop label must not win over a specific detector: {redacted}"
+        );
+        assert!(!redacted.contains("ghp_"), "raw token survived: {redacted}");
+    }
+
+    #[test]
+    fn coalesce_keeps_db_url_label_over_embedded_email() {
+        // A database URL embeds an EmailAddress-shaped span (user@host). The
+        // merged span must keep the specific PostgresUrl label, not collapse to
+        // the generic EmailAddress backstop.
+        let scanner = CredentialScanner::new();
+        let text = "DATABASE_URL=postgres://user:password@db.internal:5432/mydb";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert_eq!(
+            redacted, "[REDACTED:PostgresUrl]",
+            "db-url region must redact to the specific PostgresUrl label: {redacted}"
+        );
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
     }
 
     // --- CredentialKind::Custom and CredentialFinding::from_regex_match ---
