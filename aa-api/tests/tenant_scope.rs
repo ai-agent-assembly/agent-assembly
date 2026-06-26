@@ -823,3 +823,30 @@ async fn pause_op_cross_tenant_is_403() {
         "cross-tenant op pause is denied"
     );
 }
+
+// AAASM-3790 — resume_op is a mutation that took no caller.
+#[tokio::test]
+async fn resume_op_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xD3, "beta")).unwrap();
+    state.ops_registry.ingest_with_agent(
+        "op-beta-resume".to_string(),
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: "beta".to_string(),
+            agent_id: hex_id(0xD3),
+        },
+    );
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/ops/op-beta-resume/resume", &token, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant op resume is denied"
+    );
+}
