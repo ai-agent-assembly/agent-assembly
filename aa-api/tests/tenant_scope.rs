@@ -14,6 +14,7 @@ use tower::ServiceExt;
 use aa_api::auth::config::AuthMode;
 use aa_api::auth::scope::Scope;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
+use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_runtime::approval::ApprovalRequest;
 
 /// Build a pending `ApprovalRequest` owned by `team`.
@@ -284,6 +285,36 @@ async fn list_approvals_is_scoped_to_caller_team() {
         "a team-scoped caller sees only its own team's approvals"
     );
     assert_eq!(items[0]["team_id"], "alpha");
+}
+
+// AAASM-3790 — ops pause/resume/terminate took no caller; any authenticated key
+// could drive another team's operations.
+#[tokio::test]
+async fn terminate_op_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xD1, "beta")).unwrap();
+    // Register an op whose owning agent belongs to team "beta".
+    state.ops_registry.ingest_with_agent(
+        "op-beta".to_string(),
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: "beta".to_string(),
+            agent_id: hex_id(0xD1),
+        },
+    );
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to "alpha" must not terminate a "beta" op.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/ops/op-beta/terminate", &token, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant op terminate is denied"
+    );
 }
 
 // ---------------------------------------------------------------------------
