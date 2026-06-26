@@ -153,8 +153,11 @@ jobs:
           # Tags:
           #   <lang>:<version>                    — moving tag, always.
           #   <lang>:<version>-<ref_name>         — immutable product-version tag.
-          #     Only meaningful on tag push (where push: true); on PR, ref_name
-          #     is the PR merge ref and the image is loaded locally, not pushed.
+          #     Emitted ONLY on a v* tag push, where ref_name is the release tag
+          #     (e.g. v0.0.1-beta.4). On a PR, ref_name is the merge ref
+          #     (e.g. `1257/merge`) whose `/` is an illegal Docker tag character
+          #     and would fail the build, so the immutable tag is omitted on PRs
+          #     (the image is loaded locally for smoke under the moving tag anyway).
           #   <lang>:latest                       — only for is_latest entries.
           # The `:latest` tag is only pushed by matrix entries flagged with
           # `is_latest: true` (the F114 pin per language). Without this gate,
@@ -163,7 +166,7 @@ jobs:
           # variant" AC bullet. See AAASM-1446.
           tags: |
             ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
-            ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}-${{ github.ref_name }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/ai-agent-assembly/{0}:{1}-{2}', matrix.lang, matrix.version, github.ref_name) || '' }}
             ${{ matrix.is_latest && format('ghcr.io/ai-agent-assembly/{0}:latest', matrix.lang) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
