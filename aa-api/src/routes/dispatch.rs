@@ -296,3 +296,94 @@ fn unix_now_ns() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_gateway::secrets::Secret;
+    use tokio::sync::mpsc;
+
+    /// Build the fully-wired in-memory AppState used by the native dispatch path.
+    fn state() -> AppState {
+        AppState::local_in_memory().expect("in-memory state builds")
+    }
+
+    fn req(args: serde_json::Value) -> DispatchToolRequest {
+        DispatchToolRequest {
+            tool: "call_database".to_string(),
+            args,
+        }
+    }
+
+    #[tokio::test]
+    async fn passthrough_args_without_placeholders() {
+        let st = state();
+        let body = req(serde_json::json!({"query": "SELECT 1"}));
+        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+        // No `${...}` tokens: args echoed verbatim, nothing substituted, no sandbox.
+        assert_eq!(resp.resolved_args, serde_json::json!({"query": "SELECT 1"}));
+        assert!(resp.names_substituted.is_empty());
+        assert!(resp.sandbox.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolves_registered_placeholder() {
+        let st = state();
+        st.secrets_store
+            .register(Secret {
+                name: "DB_PASSWORD".to_string(),
+                value: "real-secret".to_string(),
+            })
+            .expect("register secret");
+
+        let body = req(serde_json::json!({"password": "${DB_PASSWORD}"}));
+        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+
+        assert_eq!(resp.resolved_args, serde_json::json!({"password": "real-secret"}));
+        assert_eq!(resp.names_substituted, vec!["DB_PASSWORD".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn unknown_placeholder_is_422() {
+        let st = state();
+        let body = req(serde_json::json!({"token": "${MISSING}"}));
+        let err = dispatch_tool(Extension(st), Json(body))
+            .await
+            .expect_err("unknown placeholder rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        assert!(err.detail.unwrap().contains("MISSING"));
+    }
+
+    #[tokio::test]
+    async fn emits_audit_entry_with_placeholder_form_args() {
+        let mut st = state();
+        let (tx, mut rx) = mpsc::channel(8);
+        st.audit_sender = Some(tx);
+
+        let body = req(serde_json::json!({"q": "noop"}));
+        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+        assert!(resp.names_substituted.is_empty());
+
+        // The audit path runs only when audit_sender is wired; an entry must be queued.
+        let entry = rx.try_recv().expect("audit entry emitted when sender is connected");
+        // Native dispatch emits with zero-byte identifiers (no per-dispatch context).
+        assert_eq!(entry.agent_id(), AgentId::from_bytes([0u8; 16]));
+    }
+
+    #[test]
+    fn sandbox_error_outcomes_carry_variant_name() {
+        // Pure mapping: every SandboxError variant projects to ok=false with its
+        // discriminant name; FilesystemBlocked additionally carries the errno.
+        let fs = sandbox_error_to_outcome(&SandboxError::FilesystemBlocked { errno: 13 });
+        assert!(!fs.ok);
+        assert_eq!(fs.error.as_deref(), Some("FilesystemBlocked"));
+        assert_eq!(fs.errno, Some(13));
+
+        let cpu = sandbox_error_to_outcome(&SandboxError::CpuTimeout);
+        assert_eq!(cpu.error.as_deref(), Some("CpuTimeout"));
+        assert!(cpu.errno.is_none());
+
+        let invalid = sandbox_error_to_outcome(&SandboxError::InvalidWasm("bad".to_string()));
+        assert_eq!(invalid.error.as_deref(), Some("InvalidWasm: bad"));
+    }
+}
