@@ -931,3 +931,31 @@ async fn get_alert_cross_tenant_is_403() {
         "cross-tenant alert read is denied"
     );
 }
+
+// AAASM-3790 — silence_alert authenticated but never checked ownership, so any
+// key could suppress another team's alert.
+#[tokio::test]
+async fn silence_alert_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let id = state.alert_store.record(&BudgetAlert {
+        agent_id: aa_core::identity::AgentId::from_bytes([0xE7; 16]),
+        team_id: Some("beta".to_string()),
+        threshold_pct: 95,
+        spent_usd: 9.5,
+        limit_usd: 10.0,
+    });
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to "alpha" must not silence a "beta" alert.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let body = format!(r#"{{"alert_id":"{id}","duration_seconds":60}}"#);
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/alerts/silence", &token, &body))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant alert silence is denied"
+    );
+}
