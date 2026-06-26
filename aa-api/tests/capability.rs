@@ -399,3 +399,56 @@ async fn get_matrix_with_effective_only_excludes_all_na_cells() {
         }
     }
 }
+
+// ── TTL auto-revert (covers the spawned revert task) ──────────────────────────
+
+#[tokio::test]
+async fn apply_override_with_short_ttl_auto_reverts_cell() {
+    use aa_api::models::capability::{Decision, Verb};
+    use aa_api::routes::capability::CapabilityStore;
+    use std::sync::Arc;
+
+    let store = CapabilityStore::new_seeded();
+
+    // Capture the original decision for support-triage / pg / write.
+    let before = store.snapshot().await;
+    let original = before
+        .agents
+        .iter()
+        .find(|a| a.id == "support-triage")
+        .and_then(|a| a.caps.get("pg"))
+        .map(|c| c.write)
+        .expect("seed must include support-triage/pg");
+
+    let req = aa_api::models::capability::CapabilityOverrideRequest {
+        agent_ids: vec!["support-triage".to_string()],
+        resource_id: "pg".to_string(),
+        verb: Verb::Write,
+        decision: Decision::Deny,
+        ttl_seconds: Some(1),
+    };
+    let (_id, _updated) = Arc::clone(&store).apply_override(&req).await.unwrap();
+
+    // Immediately after applying, the cell reflects the override.
+    let during = store.snapshot().await;
+    let during_write = during
+        .agents
+        .iter()
+        .find(|a| a.id == "support-triage")
+        .and_then(|a| a.caps.get("pg"))
+        .map(|c| c.write)
+        .unwrap();
+    assert_eq!(during_write, Decision::Deny);
+
+    // After the TTL elapses the spawned task reverts the cell to its original value.
+    tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+    let after = store.snapshot().await;
+    let after_write = after
+        .agents
+        .iter()
+        .find(|a| a.id == "support-triage")
+        .and_then(|a| a.caps.get("pg"))
+        .map(|c| c.write)
+        .unwrap();
+    assert_eq!(after_write, original, "TTL expiry must restore the original decision");
+}

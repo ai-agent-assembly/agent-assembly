@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use aa_runtime::approval::ApprovalRequest;
+use aa_runtime::approval::{ApprovalRequest, RoutingHistoryEntry};
 
 fn make_approval_request(timeout_secs: u64) -> ApprovalRequest {
     ApprovalRequest {
@@ -522,4 +522,88 @@ async fn reject_action_returns_409_when_already_decided() {
         .as_str()
         .unwrap_or_default()
         .contains("already been decided"));
+}
+
+#[tokio::test]
+async fn list_approvals_includes_routing_status_when_recorded() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+
+    // Record routing metadata so pending_to_response surfaces routing_status.
+    let recorded = state.approval_queue.record_routing(
+        id,
+        "routed".to_string(),
+        Some("oncall".to_string()),
+        Some(1_700_000_100),
+        Some(1_700_000_900),
+        Some(RoutingHistoryEntry {
+            at: 1_700_000_100,
+            action: "routed".to_string(),
+            from_role: None,
+            to_role: "oncall".to_string(),
+        }),
+    );
+    assert!(recorded);
+
+    let app = aa_api::server::build_app(state);
+    let resp = app
+        .oneshot(Request::builder().uri("/api/v1/approvals").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let item = &json["items"][0];
+    assert_eq!(item["routing_status"]["status"], "routed");
+    assert_eq!(item["routing_status"]["target_role"], "oncall");
+    assert_eq!(item["routing_status"]["routed_at"], 1_700_000_100);
+    assert_eq!(item["routing_status"]["escalate_at"], 1_700_000_900);
+    let history = item["routing_status"]["history"].as_array().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0]["action"], "routed");
+    assert_eq!(history[0]["to_role"], "oncall");
+}
+
+#[tokio::test]
+async fn get_approval_includes_routing_status_when_recorded() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+
+    state.approval_queue.record_routing(
+        id,
+        "escalated".to_string(),
+        Some("manager".to_string()),
+        None,
+        None,
+        Some(RoutingHistoryEntry {
+            at: 1_700_000_200,
+            action: "escalated".to_string(),
+            from_role: Some("oncall".to_string()),
+            to_role: "manager".to_string(),
+        }),
+    );
+
+    let app = aa_api::server::build_app(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/approvals/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["routing_status"]["status"], "escalated");
+    assert_eq!(json["routing_status"]["target_role"], "manager");
+    let history = json["routing_status"]["history"].as_array().unwrap();
+    assert_eq!(history[0]["from_role"], "oncall");
 }
