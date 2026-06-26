@@ -10,11 +10,27 @@ use aa_proto::assembly::approval::v1::approval_service_server::ApprovalService;
 use aa_proto::assembly::approval::v1::{
     ApprovalEvent, DecideRequest, DecideResponse, ListPendingRequest, ListPendingResponse, WatchApprovalsRequest,
 };
-use aa_runtime::approval::ApprovalQueue;
+use aa_runtime::approval::{ApprovalLookup, ApprovalQueue, ApprovalRequestId};
 
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
+use crate::iam::VerifiedCaller;
 use crate::service::convert;
+
+/// Tenant-authorization rule for an approval action (AAASM-3788).
+///
+/// A credentialed caller may act on an approval only when the caller and the
+/// approval are not in *different* tenants. When both the caller and the
+/// approval carry a `team_id`, they must match; if either side is untenanted
+/// the action is allowed (the untenanted/single-tenant deployment fallback,
+/// mirroring the policy-service tenancy residual under AAASM-3416). The
+/// interceptor has already guaranteed the caller is authenticated.
+fn caller_may_act_on(caller: &VerifiedCaller, approval_team: Option<&str>) -> bool {
+    match (caller.team_id.as_deref(), approval_team) {
+        (Some(caller_team), Some(approval_team)) => caller_team == approval_team,
+        _ => true,
+    }
+}
 
 /// gRPC service implementation wiring approval RPCs to [`ApprovalQueue`].
 pub struct ApprovalServiceImpl {
@@ -62,15 +78,45 @@ impl ApprovalService for ApprovalServiceImpl {
 
     async fn list_pending(
         &self,
-        _request: Request<ListPendingRequest>,
+        request: Request<ListPendingRequest>,
     ) -> Result<Response<ListPendingResponse>, Status> {
+        // AAASM-3788 — when an authenticated caller is present (the production
+        // interceptor guarantees it), scope the listing to the caller's tenant
+        // so one team cannot enumerate another team's pending approvals.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let pending = self.queue.list();
-        let requests = pending.iter().map(convert::pending_to_proto).collect();
+        let requests = pending
+            .iter()
+            .filter(|p| match &caller {
+                Some(c) => caller_may_act_on(c, p.team_id.as_deref()),
+                None => true,
+            })
+            .map(convert::pending_to_proto)
+            .collect();
         Ok(Response::new(ListPendingResponse { requests }))
     }
 
     async fn decide(&self, request: Request<DecideRequest>) -> Result<Response<DecideResponse>, Status> {
-        let req = request.into_inner();
+        // AAASM-3788 — read the verified caller (injected by the auth
+        // interceptor) before consuming the request.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
+        let mut req = request.into_inner();
+
+        if let Some(caller) = &caller {
+            // Bind the decision to the authenticated approver's tenant: reject a
+            // cross-tenant decide (the governance-bypass primary impact).
+            if let Ok(id) = req.request_id.parse::<ApprovalRequestId>() {
+                if let Some(ApprovalLookup::Pending(pending)) = self.queue.get_by_id(id) {
+                    if !caller_may_act_on(caller, pending.team_id.as_deref()) {
+                        return Err(Status::permission_denied("approval belongs to a different tenant"));
+                    }
+                }
+            }
+            // `decided_by` is derived from the authenticated caller, never
+            // trusted from the request body (which an attacker could forge to
+            // attribute the decision to a spoofed operator in the audit trail).
+            req.decided_by = caller.agent_id_str();
+        }
 
         let (id, decision) =
             convert::decide_request_to_core(&req).map_err(|e| Status::invalid_argument(e.to_string()))?;

@@ -493,21 +493,50 @@ pub async fn serve_tcp(
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
+    // AAASM-3788 — build the agent-plane auth interceptors from the shared
+    // registry before it is moved into the lifecycle service. `auth` is
+    // fail-closed (applied to the previously-unauthenticated services); `enrich`
+    // never rejects (applied to lifecycle/policy, which self-validate the body
+    // token authoritatively, so a verified identity is available without
+    // breaking bootstrap Register / policy optional-enrichment).
+    let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
+    let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     let addr = listen_addr.parse()?;
-    tracing::info!(%addr, "starting gRPC server on TCP");
+
+    // AAASM-3788 — mTLS wire point. The credential-token interceptor above is
+    // the always-on authentication layer; mTLS is optional transport hardening.
+    // The live handshake is a follow-up under AAASM-3418, so when TLS is
+    // *requested* via the environment we fail closed rather than serve plaintext
+    // on a socket the operator believes is encrypted.
+    if let Some(tls) = crate::iam::GrpcTlsConfig::from_env() {
+        return Err(format!(
+            "gRPC TLS requested (mutual={}) via {}/{} but TLS support is not yet \
+             compiled into aa-gateway (tracked under AAASM-3418). Refusing to start \
+             plaintext; unset the TLS env vars to run the default loopback posture.",
+            tls.is_mutual(),
+            crate::iam::grpc_tls::GrpcTlsConfig::ENV_CERT,
+            crate::iam::grpc_tls::GrpcTlsConfig::ENV_KEY,
+        )
+        .into());
+    }
+
+    tracing::info!(%addr, "starting gRPC server on TCP (per-RPC credential auth enforced)");
 
     Server::builder()
-        .add_service(PolicyServiceServer::new(policy_svc))
-        .add_service(AuditServiceServer::new(audit_svc))
-        .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
-        .add_service(ApprovalServiceServer::new(approval_svc))
-        .add_service(TopologyServiceServer::new(topology_svc))
-        .add_service(SecretsServiceServer::new(secrets_svc))
+        .add_service(PolicyServiceServer::with_interceptor(policy_svc, enrich.clone()))
+        .add_service(AuditServiceServer::with_interceptor(audit_svc, auth.clone()))
+        .add_service(AgentLifecycleServiceServer::with_interceptor(
+            lifecycle_svc,
+            enrich.clone(),
+        ))
+        .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
+        .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
+        .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
         .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
             Arc::clone(&invalidation_hub),
         )))
@@ -576,12 +605,17 @@ pub async fn serve_uds(
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
+    // AAASM-3788 — agent-plane auth interceptors (see serve_tcp for the
+    // fail-closed vs enrich rationale). UDS is additionally protected by
+    // filesystem permissions; the credential interceptor is enforced regardless.
+    let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
+    let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
     let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
-    tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS");
+    tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS (per-RPC credential auth enforced)");
 
     if socket_path.exists() {
         std::fs::remove_file(socket_path)?;
@@ -591,12 +625,15 @@ pub async fn serve_uds(
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
     Server::builder()
-        .add_service(PolicyServiceServer::new(policy_svc))
-        .add_service(AuditServiceServer::new(audit_svc))
-        .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
-        .add_service(ApprovalServiceServer::new(approval_svc))
-        .add_service(TopologyServiceServer::new(topology_svc))
-        .add_service(SecretsServiceServer::new(secrets_svc))
+        .add_service(PolicyServiceServer::with_interceptor(policy_svc, enrich.clone()))
+        .add_service(AuditServiceServer::with_interceptor(audit_svc, auth.clone()))
+        .add_service(AgentLifecycleServiceServer::with_interceptor(
+            lifecycle_svc,
+            enrich.clone(),
+        ))
+        .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
+        .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
+        .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
         .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
             Arc::clone(&invalidation_hub),
         )))

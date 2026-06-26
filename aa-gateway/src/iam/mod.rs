@@ -12,3 +12,9 @@
 
 pub mod api_keys;
 pub use api_keys::{ApiKeyEntry, ApiKeyScope, ApiKeyStatus, GeneratedApiKey, IamApiKeyStore, RecentActivityEntry};
+
+pub mod grpc_auth;
+pub use grpc_auth::{auth_interceptor, enrich_interceptor, VerifiedCaller, CREDENTIAL_METADATA_KEY};
+
+pub mod grpc_tls;
+pub use grpc_tls::GrpcTlsConfig;
