@@ -13,6 +13,7 @@ use tower::ServiceExt;
 
 use aa_api::auth::config::AuthMode;
 use aa_api::auth::scope::Scope;
+use aa_api::models::trace::TraceSpan;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_runtime::approval::ApprovalRequest;
@@ -314,6 +315,39 @@ async fn terminate_op_cross_tenant_is_403() {
         response.status(),
         StatusCode::FORBIDDEN,
         "cross-tenant op terminate is denied"
+    );
+}
+
+// AAASM-3790 — get_trace took no caller, so any key could read any session's
+// trace (which exposes another agent's activity).
+#[tokio::test]
+async fn get_trace_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xE1, "beta")).unwrap();
+    let span = TraceSpan {
+        span_id: "s1".to_string(),
+        parent_span_id: None,
+        operation: "tool_call".to_string(),
+        decision: Some("allow".to_string()),
+        start_time: chrono::Utc::now(),
+        end_time: None,
+    };
+    // Record a trace for a session owned by the beta agent.
+    state
+        .trace_store
+        .record_span("session-beta", &hex_id(0xE1), span)
+        .unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let response = app
+        .oneshot(bearer("/api/v1/traces/session-beta", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant trace read is denied"
     );
 }
 
