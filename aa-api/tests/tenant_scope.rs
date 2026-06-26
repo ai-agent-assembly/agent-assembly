@@ -850,3 +850,20 @@ async fn resume_op_cross_tenant_is_403() {
         "cross-tenant op resume is denied"
     );
 }
+
+// AAASM-3790 — get_agent_graph walked any root agent's subgraph.
+#[tokio::test]
+async fn get_agent_graph_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xF4, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/graph", hex_id(0xF4));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant agent graph read is denied"
+    );
+}
