@@ -42,3 +42,33 @@ pub fn dispatch(args: OpenArgs, config: &CliConfig) -> ExitCode {
 
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_fails_when_dashboard_unreachable() {
+        // Serialize env mutation with the crate-wide lock; isolate the PID file
+        // to an empty temp dir so no stale running-dashboard record is found.
+        let _lock = crate::test_support::env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_data = std::env::var_os("AA_DATA_DIR");
+        let prev_port = std::env::var_os("AASM_DASHBOARD_PORT");
+        std::env::set_var("AA_DATA_DIR", tmp.path());
+        std::env::remove_var("AASM_DASHBOARD_PORT");
+
+        // Port 1 is never listening → reqwest::blocking::get fails → FAILURE.
+        let code = dispatch(OpenArgs { port: Some(1) }, &CliConfig::default());
+
+        match prev_data {
+            Some(v) => std::env::set_var("AA_DATA_DIR", v),
+            None => std::env::remove_var("AA_DATA_DIR"),
+        }
+        if let Some(v) = prev_port {
+            std::env::set_var("AASM_DASHBOARD_PORT", v);
+        }
+
+        assert_eq!(code, ExitCode::FAILURE);
+    }
+}

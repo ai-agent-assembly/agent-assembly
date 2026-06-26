@@ -668,4 +668,211 @@ mod tests {
         let (ratio, _) = compute_budget_ratio(&state);
         assert!((ratio - 1.0).abs() < 0.01);
     }
+
+    // ── full-frame rendering via ratatui's in-memory TestBackend ──────────
+    //
+    // These exercise the private panel/overlay draw helpers through the public
+    // `draw` entry point. Rendering into a `TestBackend` buffer lets us assert
+    // the visible text (panel titles, agent names, overlay headings) without a
+    // real terminal, covering the layout/style branches that only run when
+    // state is populated.
+    use crate::commands::dashboard::state::EventEntry;
+    use crate::commands::status::models::{AgentCostEntry, AgentRow, ApprovalResponse, BudgetRow, RuntimeHealth};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn rich_state() -> DashboardState {
+        let mut s = DashboardState::new();
+        s.runtime = RuntimeHealth {
+            reachable: true,
+            status: "ok".to_string(),
+            uptime_secs: 3700,
+            active_connections: 4,
+            pipeline_lag_ms: 12,
+        };
+        s.agents = vec![
+            AgentRow {
+                id: "aabbccddeeff0011".to_string(),
+                name: "agent-one".to_string(),
+                framework: "langgraph".to_string(),
+                status: "Running".to_string(),
+                sessions: 3,
+                violations_today: 1,
+                last_event: "2026-04-30T10:00:00Z".to_string(),
+                layer: "L1".to_string(),
+            },
+            AgentRow {
+                id: "ff".to_string(),
+                name: "agent-two".to_string(),
+                framework: "crewai".to_string(),
+                status: "Error".to_string(),
+                sessions: 0,
+                violations_today: 5,
+                last_event: "-".to_string(),
+                layer: "L2".to_string(),
+            },
+            AgentRow {
+                id: "ee".to_string(),
+                name: "agent-three".to_string(),
+                framework: "custom".to_string(),
+                status: "Idle".to_string(),
+                sessions: 1,
+                violations_today: 0,
+                last_event: "-".to_string(),
+                layer: "L3".to_string(),
+            },
+        ];
+        let now = chrono::Utc::now();
+        s.pending_approvals = vec![
+            // fresh → green countdown, with routing label
+            ApprovalResponse {
+                id: "ap-fresh".to_string(),
+                agent_id: "agent-one".to_string(),
+                action: "refund".to_string(),
+                reason: "amount exceeds limit".to_string(),
+                status: "pending".to_string(),
+                created_at: now.to_rfc3339(),
+                team_id: "team-x".to_string(),
+                routing_status: "routed:team-x".to_string(),
+            },
+            // mid-age → yellow countdown, no routing label
+            ApprovalResponse {
+                id: "ap-mid".to_string(),
+                agent_id: "agent-two".to_string(),
+                action: "delete".to_string(),
+                reason: "risky".to_string(),
+                status: "pending".to_string(),
+                created_at: (now - chrono::Duration::seconds(250)).to_rfc3339(),
+                team_id: String::new(),
+                routing_status: String::new(),
+            },
+            // expired → red countdown
+            ApprovalResponse {
+                id: "ap-old".to_string(),
+                agent_id: "agent-three".to_string(),
+                action: "exfil".to_string(),
+                reason: "old".to_string(),
+                status: "pending".to_string(),
+                created_at: "2020-01-01T00:00:00Z".to_string(),
+                team_id: String::new(),
+                routing_status: String::new(),
+            },
+        ];
+        s.approvals_summary.pending_count = 3;
+        s.budget = BudgetRow {
+            daily_spend_usd: "80.00".to_string(),
+            monthly_spend_usd: Some("1000.00".to_string()),
+            daily_limit_usd: Some("100.00".to_string()),
+            monthly_limit_usd: Some("2000.00".to_string()),
+            date: "2026-04-30".to_string(),
+            per_agent: vec![
+                AgentCostEntry {
+                    agent_id: "agent-one".to_string(),
+                    daily_spend_usd: "60.00".to_string(),
+                },
+                AgentCostEntry {
+                    agent_id: "agent-two".to_string(),
+                    daily_spend_usd: "20.00".to_string(),
+                },
+            ],
+        };
+        for (i, et) in ["violation", "approval", "budget", "tool_call"].iter().enumerate() {
+            s.push_event(EventEntry {
+                timestamp: format!("2026-04-30T10:00:0{i}Z"),
+                event_type: (*et).to_string(),
+                agent_id: "agent-one".to_string(),
+                message: format!("event {i}"),
+            });
+        }
+        s
+    }
+
+    fn render_to_string(state: &DashboardState) -> String {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, state)).unwrap();
+        terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn draw_full_dashboard_renders_all_panel_titles() {
+        let text = render_to_string(&rich_state());
+        assert!(text.contains("Agents"), "agents panel title missing");
+        assert!(text.contains("Event Log"), "event log panel title missing");
+        assert!(text.contains("Budget"), "budget panel title missing");
+        assert!(text.contains("Approvals"), "approvals panel title missing");
+        // footer shortcuts
+        assert!(text.contains("panel"));
+        assert!(text.contains("quit"));
+    }
+
+    #[test]
+    fn draw_full_dashboard_renders_agent_and_approval_content() {
+        let text = render_to_string(&rich_state());
+        assert!(text.contains("agent-one"));
+        assert!(text.contains("refund"));
+        // budget gauge label reflects spend / limit
+        assert!(text.contains("80.00"));
+    }
+
+    #[test]
+    fn draw_empty_approvals_shows_placeholder() {
+        let mut state = rich_state();
+        state.pending_approvals.clear();
+        state.approvals_summary.pending_count = 0;
+        let text = render_to_string(&state);
+        assert!(text.contains("No pending approvals"));
+    }
+
+    #[test]
+    fn draw_help_overlay_lists_shortcuts() {
+        let mut state = rich_state();
+        state.show_help = true;
+        let text = render_to_string(&state);
+        assert!(text.contains("Keyboard Shortcuts"));
+        assert!(text.contains("Next panel"));
+    }
+
+    #[test]
+    fn draw_inspect_overlay_agent_panel() {
+        let mut state = rich_state();
+        state.active_panel = Panel::Agents;
+        state.agent_selected = 0;
+        state.show_inspect = true;
+        let text = render_to_string(&state);
+        assert!(text.contains("Agent Detail"));
+        assert!(text.contains("Framework"));
+    }
+
+    #[test]
+    fn draw_inspect_overlay_approval_panel() {
+        let mut state = rich_state();
+        state.active_panel = Panel::Approvals;
+        state.approval_selected = 0;
+        state.show_inspect = true;
+        let text = render_to_string(&state);
+        assert!(text.contains("Approval Detail"));
+        assert!(text.contains("Routing"));
+    }
+
+    #[test]
+    fn draw_policy_overlay_with_and_without_yaml() {
+        let mut state = rich_state();
+        state.show_policy = true;
+        let loading = render_to_string(&state);
+        assert!(loading.contains("Policy Viewer"));
+        assert!(loading.contains("loading policy"));
+
+        state.policy_yaml = Some("rules:\n  - allow: all".to_string());
+        let loaded = render_to_string(&state);
+        assert!(loaded.contains("allow"));
+    }
+
+    #[test]
+    fn draw_budget_without_limit_shows_no_limit_label() {
+        let mut state = rich_state();
+        state.budget.daily_limit_usd = None;
+        let text = render_to_string(&state);
+        assert!(text.contains("no limit set"));
+    }
 }

@@ -49,3 +49,26 @@ pub fn dispatch() -> ExitCode {
     println!("Dashboard stopped.");
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_reports_success_when_no_dashboard_running() {
+        // Isolate the PID-file location to an empty temp dir so no real process
+        // is ever signalled — this exercises the "no running dashboard" path.
+        let _lock = crate::test_support::env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("AA_DATA_DIR");
+        std::env::set_var("AA_DATA_DIR", tmp.path());
+
+        let code = dispatch();
+
+        match prev {
+            Some(v) => std::env::set_var("AA_DATA_DIR", v),
+            None => std::env::remove_var("AA_DATA_DIR"),
+        }
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+}
