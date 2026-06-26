@@ -69,7 +69,14 @@ ENV GOTOOLCHAIN=auto
 
 # Install the AAASM Go SDK. `go install` uses Go's native git-based
 # distribution model — no registry-publish prerequisite (unlike pip/npm).
-RUN go install github.com/ai-agent-assembly/go-sdk/...@latest
+ARG SDK_VERSION=""
+# Pin the exact released SDK for reproducible, version-tagged images (AAASM-3765);
+# fall back to the floating @latest install only when no version is passed (PR smoke builds).
+RUN if [ -n "$SDK_VERSION" ]; then \
+        go install "github.com/ai-agent-assembly/go-sdk/...@${SDK_VERSION}"; \
+    else \
+        go install github.com/ai-agent-assembly/go-sdk/...@latest; \
+    fi
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.

@@ -56,7 +56,14 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 # line, mirroring how the Python image installs its SDK from the canonical
 # source. The previous `github:` shorthand made npm git-clone over SSH, which
 # fails in the build image (no ssh) with exit code 128.
-RUN npm install -g '@agent-assembly/sdk@beta'
+ARG SDK_VERSION=""
+# Pin the exact released SDK for reproducible, version-tagged images (AAASM-3765);
+# fall back to the floating @beta install only when no version is passed (PR smoke builds).
+RUN if [ -n "$SDK_VERSION" ]; then \
+        npm install -g "@agent-assembly/sdk@${SDK_VERSION}"; \
+    else \
+        npm install -g '@agent-assembly/sdk@beta'; \
+    fi
 
 # Make the globally-installed SDK resolvable to bare `require()` /`import`
 # from arbitrary scripts (a `-g` package is not on the default module

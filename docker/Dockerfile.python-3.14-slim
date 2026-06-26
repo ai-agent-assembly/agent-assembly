@@ -64,8 +64,14 @@ RUN apt-get update \
 # entrypoint shadows the Rust governance CLI (which is what `aasm --version`
 # needs to invoke). See AAASM-1500. Transitional git source; switches to
 # `pip install agent-assembly` once AAASM-1202 lands.
-RUN pip install --no-cache-dir \
-        'agent-assembly @ git+https://github.com/ai-agent-assembly/python-sdk.git'
+ARG SDK_VERSION=""
+# Pin the exact released SDK for reproducible, version-tagged images (AAASM-3765);
+# fall back to the floating git-master install only when no version is passed (PR smoke builds).
+RUN if [ -n "$SDK_VERSION" ]; then \
+        pip install --no-cache-dir "agent-assembly==${SDK_VERSION}"; \
+    else \
+        pip install --no-cache-dir 'agent-assembly @ git+https://github.com/ai-agent-assembly/python-sdk.git'; \
+    fi
 
 # Drop the prebuilt Rust `aasm` binary into the image PATH, overlaying the
 # pip-installed Python entrypoint. The Python SDK stays importable from
