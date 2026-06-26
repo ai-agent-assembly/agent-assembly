@@ -10,8 +10,55 @@ use uuid::Uuid;
 use aa_runtime::approval::{ApprovalDecision, ApprovalError, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
 use utoipa::IntoParams;
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
+
+/// Owning team of an approval lookup result, if any.
+fn approval_team_id(lookup: &ApprovalLookup) -> Option<&str> {
+    match lookup {
+        ApprovalLookup::Pending(p) => p.team_id.as_deref(),
+        ApprovalLookup::Resolved(r) => r.team_id.as_deref(),
+    }
+}
+
+/// Enforce tenant ownership of a single approval for a caller that already
+/// cleared the scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any approval; a
+/// tenant-scoped caller may act only on approvals in its own team; a caller with
+/// neither admin scope nor any team scope is denied up front so it cannot
+/// enumerate approvals via a 403-vs-404 oracle. On success returns the looked-up
+/// record so callers need not look it up twice. Returns 403 for an unauthorized
+/// caller, 404 when the approval is unknown to an authorized caller.
+fn authorize_approval_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    uuid: Uuid,
+    id: &str,
+) -> Result<ApprovalLookup, ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope"));
+    }
+
+    let lookup = state.approval_queue.get_by_id(uuid).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+    })?;
+
+    let authorized = match approval_team_id(&lookup) {
+        Some(team) => caller.can_access_team(team),
+        // The approval has no team — only an admin may act on it.
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the approval's team"));
+    }
+    Ok(lookup)
+}
 
 /// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
 ///
@@ -199,6 +246,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
     tag = "approvals"
 )]
 pub async fn list_approvals(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<ListApprovalsParams>,
 ) -> impl IntoResponse {
@@ -226,6 +274,18 @@ pub async fn list_approvals(
         // established CLI tolerance for typos in filter values.
         Some(_) => Vec::new(),
     };
+
+    // AAASM-3790: confine the listing to approvals the caller's tenant owns.
+    // An admin sees every team; a team-scoped caller sees only its own team's
+    // approvals; a caller with no team scope (and no admin) sees none. Untagged
+    // approvals (no team) are visible only to an admin.
+    let all: Vec<ApprovalResponse> = all
+        .into_iter()
+        .filter(|a| match a.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => caller.scopes.contains(&Scope::Admin),
+        })
+        .collect();
 
     let total = all.len();
     let items: Vec<ApprovalResponse> = all
@@ -262,19 +322,17 @@ pub async fn list_approvals(
     tag = "approvals"
 )]
 pub async fn get_approval(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
 
-    let resp = match state.approval_queue.get_by_id(uuid) {
-        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
-        Some(ApprovalLookup::Resolved(r)) => resolved_to_response(r),
-        None => {
-            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
-                .with_detail(format!("Approval request not found: {id}")));
-        }
+    // AAASM-3790: read-scope + tenant ownership before exposing the approval.
+    let resp = match authorize_approval_access(&caller, &state, uuid, &id)? {
+        ApprovalLookup::Pending(p) => pending_to_response(p),
+        ApprovalLookup::Resolved(r) => resolved_to_response(r),
     };
 
     Ok((StatusCode::OK, Json(resp)))
@@ -294,12 +352,16 @@ pub async fn get_approval(
     tag = "approvals"
 )]
 pub async fn approve_action(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+
+    // AAASM-3790: write-scope + tenant ownership before resolving the approval.
+    authorize_approval_access(&caller, &state, uuid, &id)?;
 
     let decision = ApprovalDecision::Approved {
         by: body.by.unwrap_or_else(|| "api".to_string()),
@@ -344,12 +406,16 @@ pub async fn approve_action(
     tag = "approvals"
 )]
 pub async fn reject_action(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+
+    // AAASM-3790: write-scope + tenant ownership before resolving the approval.
+    authorize_approval_access(&caller, &state, uuid, &id)?;
 
     let reason = body.reason.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("Rejection requires a non-empty reason")
