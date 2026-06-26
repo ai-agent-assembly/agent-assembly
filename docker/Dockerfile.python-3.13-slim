@@ -64,8 +64,19 @@ RUN apt-get update \
 # entrypoint shadows the Rust governance CLI (which is what `aasm --version`
 # needs to invoke). See AAASM-1500. Transitional git source; switches to
 # `pip install agent-assembly` once AAASM-1202 lands.
-RUN pip install --no-cache-dir \
-        'agent-assembly @ git+https://github.com/ai-agent-assembly/python-sdk.git'
+# SDK_VERSION is optional. When set, install that exact released SDK for a
+# reproducible, version-tagged image. When unset, default to the latest STABLE
+# release, falling back to the latest pre-release when no stable exists yet — the
+# same "stable-else-latest" rule across all three SDK images (and install-cli.sh),
+# so the default is uniform and predictable (ADR 0009). docker.yml passes the
+# manifest pin; a bare `docker build` gets the smart default.
+ARG SDK_VERSION=""
+RUN if [ -n "$SDK_VERSION" ]; then \
+        pip install --no-cache-dir "agent-assembly==${SDK_VERSION}"; \
+    else \
+        pip install --no-cache-dir agent-assembly \
+        || pip install --no-cache-dir --pre agent-assembly; \
+    fi
 
 # Drop the prebuilt Rust `aasm` binary into the image PATH, overlaying the
 # pip-installed Python entrypoint. The Python SDK stays importable from

@@ -56,7 +56,23 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 # line, mirroring how the Python image installs its SDK from the canonical
 # source. The previous `github:` shorthand made npm git-clone over SSH, which
 # fails in the build image (no ssh) with exit code 128.
-RUN npm install -g '@agent-assembly/sdk@beta'
+# SDK_VERSION is optional. When set, install that exact released SDK for a
+# reproducible, version-tagged image. When unset, default to the latest STABLE
+# release, falling back to the latest pre-release when no stable exists yet — the
+# same "stable-else-latest" rule across all three SDK images (and install-cli.sh),
+# so the default is uniform and predictable (ADR 0009). docker.yml passes the
+# manifest pin; a bare `docker build` gets the smart default.
+# Node resolves the default explicitly (highest non-pre-release, else highest
+# overall) rather than trusting npm's `latest` dist-tag, which is unreliable here.
+ARG SDK_VERSION=""
+RUN if [ -n "$SDK_VERSION" ]; then \
+        npm install -g "@agent-assembly/sdk@${SDK_VERSION}"; \
+    else \
+        ver="$(npm view @agent-assembly/sdk versions --json \
+            | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const vs=Array.isArray(d)?d:[d];const s=vs.filter(v=>!v.includes("-"));const p=s.length?s:vs;process.stdout.write(p[p.length-1]||"")')"; \
+        [ -n "$ver" ] || { echo "error: could not resolve an @agent-assembly/sdk version" >&2; exit 1; }; \
+        npm install -g "@agent-assembly/sdk@${ver}"; \
+    fi
 
 # Make the globally-installed SDK resolvable to bare `require()` /`import`
 # from arbitrary scripts (a `-g` package is not on the default module

@@ -62,7 +62,18 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
 # Install the AAASM Go SDK. `go install` uses Go's native git-based
 # distribution model — no registry-publish prerequisite (unlike pip/npm).
-RUN go install github.com/ai-agent-assembly/go-sdk/...@latest
+# SDK_VERSION is optional. When set, install that exact released SDK for a
+# reproducible, version-tagged image. When unset, default to the latest STABLE
+# release, falling back to the latest pre-release when no stable exists yet — the
+# same "stable-else-latest" rule across all three SDK images (and install-cli.sh),
+# so the default is uniform and predictable (ADR 0009). docker.yml passes the
+# manifest pin; a bare `docker build` gets the smart default.
+ARG SDK_VERSION=""
+RUN if [ -n "$SDK_VERSION" ]; then \
+        go install "github.com/ai-agent-assembly/go-sdk/...@${SDK_VERSION}"; \
+    else \
+        go install github.com/ai-agent-assembly/go-sdk/...@latest; \
+    fi
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
