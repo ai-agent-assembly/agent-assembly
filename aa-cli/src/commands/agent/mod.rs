@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
-mod inspect;
-mod kill;
-mod list;
+pub mod inspect;
+pub mod kill;
+pub mod list;
 pub mod resume;
 pub mod suspend;
 
