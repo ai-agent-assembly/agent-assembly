@@ -198,4 +198,70 @@ describe('DestinationManager', () => {
     fireEvent.click(screen.getByTestId('destination-delete-dest-1'))
     await waitFor(() => expect(toastSpy).toHaveBeenCalledWith('gateway down', 'error'))
   })
+
+  it('updates an existing destination when submitting in edit mode', async () => {
+    const updateMut = { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false }
+    vi.spyOn(api, 'useUpdateDestinationMutation').mockReturnValue(updateMut as unknown as never)
+    vi.spyOn(api, 'useDestinationsQuery').mockReturnValue(
+      mockQuery({ data: DESTINATIONS, isLoading: false, isError: false }),
+    )
+    renderManager()
+    fireEvent.click(screen.getByTestId('destination-edit-dest-1'))
+    fireEvent.click(screen.getByTestId('destination-form-submit'))
+    await waitFor(() =>
+      expect(updateMut.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'dest-1' }),
+      ),
+    )
+    expect(toastSpy).toHaveBeenCalledWith('Updated destination "Ops webhook"', 'success')
+  })
+
+  it('surfaces a create failure as an error toast', async () => {
+    createMut.mutateAsync.mockRejectedValueOnce(new Error('create boom'))
+    vi.spyOn(api, 'useDestinationsQuery').mockReturnValue(
+      mockQuery({ data: [], isLoading: false, isError: false }),
+    )
+    renderManager()
+    fireEvent.change(screen.getByTestId('destination-form-name'), {
+      target: { value: 'New hook' },
+    })
+    fireEvent.click(screen.getByTestId('destination-form-submit'))
+    await waitFor(() => expect(toastSpy).toHaveBeenCalledWith('create boom', 'error'))
+  })
+
+  it('reports a non-2xx test fire as an error toast', async () => {
+    testMut.mutateAsync.mockResolvedValueOnce({ connectorResponseStatus: 500 })
+    vi.spyOn(api, 'useDestinationsQuery').mockReturnValue(
+      mockQuery({ data: DESTINATIONS, isLoading: false, isError: false }),
+    )
+    renderManager()
+    fireEvent.click(screen.getByTestId('destination-test-dest-1'))
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith('Test fired → 500 (Ops webhook)', 'error'),
+    )
+  })
+
+  it('surfaces a test fire failure as an error toast', async () => {
+    testMut.mutateAsync.mockRejectedValueOnce(new Error('connector unreachable'))
+    vi.spyOn(api, 'useDestinationsQuery').mockReturnValue(
+      mockQuery({ data: DESTINATIONS, isLoading: false, isError: false }),
+    )
+    renderManager()
+    fireEvent.click(screen.getByTestId('destination-test-dest-1'))
+    await waitFor(() =>
+      expect(toastSpy).toHaveBeenCalledWith('connector unreachable', 'error'),
+    )
+  })
+
+  it('updates the draft kind when the kind select changes', () => {
+    vi.spyOn(api, 'useDestinationsQuery').mockReturnValue(
+      mockQuery({ data: [], isLoading: false, isError: false }),
+    )
+    renderManager()
+    const select = screen.getByTestId('destination-form-kind') as HTMLSelectElement
+    const other = Array.from(select.options).find((o) => o.value !== select.value)
+    expect(other).toBeDefined()
+    fireEvent.change(select, { target: { value: other!.value } })
+    expect(select.value).toBe(other!.value)
+  })
 })
