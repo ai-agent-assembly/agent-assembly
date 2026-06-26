@@ -257,6 +257,26 @@ mod tests {
         buf
     }
 
+    #[test]
+    fn codec_error_display_covers_all_variants() {
+        let io = CodecError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"));
+        assert!(io.to_string().contains("IO error"), "got: {io}");
+
+        let unknown = CodecError::UnknownTag(0xAB);
+        assert!(unknown.to_string().contains("unknown frame tag"), "got: {unknown}");
+
+        // Build a genuine prost decode error from malformed wire bytes (a field
+        // header promising a varint with no body).
+        use prost::Message;
+        let decode_err = aa_proto::assembly::policy::v1::CheckActionRequest::decode([0x08u8].as_slice())
+            .expect_err("truncated varint must fail to decode");
+        let decode = CodecError::DecodeError(decode_err);
+        assert!(decode.to_string().contains("decode"), "got: {decode}");
+
+        let too_large = CodecError::FrameTooLarge { len: 10, max: 5 };
+        assert!(too_large.to_string().contains("exceeds maximum"), "got: {too_large}");
+    }
+
     #[tokio::test]
     async fn heartbeat_round_trip() {
         // Heartbeat frame: just the tag byte, no payload or length.

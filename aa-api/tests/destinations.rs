@@ -652,3 +652,181 @@ async fn update_with_masked_secret_preserves_stored_secret() {
     // was hit proves the real secret survived the masked update.
     mock.assert();
 }
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+#[tokio::test]
+async fn create_destination_with_empty_name_returns_400() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({"name": "  ", "kind": "webhook", "config": {"url": "https://example.com"}, "enabled": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("name must be non-empty"));
+}
+
+#[tokio::test]
+async fn update_destination_with_empty_name_returns_400() {
+    // Create a destination, then try to rename it to blank.
+    let app = common::test_app();
+    let create_resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            webhook_payload("keep-me", "https://example.com/keep"),
+        ))
+        .await
+        .unwrap();
+    let id = body_json(create_resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            json!({"name": "  "}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_destination_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/alerts/destinations/nonexistent-id",
+            json!({"name": "new-name"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["detail"].as_str(), Some("destination_not_found"));
+}
+
+#[tokio::test]
+async fn delete_destination_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/alerts/destinations/nonexistent-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── PagerDuty connector not compiled in → 502 connector_failed (transport) ────
+
+/// PagerDuty/OpsGenie connectors are feature-gated and disabled in the default
+/// build, so `connector_for` returns `UnsupportedConnector`, whose `dispatch`
+/// always fails with a transport error. Firing a test against a pagerduty
+/// destination must surface as 502 `connector_failed` with status 0.
+#[tokio::test]
+async fn test_pagerduty_destination_returns_502_transport_error() {
+    let app = common::test_app();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({
+                "name": "pd",
+                "kind": "pagerduty",
+                "config": { "routing_key": "R0UTINGKEY123456" },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    assert_eq!(created["kind"], "pagerduty");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/alerts/destinations/{id}/test"),
+            json!({ "severity": "HIGH" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "connector_failed");
+    // Transport failures carry a synthetic status of 0.
+    assert_eq!(body["connector_status"], 0);
+    assert!(body["connector_body"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not enabled"));
+}
+
+// ── malformed JSON (not an unknown-variant error) → generic 400 ───────────────
+
+#[tokio::test]
+async fn create_destination_with_malformed_json_returns_400() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts/destinations")
+                .header("content-type", "application/json")
+                // Valid kind, but `config` has the wrong type → serde error that
+                // is NOT "unknown variant", exercising the generic 400 branch.
+                .body(Body::from(r#"{"name":"x","kind":"webhook","config":"not-an-object","enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_destination_with_malformed_json_returns_400() {
+    let app = common::test_app();
+    // Create a webhook to target.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            webhook_payload("upd", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/alerts/destinations/{id}"))
+                .header("content-type", "application/json")
+                // `name` must be a string; a number is a non-variant serde
+                // error → generic 400 (not the invalid_kind branch).
+                .body(Body::from(r#"{"name": 12345}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

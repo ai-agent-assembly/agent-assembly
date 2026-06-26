@@ -362,4 +362,76 @@ mod tests {
         assert_eq!(snapshot.operator, RuleOperator::Gt);
         assert_eq!(snapshot.metric, RuleMetric::BudgetSpentPct);
     }
+
+    #[test]
+    fn metric_as_str_covers_every_variant() {
+        assert_eq!(metric_as_str(RuleMetric::BudgetSpentPct), "budget_spent_pct");
+        assert_eq!(metric_as_str(RuleMetric::AnomalyScore), "anomaly_score");
+        assert_eq!(metric_as_str(RuleMetric::ApprovalPendingAge), "approval_pending_age");
+        assert_eq!(
+            metric_as_str(RuleMetric::PolicyViolationCount),
+            "policy_violation_count"
+        );
+    }
+
+    #[test]
+    fn operator_as_str_covers_every_variant() {
+        assert_eq!(operator_as_str(RuleOperator::Gt), ">");
+        assert_eq!(operator_as_str(RuleOperator::Gte), ">=");
+        assert_eq!(operator_as_str(RuleOperator::Lt), "<");
+        assert_eq!(operator_as_str(RuleOperator::Eq), "=");
+    }
+
+    #[test]
+    fn severity_as_str_covers_every_variant() {
+        assert_eq!(severity_as_str(RuleSeverity::Critical), "CRITICAL");
+        assert_eq!(severity_as_str(RuleSeverity::High), "HIGH");
+        assert_eq!(severity_as_str(RuleSeverity::Medium), "MEDIUM");
+        assert_eq!(severity_as_str(RuleSeverity::Low), "LOW");
+    }
+
+    #[test]
+    fn build_rule_alert_seed_renders_non_default_metric_op_severity() {
+        let mut r = rule(RuleOperator::Lt, 5.0);
+        r.metric = RuleMetric::AnomalyScore;
+        r.severity = RuleSeverity::Medium;
+        let seed = build_rule_alert_seed(&r, 3.0);
+        assert_eq!(seed.rule_snapshot.metric, "anomaly_score");
+        assert_eq!(seed.rule_snapshot.operator, "<");
+        assert_eq!(seed.rule_snapshot.severity, "MEDIUM");
+    }
+
+    #[test]
+    fn budget_metric_source_none_when_limit_zero() {
+        use aa_gateway::budget::tracker::BudgetTracker;
+        use aa_gateway::budget::PricingTable;
+        use rust_decimal::Decimal;
+
+        let tracker = std::sync::Arc::new(BudgetTracker::new(
+            PricingTable::default_table(),
+            Some(Decimal::ZERO),
+            None,
+            chrono_tz::UTC,
+        ));
+        let source = BudgetMetricSource::new(tracker);
+        // A zero daily limit must short-circuit to None (avoids divide-by-zero).
+        assert_eq!(source.current_value(RuleMetric::BudgetSpentPct), None);
+    }
+
+    #[tokio::test]
+    async fn spawn_rule_evaluator_fires_on_tick() {
+        let rules = std::sync::Arc::new(InMemoryAlertRuleStore::new());
+        rules.create(rule(RuleOperator::Gt, 90.0)).expect("create");
+        let alerts = std::sync::Arc::new(InMemoryAlertStore::new());
+        let metrics = std::sync::Arc::new(FixedMetric(95.0));
+
+        let handle = spawn_rule_evaluator(rules.clone(), metrics, alerts.clone(), Duration::from_millis(10));
+
+        // Give the loop a few ticks to record at least one alert.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        handle.abort();
+
+        let (items, _) = alerts.list(10, 0);
+        assert!(!items.is_empty(), "the spawned evaluator loop must record alerts");
+    }
 }

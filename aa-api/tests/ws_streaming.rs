@@ -327,3 +327,144 @@ async fn ws_cli_logs_follow_integration() {
         "CLI follow stream should receive all three event types"
     );
 }
+
+// ── Non-pipeline dispatch arms: approval / budget / ops-change ───────────────
+
+fn make_approval_request() -> aa_runtime::approval::ApprovalRequest {
+    aa_runtime::approval::ApprovalRequest {
+        request_id: uuid::Uuid::new_v4(),
+        agent_id: "approver-agent".to_string(),
+        action: "read_file /etc/shadow".to_string(),
+        condition_triggered: "sensitive-file".to_string(),
+        submitted_at: 1_700_000_000,
+        timeout_secs: 600,
+        fallback: aa_core::PolicyResult::Deny {
+            reason: "timeout".to_string(),
+        },
+        team_id: None,
+        timeout_override_secs: None,
+        escalation_role_override: None,
+    }
+}
+
+async fn read_gov_event(
+    ws: &mut (impl futures::StreamExt<
+        Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>,
+    > + Unpin),
+) -> GovernanceEvent {
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        .await
+        .expect("timeout waiting for WS message")
+        .expect("stream ended")
+        .expect("ws error");
+    serde_json::from_str(&msg.into_text().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn ws_receives_approval_event() {
+    let (url, handle) = start_server().await;
+    let ws_url = format!("{url}/api/v1/ws/events?types=approval");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle
+        .state
+        .events
+        .approval_sender()
+        .send(make_approval_request())
+        .unwrap();
+
+    let ev = read_gov_event(&mut ws).await;
+    assert_eq!(ev.event_type, EventType::Approval);
+    assert_eq!(ev.agent_id, "approver-agent");
+}
+
+#[tokio::test]
+async fn ws_receives_approval_expiry_event() {
+    let (url, handle) = start_server().await;
+    let ws_url = format!("{url}/api/v1/ws/events?types=approval");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle
+        .state
+        .events
+        .approval_expiry_sender()
+        .send(make_approval_request())
+        .unwrap();
+
+    let ev = read_gov_event(&mut ws).await;
+    assert_eq!(ev.event_type, EventType::Approval);
+    // The expiry arm marks the payload status as "expired".
+    assert_eq!(ev.payload["status"], "expired");
+}
+
+#[tokio::test]
+async fn ws_receives_budget_event() {
+    let (url, handle) = start_server().await;
+    let ws_url = format!("{url}/api/v1/ws/events?types=budget");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle
+        .state
+        .events
+        .budget_sender()
+        .send(aa_gateway::budget::types::BudgetAlert {
+            agent_id: aa_core::identity::AgentId::from_bytes([7u8; 16]),
+            team_id: Some("team-a".to_string()),
+            threshold_pct: 95,
+            spent_usd: 95.0,
+            limit_usd: 100.0,
+        })
+        .unwrap();
+
+    let ev = read_gov_event(&mut ws).await;
+    assert_eq!(ev.event_type, EventType::Budget);
+}
+
+#[tokio::test]
+async fn ws_receives_ops_change_event() {
+    let (url, handle) = start_server().await;
+    let ws_url = format!("{url}/api/v1/ws/events?types=ops_change");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    handle
+        .state
+        .events
+        .ops_change_sender()
+        .send(aa_api::events::OpsChangeBroadcast {
+            agent_id: "ops-agent".to_string(),
+            payload: aa_api::models::ws_payloads::OpsChangePayload {
+                op_id: "trace-1:span-1".to_string(),
+                state: aa_api::ops::OpState::Running,
+                updated_at: "2026-06-25T00:00:00Z".to_string(),
+            },
+        })
+        .unwrap();
+
+    let ev = read_gov_event(&mut ws).await;
+    assert_eq!(ev.event_type, EventType::OpsChange);
+    assert_eq!(ev.agent_id, "ops-agent");
+    assert_eq!(ev.payload["op_id"], "trace-1:span-1");
+}
+
+#[tokio::test]
+async fn ws_handles_client_pong_then_close_frame() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (url, _handle) = start_server().await;
+    let ws_url = format!("{url}/api/v1/ws/events");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // A client Pong is consumed by the reader loop (keep-alive bookkeeping).
+    ws.send(Message::Pong(vec![].into())).await.unwrap();
+    // A client Close frame terminates the reader loop cleanly.
+    ws.send(Message::Close(None)).await.unwrap();
+
+    // The server acknowledges the close; the stream then ends without error.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}

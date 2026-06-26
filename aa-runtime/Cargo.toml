@@ -63,6 +63,9 @@ aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.1", features 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+# `net` (TcpListenerStream) lets the invalidation-dispatch test stand up an
+# in-process mock gateway InvalidationService over loopback (AAASM-3805).
+tokio-stream = { workspace = true, features = ["net"] }
 tower = { workspace = true }
 # Captures emitted metric values so the audit-publisher metric tests can assert
 # the exact counter values recorded by `metrics::counter!`.

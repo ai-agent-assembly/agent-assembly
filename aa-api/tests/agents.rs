@@ -463,3 +463,157 @@ async fn resume_agent_returns_404_for_unknown_id() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+/// A valid hex string whose byte length ≠ 16 triggers the "wrong length" error
+/// branch in `parse_agent_id` (lines 69–72 of agents.rs).
+#[tokio::test]
+async fn get_agent_with_short_hex_id_returns_400() {
+    let app = common::test_app();
+    // "aabb" is valid hex but decodes to 2 bytes, not 16.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/agents/aabb")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("32 hex characters"),
+        "detail should mention 32-char requirement"
+    );
+}
+
+/// An agent registered with non-empty `recent_traces` must include those traces
+/// in the GET /agents/{id} response (tests lines 99–106 of agents.rs).
+#[tokio::test]
+async fn get_agent_includes_recent_traces_in_response() {
+    let state = common::test_state();
+    let mut rec = test_agent(0x77);
+    rec.recent_traces = vec![aa_gateway::registry::store::RecentTrace {
+        session_id: "test-session-abc".to_string(),
+        timestamp: chrono::Utc::now(),
+    }];
+    state.agent_registry.register(rec).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}", hex_id(0x77)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let traces = json["recent_traces"].as_array().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["session_id"], "test-session-abc");
+    assert!(traces[0]["timestamp"].is_string());
+}
+
+/// A registered agent's effective-permissions endpoint returns the merged
+/// allow/deny sets plus per-scope provenance (covers the happy path of
+/// get_agent_capabilities).
+#[tokio::test]
+async fn get_agent_capabilities_returns_200_for_registered_agent() {
+    let state = common::test_state();
+    state.agent_registry.register(test_agent(0x42)).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/capabilities", hex_id(0x42)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["allow"].is_array());
+    assert!(json["deny"].is_array());
+    assert!(json["sources"].is_array());
+}
+
+#[tokio::test]
+async fn get_agent_capabilities_returns_404_for_unknown_agent() {
+    let app = common::test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/capabilities", hex_id(0x99)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Subtree-burn over an agent with recorded spend (self) and a child with
+/// recorded spend emits a dense per-day point series with per-child rows.
+#[tokio::test]
+async fn get_agent_subtree_burn_includes_self_and_child_spend() {
+    use rust_decimal::Decimal;
+
+    let state = common::test_state();
+
+    // Parent agent declares one child; both are registered.
+    let mut parent = test_agent(0x10);
+    let child_bytes = [0x20u8; 16];
+    parent.children = vec![child_bytes];
+    state.agent_registry.register(parent).unwrap();
+
+    let mut child = test_agent(0x20);
+    child.parent_agent_id = Some(hex_id(0x10));
+    state.agent_registry.register(child).unwrap();
+
+    // Record spend so both the "(self)" and child rows are emitted.
+    let parent_id = aa_core::identity::AgentId::from_bytes([0x10u8; 16]);
+    let child_id = aa_core::identity::AgentId::from_bytes(child_bytes);
+    state
+        .budget_tracker
+        .record_raw_spend(parent_id, None, None, Decimal::new(150, 2));
+    state
+        .budget_tracker
+        .record_raw_spend(child_id, None, None, Decimal::new(75, 2));
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/subtree-burn?period=7d", hex_id(0x10)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let points = json["points"].as_array().unwrap();
+    assert!(!points.is_empty());
+    // The most recent day should carry per-child rows including the "(self)" row.
+    let last = points.last().unwrap();
+    let per_child = last["per_child"].as_array().unwrap();
+    let names: Vec<&str> = per_child
+        .iter()
+        .map(|c| c["child_name"].as_str().unwrap_or_default())
+        .collect();
+    assert!(names.contains(&"(self)"), "self row must be present; got {names:?}");
+}
