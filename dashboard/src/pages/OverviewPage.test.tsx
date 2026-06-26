@@ -344,4 +344,42 @@ describe('OverviewPage', () => {
     expect(overviewTsx).not.toMatch(/stroke="(?!var\()/)
     expect(overviewTsx).not.toMatch(/fill="(?!var\(|none)/)
   })
+
+  it('routes each drill-down action to its destination page', () => {
+    setup({
+      agents: [makeAgent()],
+      approvals: [{ id: 'ap-1' }] as unknown as Approval[],
+      policies: [{ name: 'p-1' }] as unknown as Policy[],
+      alerts: [makeAlert()],
+    })
+    renderPage()
+    const probe = screen.getByTestId('location-probe')
+
+    fireEvent.click(within(screen.getByTestId('overview-hero')).getByRole('button', { name: /open Capability/ }))
+    expect(probe).toHaveTextContent('/capability')
+
+    const issue = within(screen.getByTestId('overview-top-issue'))
+    fireEvent.click(issue.getByRole('button', { name: /review alerts/ }))
+    expect(probe).toHaveTextContent('/alerts')
+    fireEvent.click(issue.getByRole('button', { name: /review policy/ }))
+    expect(probe).toHaveTextContent('/policies')
+
+    const approvals = within(screen.getByTestId('overview-approvals'))
+    fireEvent.click(approvals.getByRole('button', { name: /review queue/ }))
+    expect(probe).toHaveTextContent('/approvals')
+    fireEvent.click(approvals.getByRole('button', { name: /open Live Ops/ }))
+    expect(probe).toHaveTextContent('/live')
+
+    fireEvent.click(screen.getByTestId('overview-layer-Identity'))
+    expect(probe).toHaveTextContent('/agents')
+    fireEvent.click(screen.getByTestId('overview-layer-Capability'))
+    expect(probe).toHaveTextContent('/capability')
+    fireEvent.click(screen.getByTestId('overview-layer-Scrub'))
+    expect(probe).toHaveTextContent('/scrub')
+
+    fireEvent.click(within(screen.getByTestId('overview-recent')).getByRole('button', { name: /tail/ }))
+    expect(probe).toHaveTextContent('/live')
+    fireEvent.click(within(screen.getByTestId('overview-snapshot')).getByRole('button', { name: /open Fleet/ }))
+    expect(probe).toHaveTextContent('/agents')
+  })
 })
