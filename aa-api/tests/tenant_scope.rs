@@ -908,3 +908,26 @@ async fn list_topology_edges_is_scoped_to_caller_team() {
     let json2 = body_json(resp2).await;
     assert_eq!(json2["count"], 1, "the owning team sees its own edge");
 }
+
+// AAASM-3790 — get_alert exposed any team's alert detail.
+#[tokio::test]
+async fn get_alert_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let id = state.alert_store.record(&BudgetAlert {
+        agent_id: aa_core::identity::AgentId::from_bytes([0xE6; 16]),
+        team_id: Some("beta".to_string()),
+        threshold_pct: 95,
+        spent_usd: 9.5,
+        limit_usd: 10.0,
+    });
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/alerts/{id}");
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant alert read is denied"
+    );
+}
