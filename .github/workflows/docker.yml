@@ -65,13 +65,18 @@ jobs:
           cache-to: type=gha,mode=max
 
   prep:
-    name: Resolve language matrix (reduced on PR, full on tag)
+    name: Resolve language matrix (full 9-image matrix on PR and tag)
     runs-on: ubuntu-latest
     outputs:
       lang_matrix: ${{ steps.set.outputs.lang_matrix }}
     steps:
-      # On pull_request, build only the `is_latest` representative per language
-      # (python 3.14, go 1.26). On tag/push, build the full version matrix.
+      # Build the FULL 9-image matrix on BOTH pull_request and tag/push. Every
+      # image (3 langs x 3 versions) is validated in CI on docker/** changes so
+      # the real SDK-pinned image is exercised before merge — not just the
+      # `is_latest` representative per language. Cost trade-off: 9 image builds
+      # per PR instead of 3, but the shared aasm-builder stage + GHA cache
+      # (type=gha,mode=max) dedup the cargo build, so the extra legs are mostly
+      # the cheap language layers on top.
       - id: set
         run: |
           full='[
@@ -85,11 +90,7 @@ jobs:
             {"lang":"go","version":"1.25-alpine","dockerfile":"docker/Dockerfile.go-1.25-alpine","smoke_run":"go list -m github.com/ai-agent-assembly/go-sdk@latest"},
             {"lang":"go","version":"1.24-alpine","dockerfile":"docker/Dockerfile.go-1.24-alpine","smoke_run":"go list -m github.com/ai-agent-assembly/go-sdk@latest"}
           ]'
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            sel=$(printf '%s' "$full" | jq -c '[.[] | select(.is_latest == true)]')
-          else
-            sel=$(printf '%s' "$full" | jq -c '.')
-          fi
+          sel=$(printf '%s' "$full" | jq -c '.')
           printf 'lang_matrix={"include":%s}\n' "$sel" >> "$GITHUB_OUTPUT"
 
   build-and-push-language-images:
@@ -127,6 +128,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Resolve the pinned SDK version for this language from the single source
+      # of truth (docker/sdk-versions.json) and pass it into the build as
+      # SDK_VERSION so the image installs a reproducible, pinned SDK. jq is
+      # preinstalled on ubuntu-latest.
+      - name: Resolve pinned SDK version for ${{ matrix.lang }}
+        id: sdkver
+        run: echo "version=$(jq -r --arg l "${{ matrix.lang }}" '.sdk[$l]' docker/sdk-versions.json)" >> "$GITHUB_OUTPUT"
+
       # PR build: linux/amd64 only + load into local Docker daemon so the
       # follow-up smoke step can `docker run` the image. Tag-push build:
       # multi-arch + push to GHCR. `load` and multi-arch are mutually exclusive,
@@ -139,6 +148,14 @@ jobs:
           platforms: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           load: ${{ github.event_name == 'pull_request' }}
+          build-args: |
+            SDK_VERSION=${{ steps.sdkver.outputs.version }}
+          # Tags:
+          #   <lang>:<version>                    — moving tag, always.
+          #   <lang>:<version>-<ref_name>         — immutable product-version tag.
+          #     Only meaningful on tag push (where push: true); on PR, ref_name
+          #     is the PR merge ref and the image is loaded locally, not pushed.
+          #   <lang>:latest                       — only for is_latest entries.
           # The `:latest` tag is only pushed by matrix entries flagged with
           # `is_latest: true` (the F114 pin per language). Without this gate,
           # every F114b leg would race to overwrite `:latest`, defeating the
@@ -146,6 +163,7 @@ jobs:
           # variant" AC bullet. See AAASM-1446.
           tags: |
             ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
+            ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}-${{ github.ref_name }}
             ${{ matrix.is_latest && format('ghcr.io/ai-agent-assembly/{0}:latest', matrix.lang) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -159,9 +177,38 @@ jobs:
         env:
           IMAGE: ghcr.io/ai-agent-assembly/${{ matrix.lang }}:${{ matrix.version }}
           SMOKE_RUN: ${{ matrix.smoke_run }}
+          LANG_KEY: ${{ matrix.lang }}
+          SDK_VERSION: ${{ steps.sdkver.outputs.version }}
         run: |
           docker run --rm "$IMAGE" aasm --version
           docker run --rm "$IMAGE" sh -c "$SMOKE_RUN"
+          # Assert the SDK version actually baked into the image matches the pin
+          # in docker/sdk-versions.json, failing the job on any drift so a stale
+          # or mis-resolved SDK_VERSION can never ship.
+          case "$LANG_KEY" in
+            python)
+              installed=$(docker run --rm "$IMAGE" python -c "import importlib.metadata as m; print(m.version('agent-assembly'))")
+              ;;
+            node)
+              installed=$(docker run --rm "$IMAGE" npm ls -g @agent-assembly/sdk --depth=0 2>/dev/null | grep -o '@agent-assembly/sdk@[^ ]*' | cut -d@ -f3)
+              ;;
+            go)
+              # The go image runs `go install ...@<SDK_VERSION>` at build time, so
+              # a bad pin fails the build itself; there is no installed-package
+              # registry to query at runtime. Echo the pin and skip the compare.
+              echo "go SDK pinned at $SDK_VERSION (verified at build time)"
+              installed="$SDK_VERSION"
+              ;;
+            *)
+              echo "::error::unknown language '$LANG_KEY' in SDK version assertion" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$installed" != "$SDK_VERSION" ]; then
+            echo "::error::SDK version mismatch for $LANG_KEY: image has '$installed', pin is '$SDK_VERSION'" >&2
+            exit 1
+          fi
+          echo "SDK version OK for $LANG_KEY: $installed == $SDK_VERSION"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
