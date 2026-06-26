@@ -47,18 +47,27 @@ existing moving tags. On a `v*` tag push, each language image is published as:
 The `<core-version>` coordinate is the `aa-runtime`/release tag (`github.ref_name`),
 so all governed images for a release share one version coordinate.
 
-**2. Make the baked-in SDK reproducible — and require the pin.** Each Dockerfile takes
-a **required** `ARG SDK_VERSION` and installs that exact released SDK from the language
-registry (`pip install agent-assembly==<v>`, `npm install -g @agent-assembly/sdk@<v>`,
-`go install …/go-sdk/...@<v>`). There is **no floating fallback** — a build with no
-`SDK_VERSION` fails fast with a clear error. This is deliberate: the **core version is
-the developer's selectable axis** (the image tag + the bundled `aasm` CLI) and the SDK
-is a *dependent* value pinned to the compatible release, so every image is an explicit,
-reproducible `(core, SDK)` pair. Dropping the fallback also makes the install path
-**identical across Python, Node, and Go** — the earlier per-language defaults diverged
-(git-master / `@beta` / `@latest`), partly because npm's `latest` dist-tag is stale; a
-required pin sidesteps all of that. `docker.yml` and the smoke runner both resolve the
-pin from the manifest and pass it.
+**2. Make the baked-in SDK reproducible — optional pin, with a uniform smart default.**
+Each Dockerfile takes an **optional** `ARG SDK_VERSION`:
+
+- **When set** → install that exact released SDK (`pip install agent-assembly==<v>`,
+  `npm install -g @agent-assembly/sdk@<v>`, `go install …/go-sdk/...@<v>`) — a
+  reproducible, version-tagged image.
+- **When unset** → install the **latest stable release, falling back to the latest
+  pre-release** when no stable exists yet. This single "stable-else-latest" rule is
+  **uniform across all three SDKs** (and matches `install-cli.sh`), replacing the old
+  divergent defaults (git-master / `@beta` / `@latest`) that each meant a different
+  thing. Per-ecosystem mechanism: Python `pip install` (skips pre-releases) with a
+  `--pre` fallback; Go `go install …@latest` (natively stable-else-pre); Node resolves
+  it **explicitly** — highest non-pre-release, else highest overall — rather than trust
+  npm's `latest` dist-tag, which is stale/unreliable for this package.
+
+The **core version remains the developer's selectable axis** (the image tag + the
+bundled `aasm` CLI); the SDK is the dependent value. A bare `docker build` gets a
+predictable, sensible image (stable-by-default); an explicit `SDK_VERSION` (which
+`docker.yml` always passes from the manifest on publish, keeping published images
+reproducible) gives an exact pin. The smoke runner builds **without** a pin so the
+default-resolution path is itself exercised in CI.
 
 **3. Resolve the SDK pin from an explicit source of truth.** A new
 `docker/sdk-versions.json` maps each language to its pinned SDK release:
