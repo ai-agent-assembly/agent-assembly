@@ -383,6 +383,54 @@ async fn test_webhook_returns_502_connector_failed() {
     mock.assert();
 }
 
+#[tokio::test]
+async fn test_webhook_to_internal_host_is_rejected() {
+    // AAASM-3789: a webhook test-fire aimed at an internal address (cloud
+    // metadata, loopback, RFC1918) must be refused with 400 before any request
+    // is dispatched — the SSRF the egress guard closes. The guard is on by
+    // default, so this test must NOT opt in to private egress.
+    std::env::remove_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS");
+
+    for internal in [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1/hook",
+        "http://10.0.0.1/hook",
+    ] {
+        let app = common::test_app();
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/alerts/destinations",
+                webhook_payload("hook", internal),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "create should still succeed for {internal}"
+        );
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+        let resp = app
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/alerts/destinations/{id}/test"),
+                json!({ "severity": "LOW" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "test-fire to internal host {internal} must be rejected"
+        );
+        let body = body_json(resp).await;
+        assert_eq!(body["detail"], "webhook.url resolves to a disallowed internal address");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AAASM-3688 — destination handlers require read/write scope, and the webhook
 // secret_header is never returned in cleartext.
