@@ -187,6 +187,36 @@ async fn webhook_connector_rejects_non_webhook_destination() {
     }
 }
 
+#[tokio::test]
+async fn webhook_dispatch_does_not_follow_redirects() {
+    // AAASM-3789: a redirect must NOT be chased — otherwise an allowlisted
+    // target could 3xx-bounce the request to an internal address. With
+    // `redirect(Policy::none())` the 3xx is surfaced as a non-2xx outcome and
+    // the `Location` (here an internal metadata host) is never fetched.
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(MOCK_POST).path("/hook");
+        then.status(308)
+            .header("location", "http://169.254.169.254/latest/meta-data/");
+    });
+
+    let dst = destination(DestinationConfig::Webhook {
+        url: server.url("/hook"),
+        secret_header: None,
+    });
+
+    let err = WebhookConnector
+        .dispatch(&dst, &DispatchRequest::default())
+        .await
+        .expect_err("a redirect must surface as a non-2xx error, not be followed");
+
+    match err {
+        ConnectorError::Http { status, .. } => assert_eq!(status, 308, "the redirect itself must be returned"),
+        other => panic!("expected Http error carrying the 3xx, got {other:?}"),
+    }
+    mock.assert();
+}
+
 // ── Slack connector ────────────────────────────────────────────────────────
 
 #[tokio::test]
