@@ -435,4 +435,156 @@ mod tests {
             "agent header forwarded: {text}"
         );
     }
+
+    // ── request-side error branches ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn malformed_request_line_is_config_error() {
+        // A request line that does not split into method/target/version must be
+        // rejected rather than silently mis-parsed.
+        let mut reader = make_reader(b"GET-ONLY\r\n\r\n");
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_header_line_is_config_error() {
+        // A header line with no colon separator is malformed.
+        let mut reader = make_reader(b"GET / HTTP/1.1\r\nNoColonHere\r\n\r\n");
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unexpected_eof_reading_request_headers_is_error() {
+        // Stream ends after the request line, before the header-terminating
+        // blank line — this is a truncated request, not a clean inter-request
+        // EOF, so it must surface as an error.
+        let mut reader = make_reader(b"GET / HTTP/1.1\r\n");
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    // ── response-side parsing ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn parses_response_with_content_length_body() {
+        let raw = b"HTTP/1.1 200 OK\r\n\
+                    Content-Type: application/json\r\n\
+                    Content-Length: 11\r\n\
+                    \r\n\
+                    {\"ok\":true}";
+        let mut reader = make_reader(raw);
+        let resp = read_http_response(&mut reader)
+            .await
+            .unwrap()
+            .expect("response present");
+        assert_eq!(resp.version, "HTTP/1.1");
+        assert_eq!(resp.status_code, "200");
+        assert_eq!(resp.reason, "OK");
+        assert_eq!(&resp.body, b"{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn response_returns_none_on_clean_eof() {
+        let mut reader = make_reader(b"");
+        assert!(read_http_response(&mut reader).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn response_with_no_reason_phrase_parses() {
+        // A status line with only version + code (no reason phrase) is valid;
+        // the reason is captured as an empty string.
+        let raw = b"HTTP/1.1 204\r\nContent-Length: 0\r\n\r\n";
+        let mut reader = make_reader(raw);
+        let resp = read_http_response(&mut reader).await.unwrap().unwrap();
+        assert_eq!(resp.status_code, "204");
+        assert_eq!(resp.reason, "");
+        assert!(resp.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_status_line_is_config_error() {
+        // Fewer than two whitespace-separated parts is not a status line.
+        let mut reader = make_reader(b"GARBAGE\r\n\r\n");
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_response_header_line_is_config_error() {
+        let mut reader = make_reader(b"HTTP/1.1 200 OK\r\nNoColonHeader\r\n\r\n");
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unexpected_eof_reading_response_headers_is_error() {
+        let mut reader = make_reader(b"HTTP/1.1 200 OK\r\n");
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got {err:?}"
+        );
+    }
+
+    // ── response-side re-serialisation ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn serialize_response_rewrites_content_length_and_drops_transfer_encoding() {
+        let raw = b"HTTP/1.1 200 OK\r\n\
+                    Content-Type: application/json\r\n\
+                    Transfer-Encoding: chunked\r\n\
+                    Content-Length: 3\r\n\
+                    \r\n\
+                    old";
+        let mut reader = make_reader(raw);
+        let resp = read_http_response(&mut reader).await.unwrap().unwrap();
+
+        let new_body = b"redacted";
+        let wire = serialize_http_response(&resp, new_body);
+        let text = std::str::from_utf8(&wire).unwrap();
+
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("Content-Type: application/json\r\n"));
+        // Stale framing headers are dropped and replaced by one accurate length.
+        assert!(
+            !text.to_ascii_lowercase().contains("transfer-encoding"),
+            "Transfer-Encoding must be stripped: {text}"
+        );
+        // The original Content-Length: 3 is dropped; only the new value remains.
+        assert_eq!(text.matches("Content-Length:").count(), 1);
+        assert_eq!(text.matches("Content-Length: 8\r\n").count(), 1);
+        assert!(text.ends_with("\r\n\r\nredacted"));
+    }
+
+    #[tokio::test]
+    async fn serialize_response_omits_empty_reason_phrase() {
+        // When the parsed response carried no reason phrase, the re-serialised
+        // status line must not emit a trailing space after the code.
+        let raw = b"HTTP/1.1 204\r\nContent-Length: 0\r\n\r\n";
+        let mut reader = make_reader(raw);
+        let resp = read_http_response(&mut reader).await.unwrap().unwrap();
+        let wire = serialize_http_response(&resp, b"");
+        let text = std::str::from_utf8(&wire).unwrap();
+        assert!(
+            text.starts_with("HTTP/1.1 204\r\n"),
+            "no trailing reason space: {text:?}"
+        );
+    }
 }
