@@ -47,11 +47,18 @@ existing moving tags. On a `v*` tag push, each language image is published as:
 The `<core-version>` coordinate is the `aa-runtime`/release tag (`github.ref_name`),
 so all governed images for a release share one version coordinate.
 
-**2. Make the baked-in SDK reproducible.** Each Dockerfile takes `ARG SDK_VERSION` and
-installs that exact released SDK from the language registry
-(`pip install agent-assembly==<v>`, `npm install -g @agent-assembly/sdk@<v>`,
-`go install …/go-sdk/...@<v>`). The current floating install is retained only as the
-**no-arg fallback** for PR smoke builds and ad-hoc local builds.
+**2. Make the baked-in SDK reproducible — and require the pin.** Each Dockerfile takes
+a **required** `ARG SDK_VERSION` and installs that exact released SDK from the language
+registry (`pip install agent-assembly==<v>`, `npm install -g @agent-assembly/sdk@<v>`,
+`go install …/go-sdk/...@<v>`). There is **no floating fallback** — a build with no
+`SDK_VERSION` fails fast with a clear error. This is deliberate: the **core version is
+the developer's selectable axis** (the image tag + the bundled `aasm` CLI) and the SDK
+is a *dependent* value pinned to the compatible release, so every image is an explicit,
+reproducible `(core, SDK)` pair. Dropping the fallback also makes the install path
+**identical across Python, Node, and Go** — the earlier per-language defaults diverged
+(git-master / `@beta` / `@latest`), partly because npm's `latest` dist-tag is stale; a
+required pin sidesteps all of that. `docker.yml` and the smoke runner both resolve the
+pin from the manifest and pass it.
 
 **3. Resolve the SDK pin from an explicit source of truth.** A new
 `docker/sdk-versions.json` maps each language to its pinned SDK release:
