@@ -76,29 +76,26 @@ impl VerifiedCaller {
 /// `None` when neither is present or the value is empty / non-ASCII.
 fn extract_token(req: &Request<()>) -> Option<String> {
     let md = req.metadata();
+    token_from_credential_header(md).or_else(|| token_from_authorization_header(md))
+}
 
-    if let Some(value) = md.get(CREDENTIAL_METADATA_KEY) {
-        if let Ok(s) = value.to_str() {
-            let token = s.trim();
-            if !token.is_empty() {
-                return Some(token.to_owned());
-            }
-        }
-    }
+/// Read a non-empty, trimmed token from the dedicated [`CREDENTIAL_METADATA_KEY`]
+/// header. Returns `None` for an absent, non-ASCII, or empty value.
+fn token_from_credential_header(md: &tonic::metadata::MetadataMap) -> Option<String> {
+    let token = md.get(CREDENTIAL_METADATA_KEY)?.to_str().ok()?.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
 
-    if let Some(value) = md.get("authorization") {
-        if let Ok(s) = value.to_str() {
-            let s = s.trim();
-            if let Some(rest) = s.strip_prefix("Bearer ").or_else(|| s.strip_prefix("bearer ")) {
-                let token = rest.trim();
-                if !token.is_empty() {
-                    return Some(token.to_owned());
-                }
-            }
-        }
-    }
-
-    None
+/// Read a non-empty, trimmed token from a standard `authorization: Bearer <token>`
+/// header (case-insensitive scheme). Returns `None` for an absent, non-ASCII,
+/// non-bearer, or empty value.
+fn token_from_authorization_header(md: &tonic::metadata::MetadataMap) -> Option<String> {
+    let value = md.get("authorization")?.to_str().ok()?.trim();
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?
+        .trim();
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 /// Resolve a credential token to a [`VerifiedCaller`] against the registry's
@@ -294,5 +291,49 @@ mod tests {
             org_id: None,
         };
         assert_eq!(caller.agent_id_str(), "00000000-0000-0000-0000-000000000000");
+    }
+
+    // Behavior locks for the `extract_token` precedence/trim/fall-through logic
+    // split into helpers by the AAASM-3823 S3776 refactor (must not change).
+    #[test]
+    fn extract_token_prefers_credential_header_over_authorization() {
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert(CREDENTIAL_METADATA_KEY, "cred-tok".parse().unwrap());
+        req.metadata_mut()
+            .insert("authorization", "Bearer bearer-tok".parse().unwrap());
+        assert_eq!(extract_token(&req).as_deref(), Some("cred-tok"));
+    }
+
+    #[test]
+    fn extract_token_falls_back_to_authorization_when_credential_empty() {
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert(CREDENTIAL_METADATA_KEY, "   ".parse().unwrap());
+        req.metadata_mut()
+            .insert("authorization", "Bearer bearer-tok".parse().unwrap());
+        assert_eq!(extract_token(&req).as_deref(), Some("bearer-tok"));
+    }
+
+    #[test]
+    fn extract_token_trims_credential_value() {
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert(CREDENTIAL_METADATA_KEY, "  spaced  ".parse().unwrap());
+        assert_eq!(extract_token(&req).as_deref(), Some("spaced"));
+    }
+
+    #[test]
+    fn extract_token_accepts_lowercase_bearer_scheme() {
+        let mut req = Request::new(());
+        req.metadata_mut()
+            .insert("authorization", "bearer low-tok".parse().unwrap());
+        assert_eq!(extract_token(&req).as_deref(), Some("low-tok"));
+    }
+
+    #[test]
+    fn extract_token_none_when_no_headers() {
+        let req = Request::new(());
+        assert_eq!(extract_token(&req), None);
     }
 }
