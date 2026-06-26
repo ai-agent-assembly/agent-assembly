@@ -15,3 +15,5 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0006](0006-limited-self-host-k8s-terraform.md) | Limited-Function Self-Host — Kubernetes (Helm) / Terraform Support | Accepted |
 | [0007](0007-public-domain-and-url-contract.md) | Public Domain & URL Contract | Proposed |
 | [0008](0008-saas-host-routing-auth-cookie-boundaries.md) | SaaS Host Routing, Auth & Cookie Boundaries | Proposed |
+| [0009](0009-versioned-base-image-tags-and-sdk-pinning.md) | Versioned Base-Image Tags & Reproducible SDK Pinning | Proposed |
+| [0010](0010-gateway-distribution-self-host-examples.md) | Gateway Distribution for Self-Host & Examples | Proposed |

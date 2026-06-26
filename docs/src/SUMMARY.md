@@ -141,3 +141,4 @@
   - [0007 - Public Domain & URL Contract](adr/0007-public-domain-and-url-contract.md)
   - [0008 - SaaS Host Routing, Auth & Cookie Boundaries](adr/0008-saas-host-routing-auth-cookie-boundaries.md)
   - [0009 - Versioned Base-Image Tags & SDK Pinning](adr/0009-versioned-base-image-tags-and-sdk-pinning.md)
+  - [0010 - Gateway Distribution for Self-Host & Examples](adr/0010-gateway-distribution-self-host-examples.md)
