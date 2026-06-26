@@ -797,4 +797,62 @@ mod tests {
         assert_ne!(id_a, id_b, "different rule_ids must not dedup against each other");
         assert_eq!(outcome_b, DedupOutcome::Created);
     }
+
+    #[test]
+    fn default_impl_matches_new() {
+        let store = InMemoryAlertStore::default();
+        let (items, total) = store.list(10, 0);
+        assert!(items.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn record_secret_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
+        store.record_secret(&test_secret_alert(CredentialKind::OpenAiKey));
+        store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey)); // evicts oldest
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn record_rule_alert_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        let mut seed = test_rule_seed();
+        seed.rule_snapshot.dedup_window_seconds = 0; // force a fresh record each call
+        store.record_rule_alert(&seed);
+        store.record_rule_alert(&seed);
+        store.record_rule_alert(&seed); // evicts oldest
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn dedup_create_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        let mut seed = test_rule_seed();
+        seed.rule_snapshot.dedup_window_seconds = 0; // every call creates
+        let now = fixed_now();
+        store.dedup_or_record_rule_alert(&seed, now);
+        store.dedup_or_record_rule_alert(&seed, now);
+        store.dedup_or_record_rule_alert(&seed, now); // evicts oldest on create
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn dedup_skips_non_rule_and_foreign_rule_entries_then_creates() {
+        let store = InMemoryAlertStore::with_capacity(100);
+        // A budget alert has no rule_context → the dedup scan `continue`s past it.
+        store.record(&test_alert(80));
+        // A rule alert recorded via record_rule_alert carries a rule_context but
+        // no dedup_window_expires_at → the dedup scan also `continue`s past it.
+        let mut other = test_rule_seed();
+        other.rule_id = "some-other-rule".to_string();
+        store.record_rule_alert(&other);
+
+        // Now dedup a fresh seed: it must skip both existing entries and create.
+        let seed = test_rule_seed();
+        let now = fixed_now();
+        let (_id, outcome) = store.dedup_or_record_rule_alert(&seed, now);
+        assert_eq!(outcome, DedupOutcome::Created);
+    }
 }
