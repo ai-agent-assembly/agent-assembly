@@ -449,4 +449,79 @@ mod tests {
         let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-forever".to_vec())]);
         assert!(store.authorization_for("api.openai.com").is_some());
     }
+
+    #[test]
+    fn empty_secret_constructs_and_does_not_pin() {
+        // A zero-length credential must not attempt to mlock an empty range
+        // (`lock_memory` returns false for an empty buffer) and must still
+        // construct, expose, and drop cleanly.
+        let secret = Secret::new(Vec::new());
+        assert!(secret.expose().is_empty());
+        drop(secret);
+    }
+
+    // ── from_env operator-configuration parsing ─────────────────────────────
+    //
+    // `from_env` is the only path that turns operator config into a live store,
+    // so its host=key parsing, lowercasing, and malformed-entry skipping are
+    // load-bearing for egress injection.
+
+    /// Serialise env-var tests so they don't race each other.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn from_env_unset_yields_empty_store() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        let store = CredentialStore::from_env();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn from_env_empty_string_yields_empty_store() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_PROXY_PROVIDER_KEYS", "");
+        let store = CredentialStore::from_env();
+        assert!(store.is_empty());
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+    }
+
+    #[test]
+    fn from_env_parses_multiple_host_key_pairs_lowercased() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            " API.OpenAI.com=sk-openai , api.anthropic.com=sk-ant ",
+        );
+        let store = CredentialStore::from_env();
+        assert_eq!(store.len(), 2);
+        // Hosts are stored lowercased and trimmed; keys keep their exact bytes.
+        assert_eq!(
+            store.authorization_for("api.openai.com").as_deref(),
+            Some(&b"Bearer sk-openai"[..])
+        );
+        assert_eq!(
+            store.authorization_for("api.anthropic.com").as_deref(),
+            Some(&b"Bearer sk-ant"[..])
+        );
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+    }
+
+    #[test]
+    fn from_env_skips_malformed_entries_but_keeps_valid_ones() {
+        // Entries without '=', with an empty host, or an empty key are skipped
+        // (and never echoed); the surrounding valid entry must still load.
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "no-equals-sign,=orphan-key,emptyval=,api.openai.com=sk-ok",
+        );
+        let store = CredentialStore::from_env();
+        assert_eq!(store.len(), 1, "only the well-formed entry should load");
+        assert_eq!(
+            store.authorization_for("api.openai.com").as_deref(),
+            Some(&b"Bearer sk-ok"[..])
+        );
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+    }
 }
