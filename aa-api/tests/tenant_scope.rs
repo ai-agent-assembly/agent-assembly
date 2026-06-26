@@ -171,6 +171,25 @@ async fn agent_budget_cross_tenant_read_is_403() {
     );
 }
 
+// AAASM-3790 — the `GET /agents/{id}` read path was missing the
+// `authorize_agent_access` gate its delete/suspend siblings already had.
+#[tokio::test]
+async fn get_agent_cross_tenant_read_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xC1, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // Caller scoped to "alpha" must not read a "beta" agent's record.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}", hex_id(0xC1));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant agent record read is denied"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AAASM-3483 — topology & audit-log cross-tenant isolation (security
 // regression). Reproduces the four leaks the QA harness flagged on base SHA
