@@ -66,8 +66,11 @@ The **core version remains the developer's selectable axis** (the image tag + th
 bundled `aasm` CLI); the SDK is the dependent value. A bare `docker build` gets a
 predictable, sensible image (stable-by-default); an explicit `SDK_VERSION` (which
 `docker.yml` always passes from the manifest on publish, keeping published images
-reproducible) gives an exact pin. The smoke runner builds **without** a pin so the
-default-resolution path is itself exercised in CI.
+reproducible) gives an exact pin. The governed smoke runner builds with the **same
+manifest pin**, so it exercises the *published* image configuration rather than a
+floating default (the default-resolution logic is validated independently — a
+floating build would pull a newer SDK and trip the open live-transport gap,
+AAASM-3000 / AAASM-3172).
 
 **3. Resolve the SDK pin from an explicit source of truth.** A new
 `docker/sdk-versions.json` maps each language to its pinned SDK release:
