@@ -743,6 +743,70 @@ mod tests {
         token.cancel();
     }
 
+    /// The accept loop's semaphore bounds in-flight connections: a peer that
+    /// arrives while the only permit is held by a still-handshaking connection is
+    /// dropped without being served a challenge. This is the resource guard that
+    /// stops a flood of half-open connections from exhausting the runtime.
+    #[tokio::test]
+    async fn connection_over_limit_is_dropped() {
+        use tokio::io::AsyncReadExt;
+
+        let socket_path = temp_socket_path("conn-limit");
+        let _ = std::fs::remove_file(&socket_path);
+        let token = CancellationToken::new();
+        let active = Arc::new(AtomicI64::new(0));
+
+        let config = IpcServerConfig {
+            socket_path: socket_path.clone(),
+            agent_id: TEST_AGENT_ID.to_string(),
+            max_connections: 1,
+            inbound_channel_capacity: 16,
+        };
+        let server = IpcServer::bind(config).expect("bind failed");
+        let (tx, _rx) = mpsc::channel(16);
+        let router = crate::ipc::new_response_router();
+        let verified = crate::ipc::new_verified_identity_store();
+        let tracker = TaskTracker::new();
+        let tracker_clone = tracker.clone();
+        let run_token = token.clone();
+        let run_active = Arc::clone(&active);
+        tracker.spawn(async move {
+            server
+                .run(tracker_clone, run_token, tx, run_active, router, verified)
+                .await;
+        });
+
+        // First client connects but deliberately stalls — it reads the challenge
+        // and never replies, so its connection task keeps holding the single
+        // permit while it awaits the proof (well within the 5 s handshake bound).
+        let mut c1 = UnixStream::connect(&socket_path).await.expect("c1 connect");
+        let tag = tokio::time::timeout(Duration::from_secs(2), c1.read_u8())
+            .await
+            .expect("c1 read did not resolve within 2s")
+            .expect("c1 should receive a challenge");
+        assert_eq!(
+            tag,
+            crate::ipc::codec::TAG_HANDSHAKE_CHALLENGE,
+            "first connection should be served a handshake challenge"
+        );
+
+        // Second client arrives while the permit is held: the UDS connect
+        // succeeds but the server drops the stream without a challenge, so the
+        // peer reads EOF.
+        let mut c2 = UnixStream::connect(&socket_path).await.expect("c2 connect");
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), c2.read(&mut byte))
+            .await
+            .expect("c2 read did not resolve within 2s");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "over-limit connection must be dropped (EOF/err), got {read:?}"
+        );
+
+        token.cancel();
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
     /// Round-trip latency test. Marked #[ignore] — run explicitly only.
     #[tokio::test]
     #[ignore]
