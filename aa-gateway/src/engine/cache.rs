@@ -57,9 +57,14 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
             // collide on the cache key (AAASM-3787).
             args.hash(&mut h);
         }
-        aa_core::GovernanceAction::ToolResult { tool_name, .. } => {
+        aa_core::GovernanceAction::ToolResult { tool_name, result } => {
             "tool_result".hash(&mut h);
             tool_name.hash(&mut h);
+            // Hash the full result payload: response-side `tool_result.<key>`
+            // predicates evaluate over it (the mirror of `args.<key>`), so two
+            // results for the same tool with different bodies must not collide
+            // on the cache key (AAASM-3787).
+            result.hash(&mut h);
         }
         aa_core::GovernanceAction::NetworkRequest { url, method } => {
             "net".hash(&mut h);
