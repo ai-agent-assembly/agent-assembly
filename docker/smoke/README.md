@@ -60,14 +60,16 @@ The "real governance path" the ticket asks for is `SDK → aa-runtime → core`.
 harness wires that path for real (the sidecar is the real `aa-runtime` binary,
 reachable over the shared UDS). But whether the agent **dials** that socket
 depends on the SDK build that the *base image* ships, and today none of the three
-published images ship the socket-dialing native client:
+published images ship the socket-dialing native client. (Each image installs the
+pinned `SDK_VERSION` when set, else the latest stable / latest pre-release default
+— see ADR 0009; the `transport` conclusion below is independent of *which* SDK
+version ships.)
 
-- **Python** installs the SDK from git via `pip` (hatchling, pure-Python wheel) —
-  no compiled `agent_assembly._core` extension in the image, so the SDK uses its
-  offline path. (Transitional source; `pip install agent-assembly` lands with
-  AAASM-1202.)
-- **Node** installs `@agent-assembly/sdk@beta` from npm — no bundled native
-  binding wired to a UDS.
+- **Python** installs the published `agent-assembly` SDK via `pip` (pure-Python
+  wheel) — no compiled `agent_assembly._core` extension in the image, so the SDK
+  uses its offline path.
+- **Node** installs the published `@agent-assembly/sdk` from npm — no bundled
+  native binding wired to a UDS.
 - **Go** `go install`s the pure-Go SDK — without the `aa_ffi_go` cgo
   `libaa_ffi_go`, the SDK uses a **simulated** UDS fallback that never dials the
   socket.
