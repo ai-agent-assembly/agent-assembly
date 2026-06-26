@@ -473,11 +473,18 @@ fn cap_set_to_strings(set: &aa_core::CapabilitySet) -> (Vec<String>, Vec<String>
     tag = "agents"
 )]
 pub async fn get_agent_capabilities(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<EffectivePermissionsResponse>), ProblemDetail> {
     let agent_id_bytes = parse_agent_id(&id)?;
     let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+
+    // AAASM-3824: read-scope + tenant ownership before exposing the cascade.
+    // Siblings `get_agent` / `get_agent_budget` already gate here; the
+    // capabilities path was missed, letting any caller read any team's
+    // effective permissions.
+    authorize_agent_access(&caller, &state, &agent_id_bytes, &id)?;
 
     if state.agent_registry.get(&agent_id_bytes).is_none() {
         return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")));
