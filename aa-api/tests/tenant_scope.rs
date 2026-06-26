@@ -796,3 +796,30 @@ async fn list_alerts_is_scoped_before_pagination() {
     assert_eq!(items.len(), 1, "the beta caller's second alert is visible on page 2");
     assert_eq!(items[0]["team_id"], "beta");
 }
+
+// AAASM-3790 — pause_op is a mutation that took no caller.
+#[tokio::test]
+async fn pause_op_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xD2, "beta")).unwrap();
+    state.ops_registry.ingest_with_agent(
+        "op-beta-pause".to_string(),
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: "beta".to_string(),
+            agent_id: hex_id(0xD2),
+        },
+    );
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/ops/op-beta-pause/pause", &token, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant op pause is denied"
+    );
+}
