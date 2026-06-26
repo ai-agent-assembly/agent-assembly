@@ -685,4 +685,213 @@ mod tests {
         assert_eq!(fields.model, "gpt-4");
         assert_eq!(fields.prompt_tokens, Some(5));
     }
+
+    // ── intercept_request verdict matrix ────────────────────────────────────
+    //
+    // The request-side credential gate maps (findings × CredentialAction) onto
+    // the data-path VerdictDecision. These tests pin every arm.
+
+    /// A synthetic OpenAI key that the default scanner detects. Not a real key.
+    const CRED_BODY: &[u8] = b"leaking sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab here";
+
+    #[test]
+    fn intercept_request_disabled_scanner_forwards_even_with_credential() {
+        let (tx, _rx) = broadcast::channel(16);
+        let interceptor = Interceptor::with_scanner(tx, None);
+        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Forward);
+        assert!(verdict.findings.is_empty());
+        assert!(verdict.redacted_body.is_none());
+    }
+
+    #[test]
+    fn intercept_request_clean_body_forwards() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(b"nothing secret here", CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Forward);
+        assert!(verdict.findings.is_empty());
+        assert!(verdict.redacted_body.is_none());
+    }
+
+    #[test]
+    fn intercept_request_block_action_blocks_on_finding() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Block);
+        assert!(!verdict.findings.is_empty(), "a finding must be reported");
+        // Block never forwards bytes, so no redacted body is produced.
+        assert!(verdict.redacted_body.is_none());
+    }
+
+    #[test]
+    fn intercept_request_redact_only_returns_redacted_bytes() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::RedactOnly);
+        assert_eq!(verdict.decision, VerdictDecision::ForwardRedacted);
+        assert!(!verdict.findings.is_empty());
+        let redacted = verdict.redacted_body.expect("redact_only must populate the body");
+        assert!(
+            !redacted
+                .windows(b"TESTONLY-NOT-REAL".len())
+                .any(|w| w == b"TESTONLY-NOT-REAL"),
+            "redacted body must not contain the raw secret"
+        );
+    }
+
+    #[test]
+    fn intercept_request_alert_only_forwards_original_with_findings() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::AlertOnly);
+        assert_eq!(verdict.decision, VerdictDecision::AlertAndForward);
+        assert!(!verdict.findings.is_empty());
+        // alert_only forwards the original body unmodified, so no redaction.
+        assert!(verdict.redacted_body.is_none());
+    }
+
+    // ── redact_response_body ────────────────────────────────────────────────
+
+    #[test]
+    fn redact_response_body_disabled_scanner_returns_none() {
+        let (tx, _rx) = broadcast::channel(16);
+        let interceptor = Interceptor::with_scanner(tx, None);
+        assert!(interceptor.redact_response_body(CRED_BODY).is_none());
+    }
+
+    #[test]
+    fn redact_response_body_clean_payload_returns_none() {
+        let interceptor = make_interceptor();
+        assert!(interceptor.redact_response_body(b"clean upstream response").is_none());
+    }
+
+    #[test]
+    fn redact_response_body_with_credential_returns_redacted() {
+        let interceptor = make_interceptor();
+        let redacted = interceptor
+            .redact_response_body(CRED_BODY)
+            .expect("a credential payload must yield redacted bytes");
+        assert!(
+            !redacted
+                .windows(b"TESTONLY-NOT-REAL".len())
+                .any(|w| w == b"TESTONLY-NOT-REAL"),
+            "redacted response must not contain the raw secret"
+        );
+    }
+
+    // ── emit_policy_decision (CONNECT tunnel audit) ─────────────────────────
+
+    #[tokio::test]
+    async fn emit_policy_decision_denied_emits_violation() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        interceptor.emit_policy_decision("evil.example.com", true).await;
+
+        let event = rx.try_recv().expect("a pipeline event must be emitted");
+        let PipelineEvent::Audit(enriched) = event else {
+            panic!("expected Audit event");
+        };
+        assert_eq!(enriched.source, EventSource::Proxy);
+        match enriched.inner.detail.expect("detail") {
+            audit_event::Detail::Violation(v) => {
+                assert_eq!(v.blocked_action, "CONNECT evil.example.com");
+            }
+            other => panic!("expected Violation detail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_policy_decision_allowed_emits_network_detail() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        interceptor.emit_policy_decision("api.openai.com", false).await;
+
+        let PipelineEvent::Audit(enriched) = rx.try_recv().expect("event") else {
+            panic!("expected Audit event");
+        };
+        match enriched.inner.detail.expect("detail") {
+            audit_event::Detail::Network(n) => {
+                assert_eq!(n.host, "api.openai.com");
+                assert_eq!(n.protocol, "https");
+                assert!(n.succeeded);
+            }
+            other => panic!("expected Network detail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_policy_decision_with_no_receiver_does_not_panic() {
+        // Standalone proxy mode: the broadcast send returns Err with no
+        // receivers, which the method must swallow.
+        let (tx, rx) = broadcast::channel(16);
+        drop(rx);
+        let interceptor = Interceptor::new(tx);
+        interceptor.emit_policy_decision("api.openai.com", true).await;
+    }
+
+    // ── emit_mcp_decision (tools/call audit) ────────────────────────────────
+
+    #[tokio::test]
+    async fn emit_mcp_decision_denied_emits_violation_with_blocked_action() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        interceptor
+            .emit_mcp_decision("read_file", b"{}", true, "blocked on /etc paths")
+            .await;
+
+        let PipelineEvent::Audit(enriched) = rx.try_recv().expect("event") else {
+            panic!("expected Audit event");
+        };
+        match enriched.inner.detail.expect("detail") {
+            audit_event::Detail::Violation(v) => {
+                assert_eq!(v.blocked_action, "tools/call read_file");
+                assert_eq!(v.reason, "blocked on /etc paths");
+            }
+            other => panic!("expected Violation detail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_mcp_decision_allowed_redacts_credentials_in_args() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let args = br#"{"token":"sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab"}"#;
+        interceptor.emit_mcp_decision("call_api", args, false, "").await;
+
+        let PipelineEvent::Audit(enriched) = rx.try_recv().expect("event") else {
+            panic!("expected Audit event");
+        };
+        match enriched.inner.detail.expect("detail") {
+            audit_event::Detail::ToolCall(tc) => {
+                assert_eq!(tc.tool_name, "call_api");
+                assert_eq!(tc.tool_source, "mcp");
+                assert!(tc.succeeded);
+                // Producer-side scrub: the raw secret never enters the audit chain.
+                assert!(
+                    !tc.args_json
+                        .windows(b"TESTONLY-NOT-REAL".len())
+                        .any(|w| w == b"TESTONLY-NOT-REAL"),
+                    "args_json must be redacted in the audit record"
+                );
+            }
+            other => panic!("expected ToolCall detail, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_mcp_decision_allowed_clean_args_pass_through() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let interceptor = Interceptor::new(tx);
+        let args = br#"{"path":"/tmp/readme.txt"}"#;
+        interceptor.emit_mcp_decision("read_file", args, false, "").await;
+
+        let PipelineEvent::Audit(enriched) = rx.try_recv().expect("event") else {
+            panic!("expected Audit event");
+        };
+        match enriched.inner.detail.expect("detail") {
+            audit_event::Detail::ToolCall(tc) => {
+                // No findings → the original args bytes are preserved verbatim.
+                assert_eq!(tc.args_json, args);
+            }
+            other => panic!("expected ToolCall detail, got {other:?}"),
+        }
+    }
 }
