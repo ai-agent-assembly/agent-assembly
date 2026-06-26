@@ -1243,30 +1243,44 @@ jobs:
           echo "Backfilling rust-coverage-lcov from master run ${run_id}."
           gh run download "$run_id" --name rust-coverage-lcov --dir . \
             || echo "::warning::rust-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
-      # ---- TypeScript coverage (generated fresh in-job) ---------------------
-      # AAASM-3803: the dashboard LCOV used to be pulled from the `dashboard-test`
-      # artifact (with an AAASM-3197 cross-run backfill). When that artifact was
-      # expired/absent — common on the billing-throttled scan — the step degraded
-      # to a soft `::warning:: ... scanning without it`, so Sonar scanned with NO
-      # dashboard coverage and dashboard/src reported 0.0%. Generating the LCOV
-      # here makes it unconditionally present, which also preserves the AAASM-3197
-      # full-snapshot invariant (a Rust-only push no longer wipes dashboard
-      # coverage to 0) without depending on any cross-run artifact.
+      # ---- TypeScript coverage ---------------------------------------------
+      # AAASM-3803 (Option C): prefer the SAME-RUN `dashboard-test` artifact and
+      # only regenerate in-job when that job did not run this build. Same-run
+      # artifacts never expire, so the download is reliable — unlike the previous
+      # cross-run backfill, which degraded to a soft `::warning:: ... scanning
+      # without it` when the artifact was expired/absent (common on the
+      # billing-throttled scan), letting Sonar scan with 0.0% dashboard coverage.
+      # This avoids re-running the dashboard tests on the common path (a dashboard
+      # PR, where `dashboard-test` already ran) while still guaranteeing coverage
+      # on a Rust-only master push (where `dashboard-test` is path-skipped but the
+      # AAASM-3197 full-snapshot invariant still requires dashboard coverage).
+      - name: Download TypeScript coverage (LCOV) from the Dashboard test job
+        if: needs.dashboard-test.result == 'success'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: dashboard-coverage-lcov
+          path: dashboard/coverage
+      # Fallback — regenerate only when `dashboard-test` was skipped/failed.
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        if: needs.dashboard-test.result != 'success'
         with:
           version: 10.9.0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: needs.dashboard-test.result != 'success'
         with:
           node-version: 20
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
-      - name: Install dashboard dependencies
+      - name: Install dashboard dependencies (fallback)
+        if: needs.dashboard-test.result != 'success'
         working-directory: dashboard
         run: pnpm install --frozen-lockfile
-      - name: Generate API types from OpenAPI spec
+      - name: Generate API types from OpenAPI spec (fallback)
+        if: needs.dashboard-test.result != 'success'
         working-directory: dashboard
         run: pnpm generate:api
-      - name: Generate TypeScript coverage (LCOV) for SonarCloud
+      - name: Generate TypeScript coverage (LCOV) for SonarCloud (fallback)
+        if: needs.dashboard-test.result != 'success'
         working-directory: dashboard
         run: pnpm test:coverage
       # ---- Scan -------------------------------------------------------------
