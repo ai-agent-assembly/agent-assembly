@@ -34,6 +34,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  validate-sdk-pins:
+    name: Validate SDK version pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      # docker/sdk-versions.json is the pin source of truth consumed by
+      # docker.yml's per-language build (build-arg SDK_VERSION). Fail fast if it
+      # is malformed or any language pin is missing/empty before the (much more
+      # expensive) image-build matrix runs. jq is preinstalled on ubuntu-latest.
+      - name: Assert docker/sdk-versions.json is valid and fully pinned
+        run: |
+          jq -e . docker/sdk-versions.json > /dev/null
+          for lang in python node go; do
+            v=$(jq -r --arg l "$lang" '.sdk[$l] // empty' docker/sdk-versions.json)
+            if [ -z "$v" ]; then
+              echo "::error::docker/sdk-versions.json: .sdk.$lang is missing or empty" >&2
+              exit 1
+            fi
+            echo "pinned $lang SDK = $v"
+          done
+
   prep:
     name: Resolve smoke matrix
     runs-on: ubuntu-latest
