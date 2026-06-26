@@ -161,6 +161,29 @@ fn proxy_status_stale_pid_cleans_up_and_succeeds() {
     }
 }
 
+#[test]
+fn gateway_status_running_and_serving_succeeds() {
+    let _dd = DataDir::new();
+    // Bind a real listener so the TCP health probe sees an open port, and use
+    // our own (alive) PID so the liveness check passes → "running" branch.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    gateway::pid::write_pid(std::process::id(), &addr, "2026-01-01T00:00:00Z").unwrap();
+    let code = gateway::status::dispatch(gateway::status::StatusArgs { json: false });
+    assert_eq!(code, ExitCode::SUCCESS);
+}
+
+#[test]
+fn proxy_status_running_and_serving_succeeds() {
+    let _dd = DataDir::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    // proxy::pid::write_pid records the current (alive) process id.
+    std::fs::write(proxy::pid::pid_path(), format!("{}\n{}\n", std::process::id(), addr)).unwrap();
+    let code = proxy::status::dispatch(proxy::status::StatusArgs { json: true });
+    assert_eq!(code, ExitCode::SUCCESS);
+}
+
 // ── proxy stop ────────────────────────────────────────────────────────
 
 #[test]
