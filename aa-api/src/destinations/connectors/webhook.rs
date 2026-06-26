@@ -8,7 +8,7 @@
 use chrono::Utc;
 
 use crate::destinations::connectors::{
-    shared_client, truncate_body, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
+    shared_client, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
 };
 use crate::destinations::types::{Destination, DestinationConfig};
 
@@ -45,17 +45,23 @@ impl NotificationConnector for WebhookConnector {
             .await
             .map_err(|e| ConnectorError::Transport(e.to_string()))?;
         let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
-        let body = truncate_body(body);
+        // AAASM-3789: do NOT capture or return the upstream response body. A
+        // webhook test-fire must not reflect origin/internal response content
+        // back to the caller (SSRF data-exfiltration vector). Drain and discard
+        // the body so only the observed status is surfaced.
+        drop(resp.bytes().await);
 
         if (200..300).contains(&status) {
             Ok(DispatchOutcome {
                 delivered_at: Utc::now().to_rfc3339(),
                 connector_response_status: status,
-                connector_response_body: body,
+                connector_response_body: String::new(),
             })
         } else {
-            Err(ConnectorError::Http { status, body })
+            Err(ConnectorError::Http {
+                status,
+                body: String::new(),
+            })
         }
     }
 }

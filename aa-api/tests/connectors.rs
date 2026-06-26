@@ -67,7 +67,11 @@ async fn webhook_dispatch_posts_payload_and_returns_outcome_on_2xx() {
 
     mock.assert();
     assert_eq!(outcome.connector_response_status, 202);
-    assert_eq!(outcome.connector_response_body, "queued");
+    // AAASM-3789: the upstream body is no longer reflected to the caller.
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "upstream webhook body must not be reflected"
+    );
     assert!(!outcome.delivered_at.is_empty());
 }
 
@@ -114,16 +118,19 @@ async fn webhook_dispatch_maps_non_2xx_to_http_error() {
     match err {
         ConnectorError::Http { status, body } => {
             assert_eq!(status, 500);
-            assert_eq!(body, "upstream boom");
+            // AAASM-3789: the upstream error body must not be reflected either.
+            assert!(body.is_empty(), "upstream webhook error body must not be reflected");
         }
         other => panic!("expected Http error, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn webhook_dispatch_truncates_oversized_response_body() {
+async fn webhook_dispatch_never_reflects_response_body() {
+    // AAASM-3789: regardless of how much the upstream returns, none of it may
+    // leak back to the caller via the outcome — the webhook test-fire is an
+    // SSRF data-exfiltration sink otherwise.
     let server = MockServer::start();
-    // A 3000-byte body must be capped at the 2048-byte ceiling.
     let big = "x".repeat(3000);
     server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook");
@@ -140,7 +147,10 @@ async fn webhook_dispatch_truncates_oversized_response_body() {
         .await
         .unwrap();
 
-    assert_eq!(outcome.connector_response_body.len(), 2048);
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "no part of the upstream body may be reflected"
+    );
 }
 
 #[tokio::test]

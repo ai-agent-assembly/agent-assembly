@@ -372,7 +372,8 @@ async fn test_webhook_returns_502_connector_failed() {
     let body = body_json(resp).await;
     assert_eq!(body["error"], "connector_failed");
     assert_eq!(body["connector_status"], 401);
-    assert_eq!(body["connector_body"], "Invalid token");
+    // AAASM-3789: the upstream error body is no longer reflected to the caller.
+    assert_eq!(body["connector_body"], "");
     mock.assert();
 }
 
