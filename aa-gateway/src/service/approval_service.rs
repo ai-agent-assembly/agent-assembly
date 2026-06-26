@@ -70,6 +70,47 @@ impl ApprovalServiceImpl {
         self.db_escalation_scheduler = scheduler;
         self
     }
+
+    /// Reject a cross-tenant `decide`: when the caller is tenanted and the target
+    /// approval belongs to a *different* tenant, deny with `permission_denied`
+    /// (the governance-bypass primary impact of AAASM-3788). An unparseable id or
+    /// an absent pending row is intentionally a no-op — the later
+    /// `convert`/`queue.decide` path surfaces those — preserving the original
+    /// inline fall-through behavior exactly.
+    fn enforce_decide_tenancy(&self, caller: &VerifiedCaller, request_id: &str) -> Result<(), Status> {
+        if let Ok(id) = request_id.parse::<ApprovalRequestId>() {
+            if let Some(ApprovalLookup::Pending(pending)) = self.queue.get_by_id(id) {
+                if !caller_may_act_on(caller, pending.team_id.as_deref()) {
+                    return Err(Status::permission_denied("approval belongs to a different tenant"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancel any pending in-memory escalation timer for a decided request.
+    /// Best-effort: logs on failure, never errors the RPC.
+    fn cancel_escalation_timer(&self, id: ApprovalRequestId) {
+        if let Some(scheduler) = &self.escalation_scheduler {
+            match scheduler.cancel(id) {
+                Ok(true) => tracing::debug!(approval_id = %id, "escalation timer cancelled"),
+                Ok(false) => {} // already fired or never registered
+                Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel escalation timer"),
+            }
+        }
+    }
+
+    /// Cancel any DB-backed escalation row for a decided request.
+    /// Best-effort: logs on failure, never errors the RPC.
+    async fn cancel_db_escalation_row(&self, id: ApprovalRequestId) {
+        if let Some(db_scheduler) = &self.db_escalation_scheduler {
+            match db_scheduler.cancel(id).await {
+                Ok(true) => tracing::debug!(approval_id = %id, "DB escalation row cancelled"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel DB escalation row"),
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -105,13 +146,7 @@ impl ApprovalService for ApprovalServiceImpl {
         if let Some(caller) = &caller {
             // Bind the decision to the authenticated approver's tenant: reject a
             // cross-tenant decide (the governance-bypass primary impact).
-            if let Ok(id) = req.request_id.parse::<ApprovalRequestId>() {
-                if let Some(ApprovalLookup::Pending(pending)) = self.queue.get_by_id(id) {
-                    if !caller_may_act_on(caller, pending.team_id.as_deref()) {
-                        return Err(Status::permission_denied("approval belongs to a different tenant"));
-                    }
-                }
-            }
+            self.enforce_decide_tenancy(caller, &req.request_id)?;
             // `decided_by` is derived from the authenticated caller, never
             // trusted from the request body (which an attacker could forge to
             // attribute the decision to a spoofed operator in the audit trail).
@@ -123,22 +158,9 @@ impl ApprovalService for ApprovalServiceImpl {
 
         match self.queue.decide(id, decision) {
             Ok(()) => {
-                // Cancel any pending escalation timer for this request now that a
-                // decision has been made — best-effort, log on failure.
-                if let Some(scheduler) = &self.escalation_scheduler {
-                    match scheduler.cancel(id) {
-                        Ok(true) => tracing::debug!(approval_id = %id, "escalation timer cancelled"),
-                        Ok(false) => {} // already fired or never registered
-                        Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel escalation timer"),
-                    }
-                }
-                if let Some(db_scheduler) = &self.db_escalation_scheduler {
-                    match db_scheduler.cancel(id).await {
-                        Ok(true) => tracing::debug!(approval_id = %id, "DB escalation row cancelled"),
-                        Ok(false) => {}
-                        Err(e) => tracing::warn!(error = %e, approval_id = %id, "failed to cancel DB escalation row"),
-                    }
-                }
+                // Cancel any pending escalation now that a decision has been made.
+                self.cancel_escalation_timer(id);
+                self.cancel_db_escalation_row(id).await;
                 Ok(Response::new(DecideResponse {
                     success: true,
                     error_message: String::new(),
@@ -261,6 +283,80 @@ mod tests {
             !scheduler.cancel(id).unwrap(),
             "entry should have been removed by decide()"
         );
+    }
+
+    fn make_approval_request_with_team(id: Uuid, team: Option<&str>) -> ApprovalRequest {
+        let mut r = make_approval_request(id);
+        r.team_id = team.map(|s| s.to_owned());
+        r
+    }
+
+    fn verified_caller(team: Option<&str>) -> VerifiedCaller {
+        VerifiedCaller {
+            agent_key: [1u8; 16],
+            team_id: team.map(|s| s.to_owned()),
+            org_id: None,
+        }
+    }
+
+    // Behavior lock for the cross-tenant authorization extracted into
+    // `enforce_decide_tenancy` (AAASM-3823 S3776 refactor must not change it).
+    #[tokio::test]
+    async fn decide_cross_tenant_is_permission_denied() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue));
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request_with_team(id, Some("team-b")));
+
+        let mut req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "attacker".to_string(),
+            reason: String::new(),
+        });
+        req.extensions_mut().insert(verified_caller(Some("team-a")));
+
+        let err = service.decide(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn decide_same_tenant_is_allowed() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue));
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request_with_team(id, Some("team-a")));
+
+        let mut req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "ignored".to_string(),
+            reason: String::new(),
+        });
+        req.extensions_mut().insert(verified_caller(Some("team-a")));
+
+        let resp = service.decide(req).await.unwrap().into_inner();
+        assert!(resp.success);
+    }
+
+    #[tokio::test]
+    async fn decide_untenanted_caller_allowed_cross_team() {
+        // Untenanted caller falls back to allow (single-tenant deployment).
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue));
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request_with_team(id, Some("team-b")));
+
+        let mut req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "ops".to_string(),
+            reason: String::new(),
+        });
+        req.extensions_mut().insert(verified_caller(None));
+
+        let resp = service.decide(req).await.unwrap().into_inner();
+        assert!(resp.success);
     }
 
     #[tokio::test]
