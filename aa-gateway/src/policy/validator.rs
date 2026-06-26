@@ -1273,4 +1273,114 @@ spec:
             out.warnings,
         );
     }
+
+    // ── Schedule active_hours missing/unknown fields ────────────────────────
+
+    #[test]
+    fn schedule_unknown_key_produces_warning() {
+        let yaml = "schedule:\n  surprise: 1\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(
+            out.warnings.iter().any(|w| w.field == "schedule.surprise"),
+            "expected warning for unknown schedule key, got: {:?}",
+            out.warnings,
+        );
+    }
+
+    #[test]
+    fn schedule_active_hours_unknown_key_produces_warning() {
+        let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n    timezone: \"UTC\"\n    surprise: 1\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(
+            out.warnings.iter().any(|w| w.field == "schedule.active_hours.surprise"),
+            "expected warning for unknown active_hours key, got: {:?}",
+            out.warnings,
+        );
+    }
+
+    #[test]
+    fn schedule_missing_start_is_an_error() {
+        let yaml = "schedule:\n  active_hours:\n    end: \"18:00\"\n    timezone: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.start"));
+    }
+
+    #[test]
+    fn schedule_invalid_end_format_is_an_error() {
+        let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"6pm\"\n    timezone: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.end"));
+    }
+
+    #[test]
+    fn schedule_missing_end_is_an_error() {
+        let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    timezone: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.end"));
+    }
+
+    #[test]
+    fn schedule_missing_timezone_is_an_error() {
+        let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.timezone"));
+    }
+
+    #[test]
+    fn schedule_start_without_colon_is_rejected() {
+        // is_hhmm must reject a value with no ':' separator (e.g. "0900").
+        let yaml = "schedule:\n  active_hours:\n    start: \"0900\"\n    end: \"18:00\"\n    timezone: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.start"));
+    }
+
+    #[test]
+    fn schedule_start_with_non_numeric_components_is_rejected() {
+        // is_hhmm must reject non-numeric HH/MM components (e.g. "ab:cd").
+        let yaml = "schedule:\n  active_hours:\n    start: \"ab:cd\"\n    end: \"18:00\"\n    timezone: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "schedule.active_hours.start"));
+    }
+
+    // ── Budget sub-day window (AAASM-1600) ──────────────────────────────────
+
+    #[test]
+    fn budget_window_valid_humantime_round_trips() {
+        let yaml = "budget:\n  daily_limit_usd: 10.0\n  window: \"30m\"\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let bp = out.document.budget.unwrap();
+        assert_eq!(bp.window, Some(std::time::Duration::from_secs(30 * 60)));
+    }
+
+    #[test]
+    fn budget_window_zero_duration_is_an_error() {
+        let yaml = "budget:\n  daily_limit_usd: 10.0\n  window: \"0s\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "budget.window"),
+            "zero window must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn budget_window_unparseable_is_an_error() {
+        let yaml = "budget:\n  daily_limit_usd: 10.0\n  window: \"not-a-duration\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "budget.window"),
+            "unparseable window must be rejected, got: {errs:?}"
+        );
+    }
+
+    // ── Capabilities deny-list validation ───────────────────────────────────
+
+    #[test]
+    fn capabilities_invalid_deny_entry_is_an_error() {
+        let yaml = "capabilities:\n  deny:\n    - \"not::a::capability\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "capabilities.deny[0]"),
+            "invalid deny capability must be rejected, got: {errs:?}"
+        );
+    }
 }

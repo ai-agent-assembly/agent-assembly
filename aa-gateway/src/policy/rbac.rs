@@ -252,4 +252,34 @@ mod tests {
             PolicyScopeKind::Tool
         );
     }
+
+    // ── Display impls (audit/log rendering) ─────────────────────────────────
+    //
+    // These string forms land in audit records and tracing lines, so the
+    // snake_case spelling is a contract, not an implementation detail.
+
+    #[test]
+    fn policy_scope_kind_display_uses_snake_case_labels() {
+        assert_eq!(PolicyScopeKind::Global.to_string(), "global");
+        assert_eq!(PolicyScopeKind::Org.to_string(), "org");
+        assert_eq!(PolicyScopeKind::Team.to_string(), "team");
+        assert_eq!(PolicyScopeKind::Agent.to_string(), "agent");
+        assert_eq!(PolicyScopeKind::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn mutation_kind_display_uses_lowercase_verbs() {
+        assert_eq!(MutationKind::Create.to_string(), "create");
+        assert_eq!(MutationKind::Update.to_string(), "update");
+        assert_eq!(MutationKind::Delete.to_string(), "delete");
+    }
+
+    #[test]
+    fn caller_role_display_uses_snake_case_labels() {
+        assert_eq!(CallerRole::OrgAdmin.to_string(), "org_admin");
+        assert_eq!(CallerRole::TeamAdmin.to_string(), "team_admin");
+        assert_eq!(CallerRole::Developer.to_string(), "developer");
+        assert_eq!(CallerRole::Viewer.to_string(), "viewer");
+        assert_eq!(CallerRole::Auditor.to_string(), "auditor");
+    }
 }
