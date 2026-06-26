@@ -131,3 +131,80 @@ impl TraceStore for InMemoryTraceStore {
         Ok(order.iter().rev().take(limit).cloned().collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn span(span_id: &str, start_secs: i64) -> TraceSpan {
+        TraceSpan {
+            span_id: span_id.to_string(),
+            parent_span_id: None,
+            operation: "op".to_string(),
+            decision: None,
+            start_time: Utc.timestamp_opt(start_secs, 0).unwrap(),
+            end_time: None,
+        }
+    }
+
+    #[test]
+    fn default_constructs_empty_store() {
+        let store = InMemoryTraceStore::default();
+        // A fresh store has no trace for any session.
+        assert!(store.get_trace("unknown-session").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_trace_returns_spans_sorted_by_start_time() {
+        let store = InMemoryTraceStore::new();
+        // Record out of chronological order; get_trace must sort by start_time.
+        store.record_span("s1", "agent-a", span("late", 200)).unwrap();
+        store.record_span("s1", "agent-a", span("early", 100)).unwrap();
+
+        let trace = store.get_trace("s1").unwrap().expect("session exists");
+        assert_eq!(trace.agent_id, "agent-a");
+        let ids: Vec<&str> = trace.spans.iter().map(|s| s.span_id.as_str()).collect();
+        assert_eq!(ids, vec!["early", "late"]);
+    }
+
+    #[test]
+    fn record_span_evicts_oldest_span_at_capacity() {
+        // One span per session capacity: the second span evicts the first.
+        let store = InMemoryTraceStore::with_capacity(10, 1);
+        store.record_span("s1", "agent-a", span("first", 100)).unwrap();
+        store.record_span("s1", "agent-a", span("second", 200)).unwrap();
+
+        let trace = store.get_trace("s1").unwrap().expect("session exists");
+        let ids: Vec<&str> = trace.spans.iter().map(|s| s.span_id.as_str()).collect();
+        assert_eq!(ids, vec!["second"]);
+    }
+
+    #[test]
+    fn record_span_evicts_oldest_session_at_capacity() {
+        // Capacity of one session: recording a second session evicts the first.
+        let store = InMemoryTraceStore::with_capacity(1, 10);
+        store.record_span("s1", "agent-a", span("a", 100)).unwrap();
+        store.record_span("s2", "agent-b", span("b", 100)).unwrap();
+
+        assert!(store.get_trace("s1").unwrap().is_none());
+        assert!(store.get_trace("s2").unwrap().is_some());
+    }
+
+    #[test]
+    fn list_sessions_returns_most_recent_first_and_respects_limit() {
+        let store = InMemoryTraceStore::new();
+        store.record_span("s1", "agent-a", span("a", 100)).unwrap();
+        store.record_span("s2", "agent-a", span("b", 100)).unwrap();
+        store.record_span("s3", "agent-a", span("c", 100)).unwrap();
+
+        assert_eq!(store.list_sessions(10).unwrap(), vec!["s3", "s2", "s1"]);
+        assert_eq!(store.list_sessions(2).unwrap(), vec!["s3", "s2"]);
+    }
+
+    #[test]
+    fn trace_store_error_display_includes_message() {
+        let err = TraceStoreError::Internal("boom".to_string());
+        assert_eq!(err.to_string(), "trace store internal error: boom");
+    }
+}

@@ -489,4 +489,65 @@ mod tests {
             "empty suppression_labels should be omitted, got {v}",
         );
     }
+
+    #[test]
+    fn negative_threshold_rejected_for_every_non_budget_metric() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        for metric in [
+            RuleMetric::AnomalyScore,
+            RuleMetric::ApprovalPendingAge,
+            RuleMetric::PolicyViolationCount,
+        ] {
+            let rule = AlertRule {
+                metric,
+                threshold: -1.0,
+                ..valid_rule()
+            };
+            let err = rule.validate(&registry).expect_err("negative threshold must fail");
+            assert!(
+                matches!(err, AlertRuleValidationError::InvalidThreshold { .. }),
+                "metric {metric:?} should reject a negative threshold",
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_threshold_accepted_for_every_non_budget_metric() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        for metric in [
+            RuleMetric::AnomalyScore,
+            RuleMetric::ApprovalPendingAge,
+            RuleMetric::PolicyViolationCount,
+        ] {
+            let rule = AlertRule {
+                metric,
+                threshold: 5.0,
+                ..valid_rule()
+            };
+            assert_eq!(rule.validate(&registry), Ok(()), "metric {metric:?} should accept 5.0");
+        }
+    }
+
+    #[test]
+    fn validation_error_display_covers_every_variant() {
+        let cases = [
+            AlertRuleValidationError::InvalidName {
+                reason: "bad".to_string(),
+            },
+            AlertRuleValidationError::InvalidThreshold {
+                metric: RuleMetric::BudgetSpentPct,
+                value: 200.0,
+                reason: "too big".to_string(),
+            },
+            AlertRuleValidationError::InvalidEvaluationWindow { value: 7 },
+            AlertRuleValidationError::EmptyDestinations,
+            AlertRuleValidationError::UnknownDestination {
+                id: "ghost".to_string(),
+            },
+        ];
+        for case in cases {
+            // Every variant must render a non-empty Display string.
+            assert!(!case.to_string().is_empty());
+        }
+    }
 }

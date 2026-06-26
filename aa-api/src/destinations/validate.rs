@@ -330,3 +330,98 @@ mod tests {
         assert!(allowed.is_ok(), "private egress must be allowed when opted in");
     }
 }
+
+#[cfg(test)]
+mod tests_extra {
+    use super::*;
+    use crate::destinations::types::{Destination, DestinationConfig};
+
+    fn dest(name: &str, config: DestinationConfig) -> Destination {
+        Destination {
+            id: "dst_test".to_string(),
+            name: name.to_string(),
+            config,
+            enabled: true,
+            created_at: "2026-06-25T00:00:00Z".to_string(),
+            updated_at: "2026-06-25T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn empty_name_is_rejected() {
+        let d = dest(
+            "  ",
+            DestinationConfig::Webhook {
+                url: "https://example.com/h".to_string(),
+                secret_header: None,
+            },
+        );
+        assert!(matches!(
+            validate_destination(&d),
+            Err(ValidationError::InvalidConfig("name must be non-empty"))
+        ));
+    }
+
+    #[test]
+    fn valid_webhook_passes() {
+        let d = dest(
+            "wh",
+            DestinationConfig::Webhook {
+                url: "https://example.com/h".to_string(),
+                secret_header: None,
+            },
+        );
+        assert!(validate_destination(&d).is_ok());
+    }
+
+    #[test]
+    fn pagerduty_requires_non_empty_routing_key() {
+        let bad = DestinationConfig::PagerDuty {
+            routing_key: "   ".to_string(),
+            severity_map: None,
+        };
+        assert!(validate_config(&bad).is_err());
+
+        let ok = DestinationConfig::PagerDuty {
+            routing_key: "R0UTING".to_string(),
+            severity_map: None,
+        };
+        assert!(validate_config(&ok).is_ok());
+    }
+
+    #[test]
+    fn opsgenie_requires_api_key_and_team_id() {
+        let no_key = DestinationConfig::OpsGenie {
+            api_key: "".to_string(),
+            team_id: "team".to_string(),
+        };
+        assert!(validate_config(&no_key).is_err());
+
+        let no_team = DestinationConfig::OpsGenie {
+            api_key: "key".to_string(),
+            team_id: "  ".to_string(),
+        };
+        assert!(validate_config(&no_team).is_err());
+
+        let ok = DestinationConfig::OpsGenie {
+            api_key: "key".to_string(),
+            team_id: "team".to_string(),
+        };
+        assert!(validate_config(&ok).is_ok());
+    }
+
+    #[test]
+    fn slack_requires_https_url() {
+        let bad = DestinationConfig::Slack {
+            webhook_url: "http://hooks.slack.com/services/x".to_string(),
+            channel_override: None,
+        };
+        assert!(validate_config(&bad).is_err());
+
+        let ok = DestinationConfig::Slack {
+            webhook_url: "https://hooks.slack.com/services/x".to_string(),
+            channel_override: None,
+        };
+        assert!(validate_config(&ok).is_ok());
+    }
+}

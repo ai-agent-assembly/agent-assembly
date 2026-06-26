@@ -519,3 +519,117 @@ pub async fn test_destination(
         })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::scope::Scope;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+
+    fn writer() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: Tenant::default(),
+        })
+    }
+
+    #[test]
+    fn connector_for_resolves_builtin_kinds() {
+        // Webhook + Slack are always compiled in; the factory must not panic.
+        let _webhook = connector_for(DestinationKind::Webhook);
+        let _slack = connector_for(DestinationKind::Slack);
+    }
+
+    #[tokio::test]
+    async fn connector_for_unsupported_kind_fails_closed() {
+        // OpsGenie has no compiled backend in the default build, so dispatch must
+        // return a transport error rather than panic.
+        let conn = connector_for(DestinationKind::OpsGenie);
+        let dest = Destination {
+            id: "dst_x".to_string(),
+            name: "og".to_string(),
+            config: DestinationConfig::OpsGenie {
+                api_key: "k".to_string(),
+                team_id: "t".to_string(),
+            },
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let req = DispatchRequest {
+            severity: "LOW".to_string(),
+            message: "m".to_string(),
+        };
+        assert!(conn.dispatch(&dest, &req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_destination_rejects_internal_webhook_target() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let dest = state.destination_store.create(
+            "internal".to_string(),
+            DestinationConfig::Webhook {
+                url: "http://127.0.0.1:9/hook".to_string(),
+                secret_header: None,
+            },
+            true,
+        );
+        // SSRF egress guard (AAASM-3789): a loopback target is refused before dispatch.
+        let failure = test_destination(writer(), Extension(state), Path(dest.id), None)
+            .await
+            .expect_err("loopback target rejected");
+        assert_eq!(failure.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_preserves_stored_secret_when_masked() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let dest = state.destination_store.create(
+            "wh".to_string(),
+            DestinationConfig::Webhook {
+                url: "https://example.com/hook".to_string(),
+                secret_header: Some("real-secret".to_string()),
+            },
+            true,
+        );
+        // A GET → edit → PUT round-trip ships back the masked sentinel; it must not
+        // clobber the real stored secret.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "webhook",
+            "config": { "url": "https://example.com/hook", "secret_header": "********" }
+        }))
+        .unwrap();
+        let _ = update_destination(
+            writer(),
+            Extension(state.clone()),
+            Path(dest.id.clone()),
+            Bytes::from(body),
+        )
+        .await
+        .expect("update applies");
+
+        let stored = state.destination_store.get(&dest.id).expect("still present");
+        match stored.config {
+            DestinationConfig::Webhook { secret_header, .. } => {
+                assert_eq!(secret_header.as_deref(), Some("real-secret"));
+            }
+            other => panic!("expected webhook config, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_unknown_destination_is_404() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let body = serde_json::to_vec(&serde_json::json!({ "name": "x" })).unwrap();
+        let err = update_destination(
+            writer(),
+            Extension(state),
+            Path("dst_missing".to_string()),
+            Bytes::from(body),
+        )
+        .await
+        .expect_err("not found");
+        assert_eq!(err.status, StatusCode::NOT_FOUND.as_u16());
+    }
+}

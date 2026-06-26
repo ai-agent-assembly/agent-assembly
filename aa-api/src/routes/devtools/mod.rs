@@ -183,3 +183,41 @@ pub async fn saas_webhook(
 
 // Expose config type for future registry integration.
 pub use aa_devtool_saas::provider::SaasProviderConfig as SaasProviderCfg;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    #[tokio::test]
+    async fn unknown_provider_is_404() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let resp = saas_webhook(
+            Path("not-a-provider".to_string()),
+            HeaderMap::new(),
+            Extension(state),
+            Bytes::new(),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn missing_hmac_secret_is_401() {
+        // The default cache resolves HMAC secrets from the environment; with the
+        // provider's secret var unset, secret resolution misses and the webhook
+        // rejects before parsing the body.
+        std::env::remove_var("AA_SAAS_CLAUDE_AI_HMAC_SECRET");
+        let state = AppState::local_in_memory().expect("state builds");
+        let resp = saas_webhook(
+            Path("claude-ai".to_string()),
+            HeaderMap::new(),
+            Extension(state),
+            Bytes::new(),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}

@@ -334,4 +334,59 @@ mod tests {
         let result = store.validate(key2.as_str());
         assert!(result.is_none());
     }
+
+    #[test]
+    fn verify_returns_false_for_unparseable_hash() {
+        let key = ApiKey::generate();
+        // A non-PHC string can't be parsed into a PasswordHash → verify is false.
+        assert!(!key.verify("not-a-valid-argon2-hash"));
+    }
+
+    #[test]
+    fn verify_round_trips_against_its_own_hash() {
+        let key = ApiKey::generate();
+        let hash = key.hash().expect("hash");
+        assert!(key.verify(&hash));
+    }
+
+    #[test]
+    fn store_len_is_empty_and_validate_detailed_distinguishes_revoked() {
+        let key = ApiKey::generate();
+        let entry = ApiKeyEntry {
+            id: "key-1".to_string(),
+            key_hash: key.hash().expect("hash"),
+            scopes: vec![Scope::Admin],
+            created_at: 1700000000,
+            label: None,
+            team_id: None,
+            org_id: None,
+        };
+        let store = ApiKeyStore::from_entries(vec![entry]);
+        assert_eq!(store.len(), 1);
+        assert!(!store.is_empty());
+
+        // Valid before revocation.
+        assert!(store.validate(key.as_str()).is_some());
+
+        // After revoking the matching key id, validate_detailed reports Revoked.
+        store.revoke("key-1");
+        assert!(matches!(
+            store.validate_detailed(key.as_str()),
+            Err(KeyNotValid::Revoked)
+        ));
+
+        // An entirely unknown key is NotFound.
+        let other = ApiKey::generate();
+        assert!(matches!(
+            store.validate_detailed(other.as_str()),
+            Err(KeyNotValid::NotFound)
+        ));
+    }
+
+    #[test]
+    fn empty_store_reports_is_empty() {
+        let store = ApiKeyStore::from_entries(vec![]);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+    }
 }

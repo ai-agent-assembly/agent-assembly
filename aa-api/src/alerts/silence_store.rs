@@ -187,4 +187,10 @@ mod tests {
         let expired = store.expire_due(now);
         assert_eq!(expired.len(), 1);
     }
+
+    #[test]
+    fn default_impl_constructs_empty_store() {
+        let store = InMemorySilenceStore::default();
+        assert!(store.get_active_for_alert("any", at("2026-05-20T09:30:00Z")).is_none());
+    }
 }

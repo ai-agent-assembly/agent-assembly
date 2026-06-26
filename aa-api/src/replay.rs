@@ -50,3 +50,70 @@ impl Default for ReplayBuffer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::event_type::EventType;
+
+    fn event(id: EventId) -> GovernanceEvent {
+        GovernanceEvent {
+            id,
+            event_type: EventType::Violation,
+            agent_id: "agent-a".to_string(),
+            payload: serde_json::json!({}),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn default_matches_new_empty_buffer() {
+        let buf = ReplayBuffer::default();
+        // events_since(0) on an empty buffer yields nothing to replay.
+        assert!(buf.events_since(0).is_empty());
+    }
+
+    #[test]
+    fn events_since_returns_only_newer_events() {
+        let buf = ReplayBuffer::new();
+        for id in 1..=5 {
+            buf.push(event(id));
+        }
+        let replayed: Vec<EventId> = buf.events_since(2).into_iter().map(|e| e.id).collect();
+        assert_eq!(replayed, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn events_since_newest_id_is_empty() {
+        let buf = ReplayBuffer::new();
+        buf.push(event(1));
+        buf.push(event(2));
+        // since_id at or beyond the newest event yields nothing.
+        assert!(buf.events_since(2).is_empty());
+        assert!(buf.events_since(99).is_empty());
+    }
+
+    #[test]
+    fn push_evicts_oldest_when_at_capacity() {
+        let buf = ReplayBuffer::new();
+        // Fill beyond capacity; the oldest events must be evicted, so a
+        // reconnecting client asking for everything only sees the tail.
+        for id in 1..=(MAX_CAPACITY as u64 + 5) {
+            buf.push(event(id));
+        }
+        let all = buf.events_since(0);
+        assert_eq!(all.len(), MAX_CAPACITY);
+        // Oldest surviving event is id=6 (first 5 evicted).
+        assert_eq!(all.first().map(|e| e.id), Some(6));
+        assert_eq!(all.last().map(|e| e.id), Some(MAX_CAPACITY as u64 + 5));
+    }
+
+    #[test]
+    fn clone_shares_backing_buffer() {
+        let buf = ReplayBuffer::new();
+        let clone = buf.clone();
+        // Clone shares the Arc<Mutex<..>>, so a push via one is visible via the other.
+        buf.push(event(7));
+        assert_eq!(clone.events_since(0).len(), 1);
+    }
+}
