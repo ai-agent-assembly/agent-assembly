@@ -1333,6 +1333,86 @@ mod tests {
             .is_none());
     }
 
+    /// A NATS config path that exists but holds malformed TOML must disable the
+    /// audit publisher (fail-soft), never abort startup (AAASM-2547).
+    #[tokio::test]
+    async fn build_audit_publisher_disabled_on_invalid_nats_config() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        writeln!(tmp, "this is = not valid [gateway.nats] toml = = =").unwrap();
+        tmp.flush().unwrap();
+        assert!(
+            super::build_audit_publisher(&audit_test_config(Some(tmp.path().to_path_buf())))
+                .await
+                .is_none(),
+            "malformed NATS config must disable audit publishing, not crash startup"
+        );
+    }
+
+    // ── build_gateway_client tests (AAASM-3430) ──────────────────────────────
+
+    #[tokio::test]
+    async fn build_gateway_client_none_when_unconfigured() {
+        // No endpoint ⇒ no client; the pipeline evaluates policy locally.
+        let config = audit_test_config(None);
+        assert!(config.gateway_endpoint.is_none());
+        assert!(super::build_gateway_client(&config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_gateway_client_lazy_when_initial_connect_fails() {
+        // A configured-but-unreachable endpoint must NOT yield None (which the
+        // pipeline would treat as "evaluate locally / allow"). The eager connect
+        // fails, so build_gateway_client falls back to a lazy channel — a Some
+        // whose checks fail-closed at call time (AAASM-3110 + AAASM-3430).
+        let mut config = audit_test_config(None);
+        // Port chosen to be almost certainly closed so the eager connect fails fast.
+        config.gateway_endpoint = Some("http://127.0.0.1:1".to_string());
+        assert!(
+            super::build_gateway_client(&config).await.is_some(),
+            "unreachable gateway must yield a lazy client, never None (no permissive local fallback)"
+        );
+    }
+
+    // ── spawn_op_control tests (AAASM-3491) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_op_control_noop_without_endpoint() {
+        // Without a gateway endpoint there is no kill-switch channel, so no
+        // subscriber task is spawned.
+        let tracker = TaskTracker::new();
+        let store = crate::op_control::OpControlStore::new();
+        let config = audit_test_config(None);
+        assert!(config.gateway_endpoint.is_none());
+
+        super::spawn_op_control(&tracker, &config, &store);
+
+        assert_eq!(
+            tracker.len(),
+            0,
+            "no op-control task should be spawned without an endpoint"
+        );
+        tracker.close();
+    }
+
+    #[tokio::test]
+    async fn spawn_op_control_spawns_subscriber_with_endpoint() {
+        // With an endpoint configured, the op-control subscriber is spawned onto
+        // the tracker (it reconnects in the background; we only assert it was
+        // registered, not that it connects).
+        let tracker = TaskTracker::new();
+        let store = crate::op_control::OpControlStore::new();
+        let mut config = audit_test_config(None);
+        config.gateway_endpoint = Some("http://127.0.0.1:1".to_string());
+
+        super::spawn_op_control(&tracker, &config, &store);
+
+        assert_eq!(tracker.len(), 1, "an op-control subscriber task should be spawned");
+        // Don't await — the subscriber reconnect-loops forever by design; the
+        // detached task is dropped when the test runtime shuts down.
+        tracker.close();
+    }
+
     // ── spawn_pipeline_audit_publisher tests (AAASM-2610) ────────────────────
 
     use aa_core::storage::{AuditEntry, AuditSink, Result as StorageResult};
