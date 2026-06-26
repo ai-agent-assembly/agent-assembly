@@ -12,13 +12,15 @@ first run with no extra install step — you just build your agent `FROM` one of
 ## The images
 
 Three languages × three runtime versions = **9 images**, under
-`ghcr.io/ai-agent-assembly/`:
+`ghcr.io/ai-agent-assembly/`. Each language also has its own container guide — with
+the `FROM` example, install command, and `SDK_VERSION` usage tailored to that
+language:
 
-| Language | Image | Runtime variants |
-|---|---|---|
-| Python | `ghcr.io/ai-agent-assembly/python` | `3.14-slim`, `3.13-slim`, `3.12-slim` |
-| Node.js | `ghcr.io/ai-agent-assembly/node` | `24-slim`, `22-slim`, `20-slim` |
-| Go | `ghcr.io/ai-agent-assembly/go` | `1.26-alpine`, `1.25-alpine`, `1.24-alpine` |
+| Language | Image | Runtime variants | Language-specific guide |
+|---|---|---|---|
+| Python | `ghcr.io/ai-agent-assembly/python` | `3.14-slim`, `3.13-slim`, `3.12-slim` | [Python SDK container guide](https://docs.agent-assembly.com/python-sdk/latest/guides/container-base-image/) |
+| Node.js | `ghcr.io/ai-agent-assembly/node` | `24-slim`, `22-slim`, `20-slim` | [Node SDK container guide](https://docs.agent-assembly.com/node-sdk/guides/container-base-image) |
+| Go | `ghcr.io/ai-agent-assembly/go` | `1.26-alpine`, `1.25-alpine`, `1.24-alpine` | [Go SDK container guide](https://docs.agent-assembly.com/go-sdk/guides/container-base-image/) |
 
 Each is a small two-stage build (the `aasm` CLI is compiled and copied into an
 official `python` / `node` / `golang` slim base) and is published for
