@@ -314,3 +314,50 @@ async fn delete_rule_preserves_snapshot_on_already_recorded_alerts() {
     assert_eq!(body["ruleSnapshot"]["threshold"], 90.0);
     assert_eq!(body["ruleSnapshot"]["metric"], "budget_spent_pct");
 }
+
+#[tokio::test]
+async fn create_accepts_every_operator_variant() {
+    let app = common::test_app();
+    for (i, op) in [">", ">=", "<", "="].iter().enumerate() {
+        let mut body = valid_rule_body();
+        body["name"] = json!(format!("op-rule-{i}"));
+        body["operator"] = json!(op);
+        // "<"/"=" against budget_spent_pct with threshold 90 is still in range.
+        let resp = app.clone().oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "operator {op} must be accepted");
+    }
+}
+
+#[tokio::test]
+async fn create_accepts_every_severity_variant() {
+    let app = common::test_app();
+    for (i, sev) in ["CRITICAL", "HIGH", "MEDIUM", "LOW"].iter().enumerate() {
+        let mut body = valid_rule_body();
+        body["name"] = json!(format!("sev-rule-{i}"));
+        body["severity"] = json!(sev);
+        let resp = app.clone().oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "severity {sev} must be accepted");
+    }
+}
+
+#[tokio::test]
+async fn create_with_unknown_operator_returns_invalid_operator() {
+    let app = common::test_app();
+    let mut body = valid_rule_body();
+    body["operator"] = json!("≈");
+    let resp = app.oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = read_json(resp).await;
+    assert_eq!(json["error_code"], "invalid_operator");
+}
+
+#[tokio::test]
+async fn create_with_unknown_severity_returns_invalid_severity() {
+    let app = common::test_app();
+    let mut body = valid_rule_body();
+    body["severity"] = json!("FATAL");
+    let resp = app.oneshot(post("/api/v1/alerts/rules", body)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = read_json(resp).await;
+    assert_eq!(json["error_code"], "invalid_severity");
+}
