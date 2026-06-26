@@ -148,4 +148,24 @@ mod tests {
         let cache = SecretCache::with_resolver(Arc::new(NoneResolver));
         assert!(cache.get("vault:secret/missing").await.is_none());
     }
+
+    #[test]
+    fn env_var_resolver_reads_set_variable_and_misses_unset() {
+        // nextest runs each test in its own process, so this env mutation is isolated.
+        let var = "AA_SECRET_CACHE_TEST_VAR";
+        std::env::set_var(var, "from-env");
+        let resolver = EnvVarResolver;
+        assert_eq!(resolver.resolve(var), Some(b"from-env".to_vec()));
+        assert!(
+            resolver.resolve("AA_SECRET_CACHE_DEFINITELY_UNSET").is_none(),
+            "unset variable resolves to None"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_uses_env_var_resolver() {
+        // Default wiring resolves through the environment; an unset ref misses.
+        let cache = SecretCache::default();
+        assert!(cache.get("AA_SECRET_CACHE_DEFAULT_UNSET").await.is_none());
+    }
 }
