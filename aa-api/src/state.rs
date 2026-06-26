@@ -482,3 +482,56 @@ impl AppState {
         Ok(state)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_in_memory_has_documented_disconnected_seams() {
+        let state = AppState::local_in_memory().expect("in-memory state builds");
+        // The in-memory wiring deliberately leaves these seams disconnected.
+        assert!(state.audit_sender.is_none(), "audit pipeline is disconnected");
+        assert!(state.retention_engine.is_none(), "no storage section in this mode");
+        assert!(matches!(state.auth_config.mode, AuthMode::Off), "auth is bypassed");
+        assert!(state.secrets_store.list().is_empty(), "no secrets pre-registered");
+    }
+
+    #[tokio::test]
+    async fn local_hardened_off_keeps_auth_bypassed_but_wires_audit() {
+        let state = AppState::local_hardened(LocalAuth::Off)
+            .await
+            .expect("hardened state builds");
+        // LocalAuth::Off keeps the bypass, but hardening still connects the
+        // audit + retention seams that local_in_memory leaves None.
+        assert!(matches!(state.auth_config.mode, AuthMode::Off));
+        assert!(
+            state.audit_sender.is_some(),
+            "hardened mode connects the audit pipeline"
+        );
+        assert!(state.retention_engine.is_some(), "hardened mode wires retention");
+    }
+
+    #[tokio::test]
+    async fn local_hardened_api_key_requires_auth() {
+        let key = crate::auth::api_key::ApiKey::generate().as_str().to_string();
+        let state = AppState::local_hardened(LocalAuth::ApiKey { key })
+            .await
+            .expect("hardened state builds");
+        // Supplying a key flips the gate on and seeds exactly one admin key.
+        assert!(matches!(state.auth_config.mode, AuthMode::On));
+        assert_eq!(state.key_store.len(), 1, "exactly the seeded admin key is present");
+    }
+
+    #[test]
+    fn local_state_error_messages_are_descriptive() {
+        let load = LocalStateError::PolicyLoad("bad policy".to_string());
+        assert_eq!(load.to_string(), "failed to load bootstrap policy: bad policy");
+
+        let storage = LocalStateError::Storage("disk full".to_string());
+        assert_eq!(storage.to_string(), "failed to open local storage backend: disk full");
+
+        let rate = LocalStateError::RateLimit("abc".to_string());
+        assert_eq!(rate.to_string(), "invalid AA_RATE_LIMIT_RPM: abc");
+    }
+}
