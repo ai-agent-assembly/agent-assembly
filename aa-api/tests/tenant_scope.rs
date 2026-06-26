@@ -14,6 +14,25 @@ use tower::ServiceExt;
 use aa_api::auth::config::AuthMode;
 use aa_api::auth::scope::Scope;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
+use aa_runtime::approval::ApprovalRequest;
+
+/// Build a pending `ApprovalRequest` owned by `team`.
+fn approval_for_team(team: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        request_id: uuid::Uuid::new_v4(),
+        agent_id: "test-agent".to_string(),
+        action: "transfer".to_string(),
+        condition_triggered: "requires-approval".to_string(),
+        submitted_at: 1_700_000_000,
+        timeout_secs: 600,
+        fallback: aa_core::PolicyResult::Deny {
+            reason: "timed out".to_string(),
+        },
+        team_id: Some(team.to_string()),
+        timeout_override_secs: None,
+        escalation_role_override: None,
+    }
+}
 
 fn bearer(uri: &str, token: &str) -> Request<Body> {
     Request::builder()
@@ -188,6 +207,83 @@ async fn get_agent_cross_tenant_read_is_403() {
         StatusCode::FORBIDDEN,
         "cross-tenant agent record read is denied"
     );
+}
+
+// AAASM-3790 — approvals approve/reject/get/list took no caller, letting any
+// authenticated key act on another team's approvals.
+#[tokio::test]
+async fn get_approval_cross_tenant_read_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let req = approval_for_team("beta");
+    let (rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/approvals/{rid}");
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant approval read is denied"
+    );
+}
+
+#[tokio::test]
+async fn approve_action_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let req = approval_for_team("beta");
+    let (rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to "alpha" must not approve a "beta" approval.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/approvals/{rid}/approve");
+    let response = app.oneshot(json_bearer("POST", &uri, &token, "{}")).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant approval approve is denied"
+    );
+}
+
+#[tokio::test]
+async fn reject_action_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let req = approval_for_team("beta");
+    let (rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/approvals/{rid}/reject");
+    let response = app
+        .oneshot(json_bearer("POST", &uri, &token, r#"{"reason":"no"}"#))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant approval reject is denied"
+    );
+}
+
+#[tokio::test]
+async fn list_approvals_is_scoped_to_caller_team() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let (_rid_a, _fut_a) = state.approval_queue.submit(approval_for_team("alpha"));
+    let (_rid_b, _fut_b) = state.approval_queue.submit(approval_for_team("beta"));
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let response = app.oneshot(bearer("/api/v1/approvals", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["items"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "a team-scoped caller sees only its own team's approvals"
+    );
+    assert_eq!(items[0]["team_id"], "alpha");
 }
 
 // ---------------------------------------------------------------------------
