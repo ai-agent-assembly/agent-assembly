@@ -959,3 +959,23 @@ async fn silence_alert_cross_tenant_is_403() {
         "cross-tenant alert silence is denied"
     );
 }
+
+// AAASM-3824 — get_agent_capabilities exposed any team's effective-permission
+// cascade with no auth. An alpha-scoped caller must not read a beta agent's
+// capabilities; the gate fires before any existence check, so there is no
+// 403-vs-404 enumeration oracle.
+#[tokio::test]
+async fn get_agent_capabilities_cross_tenant_read_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xC2, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/capabilities", hex_id(0xC2));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant capabilities read is denied"
+    );
+}
