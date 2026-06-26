@@ -423,19 +423,20 @@ pub async fn list_alerts(
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let limit = params.per_page() as usize;
-    let offset = params.offset();
-
-    let (stored, total) = state.alert_store.list(limit, offset);
-
-    // AAASM-3790: confine the listing to alerts the caller's tenant owns. An
-    // admin sees every alert; a team-scoped caller sees only its team's alerts;
-    // a caller with no team scope (and no admin) sees none. Untagged alerts (no
-    // team) are admin-only. `total` keeps the store's unfiltered page count: the
-    // filter strips other teams' alert *contents* (the IDOR), leaving only an
-    // aggregate count — never another team's alert data.
+    // AAASM-3790: confine the listing to alerts the caller's tenant owns, and
+    // apply that ownership predicate BEFORE pagination/counting so the page and
+    // `total` both reflect only the visible set (mirrors list_approvals /
+    // list_ops). Filtering after pagination would both leak an aggregate
+    // cross-tenant count and hide a tenant's own alerts that fall on a later
+    // page. An admin sees every alert; a team-scoped caller sees only its team's
+    // alerts; a caller with no team scope (and no admin) sees none; untagged
+    // alerts (no team) are admin-only.
+    //
+    // The in-memory store is a capacity-bounded ring buffer, so pulling the full
+    // set (newest-first) up front is the same shape the other list endpoints use.
     let is_admin = caller.scopes.contains(&Scope::Admin);
-    let stored: Vec<StoredAlert> = stored
+    let (all, _store_total) = state.alert_store.list(usize::MAX, 0);
+    let visible: Vec<StoredAlert> = all
         .into_iter()
         .filter(|a| match a.team_id.as_deref() {
             Some(team) => caller.can_access_team(team),
@@ -443,7 +444,13 @@ pub async fn list_alerts(
         })
         .collect();
 
-    let items: Vec<AlertResponse> = stored.into_iter().map(alert_response_from_stored).collect();
+    let total = visible.len() as u64;
+    let items: Vec<AlertResponse> = visible
+        .into_iter()
+        .skip(params.offset())
+        .take(params.per_page() as usize)
+        .map(alert_response_from_stored)
+        .collect();
 
     (
         StatusCode::OK,
