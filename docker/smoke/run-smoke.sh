@@ -124,9 +124,17 @@ resolve_base_image() {
     return 0
   fi
   local img="aaasm-smoke/${lang}-${version}:local"
-  log "building base image ${lang}:${version} from ${dockerfile}"
+  # Build with the manifest-pinned SDK_VERSION — the governed smoke tests the
+  # PUBLISHED image configuration (docker.yml pins from the same manifest), and the
+  # known-compatible pin keeps the deep-governance smoke stable. Building with the
+  # floating default would pull a newer SDK that attempts live transport and trips
+  # the open IPC gap (AAASM-3000 / AAASM-3172). jq is a smoke-runner prerequisite.
+  local sdk_version
+  sdk_version="$(jq -r --arg l "${lang}" '.sdk[$l]' "${REPO_ROOT}/docker/sdk-versions.json")"
+  log "building base image ${lang}:${version} from ${dockerfile} (SDK ${sdk_version})"
   if ! DOCKER_BUILDKIT=1 docker build \
       -f "${REPO_ROOT}/${dockerfile}" \
+      --build-arg "SDK_VERSION=${sdk_version}" \
       -t "${img}" \
       "${REPO_ROOT}" >&2; then
     return 1
