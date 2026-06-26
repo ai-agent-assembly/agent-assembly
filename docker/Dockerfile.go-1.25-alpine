@@ -69,14 +69,15 @@ ENV GOTOOLCHAIN=auto
 
 # Install the AAASM Go SDK. `go install` uses Go's native git-based
 # distribution model — no registry-publish prerequisite (unlike pip/npm).
-ARG SDK_VERSION=""
-# Pin the exact released SDK for reproducible, version-tagged images (AAASM-3765);
-# fall back to the floating @latest install only when no version is passed (PR smoke builds).
-RUN if [ -n "$SDK_VERSION" ]; then \
-        go install "github.com/ai-agent-assembly/go-sdk/...@${SDK_VERSION}"; \
-    else \
-        go install github.com/ai-agent-assembly/go-sdk/...@latest; \
-    fi
+# SDK_VERSION is REQUIRED — every image is an explicit, reproducible (core, SDK)
+# pair (ADR 0009): the core version is the image-tag coordinate, the SDK is the
+# compatible release pinned from docker/sdk-versions.json. No floating fallback,
+# so the install path is identical across the Python, Node, and Go images. A
+# manual build must pass --build-arg SDK_VERSION=<release> (docker.yml + the smoke
+# runner resolve it from the manifest).
+ARG SDK_VERSION
+RUN test -n "$SDK_VERSION" || { echo "error: SDK_VERSION build-arg is required (see docker/sdk-versions.json)" >&2; exit 1; }; \
+    go install "github.com/ai-agent-assembly/go-sdk/...@${SDK_VERSION}"
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.

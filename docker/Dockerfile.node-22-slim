@@ -56,14 +56,15 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 # line, mirroring how the Python image installs its SDK from the canonical
 # source. The previous `github:` shorthand made npm git-clone over SSH, which
 # fails in the build image (no ssh) with exit code 128.
-ARG SDK_VERSION=""
-# Pin the exact released SDK for reproducible, version-tagged images (AAASM-3765);
-# fall back to the floating @beta install only when no version is passed (PR smoke builds).
-RUN if [ -n "$SDK_VERSION" ]; then \
-        npm install -g "@agent-assembly/sdk@${SDK_VERSION}"; \
-    else \
-        npm install -g '@agent-assembly/sdk@beta'; \
-    fi
+# SDK_VERSION is REQUIRED — every image is an explicit, reproducible (core, SDK)
+# pair (ADR 0009): the core version is the image-tag coordinate, the SDK is the
+# compatible release pinned from docker/sdk-versions.json. No floating fallback,
+# so the install path is identical across the Python, Node, and Go images. A
+# manual build must pass --build-arg SDK_VERSION=<release> (docker.yml + the smoke
+# runner resolve it from the manifest).
+ARG SDK_VERSION
+RUN test -n "$SDK_VERSION" || { echo "error: SDK_VERSION build-arg is required (see docker/sdk-versions.json)" >&2; exit 1; }; \
+    npm install -g "@agent-assembly/sdk@${SDK_VERSION}"
 
 # Make the globally-installed SDK resolvable to bare `require()` /`import`
 # from arbitrary scripts (a `-g` package is not on the default module
