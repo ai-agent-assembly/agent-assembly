@@ -100,6 +100,12 @@ pub(crate) fn shared_client() -> &'static Client {
         Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(15))
+            // AAASM-3789: never follow redirects. A redirect can bounce an
+            // otherwise-allowlisted destination to an internal address (cloud
+            // metadata, loopback, RFC1918), re-opening the SSRF the egress
+            // guard closes. A 3xx is surfaced to the caller as a non-2xx
+            // outcome instead of being chased inward.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client construction failed")
     })
