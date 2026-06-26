@@ -961,6 +961,104 @@ mod tests {
         }
     }
 
+    // --- routing metadata (record_routing / update_routing_status) ---
+
+    #[tokio::test]
+    async fn record_routing_inserts_then_updates_pending_metadata() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        // First record: or_insert path — fresh RoutingMeta with one history entry.
+        assert!(q.record_routing(
+            id,
+            "routed".to_string(),
+            Some("oncall".to_string()),
+            Some(1_700_000_100),
+            Some(1_700_000_400),
+            Some(RoutingHistoryEntry {
+                at: 1_700_000_100,
+                action: "routed".to_string(),
+                from_role: None,
+                to_role: "oncall".to_string(),
+            }),
+        ));
+
+        let p = q
+            .list()
+            .into_iter()
+            .find(|p| p.request_id == id)
+            .expect("still pending");
+        assert_eq!(p.routing_status.as_deref(), Some("routed"));
+        assert_eq!(p.target_role.as_deref(), Some("oncall"));
+        assert_eq!(p.routed_at, Some(1_700_000_100));
+        assert_eq!(p.escalate_at, Some(1_700_000_400));
+        assert_eq!(p.routing_history.len(), 1);
+
+        // Second record: and_modify path — status changes, history appends, and
+        // the None target_role leaves the prior role intact.
+        assert!(q.record_routing(
+            id,
+            "escalated".to_string(),
+            None,
+            None,
+            None,
+            Some(RoutingHistoryEntry {
+                at: 1_700_000_500,
+                action: "escalated".to_string(),
+                from_role: Some("oncall".to_string()),
+                to_role: "manager".to_string(),
+            }),
+        ));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("escalated"));
+        assert_eq!(p.target_role.as_deref(), Some("oncall"), "None must not clear the role");
+        assert_eq!(p.routing_history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_routing_status_classifies_action_and_appends_history() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        // A non-"escalated" status is classified as a "routed" history action.
+        assert!(q.update_routing_status(id, "routed:oncall".to_string()));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("routed:oncall"));
+        assert_eq!(p.routing_history.len(), 1);
+        assert_eq!(p.routing_history[0].action, "routed");
+
+        // An "escalated"-prefixed status is classified as an "escalated" action.
+        assert!(q.update_routing_status(id, "escalated:manager".to_string()));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("escalated:manager"));
+        assert_eq!(p.routing_history.len(), 2);
+        assert_eq!(p.routing_history[1].action, "escalated");
+    }
+
+    #[tokio::test]
+    async fn routing_updates_are_noop_after_resolution() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        q.decide(
+            id,
+            ApprovalDecision::Rejected {
+                by: "alice".to_string(),
+                reason: "denied".to_string(),
+            },
+        )
+        .expect("decide");
+
+        // Both routing entry points must report false for a resolved request.
+        assert!(!q.update_routing_status(id, "routed:oncall".to_string()));
+        assert!(!q.record_routing(id, "routed".to_string(), None, None, None, None));
+    }
+
     // --- ApprovalQueue::submit ---
 
     #[tokio::test]
