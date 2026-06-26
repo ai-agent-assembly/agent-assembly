@@ -154,3 +154,74 @@ async fn build_trace_from_audit(reader: &AuditReader, session_id_hex: &str) -> O
     spans.sort_by_key(|s| s.start_time);
     Some(SessionTrace { agent_id, spans })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+
+    fn caller(scopes: Vec<Scope>, team_id: Option<String>) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes,
+            tenant: Tenant { team_id, org_id: None },
+        })
+    }
+
+    fn span(id: &str) -> TraceSpan {
+        TraceSpan {
+            span_id: id.to_string(),
+            parent_span_id: None,
+            operation: "op".to_string(),
+            decision: None,
+            start_time: chrono::Utc::now(),
+            end_time: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn non_admin_without_team_is_forbidden() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let err = get_trace(
+            caller(vec![Scope::Read], None),
+            Extension(state),
+            axum::extract::Path("session-x".to_string()),
+        )
+        .await
+        .expect_err("forbidden");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    #[tokio::test]
+    async fn admin_unknown_session_is_404() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let err = get_trace(
+            caller(vec![Scope::Admin], None),
+            Extension(state),
+            axum::extract::Path("missing-session".to_string()),
+        )
+        .await
+        .expect_err("not found");
+        assert_eq!(err.status, StatusCode::NOT_FOUND.as_u16());
+    }
+
+    #[tokio::test]
+    async fn admin_reads_recorded_trace() {
+        let state = AppState::local_in_memory().expect("state builds");
+        state
+            .trace_store
+            .record_span("session-1", "deadbeef", span("s1"))
+            .expect("record");
+
+        let (status, body) = get_trace(
+            caller(vec![Scope::Admin], None),
+            Extension(state),
+            axum::extract::Path("session-1".to_string()),
+        )
+        .await
+        .expect("trace found");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.session_id, "session-1");
+        assert_eq!(body.spans.len(), 1);
+    }
+}
