@@ -285,4 +285,48 @@ mod tests {
             Err(ValidationError::InvalidConfig("name must be non-empty"))
         );
     }
+
+    // ── Egress guard (AAASM-3789) ────────────────────────────────────────────
+
+    fn egress(url: &str) -> Result<(), ValidationError> {
+        validate_webhook_egress(&url::Url::parse(url).expect("test url parses"))
+    }
+
+    #[test]
+    fn egress_rejects_loopback_metadata_and_private() {
+        // Loopback, the cloud-metadata link-local address, and an RFC1918 host
+        // must all be refused before any request is dispatched.
+        for url in [
+            "http://127.0.0.1/hook",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/hook",
+            "http://192.168.1.1/hook",
+            "http://172.16.0.1/hook",
+            "http://[::1]/hook",
+        ] {
+            assert_eq!(
+                egress(url),
+                Err(ValidationError::InvalidConfig(
+                    "webhook.url resolves to a disallowed internal address"
+                )),
+                "{url} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn egress_allows_public_ip() {
+        // A public literal IP carries no DNS dependency and must be allowed.
+        assert!(egress("http://8.8.8.8/hook").is_ok());
+        assert!(egress("https://1.1.1.1/hook").is_ok());
+    }
+
+    #[test]
+    fn egress_env_escape_allows_private() {
+        // The documented self-host opt-out disables the guard.
+        std::env::set_var(ALLOW_PRIVATE_EGRESS_ENV, "1");
+        let allowed = egress("http://127.0.0.1/hook");
+        std::env::remove_var(ALLOW_PRIVATE_EGRESS_ENV);
+        assert!(allowed.is_ok(), "private egress must be allowed when opted in");
+    }
 }
