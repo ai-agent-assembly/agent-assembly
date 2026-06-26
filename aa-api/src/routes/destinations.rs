@@ -18,7 +18,7 @@ use crate::destinations::connectors::webhook::WebhookConnector;
 use crate::destinations::connectors::{ConnectorError, DispatchRequest, NotificationConnector};
 use crate::destinations::store::StoreError;
 use crate::destinations::types::{Destination, DestinationConfig, DestinationKind};
-use crate::destinations::validate::{validate_config, ValidationError};
+use crate::destinations::validate::{validate_config, validate_webhook_egress, ValidationError};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -246,6 +246,10 @@ impl NotificationConnector for UnsupportedConnector {
 pub enum TestDestinationFailure {
     /// Destination does not exist — surfaced as 404.
     NotFound(ProblemDetail),
+    /// Request rejected before dispatch (e.g. the SSRF egress guard refused the
+    /// webhook target) — surfaced as the status carried by the `ProblemDetail`
+    /// (400). (AAASM-3789.)
+    Rejected(ProblemDetail),
     /// Connector failed — surfaced as 502 with `ConnectorFailedBody`.
     Connector(ConnectorFailedBody),
 }
@@ -254,6 +258,7 @@ impl IntoResponse for TestDestinationFailure {
     fn into_response(self) -> Response {
         match self {
             TestDestinationFailure::NotFound(p) => p.into_response(),
+            TestDestinationFailure::Rejected(p) => p.into_response(),
             TestDestinationFailure::Connector(body) => (StatusCode::BAD_GATEWAY, Json(body)).into_response(),
         }
     }
@@ -465,6 +470,26 @@ pub async fn test_destination(
         .destination_store
         .get(&id)
         .ok_or_else(|| TestDestinationFailure::NotFound(not_found_problem()))?;
+
+    // AAASM-3789: SSRF egress guard. Before dispatching a webhook test-fire,
+    // reject targets that resolve to an internal address (loopback / RFC1918 /
+    // link-local incl. the cloud-metadata endpoint / ULA). The resolution does
+    // a blocking DNS lookup, so it runs on the blocking pool.
+    if let DestinationConfig::Webhook { url, .. } = &destination.config {
+        let parsed = url::Url::parse(url).map_err(|_| {
+            TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
+                "webhook.url is not a valid URL",
+            )))
+        })?;
+        let egress = tokio::task::spawn_blocking(move || validate_webhook_egress(&parsed))
+            .await
+            .map_err(|_| {
+                TestDestinationFailure::Rejected(
+                    ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail("egress_check_failed"),
+                )
+            })?;
+        egress.map_err(|e| TestDestinationFailure::Rejected(validation_error_to_problem(e)))?;
+    }
 
     let req_in = body.map(|Json(b)| b).unwrap_or_default();
     let dispatch = DispatchRequest {

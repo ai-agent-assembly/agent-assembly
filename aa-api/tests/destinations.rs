@@ -308,6 +308,10 @@ async fn get_unknown_returns_404_destination_not_found() {
 
 #[tokio::test]
 async fn test_webhook_returns_200_and_hits_connector() {
+    // AAASM-3789: the test-fire egress guard blocks loopback/private targets by
+    // default; opt in so this happy-path can drive a loopback httpmock server.
+    // (nextest runs each test in its own process, so this env is test-local.)
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook");
@@ -342,6 +346,8 @@ async fn test_webhook_returns_200_and_hits_connector() {
 
 #[tokio::test]
 async fn test_webhook_returns_502_connector_failed() {
+    // AAASM-3789: opt in to private egress so the loopback mock is reachable.
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook");
@@ -522,6 +528,8 @@ async fn update_with_masked_secret_preserves_stored_secret() {
     // PRESERVE the real stored secret rather than clobber it with the mask.
     // Verified end-to-end: after the masked round-trip, a test-fire must still
     // ship the ORIGINAL secret in the `X-AAASM-Token` header.
+    // AAASM-3789: opt in to private egress so the loopback mock is reachable.
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook").header("X-AAASM-Token", "shh");
