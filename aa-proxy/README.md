@@ -11,4 +11,4 @@ sits alongside each AI agent process, intercepting outbound HTTPS traffic and
 enforcing governance policy before forwarding requests — with no code changes to
 the agent. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

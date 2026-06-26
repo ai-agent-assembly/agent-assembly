@@ -11,4 +11,4 @@ the gateway, enforcing three independent isolation surfaces — filesystem allow
 (WASI preopened directories), CPU budget (instruction fuel), and memory ceiling —
 each surfaced as a deterministic `SandboxError`.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

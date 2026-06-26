@@ -12,4 +12,4 @@ upstream NATS/gateway is briefly unreachable, then flushes the backlog in insert
 order on reconnect. Buffered events survive a process restart, giving Assembly
 partial autonomy so a transient outage never silently loses audit-trail data.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

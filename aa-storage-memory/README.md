@@ -11,4 +11,4 @@ for unit/integration tests and local development without a real database. State 
 ephemeral — it lives only for the life of the process — and the driver registers
 under the name `memory` for selection via `agent-assembly.toml`.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

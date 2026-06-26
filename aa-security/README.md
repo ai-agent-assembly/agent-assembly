@@ -13,4 +13,4 @@ types, and the canonical policy AST relied on by the trusted enforcement layers
 **leaf** crate with no `aa-core` dependency, so the shared policy AST is hosted
 here without a dependency cycle.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

@@ -11,4 +11,4 @@ crate is compiled twice — for the host target by `aa-ebpf` (userspace consumer
 and for the bpf target by `aa-ebpf-programs` (kernel producer). All types are
 `#[repr(C)]` and `Copy` so they cross the BPF ring buffer with no serialization.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

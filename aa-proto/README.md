@@ -11,4 +11,4 @@ and the single source of truth for the wire format. Other crates (`aa-runtime`,
 `aa-gateway`, …) depend on this crate rather than running their own prost/tonic
 codegen; the generated modules mirror the proto package hierarchy.
 
-Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://ai-agent-assembly.github.io/agent-assembly-docs/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
+Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
