@@ -14,6 +14,7 @@ use tower::ServiceExt;
 use aa_api::auth::config::AuthMode;
 use aa_api::auth::scope::Scope;
 use aa_api::models::trace::TraceSpan;
+use aa_gateway::budget::types::BudgetAlert;
 use aa_gateway::registry::{AgentRecord, AgentStatus};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_runtime::approval::ApprovalRequest;
@@ -733,5 +734,30 @@ async fn list_agent_edges_cross_tenant_is_403() {
         response.status(),
         StatusCode::FORBIDDEN,
         "cross-tenant agent edge read is denied"
+    );
+}
+
+// AAASM-3790 — resolve/get/list/silence alert handlers took no ownership check,
+// so any key could resolve another team's alert.
+#[tokio::test]
+async fn resolve_alert_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let id = state.alert_store.record(&BudgetAlert {
+        agent_id: aa_core::identity::AgentId::from_bytes([0xE5; 16]),
+        team_id: Some("beta".to_string()),
+        threshold_pct: 95,
+        spent_usd: 9.5,
+        limit_usd: 10.0,
+    });
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to "alpha" must not resolve a "beta" alert.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let uri = format!("/api/v1/alerts/{id}/resolve");
+    let response = app.oneshot(json_bearer("POST", &uri, &token, "{}")).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant alert resolve is denied"
     );
 }
