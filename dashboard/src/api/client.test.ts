@@ -9,7 +9,8 @@ const fetchMock = vi.fn(
 )
 
 function lastRequest(): Request {
-  return fetchMock.mock.calls[0][0] as Request
+  // openapi-fetch invokes `fetch(request)` with a single Request argument.
+  return (fetchMock.mock.calls[0] as unknown as [Request])[0]
 }
 
 describe('api client auth middleware', () => {
