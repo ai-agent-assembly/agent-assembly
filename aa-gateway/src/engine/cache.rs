@@ -22,7 +22,11 @@ pub struct CacheKey {
     /// Policy epoch at the time of evaluation. Stale entries are invalidated
     /// when the epoch advances (via `load_policy` or `apply_yaml`).
     pub policy_epoch: u64,
-    /// FNV-1a hash of a canonical `"{action_kind}:{action_discriminant}"` string.
+    /// Hash of the action's kind tag **and** its full evaluated payload (tool
+    /// name + args, network URL + method, file path + mode, …). The payload is
+    /// part of the key because stage-5 `requires_approval_if` predicates evaluate
+    /// over it — a key that ignored args would serve a benign payload's cached
+    /// `Allow` for a dangerous one (AAASM-3787). See [`action_discriminant`].
     pub action_hash: u64,
 }
 
@@ -44,9 +48,14 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
 
     let mut h = AHasher::default();
     match action {
-        aa_core::GovernanceAction::ToolCall { name, .. } => {
+        aa_core::GovernanceAction::ToolCall { name, args } => {
             "tool".hash(&mut h);
             name.hash(&mut h);
+            // Hash the full args payload: stage-5 `requires_approval_if`
+            // predicates (e.g. `args.amount > 1000`) are evaluated against the
+            // args, so two calls to the same tool with different args must not
+            // collide on the cache key (AAASM-3787).
+            args.hash(&mut h);
         }
         aa_core::GovernanceAction::ToolResult { tool_name, .. } => {
             "tool_result".hash(&mut h);
