@@ -2037,6 +2037,40 @@ mod tests {
     }
 
     #[test]
+    fn cached_allow_not_served_for_dangerous_args_through_cascade() {
+        // AAASM-3787 regression: the cascade decision cache must key on the
+        // action args. A benign `transfer {amount:1}` evaluates to Allow and is
+        // cached; a subsequent `transfer {amount:1000000}` within the TTL — same
+        // agent, epoch, and tool name but different args — must NOT be served
+        // the cached Allow. It must re-evaluate and trip the stage-5
+        // `requires_approval_if` predicate (`args.amount > 100`).
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "transfer".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: Some("args.amount > 100".to_string()),
+            },
+        );
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let cascade = vec![Arc::new(doc)];
+
+        let benign = tool_call("transfer", r#"{"amount":1}"#);
+        assert_eq!(
+            engine.evaluate_with_cascade(cascade.clone(), &ctx, &benign).decision,
+            PolicyResult::Allow,
+        );
+
+        let dangerous = tool_call("transfer", r#"{"amount":1000000}"#);
+        assert_eq!(
+            engine.evaluate_with_cascade(cascade, &ctx, &dangerous).decision,
+            PolicyResult::RequiresApproval { timeout_secs: 300 },
+        );
+    }
+
+    #[test]
     fn data_pattern_redacts_on_custom_match() {
         // Stage 6 no longer denies — it redacts in-memory and sets credential_findings.
         let mut doc = empty_doc();
