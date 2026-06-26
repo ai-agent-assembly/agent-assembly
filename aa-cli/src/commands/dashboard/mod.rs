@@ -289,3 +289,245 @@ fn restore_terminal() -> io::Result<()> {
     execute!(stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::dashboard::state::EventEntry;
+    use crate::commands::status::models::{AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, RuntimeHealth};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn make_context(api_url: &str) -> ResolvedContext {
+        ResolvedContext {
+            name: None,
+            api_url: api_url.to_string(),
+            api_key: None,
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn pending_approval(id: &str) -> ApprovalResponse {
+        ApprovalResponse {
+            id: id.to_string(),
+            agent_id: "agent-x".to_string(),
+            action: "refund".to_string(),
+            reason: "needs review".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-04-30T10:00:00Z".to_string(),
+            team_id: String::new(),
+            routing_status: String::new(),
+        }
+    }
+
+    fn agent_row(id: &str) -> AgentRow {
+        AgentRow {
+            id: id.to_string(),
+            name: "agent".to_string(),
+            framework: "fw".to_string(),
+            status: "Running".to_string(),
+            sessions: 0,
+            violations_today: 0,
+            last_event: "-".to_string(),
+            layer: "-".to_string(),
+        }
+    }
+
+    // ── apply_feed_message ────────────────────────────────────────────────
+
+    #[test]
+    fn status_update_replaces_snapshot_and_clamps_selection() {
+        let mut state = DashboardState::new();
+        // Selections pointing past the end of the incoming snapshot.
+        state.agent_selected = 9;
+        state.approval_selected = 9;
+
+        apply_feed_message(
+            &mut state,
+            FeedMessage::StatusUpdate {
+                runtime: RuntimeHealth {
+                    reachable: true,
+                    status: "ok".to_string(),
+                    uptime_secs: 1,
+                    active_connections: 2,
+                    pipeline_lag_ms: 3,
+                },
+                agents: vec![agent_row("a1"), agent_row("a2")],
+                approvals_summary: ApprovalsSummary {
+                    pending_count: 1,
+                    oldest_pending_age: None,
+                },
+                pending_approvals: vec![pending_approval("ap1")],
+                budget: BudgetRow {
+                    daily_spend_usd: "1.00".to_string(),
+                    monthly_spend_usd: None,
+                    daily_limit_usd: None,
+                    monthly_limit_usd: None,
+                    date: "2026-04-30".to_string(),
+                    per_agent: vec![],
+                },
+            },
+        );
+
+        assert!(state.runtime.reachable);
+        assert_eq!(state.agents.len(), 2);
+        // Clamped to last valid index.
+        assert_eq!(state.agent_selected, 1);
+        assert_eq!(state.approval_selected, 0);
+    }
+
+    #[test]
+    fn status_update_resets_selection_when_lists_empty() {
+        let mut state = DashboardState::new();
+        state.agent_selected = 4;
+        state.approval_selected = 4;
+        let runtime = state.runtime.clone();
+        let budget = state.budget.clone();
+        apply_feed_message(
+            &mut state,
+            FeedMessage::StatusUpdate {
+                runtime,
+                agents: vec![],
+                approvals_summary: ApprovalsSummary {
+                    pending_count: 0,
+                    oldest_pending_age: None,
+                },
+                pending_approvals: vec![],
+                budget,
+            },
+        );
+        assert_eq!(state.agent_selected, 0);
+        assert_eq!(state.approval_selected, 0);
+    }
+
+    #[test]
+    fn event_message_appends_to_log() {
+        let mut state = DashboardState::new();
+        apply_feed_message(
+            &mut state,
+            FeedMessage::Event(EventEntry {
+                timestamp: "2026-04-30T10:00:00Z".to_string(),
+                event_type: "violation".to_string(),
+                agent_id: "a1".to_string(),
+                message: "blocked".to_string(),
+            }),
+        );
+        assert_eq!(state.event_log.len(), 1);
+        assert_eq!(state.event_log.back().unwrap().message, "blocked");
+    }
+
+    #[test]
+    fn ws_disconnected_is_noop() {
+        let mut state = DashboardState::new();
+        apply_feed_message(&mut state, FeedMessage::WsDisconnected);
+        assert!(state.event_log.is_empty());
+    }
+
+    // ── handle_key_event ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inspect_overlay_dismissed_by_esc() {
+        let mut state = DashboardState::new();
+        state.show_inspect = true;
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_key_event(&mut state, &ctx, key(KeyCode::Esc), None).await;
+        assert!(!state.show_inspect);
+    }
+
+    #[tokio::test]
+    async fn policy_overlay_dismissed_by_q() {
+        let mut state = DashboardState::new();
+        state.show_policy = true;
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_key_event(&mut state, &ctx, key(KeyCode::Char('q')), None).await;
+        assert!(!state.show_policy);
+    }
+
+    #[tokio::test]
+    async fn approve_key_opens_confirm_dialog() {
+        let mut state = DashboardState::new();
+        state.active_panel = state::Panel::Approvals;
+        state.pending_approvals = vec![pending_approval("ap1")];
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_key_event(&mut state, &ctx, key(KeyCode::Char('a')), None).await;
+        assert_eq!(state.confirm_dialog, Some(DialogAction::Approve));
+    }
+
+    #[tokio::test]
+    async fn enter_on_agents_opens_inspect() {
+        let mut state = DashboardState::new();
+        state.active_panel = state::Panel::Agents;
+        state.agents = vec![agent_row("a1")];
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_key_event(&mut state, &ctx, key(KeyCode::Enter), None).await;
+        assert!(state.show_inspect);
+    }
+
+    // ── handle_confirm_dialog_key ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn confirm_dialog_cancelled_by_n() {
+        let mut state = DashboardState::new();
+        state.confirm_dialog = Some(DialogAction::Approve);
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_key_event(&mut state, &ctx, key(KeyCode::Char('n')), None).await;
+        assert!(state.confirm_dialog.is_none());
+    }
+
+    #[tokio::test]
+    async fn confirm_dialog_approve_commits_and_clears() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let approval = pending_approval("ap1");
+        let mut state = DashboardState::new();
+        state.confirm_dialog = Some(DialogAction::Approve);
+        let ctx = make_context(&server.uri());
+        handle_confirm_dialog_key(
+            &mut state,
+            &ctx,
+            key(KeyCode::Char('y')),
+            DialogAction::Approve,
+            Some(&approval),
+        )
+        .await;
+        assert!(state.confirm_dialog.is_none());
+    }
+
+    #[tokio::test]
+    async fn confirm_dialog_reject_commits_and_clears() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        let approval = pending_approval("ap2");
+        let mut state = DashboardState::new();
+        state.confirm_dialog = Some(DialogAction::Reject);
+        let ctx = make_context(&server.uri());
+        handle_confirm_dialog_key(
+            &mut state,
+            &ctx,
+            key(KeyCode::Char('y')),
+            DialogAction::Reject,
+            Some(&approval),
+        )
+        .await;
+        assert!(state.confirm_dialog.is_none());
+    }
+
+    #[tokio::test]
+    async fn confirm_dialog_y_without_approval_just_clears() {
+        let mut state = DashboardState::new();
+        state.confirm_dialog = Some(DialogAction::Approve);
+        let ctx = make_context("http://127.0.0.1:1");
+        handle_confirm_dialog_key(&mut state, &ctx, key(KeyCode::Char('y')), DialogAction::Approve, None).await;
+        assert!(state.confirm_dialog.is_none());
+    }
+}

@@ -191,4 +191,28 @@ mod tests {
         assert!(entry.message.contains("alert"));
         assert!(entry.message.contains("100"));
     }
+
+    // Port 1 is reserved and never listened on, so both background tasks hit
+    // their connection-failure paths fast and deterministically. The REST
+    // poller still emits a (degraded) StatusUpdate even when the gateway is
+    // unreachable; the WS listener emits WsDisconnected when the connect fails.
+    const DEAD_URL: &str = "http://127.0.0.1:1";
+
+    #[tokio::test]
+    async fn rest_poller_emits_status_update_even_when_gateway_unreachable() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_rest_poller(DEAD_URL, tx);
+        let msg = rx.recv().await.expect("poller must emit at least one message");
+        assert!(matches!(msg, FeedMessage::StatusUpdate { .. }));
+        // Dropping rx makes the next send fail, breaking the poller loop.
+        drop(rx);
+    }
+
+    #[tokio::test]
+    async fn ws_listener_emits_disconnected_on_connect_failure() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        spawn_ws_listener(DEAD_URL, tx);
+        let msg = rx.recv().await.expect("ws listener must report disconnect");
+        assert!(matches!(msg, FeedMessage::WsDisconnected));
+    }
 }
