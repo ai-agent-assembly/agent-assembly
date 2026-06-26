@@ -418,3 +418,38 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
     ]);
     Arc::new(store)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_key_scope_conversions_round_trip_every_variant() {
+        let wire_variants = [
+            ApiKeyScopeResponse::ReadMembers,
+            ApiKeyScopeResponse::WriteMembers,
+            ApiKeyScopeResponse::ReadPolicies,
+            ApiKeyScopeResponse::WritePolicies,
+            ApiKeyScopeResponse::ReadAudit,
+            ApiKeyScopeResponse::Admin,
+        ];
+        for wire in wire_variants {
+            // wire → gateway → wire must be the identity for every scope.
+            let gw: GwApiKeyScope = wire.into();
+            let back: ApiKeyScopeResponse = gw.into();
+            assert_eq!(back, wire);
+        }
+    }
+
+    #[test]
+    fn gateway_scope_maps_to_matching_wire_variant() {
+        assert_eq!(
+            ApiKeyScopeResponse::from(GwApiKeyScope::WriteMembers),
+            ApiKeyScopeResponse::WriteMembers
+        );
+        assert_eq!(
+            ApiKeyScopeResponse::from(GwApiKeyScope::Admin),
+            ApiKeyScopeResponse::Admin
+        );
+    }
+}
