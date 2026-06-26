@@ -226,4 +226,21 @@ mod tests {
         let key_dangerous = CacheKey::new(&[1u8; 16], 1, &dangerous);
         assert_ne!(key_benign, key_dangerous);
     }
+
+    #[test]
+    fn different_tool_results_produce_different_keys() {
+        // AAASM-3787: response-side mirror — same tool, different result bodies
+        // must not collide, since `tool_result.<key>` predicates read the body.
+        let ok = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":true}"#.to_string(),
+        };
+        let err = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":false}"#.to_string(),
+        };
+        let key_ok = CacheKey::new(&[1u8; 16], 1, &ok);
+        let key_err = CacheKey::new(&[1u8; 16], 1, &err);
+        assert_ne!(key_ok, key_err);
+    }
 }
