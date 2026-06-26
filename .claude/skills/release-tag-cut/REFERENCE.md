@@ -57,7 +57,8 @@ if `$CURRENT` equals `<X>` (no-op release) or if the value cannot be parsed.
 ### 2. Bump every Cargo.toml version literal + regenerate Cargo.lock
 
 Run the helper script — it enumerates `**/Cargo.toml` declaring `$CURRENT`,
-sed-replaces each, regenerates `Cargo.lock`, and refuses no-op invocations:
+sed-replaces each, bumps `sonar.projectVersion`, regenerates `Cargo.lock`, and
+refuses no-op invocations:
 
 ```bash
 ./scripts/release-tag-cut.sh "$CURRENT" "<X>"
@@ -67,10 +68,18 @@ The script prints the file list before mutating (sanity check it), then
 runs `cargo update --workspace`. For reference, the AAASM-2849 alpha-9 cut
 touched **~16 crates with ~43 literal occurrences**.
 
-### 3. Commit the version bump — Cargo.toml diff only
+It also bumps `sonar.projectVersion` in `sonar-project.properties` from
+`$CURRENT` to `<X>` so SonarCloud's reported project version tracks the release
+instead of going stale (AAASM-3819). The static value is the source of truth /
+local-scan fallback; `ci.yml` additionally overrides it dynamically from the
+Cargo version at scan time, so the line only needs to match `$CURRENT` for the
+helper to rewrite it — if it has drifted, the helper warns and leaves it
+untouched rather than failing the release.
+
+### 3. Commit the version bump — manifests + sonar
 
 ```bash
-git add '**/Cargo.toml' Cargo.toml
+git add '**/Cargo.toml' Cargo.toml sonar-project.properties
 git commit -m "🔧 (release): Bump workspace to v<X>"
 ```
 
