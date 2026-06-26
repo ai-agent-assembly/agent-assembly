@@ -6,7 +6,7 @@ This book is the contributor and operator reference for the core. If you build *
 
 New here? Start with the **[Introduction](introduction/README.md)** — it explains what Agent Assembly is, the problem it solves, the core concepts, and the three-layer interception model. Then move on to the [Quick Start](quick-start/requirements.md).
 
-> **Other docs:** [Docs Hub](https://ai-agent-assembly.github.io/agent-assembly-docs/stable/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/stable/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/stable/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/stable/)
+> **Other docs:** [Docs Hub](https://docs.agent-assembly.com/stable/) · [Python SDK](https://ai-agent-assembly.github.io/python-sdk/stable/) · [Node SDK](https://ai-agent-assembly.github.io/node-sdk/stable/) · [Go SDK](https://ai-agent-assembly.github.io/go-sdk/stable/)
 
 ## Run it locally
 

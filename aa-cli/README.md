@@ -68,6 +68,6 @@ Run `aasm <command> --help` for the full set of subcommands (`agent`, `policy`,
 
 ## Links
 
-- Documentation: <https://ai-agent-assembly.github.io/agent-assembly-docs/>
+- Documentation: <https://docs.agent-assembly.com/>
 - Source: <https://github.com/ai-agent-assembly/agent-assembly>
 - License: [Apache-2.0](../LICENSE)
