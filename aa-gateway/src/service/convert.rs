@@ -425,4 +425,65 @@ mod tests {
         assert_eq!(resp.decision, Decision::Allow as i32);
         assert!(resp.redact.is_none());
     }
+
+    #[test]
+    fn request_to_core_maps_tool_result_action() {
+        // A ToolResult CheckAction (the second-pass evaluation the proxy issues
+        // on a tool's response) must map to GovernanceAction::ToolResult with
+        // the response body decoded from result_json bytes.
+        use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
+        use aa_proto::assembly::policy::v1::{action_context::Action, ActionContext, ToolResultContext};
+
+        let req = CheckActionRequest {
+            agent_id: Some(ProtoAgentId {
+                org_id: String::new(),
+                team_id: String::new(),
+                agent_id: "agent-1".into(),
+            }),
+            context: Some(ActionContext {
+                action: Some(Action::ToolResult(ToolResultContext {
+                    tool_name: "web_search".into(),
+                    tool_source: "mcp".into(),
+                    result_json: br#"{"hits":3}"#.to_vec(),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        };
+
+        let (_ctx, action) = request_to_core(&req).expect("conversion must succeed");
+        match action {
+            GovernanceAction::ToolResult { tool_name, result } => {
+                assert_eq!(tool_name, "web_search");
+                assert_eq!(result, r#"{"hits":3}"#);
+            }
+            other => panic!("expected ToolResult action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approval_timed_out_with_requires_approval_fallback_denies() {
+        // A TimedOut decision whose fallback is itself RequiresApproval cannot
+        // re-enter the approval queue, so it must collapse to a hard Deny with
+        // an explanatory reason rather than loop.
+        let id: ApprovalRequestId = Uuid::new_v4().to_string().parse().unwrap();
+        let decision = ApprovalDecision::TimedOut {
+            fallback: PolicyResult::RequiresApproval { timeout_secs: 30 },
+        };
+        let resp = approval_decision_to_response(&decision, &id, 0, "rule-x");
+        assert_eq!(resp.decision, Decision::Deny as i32);
+        assert_eq!(resp.reason, "approval timed out");
+    }
+
+    #[test]
+    fn decide_request_unspecified_decision_is_an_error() {
+        let req = DecideRequest {
+            request_id: Uuid::new_v4().to_string(),
+            decision: ApprovalDecisionType::DecisionUnspecified as i32,
+            decided_by: "alice".into(),
+            reason: String::new(),
+        };
+        let err = decide_request_to_core(&req).unwrap_err();
+        assert!(matches!(err, ApprovalConvertError::UnspecifiedDecision));
+    }
 }
