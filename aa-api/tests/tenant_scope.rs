@@ -693,3 +693,45 @@ async fn subtree_burn_cross_tenant_read_is_403() {
         "cross-tenant subtree-burn read is denied"
     );
 }
+
+// AAASM-3790 — report_edge took no caller, letting any key poison another team's
+// topology; the per-agent edge listing leaked cross-team edges.
+#[tokio::test]
+async fn report_edge_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xF1, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // A write token scoped to "alpha" must not report an edge from a "beta" agent.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let body = format!(
+        r#"{{"source_agent_id":"{}","target_agent_id":"{}","edge_type":"messages"}}"#,
+        hex_id(0xF1),
+        hex_id(0xF2)
+    );
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/topology/edges", &token, &body))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant edge report is denied"
+    );
+}
+
+#[tokio::test]
+async fn list_agent_edges_cross_tenant_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xF3, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/edges", hex_id(0xF3));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant agent edge read is denied"
+    );
+}
