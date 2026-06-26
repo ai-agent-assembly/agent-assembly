@@ -1,0 +1,8 @@
+{
+  "$comment": "Source of truth for the SDK release pinned into each governed language base image (ADR 0009, AAASM-3765). docker.yml reads .sdk.<lang> and passes it as the SDK_VERSION build-arg. Keep in step with docs/src/compatibility.md. Seed values equal the SDKs' current published releases, so pinning is behaviour-neutral until a value is bumped.",
+  "sdk": {
+    "python": "0.0.1b5",
+    "node": "0.0.1-beta.5",
+    "go": "v0.0.1-beta.3"
+  }
+}
