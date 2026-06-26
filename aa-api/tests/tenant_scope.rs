@@ -761,3 +761,38 @@ async fn resolve_alert_cross_tenant_is_403() {
         "cross-tenant alert resolve is denied"
     );
 }
+
+// AAASM-3790 regression: alert listing must apply tenant ownership BEFORE
+// pagination — a team's own alert on a later page stays visible and `total`
+// excludes other tenants' alerts.
+#[tokio::test]
+async fn list_alerts_is_scoped_before_pagination() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let budget = |byte: u8, team: &str| BudgetAlert {
+        agent_id: aa_core::identity::AgentId::from_bytes([byte; 16]),
+        team_id: Some(team.to_string()),
+        threshold_pct: 90,
+        spent_usd: 9.0,
+        limit_usd: 10.0,
+    };
+    // Record order is oldest->newest; the store lists newest-first.
+    state.alert_store.record(&budget(0x01, "beta"));
+    state.alert_store.record(&budget(0x02, "alpha"));
+    state.alert_store.record(&budget(0x03, "beta"));
+    let app = aa_api::build_app(state);
+
+    // Beta caller, one alert per page. Beta owns two alerts (newest 0x03, then
+    // 0x01); page 1 = [0x03], page 2 = [0x01]. The alpha alert must not affect
+    // either page nor the total.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "beta");
+    let response = app
+        .oneshot(bearer("/api/v1/alerts?page=2&per_page=1", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total"], 2, "total must count only the caller's team's alerts");
+    let items = json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "the beta caller's second alert is visible on page 2");
+    assert_eq!(items[0]["team_id"], "beta");
+}
