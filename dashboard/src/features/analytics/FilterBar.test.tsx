@@ -127,6 +127,16 @@ describe('FilterBar — agents multi-select', () => {
     const select = screen.getByTestId<HTMLSelectElement>('filter-agents')
     expect(Array.from(select.selectedOptions).map(o => o.value)).toEqual(['a1'])
   })
+
+  it('emits the chosen agent ids on selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(
+      <FilterBar filters={DEFAULT_FILTERS} onFiltersChange={onChange} agents={MOCK_AGENTS} />,
+    )
+    await user.selectOptions(screen.getByTestId('filter-agents'), 'a2')
+    expect(onChange).toHaveBeenLastCalledWith({ agents: ['a2'] })
+  })
 })
 
 describe('FilterBar — teams multi-select', () => {
@@ -148,6 +158,16 @@ describe('FilterBar — teams multi-select', () => {
     )
     const select = screen.getByTestId<HTMLSelectElement>('filter-teams')
     expect(Array.from(select.selectedOptions).map(o => o.value)).toEqual(['team-alpha'])
+  })
+
+  it('emits the chosen team ids on selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(
+      <FilterBar filters={DEFAULT_FILTERS} onFiltersChange={onChange} teams={MOCK_TEAMS} />,
+    )
+    await user.selectOptions(screen.getByTestId('filter-teams'), ['team-beta'])
+    expect(onChange).toHaveBeenLastCalledWith({ teams: ['team-beta'] })
   })
 })
 

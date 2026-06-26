@@ -143,6 +143,48 @@ describe('AccessLogPanel (AAASM-1398)', () => {
     })
   })
 
+  it('renders the error state and retries the query on Retry', async () => {
+    let attempts = 0
+    _accessLogInternal.setFetchOverride(() => {
+      attempts += 1
+      return attempts === 1
+        ? Promise.reject(new Error('boom'))
+        : Promise.resolve([makeEvent({ id: 'evt-after-retry' }, 1)])
+    })
+    render(<Harness />)
+    const retry = await screen.findByRole('button', { name: /Retry/ })
+    expect(screen.getByTestId('access-log-error')).toBeInTheDocument()
+
+    await userEvent.click(retry)
+    await waitFor(() =>
+      expect(screen.getByTestId('access-log-row-evt-after-retry')).toBeInTheDocument(),
+    )
+  })
+
+  it('clicking the row View link still resolves to the audit event path', async () => {
+    render(<Harness />)
+    const row = await screen.findByTestId('access-log-row-evt-1')
+    const link = within(row).getByTestId('access-log-row-link-evt-1')
+    await userEvent.click(link)
+    await waitFor(() =>
+      expect(screen.getByTestId('location-display')).toHaveTextContent('/audit/event/evt-1'),
+    )
+  })
+
+  it('pagination prev returns to the previous window', async () => {
+    const many = Array.from({ length: 15 }, (_, i) => makeEvent({ id: `pg-${i + 1}` }, i))
+    _accessLogInternal.setFetchOverride(() => Promise.resolve(many))
+    render(<Harness />)
+    await screen.findByTestId('access-log-row-pg-1')
+
+    await userEvent.click(screen.getByTestId('access-log-pagination-next'))
+    expect(screen.getByTestId('access-log-page-indicator')).toHaveTextContent('Page 2 of 2')
+
+    await userEvent.click(screen.getByTestId('access-log-pagination-prev'))
+    expect(screen.getByTestId('access-log-page-indicator')).toHaveTextContent('Page 1 of 2')
+    expect(screen.getByTestId('access-log-row-pg-1')).toBeInTheDocument()
+  })
+
   it('pagination prev/next moves the visible window when rows exceed page size', async () => {
     // Override the fetcher with 15 fake rows so we get exactly two pages.
     const many = Array.from({ length: 15 }, (_, i) =>

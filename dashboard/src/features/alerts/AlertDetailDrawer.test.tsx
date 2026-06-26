@@ -53,4 +53,26 @@ describe('AlertDetailDrawer', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it('closes when Enter/Space is pressed on the scrim but ignores other keys and child events', () => {
+    const onClose = vi.fn()
+    render(
+      <AlertDetailDrawer open onClose={onClose}>
+        <div data-testid="child">body</div>
+      </AlertDetailDrawer>,
+    )
+    const scrim = screen.getByTestId('alert-detail-drawer')
+
+    fireEvent.keyDown(scrim, { key: 'Tab' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByTestId('child'), { key: 'Enter' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(scrim, { key: 'Enter' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    fireEvent.keyDown(scrim, { key: ' ' })
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
 })
