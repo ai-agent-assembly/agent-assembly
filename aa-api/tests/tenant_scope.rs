@@ -979,3 +979,50 @@ async fn get_agent_capabilities_cross_tenant_read_is_403() {
         "cross-tenant capabilities read is denied"
     );
 }
+
+// AAASM-3825 — get_agent_graph authorized only the root agent and then BFS-walked
+// across teams, leaking cross-tenant node IDs and inter-team edges. An
+// alpha-scoped caller walking its own root must see only alpha nodes/edges, even
+// when an alpha agent has an edge into a beta agent.
+#[tokio::test]
+async fn get_agent_graph_excludes_cross_tenant_nodes() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Root + neighbour in team alpha; a beta agent reachable via an alpha edge.
+    state.agent_registry.register(agent_with_team(0x01, "alpha")).unwrap();
+    state.agent_registry.register(agent_with_team(0x02, "alpha")).unwrap();
+    state.agent_registry.register(agent_with_team(0x03, "beta")).unwrap();
+
+    let edge = |src: u8, tgt: u8| aa_core::topology::NewEdge {
+        source: aa_core::identity::AgentId::from_bytes([src; 16]),
+        target: aa_core::identity::AgentId::from_bytes([tgt; 16]),
+        edge_type: aa_core::topology::EdgeType::Messages,
+        metadata: None,
+    };
+    // alpha -> alpha (in-tenant) and alpha -> beta (cross-tenant boundary).
+    state.edge_repo.insert(edge(0x01, 0x02)).await.unwrap();
+    state.edge_repo.insert(edge(0x02, 0x03)).await.unwrap();
+
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/graph?depth=3", hex_id(0x01));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+
+    let nodes: Vec<&str> = json["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(nodes.len(), 2, "only the two alpha nodes are in the subgraph");
+    assert!(
+        !nodes.contains(&hex_id(0x03).as_str()),
+        "the beta agent must not appear in an alpha caller's subgraph"
+    );
+
+    // The only edge returned is the in-tenant one; the alpha->beta edge is gone.
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1, "only the in-tenant edge survives");
+    assert_eq!(edges[0]["target_agent_id"], hex_id(0x02));
+}
