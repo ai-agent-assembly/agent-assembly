@@ -12,10 +12,56 @@ use crate::alerts::detail::{RoutingLogEntry, Silence};
 use crate::alerts::rules::types::AlertRule;
 use crate::alerts::silence::SilenceRecord;
 use crate::alerts::StoredAlert;
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
+
+/// Enforce tenant ownership of an alert for a caller that already cleared the
+/// scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any alert; a
+/// tenant-scoped caller may act only on alerts in its own team; a caller with
+/// neither admin scope nor a team scope is denied up front. Alerts with no team
+/// are admin-only. Returns the stored alert on success so callers need not look
+/// it up twice; 403 for an unauthorized caller, 404 when the alert is unknown to
+/// an authorized caller.
+fn authorize_alert_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    id: &str,
+) -> Result<StoredAlert, ProblemDetail> {
+    let stored = state.alert_store.get_by_id(id).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
+    })?;
+    authorize_alert_owner(caller, &stored)?;
+    Ok(stored)
+}
+
+/// Scope + tenant-ownership check on an already-fetched alert (AAASM-3790).
+///
+/// Split out from [`authorize_alert_access`] so callers that need a different
+/// not-found message (e.g. `silence_alert`) can fetch the alert themselves and
+/// reuse the ownership logic. Denies a caller with neither admin scope nor a
+/// team scope, then requires the caller's team to match the alert's team
+/// (untagged alerts are admin-only).
+fn authorize_alert_owner(caller: &AuthenticatedCaller, stored: &StoredAlert) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope".to_string()));
+    }
+    let authorized = match stored.team_id.as_deref() {
+        Some(team) => caller.can_access_team(team),
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the alert's team".to_string()));
+    }
+    Ok(())
+}
 
 /// Convert a `StoredAlert` into the public-facing `AlertResponse` shape.
 ///
@@ -373,6 +419,7 @@ pub struct AlertResponse {
     tag = "alerts"
 )]
 pub async fn list_alerts(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
 ) -> impl IntoResponse {
@@ -380,6 +427,21 @@ pub async fn list_alerts(
     let offset = params.offset();
 
     let (stored, total) = state.alert_store.list(limit, offset);
+
+    // AAASM-3790: confine the listing to alerts the caller's tenant owns. An
+    // admin sees every alert; a team-scoped caller sees only its team's alerts;
+    // a caller with no team scope (and no admin) sees none. Untagged alerts (no
+    // team) are admin-only. `total` keeps the store's unfiltered page count: the
+    // filter strips other teams' alert *contents* (the IDOR), leaving only an
+    // aggregate count — never another team's alert data.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let stored: Vec<StoredAlert> = stored
+        .into_iter()
+        .filter(|a| match a.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => is_admin,
+        })
+        .collect();
 
     let items: Vec<AlertResponse> = stored.into_iter().map(alert_response_from_stored).collect();
 
@@ -411,12 +473,12 @@ pub async fn list_alerts(
     tag = "alerts"
 )]
 pub async fn get_alert(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AlertDetailResponse>), ProblemDetail> {
-    let stored = state.alert_store.get_by_id(&id).ok_or_else(|| {
-        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Alert not found: {id}"))
-    })?;
+    // AAASM-3790: read-scope + tenant ownership before exposing the alert.
+    let stored = authorize_alert_access(&caller, &state, &id)?;
 
     Ok((StatusCode::OK, Json(alert_detail_from_stored(stored))))
 }
@@ -438,10 +500,14 @@ pub async fn get_alert(
     tag = "alerts"
 )]
 pub async fn resolve_alert(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     body: Option<Json<ResolveAlertRequest>>,
 ) -> Result<(StatusCode, Json<AlertResponse>), ProblemDetail> {
+    // AAASM-3790: write-scope + tenant ownership before resolving the alert.
+    authorize_alert_access(&caller, &state, &id)?;
+
     let reason = body.and_then(|Json(req)| req.reason);
 
     let stored = state.alert_store.resolve(&id, reason.as_deref()).ok_or_else(|| {
@@ -486,17 +552,20 @@ pub async fn resolve_alert(
     tag = "alerts"
 )]
 pub async fn silence_alert(
-    caller: AuthenticatedCaller,
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(req): Json<SilenceAlertRequest>,
 ) -> Result<(StatusCode, Json<SilenceResponse>), ProblemDetail> {
     validate_silence_request(&req)?;
 
-    if state.alert_store.get_by_id(&req.alert_id).is_none() {
-        return Err(
-            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("alert_not_found: {}", req.alert_id))
-        );
-    }
+    // AAASM-3790: write-scope + tenant ownership before suppressing the alert.
+    // Keep the silence-specific `alert_not_found` message, then reuse the shared
+    // ownership check (previously this was an existence-only check that let any
+    // caller silence any team's alert).
+    let stored = state.alert_store.get_by_id(&req.alert_id).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("alert_not_found: {}", req.alert_id))
+    })?;
+    authorize_alert_owner(&caller, &stored)?;
 
     let now = Utc::now();
     if state.silence_store.get_active_for_alert(&req.alert_id, now).is_some() {
