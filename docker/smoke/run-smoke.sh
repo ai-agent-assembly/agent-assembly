@@ -124,15 +124,9 @@ resolve_base_image() {
     return 0
   fi
   local img="aaasm-smoke/${lang}-${version}:local"
-  # SDK_VERSION is required by the language Dockerfiles (ADR 0009): there is no
-  # floating fallback, so the smoke build must pass the same pin docker.yml uses.
-  # Resolve it from the single source of truth (jq is a smoke-runner prerequisite).
-  local sdk_version
-  sdk_version="$(jq -r --arg l "${lang}" '.sdk[$l]' "${REPO_ROOT}/docker/sdk-versions.json")"
-  log "building base image ${lang}:${version} from ${dockerfile} (SDK ${sdk_version})"
+  log "building base image ${lang}:${version} from ${dockerfile}"
   if ! DOCKER_BUILDKIT=1 docker build \
       -f "${REPO_ROOT}/${dockerfile}" \
-      --build-arg "SDK_VERSION=${sdk_version}" \
       -t "${img}" \
       "${REPO_ROOT}" >&2; then
     return 1
