@@ -59,27 +59,29 @@ cannot prove today.
 The "real governance path" the ticket asks for is `SDK → aa-runtime → core`. The
 harness wires that path for real (the sidecar is the real `aa-runtime` binary,
 reachable over the shared UDS). But whether the agent **dials** that socket
-depends on the SDK build that the *base image* ships, and today none of the three
-published images ship the socket-dialing native client. (Each image installs the
-pinned `SDK_VERSION` when set, else the latest stable / latest pre-release default
-— see ADR 0009; the `transport` conclusion below is independent of *which* SDK
-version ships.)
+depends on the SDK build that the *base image* ships, and that varies per image.
+(Each image installs the pinned `SDK_VERSION` when set, else the latest stable /
+latest pre-release default — see ADR 0009.)
 
-- **Python** installs the published `agent-assembly` SDK via `pip` (pure-Python
-  wheel) — no compiled `agent_assembly._core` extension in the image, so the SDK
-  uses its offline path.
+- **Python** installs the published `agent-assembly` SDK via `pip`. Where a native
+  wheel exists for the image's interpreter (e.g. the `cp312` manylinux wheel),
+  `agent_assembly._core` **is** present and the agent *attempts* live transport;
+  where only the pure-Python sdist applies (e.g. 3.13 / 3.14 today), it stays
+  offline. Either way it ends up `transport=offline`: the live SDK→runtime IPC
+  path is a known, tracked gap (**AAASM-3000**, xfail'd at the SDK level in
+  **AAASM-3172**), so the agent degrades honestly to offline rather than failing.
 - **Node** installs the published `@agent-assembly/sdk` from npm — no bundled
-  native binding wired to a UDS.
+  native binding wired to a UDS, so it stays offline.
 - **Go** `go install`s the pure-Go SDK — without the `aa_ffi_go` cgo
   `libaa_ffi_go`, the SDK uses a **simulated** UDS fallback that never dials the
   socket.
 
-So the agents report `transport=offline` and say so in `transport_note`, rather
+So the agents end up `transport=offline` and say so in `transport_note`, rather
 than asserting a live connection that cannot exist. The harness **still brings up
-the real runtime and waits for its socket**, so the day an image ships the native
-client, flipping to `transport=live` is the only change needed (the Python agent
-already opens a real `RuntimeClient` when `_core` is present, mirroring the live
-integration harness `tests/live/test_e2e_python.py`).
+the real runtime and waits for its socket**, so once the live IPC path lands
+(AAASM-3000), the Python agent's existing `RuntimeClient` call flips to
+`transport=live` — mirroring the live integration harness
+`tests/live/test_e2e_python.py`.
 
 ## Sidecar currently down — AAASM-3527
 
