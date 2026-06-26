@@ -1284,6 +1284,17 @@ jobs:
         working-directory: dashboard
         run: pnpm test:coverage
       # ---- Scan -------------------------------------------------------------
+      # AAASM-3819: derive sonar.projectVersion from the workspace Cargo version
+      # so SonarCloud's reported project version tracks the release automatically
+      # and the static value in sonar-project.properties can never silently go
+      # stale. Passed to every scan attempt below via the scanner `args` input,
+      # which overrides the file value.
+      - name: Resolve sonar.projectVersion from Cargo version
+        id: sonar-version
+        run: |
+          version="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved sonar.projectVersion=${version}"
       - name: Cache SonarCloud analysis state
         uses: actions/cache@v6
         with:
@@ -1295,6 +1306,8 @@ jobs:
         id: sonar-scan-attempt-1
         continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1308,6 +1321,8 @@ jobs:
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1319,6 +1334,8 @@ jobs:
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

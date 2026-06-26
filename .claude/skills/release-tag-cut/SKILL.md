@@ -145,12 +145,15 @@ no-op guard rationale are in
 
 1. **Resolve the current literal** — read the workspace version from
    `Cargo.toml` into `$CURRENT`; refuse the run if `$CURRENT == <X>` (no-op).
-2. **Bump + regenerate lockfile** — run
+2. **Bump version literals + regenerate lockfile** — run
    `./scripts/release-tag-cut.sh "$CURRENT" "<X>"`. The bundled helper
    enumerates every `**/Cargo.toml` declaring `$CURRENT`, sed-replaces each,
+   bumps `sonar.projectVersion` in `sonar-project.properties` from `$CURRENT`
+   to `<X>` (so SonarCloud's reported version tracks the release — AAASM-3819),
    regenerates `Cargo.lock`, and refuses no-op invocations.
-3. **Commit the bump (Cargo.toml only)** —
-   `🔧 (release): Bump workspace to v<X>`; verify the old literal is gone.
+3. **Commit the bump (manifests + sonar)** —
+   `🔧 (release): Bump workspace to v<X>` — stage the `Cargo.toml` files and
+   `sonar-project.properties`; verify the old literal is gone.
 4. **Commit `Cargo.lock` separately** —
    `🔧 (release): Regenerate Cargo.lock for v<X>` (reviewable in isolation).
 5. **Create the annotated tag** — ensure `docs/release/v<X>.md` exists (copy
