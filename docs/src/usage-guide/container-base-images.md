@@ -67,6 +67,15 @@ To actually **enforce** policy, run your agent alongside the `aa-runtime` sideca
 authoritative chokepoint). The `docker compose` example in the repo
 (`examples/docker-compose/`) wires this up; see [Self-hosting](self-hosting.md).
 
+## Language-specific guides
+
+Each SDK's documentation has a container guide with the `FROM` example, install
+command, and `SDK_VERSION` usage tailored to that language:
+
+- **Python** — [Container base image (Python SDK)](https://docs.agent-assembly.com/python-sdk/latest/guides/container-base-image/)
+- **Node.js** — [Container base image (Node SDK)](https://docs.agent-assembly.com/node-sdk/guides/container-base-image)
+- **Go** — [Container base image (Go SDK)](https://docs.agent-assembly.com/go-sdk/guides/container-base-image/)
+
 ## Choosing the SDK version — the `SDK_VERSION` build-arg
 
 The SDK that ships in the image is controlled by an **optional** `SDK_VERSION`
