@@ -330,4 +330,18 @@ mod tests {
         assert!(store.find_by_name("r1").is_some());
         assert!(store.find_by_name("not-there").is_none());
     }
+
+    #[test]
+    fn default_impl_is_empty_and_error_display_renders() {
+        let store = InMemoryAlertRuleStore::default();
+        assert!(store.list(None).is_empty());
+        assert_eq!(
+            AlertRuleStoreError::NameConflict {
+                name: "dup".to_string()
+            }
+            .to_string(),
+            "rule name already exists: dup"
+        );
+        assert_eq!(AlertRuleStoreError::NotFound.to_string(), "rule not found");
+    }
 }

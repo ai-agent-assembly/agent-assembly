@@ -86,4 +86,12 @@ mod tests {
         let registry = DestinationRegistry::seeded();
         assert!(!registry.contains("does-not-exist"));
     }
+
+    #[test]
+    fn default_impl_matches_seeded() {
+        let registry = DestinationRegistry::default();
+        let seeded = DestinationRegistry::seeded();
+        // Default delegates to seeded(), so both accept the same ids.
+        assert_eq!(registry.contains("does-not-exist"), seeded.contains("does-not-exist"));
+    }
 }
