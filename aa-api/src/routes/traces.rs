@@ -5,10 +5,31 @@ use axum::{Extension, Json};
 
 use aa_gateway::AuditReader;
 
+use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
 use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::state::AppState;
 use crate::trace_store::SessionTrace;
+
+/// Parse a hex-encoded 16-byte agent id, or `None` if it is not 32 hex chars.
+fn parse_hex_agent_id(id: &str) -> Option<[u8; 16]> {
+    if id.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(id.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Owning team of the trace's agent, resolved via the registry lineage.
+/// Returns `None` when the agent id does not resolve or has no team
+/// (admin-only), so an unresolvable id can never widen access.
+fn trace_team_id(state: &AppState, agent_id_hex: &str) -> Option<String> {
+    let bytes = parse_hex_agent_id(agent_id_hex)?;
+    state.agent_registry.lineage(&bytes).and_then(|l| l.team_id)
+}
 
 /// `GET /api/v1/traces/:session_id` — full trace for one agent session.
 ///
@@ -24,9 +45,19 @@ use crate::trace_store::SessionTrace;
     tag = "traces"
 )]
 pub async fn get_trace(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(session_id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<TraceResponse>), ProblemDetail> {
+    // AAASM-3790: deny callers with neither admin scope nor a team scope up
+    // front so a session trace (which can expose any agent's activity) is not
+    // readable cross-tenant.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope".to_string()));
+    }
+
     let trace = state
         .trace_store
         .get_trace(&session_id)
@@ -44,14 +75,27 @@ pub async fn get_trace(
     };
 
     match trace {
-        Some(session_trace) => Ok((
-            StatusCode::OK,
-            Json(TraceResponse {
-                session_id,
-                agent_id: session_trace.agent_id,
-                spans: session_trace.spans,
-            }),
-        )),
+        Some(session_trace) => {
+            // AAASM-3790: a tenant-scoped caller may read a trace only when its
+            // agent belongs to the caller's team. Traces whose agent has no
+            // resolvable team are admin-only.
+            let authorized = match trace_team_id(&state, &session_trace.agent_id) {
+                Some(team) => caller.can_access_team(&team),
+                None => is_admin,
+            };
+            if !authorized {
+                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                    .with_detail("This operation requires admin scope or membership in the agent's team".to_string()));
+            }
+            Ok((
+                StatusCode::OK,
+                Json(TraceResponse {
+                    session_id,
+                    agent_id: session_trace.agent_id,
+                    spans: session_trace.spans,
+                }),
+            ))
+        }
         None => {
             Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
                 .with_detail(format!("Session not found: {session_id}")))

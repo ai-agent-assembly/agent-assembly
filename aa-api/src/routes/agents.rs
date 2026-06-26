@@ -275,10 +275,16 @@ pub async fn list_agents(
     tag = "agents"
 )]
 pub async fn get_agent(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AgentResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3790: read-scope + tenant ownership before exposing the record.
+    // The delete/suspend siblings already gate on `authorize_agent_access`;
+    // the read path was missed, letting any caller read any team's agent.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
     let record = state.agent_registry.get(&agent_id).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}"))

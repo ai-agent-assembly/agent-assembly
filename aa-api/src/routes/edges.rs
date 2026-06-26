@@ -18,8 +18,46 @@ use utoipa::{IntoParams, ToSchema};
 use aa_core::identity::AgentId;
 use aa_core::topology::{Edge, EdgeType, NewEdge};
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
+
+/// Owning team of an agent via the registry, if any.
+fn agent_team_id(state: &AppState, agent: AgentId) -> Option<String> {
+    state
+        .agent_registry
+        .get(agent.as_bytes())
+        .and_then(|r| r.team_id.clone())
+}
+
+/// Enforce tenant ownership of an agent for a caller that already cleared the
+/// scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any agent; a
+/// tenant-scoped caller may act only on agents in its own team; a caller with
+/// neither admin scope nor a team scope is denied up front. Agents with no team
+/// are admin-only.
+fn authorize_agent_team_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    agent: AgentId,
+) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope".to_string()));
+    }
+    let authorized = match agent_team_id(state, agent) {
+        Some(team) => caller.can_access_team(&team),
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the agent's team".to_string()));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,12 +202,17 @@ pub struct ReportEdgeResponse {
     tag = "topology"
 )]
 pub async fn report_edge(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(body): Json<ReportEdgeRequest>,
 ) -> Result<(StatusCode, Json<ReportEdgeResponse>), ProblemDetail> {
     let source = parse_agent_id(&body.source_agent_id)?;
     let target = parse_agent_id(&body.target_agent_id)?;
     let edge_type = parse_edge_type(&body.edge_type)?;
+
+    // AAASM-3790: write-scope + ownership of the source (reporting) agent so a
+    // caller cannot poison another team's topology with fabricated edges.
+    authorize_agent_team_access(&caller, &state, source)?;
 
     let metadata = if let Some(json_str) = body.metadata_json {
         if json_str.is_empty() {
@@ -253,11 +296,16 @@ pub struct EdgeListResponse {
     tag = "agents"
 )]
 pub async fn list_agent_edges(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Query(params): Query<EdgeListParams>,
 ) -> Result<(StatusCode, Json<EdgeListResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3790: read-scope + tenant ownership of the agent before exposing its
+    // topology edges.
+    authorize_agent_team_access(&caller, &state, agent_id)?;
 
     let edge_type: Option<EdgeType> = params.r#type.as_deref().map(parse_edge_type).transpose()?;
 
@@ -358,11 +406,17 @@ pub struct GraphResponse {
     tag = "agents"
 )]
 pub async fn get_agent_graph(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Query(params): Query<GraphParams>,
 ) -> Result<(StatusCode, Json<GraphResponse>), ProblemDetail> {
     let root_id = parse_agent_id(&id)?;
+
+    // AAASM-3790: read-scope + tenant ownership of the root agent before walking
+    // its reachable subgraph.
+    authorize_agent_team_access(&caller, &state, root_id)?;
+
     let depth = params.depth.unwrap_or(2).min(5);
 
     // BFS: collect unique node IDs within `depth` hops
@@ -463,6 +517,7 @@ pub struct TopologyEdgeListResponse {
     tag = "topology"
 )]
 pub async fn list_topology_edges(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<TopologyEdgeListParams>,
 ) -> Result<(StatusCode, Json<TopologyEdgeListResponse>), ProblemDetail> {
@@ -478,17 +533,31 @@ pub async fn list_topology_edges(
         all_edges.extend(batch);
     }
 
-    // Optional team filter: keep edges where source or target belongs to the team.
-    let filtered: Vec<Edge> = match &params.team_id {
-        Some(tid) => all_edges
-            .into_iter()
-            .filter(|e| {
-                let src_team = state.agent_registry.get(e.source.as_bytes()).and_then(|r| r.team_id);
-                let tgt_team = state.agent_registry.get(e.target.as_bytes()).and_then(|r| r.team_id);
-                src_team.as_deref() == Some(tid.as_str()) || tgt_team.as_deref() == Some(tid.as_str())
-            })
-            .collect(),
-        None => all_edges,
+    // AAASM-3790: confine the listing to the caller's tenant. An admin may use
+    // the optional `?team_id` filter (or see every team when omitted); a
+    // tenant-scoped caller is forced to its own team regardless of `?team_id`,
+    // so it cannot dump the whole cross-team topology; a caller with no team
+    // scope (and no admin) sees nothing.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let effective_team: Option<String> = if is_admin {
+        params.team_id.clone()
+    } else {
+        caller.tenant.team_id.clone()
+    };
+
+    // Keep edges where source or target belongs to the effective team.
+    let team_filter = |state: &AppState, e: &Edge, tid: &str| {
+        let src_team = state.agent_registry.get(e.source.as_bytes()).and_then(|r| r.team_id);
+        let tgt_team = state.agent_registry.get(e.target.as_bytes()).and_then(|r| r.team_id);
+        src_team.as_deref() == Some(tid) || tgt_team.as_deref() == Some(tid)
+    };
+    let filtered: Vec<Edge> = match (is_admin, effective_team.as_deref()) {
+        // Admin with no filter — every edge.
+        (true, None) => all_edges,
+        // Either an admin's explicit filter or a tenant caller's forced team.
+        (_, Some(tid)) => all_edges.into_iter().filter(|e| team_filter(&state, e, tid)).collect(),
+        // Non-admin caller with no team scope — sees nothing.
+        (false, None) => Vec::new(),
     };
 
     // Stable newest-first order across types.

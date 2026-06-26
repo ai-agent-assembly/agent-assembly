@@ -11,11 +11,69 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::events::OpsChangeBroadcast;
 use crate::models::ws_payloads::OpsChangePayload;
 use crate::ops::{OpRecord, OpsError};
 use crate::state::AppState;
+
+/// Parse a hex-encoded 16-byte agent id, or `None` if it is not 32 hex chars.
+fn parse_hex_agent_id(id: &str) -> Option<[u8; 16]> {
+    if id.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(id.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Owning team of an operation, resolved op → agent → registry lineage.
+///
+/// Returns `None` for ops with no recorded agent, an agent id that does not
+/// resolve to a registered agent, or an agent with no team — all of which are
+/// then treated as admin-only by [`authorize_op_access`], so an unresolvable id
+/// can never widen access.
+fn op_team_id(state: &AppState, op_id: &str) -> Option<String> {
+    let agent = state.ops_registry.agent_for(op_id)?;
+    let bytes = parse_hex_agent_id(&agent.agent_id)?;
+    state.agent_registry.lineage(&bytes).and_then(|l| l.team_id)
+}
+
+/// Enforce tenant ownership of an operation for a caller that already cleared
+/// the scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any op; a
+/// tenant-scoped caller may act only on ops whose owning agent is in its team;
+/// a caller with neither admin scope nor a team scope is denied up front so it
+/// cannot enumerate ops via a 403-vs-404 oracle. Returns 403 for an unauthorized
+/// caller, 404 when the op is unknown to an authorized caller.
+fn authorize_op_access(caller: &AuthenticatedCaller, state: &AppState, op_id: &str) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope".to_string()));
+    }
+
+    if state.ops_registry.get(op_id).is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+            .with_detail("Operation not found in registry".to_string()));
+    }
+
+    let authorized = match op_team_id(state, op_id) {
+        Some(team) => caller.can_access_team(&team),
+        // The op has no resolvable team — only an admin may act on it.
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the op's team".to_string()));
+    }
+    Ok(())
+}
 
 /// Acknowledgement returned by the per-op lifecycle endpoints.
 ///
@@ -107,10 +165,13 @@ fn validate_op_id(raw: &str) -> Result<String, ProblemDetail> {
     )
 )]
 pub async fn pause_op(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
+    // AAASM-3790: write-scope + tenant ownership before the state change.
+    authorize_op_access(&caller, &state, &op_id)?;
     let record = state.ops_registry.pause(&op_id).map_err(ops_error_to_problem)?;
     emit_ops_change(&state, &record);
     Ok(lifecycle_ok(record, "pause"))
@@ -137,10 +198,13 @@ pub async fn pause_op(
     )
 )]
 pub async fn resume_op(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
+    // AAASM-3790: write-scope + tenant ownership before the state change.
+    authorize_op_access(&caller, &state, &op_id)?;
     let record = state.ops_registry.resume(&op_id).map_err(ops_error_to_problem)?;
     emit_ops_change(&state, &record);
     Ok(lifecycle_ok(record, "resume"))
@@ -167,10 +231,13 @@ pub async fn resume_op(
     )
 )]
 pub async fn terminate_op(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
     let op_id = validate_op_id(&id)?;
+    // AAASM-3790: write-scope + tenant ownership before the state change.
+    authorize_op_access(&caller, &state, &op_id)?;
     let record = state.ops_registry.terminate(&op_id).map_err(ops_error_to_problem)?;
     emit_ops_change(&state, &record);
     Ok(lifecycle_ok(record, "terminate"))
@@ -188,8 +255,22 @@ pub async fn terminate_op(
         (status = 200, description = "List of all registered ops", body = Vec<OpRecord>)
     )
 )]
-pub async fn list_ops(Extension(state): Extension<AppState>) -> impl IntoResponse {
-    Json(state.ops_registry.list())
+pub async fn list_ops(RequireRead(caller): RequireRead, Extension(state): Extension<AppState>) -> impl IntoResponse {
+    // AAASM-3790: confine the listing to ops the caller's tenant owns. An admin
+    // sees every op; a team-scoped caller sees only its team's ops; a caller
+    // with no team scope (and no admin) sees none. Ops with no resolvable team
+    // are visible only to an admin.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let ops: Vec<OpRecord> = state
+        .ops_registry
+        .list()
+        .into_iter()
+        .filter(|r| match op_team_id(&state, &r.op_id) {
+            Some(team) => caller.can_access_team(&team),
+            None => is_admin,
+        })
+        .collect();
+    Json(ops)
 }
 
 /// Request body for `POST /api/v1/ops` — register a new in-flight operation.
