@@ -252,3 +252,76 @@ async fn post_run_returns_503_when_retention_engine_is_unconfigured() {
 
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn put_with_hot_days_zero_returns_400() {
+    let app = common::test_app();
+    let req_body = serde_json::json!({
+        "hot_days": 0,
+        "warm_days": 90,
+        "cold_action": "drop",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/retention-policy")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error_code"].as_str(), Some("retention_policy_invalid_hot_days"));
+}
+
+#[tokio::test]
+async fn put_with_archive_action_and_valid_s3_url_returns_200() {
+    let (engine, _tmp) = build_engine().await;
+    let app = build_app(common::test_state_with_retention_engine(engine));
+    let req_body = serde_json::json!({
+        "hot_days": 5,
+        "warm_days": 30,
+        "cold_action": "archive",
+        "archive_url": "s3://my-bucket/retention/",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/retention-policy")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["cold_action"].as_str(), Some("archive"));
+    assert_eq!(body["archive_url"].as_str(), Some("s3://my-bucket/retention/"));
+}
+
+#[tokio::test]
+async fn post_run_non_dry_run_returns_stats() {
+    let (engine, _tmp) = build_engine().await;
+    let app = build_app(common::test_state_with_retention_engine(Arc::clone(&engine)));
+    let req_body = serde_json::json!({ "dry_run": false });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/retention-policy/run")
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(body["ran_at"].is_string());
+    assert_eq!(body["dry_run"].as_bool(), Some(false));
+}

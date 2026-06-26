@@ -463,3 +463,63 @@ async fn resume_agent_returns_404_for_unknown_id() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+/// A valid hex string whose byte length ≠ 16 triggers the "wrong length" error
+/// branch in `parse_agent_id` (lines 69–72 of agents.rs).
+#[tokio::test]
+async fn get_agent_with_short_hex_id_returns_400() {
+    let app = common::test_app();
+    // "aabb" is valid hex but decodes to 2 bytes, not 16.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/agents/aabb")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("32 hex characters"),
+        "detail should mention 32-char requirement"
+    );
+}
+
+/// An agent registered with non-empty `recent_traces` must include those traces
+/// in the GET /agents/{id} response (tests lines 99–106 of agents.rs).
+#[tokio::test]
+async fn get_agent_includes_recent_traces_in_response() {
+    let state = common::test_state();
+    let mut rec = test_agent(0x77);
+    rec.recent_traces = vec![aa_gateway::registry::store::RecentTrace {
+        session_id: "test-session-abc".to_string(),
+        timestamp: chrono::Utc::now(),
+    }];
+    state.agent_registry.register(rec).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}", hex_id(0x77)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let traces = json["recent_traces"].as_array().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["session_id"], "test-session-abc");
+    assert!(traces[0]["timestamp"].is_string());
+}

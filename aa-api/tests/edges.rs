@@ -372,3 +372,140 @@ async fn get_agent_graph_root_only_when_no_edges() {
     assert_eq!(nodes.len(), 1, "only the root node when no edges");
     assert!(json["edges"].as_array().unwrap().is_empty());
 }
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+// ── GET /api/v1/topology/edges ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_topology_edges_returns_200_with_empty_list() {
+    let app = common::test_app();
+    let (status, body) = get_json(app, "/api/v1/topology/edges").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["edges"].is_array());
+    assert_eq!(body["count"], 0);
+}
+
+#[tokio::test]
+async fn list_topology_edges_returns_recorded_edges() {
+    let state = common::test_state();
+    // Seed two edges directly via the repo.
+    state
+        .edge_repo
+        .insert(aa_core::topology::NewEdge {
+            source: agent_id(0xaa),
+            target: agent_id(0xbb),
+            edge_type: aa_core::topology::EdgeType::Messages,
+            metadata: None,
+        })
+        .await
+        .unwrap();
+    state
+        .edge_repo
+        .insert(aa_core::topology::NewEdge {
+            source: agent_id(0xcc),
+            target: agent_id(0xdd),
+            edge_type: aa_core::topology::EdgeType::DelegatesTo,
+            metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    let (status, body) = get_json(app, "/api/v1/topology/edges").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["count"], 2);
+}
+
+// ── report_edge: metadata edge cases ─────────────────────────────────────────
+
+#[tokio::test]
+async fn report_edge_empty_metadata_json_is_treated_as_none() {
+    let app = common::test_app();
+    let (status, body) = post_edge(
+        app,
+        json!({
+            "source_agent_id": hex(0x10),
+            "target_agent_id": hex(0x11),
+            "edge_type": "messages",
+            "metadata_json": ""
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(body["id"].is_number());
+}
+
+#[tokio::test]
+async fn report_edge_invalid_metadata_json_returns_400() {
+    let app = common::test_app();
+    let (status, _body) = post_edge(
+        app,
+        json!({
+            "source_agent_id": hex(0x12),
+            "target_agent_id": hex(0x13),
+            "edge_type": "messages",
+            "metadata_json": "{not valid json"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ── parse_agent_id: wrong-length hex string ──────────────────────────────────
+
+#[tokio::test]
+async fn report_edge_wrong_length_source_hex_returns_400() {
+    let app = common::test_app();
+    // Valid hex but only 4 chars (2 bytes), not 32 (16 bytes).
+    let (status, _body) = post_edge(
+        app,
+        json!({
+            "source_agent_id": "aabb",
+            "target_agent_id": hex(0x02),
+            "edge_type": "messages"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ── GET /agents/{id}/edges?before= ───────────────────────────────────────────
+
+#[tokio::test]
+async fn list_agent_edges_with_before_filter_excludes_newer_edges() {
+    let state = common::test_state();
+    // Seed an edge so there is something to query.
+    state
+        .edge_repo
+        .insert(aa_core::topology::NewEdge {
+            source: agent_id(0x30),
+            target: agent_id(0x31),
+            edge_type: aa_core::topology::EdgeType::Messages,
+            metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let app = build_app(state);
+    // A `before` timestamp in the past (Unix epoch) → no edges qualify.
+    let (status, body) = get_json(
+        app,
+        &format!("/api/v1/agents/{}/edges?before=1970-01-01T00:00:00Z", hex(0x30)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // All seeded edges were created after epoch, so filter removes them all.
+    assert_eq!(body["count"], 0);
+}

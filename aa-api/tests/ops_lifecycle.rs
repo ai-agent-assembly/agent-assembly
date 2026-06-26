@@ -127,3 +127,50 @@ async fn unknown_action_falls_through_to_404() {
     let (status, _body) = post_empty(app, "/api/v1/ops/op-1/delete").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn list_ops_returns_200_with_all_registered_ops() {
+    let app = build_app(common::test_state());
+    // Register two ops then list them.
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-list-a"})).await;
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-list-b"})).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/ops")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let ops = body.as_array().unwrap();
+    assert_eq!(ops.len(), 2);
+}
+
+#[tokio::test]
+async fn register_op_empty_op_id_returns_400() {
+    let app = build_app(common::test_state());
+    let (status, body) = post_json(app, "/api/v1/ops", json!({"op_id": "   "})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("op_id must not be empty"));
+}
+
+#[tokio::test]
+async fn invalid_transition_returns_409() {
+    let app = build_app(common::test_state());
+    // Register then immediately try to resume — resume from running is invalid.
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-conflict"})).await;
+    let (status, body) = post_empty(app, "/api/v1/ops/op-conflict/resume").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("state does not permit"));
+}

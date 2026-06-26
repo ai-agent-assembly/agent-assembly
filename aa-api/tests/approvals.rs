@@ -410,3 +410,116 @@ async fn get_approval_returns_400_for_invalid_uuid() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+// =============================================================================
+// AlreadyDecided + empty-reason edge cases (AAASM-3805)
+// =============================================================================
+
+#[tokio::test]
+async fn approve_action_returns_409_when_already_decided() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    // First approval succeeds.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/approvals/{id}/approve"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"by": "alice"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Second approval on the same id → 409 AlreadyDecided.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/approvals/{id}/approve"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"by": "bob"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already been decided"));
+}
+
+#[tokio::test]
+async fn reject_action_returns_400_for_whitespace_reason() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/approvals/{id}/reject"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"by": "alice", "reason": "   "}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["detail"].as_str().unwrap_or_default().contains("non-empty reason"));
+}
+
+#[tokio::test]
+async fn reject_action_returns_409_when_already_decided() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    // Approve first.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/approvals/{id}/approve"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"by": "alice"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Now try to reject the already-approved request → 409.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/approvals/{id}/reject"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"by": "bob", "reason": "changed mind"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already been decided"));
+}
