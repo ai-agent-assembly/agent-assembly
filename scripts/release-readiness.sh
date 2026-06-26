@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 11 local checks that must all pass before pushing a release tag.
+# Runs 12 local checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -146,6 +146,29 @@ elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$SIGNOFF"; then
   pass "Security-review sign-off present and Verdict: PASS ($SIGNOFF)"
 else
   fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /release-security-gate $VERSION"
+fi
+
+# 12. Every published workspace crate has a README.md (AAASM-3778, Epic AAASM-3774).
+# crates.io renders the crate page from its README; a missing one ships a blank
+# package page. Enumerate members from [workspace].members (same source as the
+# version-literal check above) and skip crates marked `publish = false` — those are
+# never uploaded, so their READMEs are not release-gated.
+MEMBERS="$(awk '/^\[workspace\]/{w=1} w && /members[[:space:]]*=[[:space:]]*\[/{m=1; next} m && /\]/{m=0} m{gsub(/[",]/,""); gsub(/[[:space:]]/,""); if ($0 != "") print}' Cargo.toml)"
+MISSING_READMES=""
+for CRATE in $MEMBERS; do
+  if grep -qE '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "$CRATE/Cargo.toml" 2>/dev/null; then
+    continue
+  fi
+  if [ ! -f "$CRATE/README.md" ]; then
+    MISSING_READMES="$MISSING_READMES $CRATE"
+  fi
+done
+if [ -z "$MISSING_READMES" ]; then
+  pass "All published crates have a README"
+else
+  for CRATE in $MISSING_READMES; do
+    fail "$CRATE has no README.md" "add $CRATE/README.md"
+  done
 fi
 
 echo
