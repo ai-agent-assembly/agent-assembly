@@ -4,6 +4,8 @@
 //! connector relies on at dispatch time (URL parse, https-only for Slack,
 //! non-empty PagerDuty routing key, OpsGenie key + team).
 
+use std::net::{IpAddr, ToSocketAddrs};
+
 use crate::destinations::types::{Destination, DestinationConfig};
 
 /// Reason a destination payload failed validation. The `'static str`
@@ -74,6 +76,99 @@ pub fn validate_config(c: &DestinationConfig) -> Result<(), ValidationError> {
             }
             if team_id.trim().is_empty() {
                 return Err(ValidationError::InvalidConfig("opsgenie.team_id must be non-empty"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Environment variable that, when set to a truthy value (`1`/`true`/`yes`/`on`),
+/// disables the webhook egress guard.
+///
+/// Unset — the default and the SaaS posture — keeps the guard active so an
+/// outbound webhook test-fire can never reach an internal address (cloud
+/// metadata, loopback, RFC1918, link-local). A *limited-function self-hosted*
+/// deployment that legitimately needs to reach a webhook on its own private
+/// network can opt out via this flag — the configurable egress allowlist the
+/// remediation calls for (AAASM-3789).
+const ALLOW_PRIVATE_EGRESS_ENV: &str = "AA_ALLOW_PRIVATE_WEBHOOK_EGRESS";
+
+/// Whether the operator has explicitly opted in to private-network webhook
+/// egress via [`ALLOW_PRIVATE_EGRESS_ENV`].
+fn private_egress_allowed() -> bool {
+    std::env::var(ALLOW_PRIVATE_EGRESS_ENV)
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// True when `ip` is an address an SSRF guard must refuse: loopback, RFC1918
+/// private, link-local (incl. the `169.254.169.254` cloud-metadata endpoint),
+/// IPv4 broadcast, the unspecified address, or — for IPv6 — loopback,
+/// unspecified, unique-local (`fc00::/7`), or link-local (`fe80::/10`).
+/// IPv4-mapped IPv6 addresses are unwrapped and re-checked against the v4 rules.
+fn ip_is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return ip_is_internal(IpAddr::V4(mapped));
+            }
+            let octets = v6.octets();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // fc00::/7 unique-local
+                || (octets[0] & 0xfe) == 0xfc
+                // fe80::/10 link-local
+                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
+/// Reject an address that resolves into a disallowed internal range.
+fn check_egress_addr(ip: IpAddr) -> Result<(), ValidationError> {
+    if ip_is_internal(ip) {
+        Err(ValidationError::InvalidConfig(
+            "webhook.url resolves to a disallowed internal address",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Guard a webhook URL against SSRF before it is dispatched (AAASM-3789).
+///
+/// Rejects a URL whose host — or any address it resolves to — falls in a
+/// loopback / private / link-local / ULA / metadata range. Literal-IP hosts are
+/// checked directly; hostnames are resolved and *every* returned address must be
+/// allowed, so a single internal answer rejects the whole host (defeating
+/// DNS-rebinding to an internal target). Honors [`ALLOW_PRIVATE_EGRESS_ENV`].
+///
+/// Performs a **blocking** DNS lookup for hostname targets, so call it from a
+/// blocking context (e.g. `tokio::task::spawn_blocking`) rather than directly
+/// on an async task.
+pub fn validate_webhook_egress(url: &url::Url) -> Result<(), ValidationError> {
+    if private_egress_allowed() {
+        return Ok(());
+    }
+    let host = url
+        .host()
+        .ok_or(ValidationError::InvalidConfig("webhook.url has no host"))?;
+    match host {
+        url::Host::Ipv4(ip) => check_egress_addr(IpAddr::V4(ip)),
+        url::Host::Ipv6(ip) => check_egress_addr(IpAddr::V6(ip)),
+        url::Host::Domain(domain) => {
+            let port = url.port_or_known_default().unwrap_or(443);
+            let mut resolved = (domain, port)
+                .to_socket_addrs()
+                .map_err(|_| ValidationError::InvalidConfig("webhook.url host could not be resolved"))?
+                .peekable();
+            if resolved.peek().is_none() {
+                return Err(ValidationError::InvalidConfig("webhook.url host did not resolve"));
+            }
+            for sa in resolved {
+                check_egress_addr(sa.ip())?;
             }
             Ok(())
         }
@@ -189,5 +284,49 @@ mod tests {
             validate_destination(&dst),
             Err(ValidationError::InvalidConfig("name must be non-empty"))
         );
+    }
+
+    // ── Egress guard (AAASM-3789) ────────────────────────────────────────────
+
+    fn egress(url: &str) -> Result<(), ValidationError> {
+        validate_webhook_egress(&url::Url::parse(url).expect("test url parses"))
+    }
+
+    #[test]
+    fn egress_rejects_loopback_metadata_and_private() {
+        // Loopback, the cloud-metadata link-local address, and an RFC1918 host
+        // must all be refused before any request is dispatched.
+        for url in [
+            "http://127.0.0.1/hook",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/hook",
+            "http://192.168.1.1/hook",
+            "http://172.16.0.1/hook",
+            "http://[::1]/hook",
+        ] {
+            assert_eq!(
+                egress(url),
+                Err(ValidationError::InvalidConfig(
+                    "webhook.url resolves to a disallowed internal address"
+                )),
+                "{url} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn egress_allows_public_ip() {
+        // A public literal IP carries no DNS dependency and must be allowed.
+        assert!(egress("http://8.8.8.8/hook").is_ok());
+        assert!(egress("https://1.1.1.1/hook").is_ok());
+    }
+
+    #[test]
+    fn egress_env_escape_allows_private() {
+        // The documented self-host opt-out disables the guard.
+        std::env::set_var(ALLOW_PRIVATE_EGRESS_ENV, "1");
+        let allowed = egress("http://127.0.0.1/hook");
+        std::env::remove_var(ALLOW_PRIVATE_EGRESS_ENV);
+        assert!(allowed.is_ok(), "private egress must be allowed when opted in");
     }
 }
