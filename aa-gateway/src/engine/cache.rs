@@ -209,4 +209,21 @@ mod tests {
         let key_e2 = CacheKey::new(&[1u8; 16], 2, &action);
         assert_ne!(key_e1, key_e2);
     }
+
+    #[test]
+    fn different_tool_args_produce_different_keys() {
+        // AAASM-3787: same tool name, different args must not collide — a
+        // benign payload's cached verdict must not be served for a dangerous one.
+        let benign = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1}"#.to_string(),
+        };
+        let dangerous = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1000000}"#.to_string(),
+        };
+        let key_benign = CacheKey::new(&[1u8; 16], 1, &benign);
+        let key_dangerous = CacheKey::new(&[1u8; 16], 1, &dangerous);
+        assert_ne!(key_benign, key_dangerous);
+    }
 }
