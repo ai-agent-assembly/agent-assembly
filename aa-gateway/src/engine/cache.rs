@@ -22,7 +22,11 @@ pub struct CacheKey {
     /// Policy epoch at the time of evaluation. Stale entries are invalidated
     /// when the epoch advances (via `load_policy` or `apply_yaml`).
     pub policy_epoch: u64,
-    /// FNV-1a hash of a canonical `"{action_kind}:{action_discriminant}"` string.
+    /// Hash of the action's kind tag **and** its full evaluated payload (tool
+    /// name + args, network URL + method, file path + mode, …). The payload is
+    /// part of the key because stage-5 `requires_approval_if` predicates evaluate
+    /// over it — a key that ignored args would serve a benign payload's cached
+    /// `Allow` for a dangerous one (AAASM-3787). See [`action_discriminant`].
     pub action_hash: u64,
 }
 
@@ -44,13 +48,23 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
 
     let mut h = AHasher::default();
     match action {
-        aa_core::GovernanceAction::ToolCall { name, .. } => {
+        aa_core::GovernanceAction::ToolCall { name, args } => {
             "tool".hash(&mut h);
             name.hash(&mut h);
+            // Hash the full args payload: stage-5 `requires_approval_if`
+            // predicates (e.g. `args.amount > 1000`) are evaluated against the
+            // args, so two calls to the same tool with different args must not
+            // collide on the cache key (AAASM-3787).
+            args.hash(&mut h);
         }
-        aa_core::GovernanceAction::ToolResult { tool_name, .. } => {
+        aa_core::GovernanceAction::ToolResult { tool_name, result } => {
             "tool_result".hash(&mut h);
             tool_name.hash(&mut h);
+            // Hash the full result payload: response-side `tool_result.<key>`
+            // predicates evaluate over it (the mirror of `args.<key>`), so two
+            // results for the same tool with different bodies must not collide
+            // on the cache key (AAASM-3787).
+            result.hash(&mut h);
         }
         aa_core::GovernanceAction::NetworkRequest { url, method } => {
             "net".hash(&mut h);
@@ -194,5 +208,39 @@ mod tests {
         let key_e1 = CacheKey::new(&[1u8; 16], 1, &action);
         let key_e2 = CacheKey::new(&[1u8; 16], 2, &action);
         assert_ne!(key_e1, key_e2);
+    }
+
+    #[test]
+    fn different_tool_args_produce_different_keys() {
+        // AAASM-3787: same tool name, different args must not collide — a
+        // benign payload's cached verdict must not be served for a dangerous one.
+        let benign = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1}"#.to_string(),
+        };
+        let dangerous = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1000000}"#.to_string(),
+        };
+        let key_benign = CacheKey::new(&[1u8; 16], 1, &benign);
+        let key_dangerous = CacheKey::new(&[1u8; 16], 1, &dangerous);
+        assert_ne!(key_benign, key_dangerous);
+    }
+
+    #[test]
+    fn different_tool_results_produce_different_keys() {
+        // AAASM-3787: response-side mirror — same tool, different result bodies
+        // must not collide, since `tool_result.<key>` predicates read the body.
+        let ok = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":true}"#.to_string(),
+        };
+        let err = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":false}"#.to_string(),
+        };
+        let key_ok = CacheKey::new(&[1u8; 16], 1, &ok);
+        let key_err = CacheKey::new(&[1u8; 16], 1, &err);
+        assert_ne!(key_ok, key_err);
     }
 }
