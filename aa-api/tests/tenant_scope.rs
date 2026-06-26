@@ -867,3 +867,44 @@ async fn get_agent_graph_cross_tenant_is_403() {
         "cross-tenant agent graph read is denied"
     );
 }
+
+// AAASM-3790 — the topology-wide edge list must be confined to the caller's
+// team; an admin may seed any edge but a foreign tenant must not see it.
+#[tokio::test]
+async fn list_topology_edges_is_scoped_to_caller_team() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x91, "beta")).unwrap();
+    state.agent_registry.register(agent_with_team(0x92, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // An admin seeds a beta-to-beta edge.
+    let admin = common::generate_test_jwt("admin", &[Scope::Admin]);
+    let body = format!(
+        r#"{{"source_agent_id":"{}","target_agent_id":"{}","edge_type":"messages"}}"#,
+        hex_id(0x91),
+        hex_id(0x92)
+    );
+    let created = app
+        .clone()
+        .oneshot(json_bearer("POST", "/api/v1/topology/edges", &admin, &body))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    // An alpha caller must not see the beta edge.
+    let alpha = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let resp = app
+        .clone()
+        .oneshot(bearer("/api/v1/topology/edges", &alpha))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 0, "alpha caller must not see beta's topology edges");
+
+    // The owning beta team does see it.
+    let beta = common::generate_test_jwt_for_team("u", &[Scope::Read], "beta");
+    let resp2 = app.oneshot(bearer("/api/v1/topology/edges", &beta)).await.unwrap();
+    let json2 = body_json(resp2).await;
+    assert_eq!(json2["count"], 1, "the owning team sees its own edge");
+}
