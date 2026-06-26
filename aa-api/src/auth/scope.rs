@@ -162,4 +162,11 @@ mod tests {
         assert!(RequireScope::check(&caller, Scope::Write).is_ok());
         assert!(RequireScope::check(&caller, Scope::Admin).is_err());
     }
+
+    #[test]
+    fn scope_display_renders_each_level() {
+        assert_eq!(Scope::Read.to_string(), "read");
+        assert_eq!(Scope::Write.to_string(), "write");
+        assert_eq!(Scope::Admin.to_string(), "admin");
+    }
 }
