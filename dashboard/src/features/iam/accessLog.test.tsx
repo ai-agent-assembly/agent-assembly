@@ -92,6 +92,36 @@ describe('accessLog seed + filter (AAASM-1398)', () => {
     expect(data.length).toBeLessThan(10)
   })
 
+  it.each(['7d', '30d'] as const)('timeRange %s drops events older than the cutoff', async (kind) => {
+    const { result } = renderHook(() => useAccessLogQuery({ timeRange: { kind } }), {
+      wrapper: makeWrapper(),
+    })
+    await waitFor(() => expect(result.current.data).toBeDefined())
+    const ms = kind === '7d' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000
+    const cutoff = Date.now() - ms
+    for (const e of result.current.data as AccessLogEvent[]) {
+      expect(new Date(e.timestamp).getTime()).toBeGreaterThanOrEqual(cutoff)
+    }
+  })
+
+  it('custom time range filters to the inclusive from/to window', async () => {
+    const sorted = [..._accessLogInternal.snapshot()].sort((a, b) =>
+      a.timestamp < b.timestamp ? -1 : 1,
+    )
+    const from = sorted[2].timestamp
+    const to = sorted[6].timestamp
+    const { result } = renderHook(
+      () => useAccessLogQuery({ timeRange: { kind: 'custom', from, to } }),
+      { wrapper: makeWrapper() },
+    )
+    await waitFor(() => expect(result.current.data).toBeDefined())
+    const data = result.current.data as AccessLogEvent[]
+    expect(data.length).toBeGreaterThan(0)
+    for (const e of data) {
+      expect(e.timestamp >= from && e.timestamp <= to).toBe(true)
+    }
+  })
+
   it('setFetchOverride swaps the source (proves the eventual fetch swap is one-function)', async () => {
     _accessLogInternal.setFetchOverride(() =>
       Promise.resolve([
