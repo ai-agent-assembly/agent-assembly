@@ -718,3 +718,77 @@ async fn topology_stats_large_fixture_histograms_are_correct() {
     // avg_children_per_parent > 0 (root-a has 4 children, a1 has 2, root-b has 3)
     assert!(json["avg_children_per_parent"].as_f64().unwrap() > 0.0);
 }
+
+#[tokio::test]
+async fn topology_stats_counts_suspended_and_orphan_agents() {
+    let state = common::test_state();
+    // Active root in a team.
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+    // Suspended child in the team → exercises the Suspended arm.
+    let mut suspended = make_agent(0x02, "child", 1, Some("team-a"), Some([0x01; 16]));
+    suspended.status = AgentStatus::Suspended(SuspendReason::Manual);
+    state.agent_registry.register(suspended).unwrap();
+    // Orphan: depth > 0 but no team_id → exercises the orphan branch.
+    let orphan = make_agent(0x03, "orphan", 1, None, Some([0x01; 16]));
+    state.agent_registry.register(orphan).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["total_agents"], 3);
+    // root + orphan are Active; child is Suspended.
+    assert_eq!(json["active_count"], 2);
+    assert_eq!(json["suspended_count"], 1);
+    assert_eq!(json["orphan_count"], 1);
+}
+
+#[tokio::test]
+async fn topology_stats_second_call_is_served_from_cache() {
+    let state = common::test_state();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    // First call populates the stats cache.
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = axum::body::to_bytes(first.into_body(), usize::MAX).await.unwrap();
+
+    // Second call hits the cache-return branch and must yield identical bytes.
+    let second = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = axum::body::to_bytes(second.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(first_body, second_body);
+}
