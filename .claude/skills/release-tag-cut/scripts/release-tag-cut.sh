@@ -79,6 +79,27 @@ if [ -n "$REMAINING" ]; then
     exit 7
 fi
 
+# Bump sonar.projectVersion so SonarCloud's reported project version tracks the
+# release (AAASM-3819). The static value is the source of truth / local-scan
+# fallback; ci.yml additionally overrides it dynamically from the Cargo version
+# at scan time, so a drift here never breaks CI. Only rewrite the line when it
+# currently equals $CURRENT — if it has drifted, warn and leave it untouched
+# rather than failing the release.
+SONAR_PROPS="sonar-project.properties"
+if [ -f "$SONAR_PROPS" ]; then
+    if grep -qE "^sonar\.projectVersion=$CURRENT$" "$SONAR_PROPS"; then
+        if ! sed -i.bak -E "s/^sonar\.projectVersion=$CURRENT$/sonar.projectVersion=$TARGET/" "$SONAR_PROPS"; then
+            echo "error: sed failed on $SONAR_PROPS" >&2
+            exit 9
+        fi
+        rm -f "$SONAR_PROPS.bak"
+        echo "==> Bumped sonar.projectVersion: $CURRENT -> $TARGET"
+    else
+        echo "==> note: sonar.projectVersion != $CURRENT in $SONAR_PROPS" \
+             "(ci.yml overrides it dynamically); leaving it untouched"
+    fi
+fi
+
 echo "==> Regenerating Cargo.lock via cargo update --workspace"
 if ! cargo update --workspace; then
     echo "error: cargo update --workspace failed" >&2
