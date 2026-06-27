@@ -130,3 +130,26 @@ pub(crate) fn truncate_body(body: String) -> String {
         body
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_body_handles_multibyte_boundary() {
+        // 683 × 3-byte '€' = 2049 bytes, so the 2048-byte cap lands mid-character.
+        // A naive `body[..2048]` slice would panic (AAASM-3843 remote DoS). The
+        // truncation must back up to a valid char boundary at or below the cap.
+        let over = "€".repeat(683);
+        assert_eq!(over.len(), 2049);
+        let out = truncate_body(over);
+        assert!(out.len() <= 2048);
+        assert!(out.is_char_boundary(out.len()));
+        assert_eq!(out.chars().count(), 682);
+    }
+
+    #[test]
+    fn truncate_body_leaves_short_body_untouched() {
+        assert_eq!(truncate_body("hi".to_string()), "hi");
+    }
+}
