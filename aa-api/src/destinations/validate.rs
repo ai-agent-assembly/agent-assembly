@@ -27,6 +27,16 @@ pub fn validate_destination(d: &Destination) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Whether `host` is an allowed Slack incoming-webhook host.
+///
+/// Anchored so a look-alike domain like `evil-slack.com` cannot satisfy the
+/// check: only the apex `slack.com` or a genuine `*.slack.com` subdomain is
+/// accepted. A bare `host.ends_with("slack.com")` matched `evil-slack.com`
+/// (AAASM-3868).
+fn slack_host_allowed(host: &str) -> bool {
+    host == "slack.com" || host.ends_with(".slack.com")
+}
+
 /// Validate the configuration body in isolation.
 pub fn validate_config(c: &DestinationConfig) -> Result<(), ValidationError> {
     match c {
@@ -50,9 +60,9 @@ pub fn validate_config(c: &DestinationConfig) -> Result<(), ValidationError> {
             // Allow loopback in cfg(test) so integration tests can stand up
             // an httpmock server. Production builds enforce slack.com host.
             #[cfg(not(test))]
-            if !host.ends_with("slack.com") {
+            if !slack_host_allowed(host) {
                 return Err(ValidationError::InvalidConfig(
-                    "slack.webhook_url host must end with slack.com",
+                    "slack.webhook_url host must be slack.com or a slack.com subdomain",
                 ));
             }
             #[cfg(test)]
