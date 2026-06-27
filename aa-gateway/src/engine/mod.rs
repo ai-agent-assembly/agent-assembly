@@ -242,6 +242,30 @@ pub enum PolicyLoadError {
     History(crate::policy::history::PolicyHistoryError),
 }
 
+/// Parse the optional `budget.timezone`, **failing closed** on a misconfigured
+/// value (AAASM-3875).
+///
+/// The budget timezone governs the daily/monthly reset boundaries, not an
+/// allow/deny decision directly — but silently falling back to UTC on an
+/// unparseable value (the former `parse().ok().unwrap_or(UTC)` behavior)
+/// shifted those boundaries without warning, masking the operator's
+/// misconfiguration. Mirroring the schedule fix (AAASM-3847,
+/// `eval_schedule_stage`), a present-but-unparseable timezone is now a hard
+/// configuration error that aborts the policy load rather than degrading
+/// silently to UTC. `None` (no timezone configured) keeps the documented UTC
+/// default, since absence is a deliberate choice, not a misconfiguration.
+fn parse_budget_tz(timezone: Option<&str>) -> Result<chrono_tz::Tz, PolicyLoadError> {
+    match timezone {
+        None => Ok(chrono_tz::UTC),
+        Some(s) => s.parse::<chrono_tz::Tz>().map_err(|_| {
+            PolicyLoadError::Validation(vec![crate::policy::ValidationError::new(
+                "budget.timezone",
+                format!("invalid budget timezone: {s}"),
+            )])
+        }),
+    }
+}
+
 /// Stage 6 outcome for [`PolicyEngine::apply_credential_scan`]: either a
 /// hard-block deny (the `credential_action: block` short-circuit) or the
 /// redacted payload + findings to carry into the remaining stages.
@@ -308,13 +332,7 @@ impl PolicyEngine {
                     .collect()
             })
             .unwrap_or_default();
-        let budget_tz = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.timezone.as_deref())
-            .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
-            .unwrap_or(chrono_tz::UTC);
+        let budget_tz = parse_budget_tz(output.document.budget.as_ref().and_then(|bp| bp.timezone.as_deref()))?;
         let daily_limit = output
             .document
             .budget
@@ -541,12 +559,7 @@ impl PolicyEngine {
                             .collect()
                     })
                     .unwrap_or_default();
-                budget_tz = doc
-                    .budget
-                    .as_ref()
-                    .and_then(|bp| bp.timezone.as_deref())
-                    .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
-                    .unwrap_or(chrono_tz::UTC);
+                budget_tz = parse_budget_tz(doc.budget.as_ref().and_then(|bp| bp.timezone.as_deref()))?;
                 daily_limit = doc
                     .budget
                     .as_ref()
