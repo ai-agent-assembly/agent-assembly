@@ -296,6 +296,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "proptest",
+ "rand 0.10.1",
  "rcgen",
  "redis",
  "regex",

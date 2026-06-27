@@ -1,10 +1,10 @@
 //! `AgentLifecycleService` tonic trait implementation wiring gRPC RPCs to [`AgentRegistry`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
 use tokio::sync::{mpsc, Mutex};
@@ -15,8 +15,8 @@ use aa_core::time::Timestamp;
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleService;
 use aa_proto::assembly::agent::v1::{
-    ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse, HeartbeatRequest, HeartbeatResponse,
-    RegisterRequest, RegisterResponse,
+    ChallengeRequest, ChallengeResponse, ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse,
+    HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
 };
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 
@@ -30,12 +30,107 @@ use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, Regi
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
 
-/// Verify an agent's proof of possession of its registering key (AAASM-3591).
+/// Length in bytes of a server-issued registration-challenge nonce (AAASM-3866).
+const CHALLENGE_NONCE_LEN: usize = 32;
+
+/// How long a registration-challenge nonce stays valid after it is issued
+/// (AAASM-3866). Short enough to bound replay/precompute windows, long enough to
+/// cover a client's RequestChallenge → Register round-trip.
+const CHALLENGE_TTL: Duration = Duration::from_secs(30);
+
+/// A single outstanding registration challenge, keyed in [`ChallengeStore`] by
+/// its random nonce bytes.
+struct IssuedChallenge {
+    /// did:key the nonce was issued for — re-checked at Register so a nonce
+    /// cannot be redirected to a different identity.
+    agent_id: String,
+    /// Hex public key the nonce was issued for — re-checked at Register so a
+    /// nonce cannot be replayed to register a different key.
+    public_key: String,
+    /// Monotonic instant after which the nonce is rejected as expired.
+    expires_at: Instant,
+}
+
+/// In-memory store of outstanding registration-challenge nonces (AAASM-3866).
+///
+/// The store is the single-use + time-bound + identity-binding gate that makes
+/// the registration possession proof non-replayable: a nonce is unpredictable
+/// (CSPRNG), removed the first time it is consumed, rejected once expired, and
+/// only accepted for the exact agent_id + public_key it was issued for.
+#[derive(Default)]
+struct ChallengeStore {
+    issued: StdMutex<HashMap<Vec<u8>, IssuedChallenge>>,
+}
+
+impl ChallengeStore {
+    /// Issue a fresh random nonce bound to `agent_id` + `public_key`, returning
+    /// the nonce bytes and its absolute expiry as Unix-epoch milliseconds.
+    ///
+    /// Opportunistically purges already-expired entries so the map cannot grow
+    /// unbounded under a flood of challenge requests that never register.
+    fn issue(&self, agent_id: &str, public_key: &str) -> (Vec<u8>, i64) {
+        let nonce = rand::random::<[u8; CHALLENGE_NONCE_LEN]>().to_vec();
+        let now = Instant::now();
+        let expires_at = now + CHALLENGE_TTL;
+        {
+            let mut issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+            issued.retain(|_, c| c.expires_at > now);
+            issued.insert(
+                nonce.clone(),
+                IssuedChallenge {
+                    agent_id: agent_id.to_owned(),
+                    public_key: public_key.to_owned(),
+                    expires_at,
+                },
+            );
+        }
+        let expires_at_unix_ms = Utc::now().timestamp_millis() + CHALLENGE_TTL.as_millis() as i64;
+        (nonce, expires_at_unix_ms)
+    }
+
+    /// Consume the nonce: verify it was issued (single-use — removed on lookup),
+    /// not expired, and bound to this `agent_id` + `public_key`. Returns
+    /// `Status::unauthenticated` otherwise so Register fails closed.
+    ///
+    /// The nonce is removed before the binding/expiry checks so any consumption
+    /// attempt — including a replay or a redirect to a different identity —
+    /// permanently burns it.
+    fn consume(&self, nonce: &[u8], agent_id: &str, public_key: &str) -> Result<(), Status> {
+        if nonce.is_empty() {
+            return Err(Status::unauthenticated(
+                "missing registration_nonce — call RequestChallenge before Register (AAASM-3866)",
+            ));
+        }
+        let entry = {
+            let mut issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+            issued.remove(nonce)
+        }
+        .ok_or_else(|| Status::unauthenticated("unknown or already-used registration nonce"))?;
+
+        if Instant::now() > entry.expires_at {
+            return Err(Status::unauthenticated(
+                "registration nonce expired — request a fresh challenge",
+            ));
+        }
+        if entry.agent_id != agent_id || entry.public_key != public_key {
+            return Err(Status::unauthenticated(
+                "registration nonce was not issued for this agent_id + public_key",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Verify an agent's proof of possession of its registering key (AAASM-3591,
+/// hardened by AAASM-3866).
 ///
 /// `proof` must be a raw 64-byte Ed25519 signature over `challenge` that
-/// verifies under `verifying_key`. Returns `Status::unauthenticated` when the
-/// proof is missing, malformed, or does not verify — so no `credential_token`
-/// is minted for a caller that merely presents a public key it does not hold.
+/// verifies under `verifying_key`. `challenge` is the server-issued, single-use
+/// [`ChallengeStore`] nonce (no longer the public, deterministic `agent_id`),
+/// so the proof cannot be precomputed or replayed. Returns
+/// `Status::unauthenticated` when the proof is missing, malformed, or does not
+/// verify — so no `credential_token` is minted for a caller that merely presents
+/// a public key it does not hold.
 fn verify_possession_proof(
     verifying_key: &ed25519_dalek::VerifyingKey,
     challenge: &[u8],
@@ -66,6 +161,8 @@ pub struct AgentLifecycleServiceImpl {
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
     audit_seq: Arc<AtomicU64>,
     audit_last_hash: Arc<Mutex<[u8; 32]>>,
+    /// Outstanding registration-challenge nonces (AAASM-3866).
+    challenges: Arc<ChallengeStore>,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -77,6 +174,7 @@ impl AgentLifecycleServiceImpl {
             audit_tx: None,
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
+            challenges: Arc::new(ChallengeStore::default()),
         }
     }
 
@@ -91,6 +189,7 @@ impl AgentLifecycleServiceImpl {
             audit_tx: None,
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
+            challenges: Arc::new(ChallengeStore::default()),
         }
     }
 
@@ -106,6 +205,48 @@ type ControlStreamOutput = Pin<Box<dyn tokio_stream::Stream<Item = Result<Contro
 
 #[tonic::async_trait]
 impl AgentLifecycleService for AgentLifecycleServiceImpl {
+    /// AAASM-3866: issue a fresh, single-use, server-random nonce bound to the
+    /// caller's `agent_id` + `public_key`. The agent signs this nonce and returns
+    /// it as `RegisterRequest.possession_proof` / `registration_nonce`. Issuing
+    /// the challenge server-side is what stops a caller who merely *knows* an
+    /// agent_id from precomputing a valid proof — the signed value is now
+    /// unpredictable.
+    async fn request_challenge(
+        &self,
+        request: Request<ChallengeRequest>,
+    ) -> Result<Response<ChallengeResponse>, Status> {
+        let req = request.into_inner();
+
+        let proto_id = req
+            .agent_id
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("missing agent_id"))?;
+        validate_proto_agent_id(proto_id).map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        // Validate public_key shape here too so a challenge is only ever issued
+        // for a well-formed key — the same key the proof must later verify under.
+        if req.public_key.is_empty() {
+            return Err(Status::invalid_argument("missing public_key"));
+        }
+        let pk_bytes =
+            hex::decode(&req.public_key).map_err(|_| Status::invalid_argument("public_key is not valid hex"))?;
+        let pk_array: [u8; 32] = pk_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| Status::invalid_argument("public_key must be 32 bytes (64 hex chars)"))?;
+        ed25519_dalek::VerifyingKey::from_bytes(&pk_array)
+            .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
+
+        let (nonce, expires_at_unix_ms) = self.challenges.issue(&proto_id.agent_id, &req.public_key);
+
+        tracing::debug!(agent_id = ?proto_id.agent_id, "registration challenge issued");
+
+        Ok(Response::new(ChallengeResponse {
+            nonce,
+            expires_at_unix_ms,
+        }))
+    }
+
     async fn register(&self, request: Request<RegisterRequest>) -> Result<Response<RegisterResponse>, Status> {
         let req = request.into_inner();
 
@@ -130,17 +271,23 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         )
         .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
 
-        // AAASM-3591: prove the caller actually HOLDS the private key for
-        // `public_key` before minting a credential_token. Without this, anyone
-        // who can reach the unauthenticated gRPC port can present any valid
-        // Ed25519 public key and mint a token. The proof is an Ed25519 signature
-        // over the registering did:key (`proto_id.agent_id`) bytes; it both
-        // proves possession and binds the key to the claimed identity.
+        // AAASM-3591 / AAASM-3866: prove the caller actually HOLDS the private
+        // key for `public_key` before minting a credential_token. Without this,
+        // anyone who can reach the unauthenticated gRPC port can present any
+        // valid Ed25519 public key and mint a token.
+        //
+        // The proof must sign the *server-issued nonce* the caller obtained from
+        // RequestChallenge — NOT the public, deterministic `agent_id` (which any
+        // attacker who knows the id could sign in advance, then replay). Consume
+        // the nonce first (single-use, time-bound, bound to this exact
+        // agent_id + public_key); only then verify the signature over it.
         //
         // Coordinates with AAASM-3416 (broad per-endpoint authn): this is the
         // minimal credential_token possession gate; a future authn interceptor
         // layers on top of (does not replace) it.
-        verify_possession_proof(&verifying_key, proto_id.agent_id.as_bytes(), &req.possession_proof)?;
+        self.challenges
+            .consume(&req.registration_nonce, &proto_id.agent_id, &req.public_key)?;
+        verify_possession_proof(&verifying_key, &req.registration_nonce, &req.possession_proof)?;
 
         let agent_key = proto_agent_id_to_key(proto_id);
         let credential_token = generate_credential_token();
@@ -423,5 +570,80 @@ mod tests {
         let sk = key();
         let err = verify_possession_proof(&sk.verifying_key(), b"did", &[1, 2, 3]).unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    // ── ChallengeStore (AAASM-3866) ──────────────────────────────────────────
+
+    const DID: &str = "did:key:z6MkExampleAgent";
+    const PK: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn issued_nonce_is_random_and_consumable_once() {
+        let store = ChallengeStore::default();
+        let (n1, _) = store.issue(DID, PK);
+        let (n2, _) = store.issue(DID, PK);
+        assert_eq!(n1.len(), CHALLENGE_NONCE_LEN);
+        assert_ne!(n1, n2, "two issued nonces must differ (CSPRNG)");
+
+        // First consume succeeds; the same nonce is now burned (single-use).
+        assert!(store.consume(&n1, DID, PK).is_ok());
+        let replay = store.consume(&n1, DID, PK).unwrap_err();
+        assert_eq!(replay.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn empty_nonce_is_rejected() {
+        let store = ChallengeStore::default();
+        let err = store.consume(&[], DID, PK).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn unknown_nonce_is_rejected() {
+        let store = ChallengeStore::default();
+        let err = store.consume(&[9u8; CHALLENGE_NONCE_LEN], DID, PK).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn nonce_bound_to_a_different_identity_is_rejected() {
+        let store = ChallengeStore::default();
+        let (nonce, _) = store.issue(DID, PK);
+        // Wrong agent_id.
+        let err = store.consume(&nonce, "did:key:z6MkOther", PK).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn nonce_bound_to_a_different_public_key_is_rejected() {
+        let store = ChallengeStore::default();
+        let (nonce, _) = store.issue(DID, PK);
+        let other_pk = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let err = store.consume(&nonce, DID, other_pk).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn expired_nonce_is_rejected() {
+        let store = ChallengeStore::default();
+        let nonce = vec![1u8; CHALLENGE_NONCE_LEN];
+        // Insert a nonce that already expired one second ago.
+        store.issued.lock().unwrap().insert(
+            nonce.clone(),
+            IssuedChallenge {
+                agent_id: DID.to_owned(),
+                public_key: PK.to_owned(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+            },
+        );
+        let err = store.consume(&nonce, DID, PK).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[test]
+    fn expires_at_unix_ms_is_in_the_future() {
+        let store = ChallengeStore::default();
+        let (_, expires_at_unix_ms) = store.issue(DID, PK);
+        assert!(expires_at_unix_ms > Utc::now().timestamp_millis());
     }
 }
