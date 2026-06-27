@@ -527,16 +527,29 @@ pub async fn test_destination(
         .get(&id)
         .ok_or_else(|| TestDestinationFailure::NotFound(not_found_problem()))?;
 
-    // AAASM-3789: SSRF egress guard. Before dispatching a webhook test-fire,
+    // AAASM-3789 / AAASM-3868: SSRF egress guard. Before dispatching a test-fire,
     // reject targets that resolve to an internal address (loopback / RFC1918 /
     // link-local incl. the cloud-metadata endpoint / ULA). The resolution does
     // a blocking DNS lookup, so it runs on the blocking pool.
-    if let DestinationConfig::Webhook { url, .. } = &destination.config {
-        let parsed = url::Url::parse(url).map_err(|_| {
+    //
+    // Both the generic webhook `url` and the Slack `webhook_url` are
+    // attacker-controlled targets that egress on test-fire and must pass the
+    // guard. PagerDuty / OpsGenie POST to hard-coded vendor endpoints, so they
+    // carry no caller-controlled SSRF surface and are exempt.
+    let egress_url = match &destination.config {
+        DestinationConfig::Webhook { url, .. } => Some(url::Url::parse(url).map_err(|_| {
             TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
                 "webhook.url is not a valid URL",
             )))
-        })?;
+        })?),
+        DestinationConfig::Slack { webhook_url, .. } => Some(url::Url::parse(webhook_url).map_err(|_| {
+            TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
+                "slack.webhook_url is not a valid URL",
+            )))
+        })?),
+        DestinationConfig::PagerDuty { .. } | DestinationConfig::OpsGenie { .. } => None,
+    };
+    if let Some(parsed) = egress_url {
         let egress = tokio::task::spawn_blocking(move || validate_webhook_egress(&parsed))
             .await
             .map_err(|_| {
