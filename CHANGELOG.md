@@ -5,6 +5,38 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.2] — 2026-06-27 (pre-release)
+
+> **Not for production use.** Second **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). Security-hardening + test-coverage + docs; no API,
+> ABI, or wire-protocol stability commitment at `0.x.y`.
+
+### Security
+
+- **AAASM-3788** — gRPC per-RPC auth + mTLS scaffold on the agent plane
+  (fail-closed interceptor; approval decisions bound to the authenticated caller);
+  closes the unauthenticated-gateway gap (AAASM-3416).
+- **AAASM-3790 / 3824 / 3825** — REST cross-tenant IDOR hardening: tenant
+  ownership + write-scope across agent/alert/op handlers; `get_agent_capabilities`
+  gated; `get_agent_graph` traversal tenant-filtered.
+- **AAASM-3789** webhook SSRF guard + masked-secret round-trip; **AAASM-3787**
+  eval cache key includes action args (prevents wrong-decision cache reuse).
+
+### Documentation
+
+- **AAASM-3774** — every published crate ships a `README.md` (renders on
+  crates.io/docs.rs); release-readiness enforces it. Docs use `docs.agent-assembly.com`.
+
+### Build / quality
+
+- **AAASM-3765** versioned container base images; large test-coverage expansion
+  (aa-api/aa-cli/aa-gateway/aa-proxy/aa-runtime/dashboard); Rust + dashboard
+  coverage stabilisation; SonarCloud smell/deprecation cleanups.
+
+### Changed
+
+- Workspace + inter-crate path-dependency versions bumped `0.0.1-rc.1` → `0.0.1-rc.2`.
+
 ## [0.0.1-rc.1] — 2026-06-26 (pre-release)
 
 > **Not for production use.** First **release candidate** in the v0.0.1 series,
