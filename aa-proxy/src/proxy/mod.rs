@@ -938,6 +938,23 @@ impl ProxyServer {
                 .leak()
         };
 
+        // AAASM-3864 (b): enforce the same egress denylist + network allowlist
+        // the CONNECT path applies. Without this an `http://` scheme-downgrade
+        // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
+        // recheck below only guards address ranges, not policy hosts. Deny here
+        // (before any upstream dial), mirroring the CONNECT path's 403.
+        let deny_host = host.split(':').next().unwrap_or(host);
+        if let Some(reason) = self.connect_deny_reason(deny_host) {
+            tracing::info!(host = %deny_host, "plain-HTTP egress denied: {reason}");
+            self.interceptor.emit_policy_decision(deny_host, true).await;
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
             host.to_string()
@@ -1091,11 +1108,12 @@ mod tests {
 
     #[tokio::test]
     async fn plain_http_forward_blocks_ssrf_resolved_ip() {
-        // AAASM-3140 regression: a plain-HTTP (non-CONNECT) request whose host
-        // resolves to a denied IP (here, loopback) must be refused by the same
-        // SSRF resolved-IP re-validation that guards the CONNECT/tunnel paths.
-        // Before the fix the plain-HTTP path dialed the upstream directly,
-        // bypassing the denylist.
+        // AAASM-3140 / AAASM-3864 regression: a plain-HTTP (non-CONNECT) request
+        // targeting an internal-address literal must be refused. With the egress
+        // denylist now enforced on the plain-HTTP path the loopback literal is
+        // caught by the SSRF guard inside `connect_deny_reason`, returning an
+        // explicit 403 (fail-closed) before any upstream dial.
+        use tokio::io::AsyncReadExt;
         let server = server_with(vec![], vec![]).await;
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1109,11 +1127,16 @@ mod tests {
             .await
             .unwrap();
 
-        let result = server.handle_connection(server_stream).await;
-        let err = result.expect_err("plain-HTTP request to a blocked IP must be refused");
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("denied request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
         assert!(
-            matches!(&err, ProxyError::Config(msg) if msg.contains("ssrf")),
-            "expected SSRF denial, got: {err:?}"
+            buf.contains("403"),
+            "plain-HTTP request to a blocked IP must be refused with 403, got: {buf:?}"
         );
     }
 }
