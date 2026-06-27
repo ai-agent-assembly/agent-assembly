@@ -29,7 +29,7 @@ function GenerateKeyDialogBody({ onClose, onSubmit, isSubmitting }: Readonly<Gen
     setScopes((prev) => (prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope]))
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
     setTouched(true)
     if (!labelValid || !scopesValid) return

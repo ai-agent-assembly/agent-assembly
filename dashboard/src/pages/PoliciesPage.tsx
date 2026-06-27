@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
 import { useSandboxSummaryQuery } from '../features/audit/api'
@@ -28,7 +28,7 @@ const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
 ]
 
 interface PolicyEditorOverlayContainerProps {
-  dirtyRef: MutableRefObject<boolean>
+  dirtyRef: RefObject<boolean>
   onRequestClose: () => void
 }
 

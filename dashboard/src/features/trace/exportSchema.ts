@@ -28,7 +28,7 @@ const traceEventSchema = z.object({
 
 export const traceExportSchema = z.object({
   version: z.literal('1'),
-  exportedAt: z.string().datetime(),
+  exportedAt: z.iso.datetime(),
   agentId: z.string(),
   sessionId: z.string(),
   events: z.array(traceEventSchema),

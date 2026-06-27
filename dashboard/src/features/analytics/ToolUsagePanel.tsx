@@ -4,7 +4,6 @@ import {
   Bar,
   XAxis,
   YAxis,
-  Cell,
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
@@ -18,7 +17,16 @@ export function ToolUsagePanel() {
 
   const rawTools = data?.tools
   const tools = useMemo(() => rawTools ?? [], [rawTools])
-  const sortedTools = useMemo(() => sortToolsByCallsDesc(tools), [tools])
+  // Per-bar colour is carried on each datum's `fill` (recharts reads it when
+  // rendering each bar rectangle), replacing the deprecated <Cell> child elements.
+  const sortedTools = useMemo(
+    () =>
+      sortToolsByCallsDesc(tools).map((tool) => ({
+        ...tool,
+        fill: errorRateColor(tool.errorRate),
+      })),
+    [tools],
+  )
 
   function renderBody() {
     if (isPending) {
@@ -73,11 +81,7 @@ export function ToolUsagePanel() {
                 return [value, name]
               }}
             />
-            <Bar dataKey="calls" radius={[0, 3, 3, 0]}>
-              {sortedTools.map(tool => (
-                <Cell key={tool.name} fill={errorRateColor(tool.errorRate)} />
-              ))}
-            </Bar>
+            <Bar dataKey="calls" radius={[0, 3, 3, 0]} />
           </BarChart>
         </ResponsiveContainer>
         </>

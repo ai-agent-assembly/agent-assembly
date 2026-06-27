@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useApprovalAnalyticsQuery } from './useApprovalAnalyticsQuery'
 import { CHART_COLORBLIND_PALETTE } from './chartPalette'
@@ -37,7 +37,18 @@ export function ApprovalAnalyticsPanel() {
   const { filters } = useAnalyticsFilters()
   const { data, isPending, isError } = useApprovalAnalyticsQuery(filters)
 
-  const donutData = useMemo(() => (data ? buildDonutData(data) : []), [data])
+  // Per-slice colour is carried on each datum's `fill` (recharts reads it when
+  // computing sector colours), replacing the deprecated <Cell> child elements.
+  const donutData = useMemo(
+    () =>
+      data
+        ? buildDonutData(data).map((entry, i) => ({
+            ...entry,
+            fill: DONUT_COLORS[i % DONUT_COLORS.length],
+          }))
+        : [],
+    [data],
+  )
 
   function renderBody() {
     if (isPending) {
@@ -83,11 +94,7 @@ export function ApprovalAnalyticsPanel() {
                   outerRadius={72}
                   dataKey="value"
                   isAnimationActive={false}
-                >
-                  {donutData.map((entry, i) => (
-                    <Cell key={entry.name} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
-                  ))}
-                </Pie>
+                />
                 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                 <Tooltip formatter={(value: any) => [value.toLocaleString(), '']} />
               </PieChart>

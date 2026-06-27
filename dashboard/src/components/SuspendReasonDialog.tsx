@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent, type MouseEvent } from 'react'
+import { useEffect, useState, type ChangeEvent, type SyntheticEvent, type MouseEvent } from 'react'
 import './SuspendReasonDialog.css'
 
 interface SuspendReasonDialogProps {
@@ -42,7 +42,7 @@ export function SuspendReasonDialog({
     if (e.target === e.currentTarget) onCancel()
   }
 
-  function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: SyntheticEvent) {
     e.preventDefault()
     setTouched(true)
     if (invalid) return
