@@ -489,6 +489,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_chunked_transfer_encoding_request() {
+        // AAASM-3864: a request advertising a chunked body cannot be inspected
+        // by this Content-Length-only parser, so it must fail closed rather than
+        // yield an empty body that forwards an un-scanned payload upstream.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Transfer-Encoding: chunked\r\n\
+                    \r\n\
+                    5\r\nhello\r\n0\r\n\r\n";
+        let mut reader = make_reader(raw);
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("chunked")),
+            "expected fail-closed chunked rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn unexpected_eof_reading_request_headers_is_error() {
         // Stream ends after the request line, before the header-terminating
         // blank line — this is a truncated request, not a clean inter-request
