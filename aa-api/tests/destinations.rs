@@ -738,6 +738,13 @@ async fn delete_destination_returns_404_for_unknown_id() {
 /// build, so `connector_for` returns `UnsupportedConnector`, whose `dispatch`
 /// always fails with a transport error. Firing a test against a pagerduty
 /// destination must surface as 502 `connector_failed` with status 0.
+///
+/// AAASM-3832: gated to the default (feature-off) build. Under `--all-features`
+/// — which the CI Coverage job uses — `connector-pagerduty` compiles the real
+/// connector, so `connector_for` no longer returns `UnsupportedConnector` and
+/// this stub-failure assertion would instead attempt a live PagerDuty call.
+/// Skipping it there keeps the Coverage job deterministic and offline.
+#[cfg(not(feature = "connector-pagerduty"))]
 #[tokio::test]
 async fn test_pagerduty_destination_returns_502_transport_error() {
     let app = common::test_app();
