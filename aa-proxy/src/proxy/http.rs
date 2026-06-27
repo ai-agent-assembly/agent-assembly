@@ -418,6 +418,39 @@ mod tests {
         assert!(text.contains("Content-Length: 2\r\n"));
     }
 
+    #[test]
+    fn serialize_forces_connection_close_and_strips_inbound_connection() {
+        // AAASM-3864 (a): every forwarded request must carry exactly one
+        // `Connection: close` so upstream tears the tunnel down after one
+        // exchange, and any inbound Connection header the agent supplied (e.g.
+        // keep-alive) must be dropped.
+        let req = HttpRequest {
+            method: "POST".into(),
+            target: "/v1/x".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Host".into(), "api.openai.com".into()),
+                ("Connection".into(), "keep-alive".into()),
+            ],
+            body: Vec::new(),
+        };
+        let wire = serialize_http_request(&req, b"hi");
+        let text = std::str::from_utf8(&wire).unwrap();
+        assert_eq!(
+            text.to_ascii_lowercase().matches("connection:").count(),
+            1,
+            "exactly one Connection header expected: {text}"
+        );
+        assert!(
+            text.contains("Connection: close\r\n"),
+            "must force Connection: close: {text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("keep-alive"),
+            "inbound keep-alive Connection header must be dropped: {text}"
+        );
+    }
+
     #[tokio::test]
     async fn inject_auth_strips_agent_header_and_appends_real_key() {
         // AAASM-3578: an agent request carrying its own (bogus) Authorization
