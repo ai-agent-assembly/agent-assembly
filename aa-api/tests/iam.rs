@@ -36,6 +36,35 @@ fn post_empty_request(uri: &str, token: Option<&str>) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
+// ── AAASM-3846 — function-level authz on the api-key listing ─────────────────
+
+/// `GET /iam/api-keys` previously disclosed sensitive IAM state with no auth;
+/// it must now reject an unauthenticated caller.
+#[tokio::test]
+async fn list_api_keys_unauthenticated_is_401() {
+    let app = common::test_app_with_auth(&[], 1000);
+    let resp = app.oneshot(get_request("/api/v1/iam/api-keys", None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Listing API keys requires the admin authority that generate / revoke /
+/// rotate already enforce, so a read-only caller must be denied with 403.
+#[tokio::test]
+async fn list_api_keys_rejects_read_only_scope_with_403() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let resp = app
+        .oneshot(get_request("/api/v1/iam/api-keys", Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not list IAM api keys"
+    );
+}
+
 #[tokio::test]
 async fn list_api_keys_returns_seeded_entries_newest_first() {
     let app = common::test_app();
