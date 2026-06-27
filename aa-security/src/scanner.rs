@@ -988,6 +988,111 @@ mod tests {
             .any(|f| f.kind == CredentialKind::GenericHighEntropy));
     }
 
+    // --- AAASM-3870: encoding / length evasions ---
+
+    /// A 64-char lowercase-hex secret (hex-encoded 256-bit key) has entropy
+    /// capped at 4.0 bits/char, so it slipped past the old 4.5-bit gate. The
+    /// dedicated long-hex rule must now flag it.
+    #[test]
+    fn detects_64_char_lowercase_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // 64 lowercase hex chars.
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 hex chars");
+        let result = scanner.scan(&format!("token={secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char hex secret must be flagged: {:?}",
+            result.findings
+        );
+        assert!(!scanner.scan(secret).is_clean());
+    }
+
+    /// A single base64 token longer than 64 chars was skipped entirely by the
+    /// old length-bounded rule. Removing the upper bound must now flag it.
+    #[test]
+    fn detects_base64_token_beyond_64_chars() {
+        let scanner = CredentialScanner::new();
+        // 88-char base64 of random-looking bytes (entropy well above the gate).
+        let secret = "aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ";
+        assert!(secret.len() > 64, "fixture must exceed the old 64-char cap");
+        let result = scanner.scan(&format!("authorization: {secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            ">64-char base64 token must be flagged: {:?}",
+            result.findings
+        );
+    }
+
+    /// Branded literal prefixes must remain detected after the rewrite — the
+    /// long-token rules must not displace the high-signal AC matchers.
+    #[test]
+    fn branded_prefixes_still_flagged_after_rewrite() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("k=AKIAIOSFODNN7EXAMPLE p=ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+    }
+
+    /// Common shorter hex blobs (32-char MD5/UUID, 40-char git SHA-1) and a
+    /// plain English sentence must NOT be flagged — the 64-char hex bar and the
+    /// 20-char/4.5-bit entropy gate keep these benign payloads clean.
+    #[test]
+    fn does_not_flag_benign_hex_ids_or_prose() {
+        let scanner = CredentialScanner::new();
+        let benign = [
+            // 40-char git SHA-1.
+            "commit 0123456789abcdef0123456789abcdef01234567 fixed it",
+            // 32-char MD5 / dashless UUID.
+            "etag d41d8cd98f00b204e9800998ecf8427e cached",
+            // 36-char UUID with dashes.
+            "id 550e8400-e29b-41d4-a716-446655440000 ok",
+            // Plain prose and a short id.
+            "The quarterly report is ready for review by the team.",
+            "user id 42 logged in",
+        ];
+        for text in &benign {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "benign text wrongly flagged: {:?} -> {:?}",
+                text,
+                result.findings
+            );
+        }
+    }
+
+    /// End-to-end: a 64-char hex secret embedded in JSON is fully redacted with
+    /// no raw fragment surviving.
+    #[test]
+    fn redact_removes_long_hex_secret() {
+        let scanner = CredentialScanner::new();
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw hex secret survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
+    /// `longest_hex_run` returns the longest contiguous hex span within a token
+    /// even when non-hex characters split shorter runs.
+    #[test]
+    fn longest_hex_run_picks_the_longest_span() {
+        assert_eq!(longest_hex_run("zz"), None);
+        // "ff" (2) then "abcd" (4) — the longer run wins.
+        assert_eq!(longest_hex_run("ff-zz-abcd"), Some((6, 10)));
+    }
+
     // --- luhn_valid helper ---
 
     #[test]
