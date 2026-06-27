@@ -22,6 +22,67 @@ fn post_override_request(body: serde_json::Value, token: Option<&str>) -> Reques
     builder.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
 }
 
+// ── AAASM-3846 — function-level authz on the read + revoke gates ─────────────
+
+/// `GET /capability/matrix` previously served sensitive policy state with no
+/// auth; it must now reject an unauthenticated caller.
+#[tokio::test]
+async fn get_matrix_unauthenticated_is_401() {
+    let app = common::test_app_with_auth(&[], 1000);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/capability/matrix")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// `GET /capability/override` previously disclosed the override log with no
+/// auth; it must now reject an unauthenticated caller.
+#[tokio::test]
+async fn list_overrides_unauthenticated_is_401() {
+    let app = common::test_app_with_auth(&[], 1000);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/capability/override")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// `DELETE /capability/override/{id}` mutates capability state, so a viewer
+/// (read-only) caller must be denied with 403 — matching `apply_override`.
+#[tokio::test]
+async fn revoke_override_rejects_viewer_scope_with_403() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/capability/override/some-id")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not revoke a capability override"
+    );
+}
+
 #[tokio::test]
 async fn get_matrix_returns_200_with_dashboard_shape() {
     let app = common::test_app();
