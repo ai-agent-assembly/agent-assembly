@@ -487,7 +487,11 @@ jobs:
         with:
           name: rust-coverage-lcov
           path: lcov.info
-          retention-days: 1
+          # AAASM-3829: 14d (not 1d) so the AAASM-3197 cross-run backfill in the
+          # `sonar` job reliably finds this artifact when a Rust-less master push
+          # (dashboard-only / dep bump) path-skips the `coverage` job — otherwise
+          # the scan silently runs without Rust LCOV (dashboard-only, ~5k lines).
+          retention-days: 14
 
   # AAASM-1858: dedicated TimescaleDB job for env-gated tests in
   # aa-gateway. Sibling tests (in storage::timescale::tests and
@@ -1118,7 +1122,10 @@ jobs:
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage/lcov.info
-          retention-days: 1
+          # AAASM-3829: 14d for parity with rust-coverage-lcov (Codecov + any
+          # backfill consumer); the sonar job regenerates dashboard LCOV in-job
+          # (AAASM-3803 Option C), so this is a non-critical safety margin.
+          retention-days: 14
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
