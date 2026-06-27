@@ -179,6 +179,33 @@ async fn plain_http_request_is_forwarded_to_upstream() {
 }
 
 #[tokio::test]
+async fn plain_http_request_to_denied_host_is_rejected_with_403() {
+    // AAASM-3864 (b): the plain-HTTP forward path must enforce the egress
+    // denylist that the CONNECT path applies. A request to a denied host is
+    // refused with 403 before any upstream dial, so an `http://` scheme
+    // downgrade cannot bypass denied_hosts.
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let mut config = test_config(dir.path());
+    config.denied_hosts = vec!["denied.example.com".to_string()];
+    let (proxy_addr, _handle) = start_proxy(config, ca).await;
+
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    stream
+        .write_all(b"GET http://denied.example.com/secret HTTP/1.1\r\nHost: denied.example.com\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response).await.unwrap();
+    assert!(
+        response.contains("403"),
+        "plain-HTTP request to a denied host must be refused with 403, got: {response}"
+    );
+}
+
+#[tokio::test]
 async fn connect_to_llm_host_triggers_interception_without_crash() {
     // This test verifies that a CONNECT to a known LLM API host
     // (api.openai.com) goes through the detect_api → Interceptor path
