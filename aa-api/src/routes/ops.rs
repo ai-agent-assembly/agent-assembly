@@ -295,6 +295,10 @@ pub struct RegisterOpRequest {
     )
 )]
 pub async fn register_op(
+    // AAASM-3865: registering an op is a mutation; its lifecycle siblings
+    // (pause/resume/terminate) all require write scope, but the register path
+    // was missed, letting any read-only key create ops.
+    RequireWrite(_caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(req): Json<RegisterOpRequest>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
