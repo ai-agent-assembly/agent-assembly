@@ -103,7 +103,7 @@ function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
           className={`ad-identity__metric${fleetAgent.blocked24h !== null && fleetAgent.blocked24h > 50 ? ' ad-identity__metric--danger' : ''}`}
           data-testid="agent-detail-blocked"
         >
-          {fleetAgent.blocked24h === null ? '—' : fleetAgent.blocked24h}
+          {fleetAgent.blocked24h ?? '—'}
         </p>
         <p className="ad-identity__metric-sub">capability denials</p>
       </div>
@@ -114,7 +114,7 @@ function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
           className="ad-identity__metric ad-identity__metric--scrub"
           data-testid="agent-detail-scrubbed"
         >
-          {fleetAgent.scrubbed24h === null ? '—' : fleetAgent.scrubbed24h}
+          {fleetAgent.scrubbed24h ?? '—'}
         </p>
         <p className="ad-identity__metric-sub">secrets stripped at L3</p>
       </div>
