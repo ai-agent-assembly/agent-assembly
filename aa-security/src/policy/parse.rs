@@ -115,7 +115,12 @@ impl PolicyDocument {
             .into_iter()
             .map(|(name, t)| ToolRule {
                 name,
-                allow: t.allow.unwrap_or(true),
+                // Deny-by-default: a tool entry that omits `allow:` (or whose
+                // `allow:` key is misspelled and dropped) must not be silently
+                // permitted. Callers must opt a tool in explicitly with
+                // `allow: true` (AAASM-3874). This is a deliberate behaviour
+                // change from the previous allow-by-default.
+                allow: t.allow.unwrap_or(false),
                 requires_approval_if: t.requires_approval_if,
             })
             .collect();
