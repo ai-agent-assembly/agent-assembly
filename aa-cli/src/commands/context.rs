@@ -6,6 +6,31 @@ use clap::{Args, Subcommand};
 
 use crate::config;
 
+/// Environment variable that supplies the API key for `aasm context set`
+/// without exposing it on the command line.
+///
+/// Argv is world-readable via `ps`, `/proc/<pid>/cmdline`, and shell history,
+/// so passing `--api-key` leaks the operator bearer token to any local user.
+const API_KEY_ENV: &str = "AASM_API_KEY";
+
+/// Resolve the API key for `context set`, preferring the `AASM_API_KEY`
+/// environment variable over the `--api-key` flag.
+///
+/// The flag still works to avoid breaking existing scripts, but because it
+/// leaks the secret into argv we emit a warning recommending the env var when
+/// it is used. An empty env var is treated as unset.
+fn resolve_set_api_key(flag: Option<String>) -> Option<String> {
+    if let Some(key) = flag {
+        eprintln!(
+            "warning: passing --api-key exposes the key in process listings \
+             (ps, /proc/<pid>/cmdline) and shell history; prefer the \
+             {API_KEY_ENV} environment variable instead"
+        );
+        return Some(key);
+    }
+    std::env::var(API_KEY_ENV).ok().filter(|key| !key.is_empty())
+}
+
 /// Arguments for the `aasm context` subcommand group.
 #[derive(Args)]
 pub struct ContextArgs {
@@ -32,7 +57,9 @@ pub struct SetArgs {
     /// API URL for this context.
     #[arg(long)]
     pub api_url: String,
-    /// API key for this context (optional).
+    /// API key for this context (optional). Prefer the `AASM_API_KEY`
+    /// environment variable: passing `--api-key` leaks the key into argv
+    /// (`ps`, `/proc/<pid>/cmdline`, shell history).
     #[arg(long)]
     pub api_key: Option<String>,
 }
@@ -91,7 +118,7 @@ fn run_set(args: SetArgs) -> ExitCode {
         args.name.clone(),
         config::ContextConfig {
             api_url: args.api_url,
-            api_key: args.api_key,
+            api_key: resolve_set_api_key(args.api_key),
         },
     );
 
