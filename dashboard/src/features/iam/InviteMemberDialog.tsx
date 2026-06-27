@@ -32,7 +32,7 @@ function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Readonly<Om
   const emailValid = isValidEmail(trimmed)
   const showError = touched && !emailValid
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
     setTouched(true)
     if (!emailValid) return

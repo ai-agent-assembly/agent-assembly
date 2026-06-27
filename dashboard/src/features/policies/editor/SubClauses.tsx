@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type SyntheticEvent } from 'react'
 import {
   APPROVER_QUORUM_OPTS,
   APPROVER_SLA_OPTS,
@@ -39,7 +39,7 @@ function ChipList({
 }>) {
   const [draft, setDraft] = useState('')
 
-  const handleAdd = (e: FormEvent<HTMLFormElement>) => {
+  const handleAdd = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     const trimmed = draft.trim()
     if (trimmed.length === 0) return
