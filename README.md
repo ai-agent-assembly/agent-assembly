@@ -72,10 +72,10 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 
 | Repository | Role | Status |
 |---|---|---|
-| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | Public · Alpha |
-| [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
-| [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
-| [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
+| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver&label=release)](https://github.com/ai-agent-assembly/agent-assembly/releases) |
+| [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/python-sdk?include_prereleases&sort=semver&label=release)](https://github.com/ai-agent-assembly/python-sdk/releases) |
+| [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/node-sdk?include_prereleases&sort=semver&label=release)](https://github.com/ai-agent-assembly/node-sdk/releases) |
+| [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/go-sdk?include_prereleases&sort=semver&label=release)](https://github.com/ai-agent-assembly/go-sdk/releases) |
 | [homebrew-agent-assembly](https://github.com/ai-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
 | [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | Public |
 | agent-assembly-cloud | Hosted SaaS control plane | Private · in development |
