@@ -76,7 +76,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::{AgentRegistry, OrphanMode};
 use aa_gateway::routes::healthz::{healthz, HealthzState};
-use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
+use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore, TenantScopedStore};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use aa_sandbox::registry::ToolRegistry;
@@ -247,12 +247,19 @@ impl TopologyTestEnv {
         let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
 
         // Replace the empty store with one pre-populated for this scenario.
+        // AAASM-3845: secret resolution is now scoped to the caller's tenant.
+        // The harness runs in bypass mode (untenanted admin), so the secrets
+        // must be registered under the untenanted namespace for the
+        // `dispatch_tool` route to resolve them.
         let populated = Arc::new(InMemorySecretsStore::new());
-        for (name, value) in entries {
-            (*populated).register(Secret {
-                name: (*name).to_owned(),
-                value: (*value).to_owned(),
-            })?;
+        {
+            let scoped = TenantScopedStore::for_tenant(populated.as_ref(), None, None);
+            for (name, value) in entries {
+                scoped.register(Secret {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })?;
+            }
         }
         state.secrets_store = populated as Arc<dyn SecretsStore>;
 
