@@ -829,7 +829,19 @@ impl PolicyEngine {
     fn eval_schedule_stage(policy: &PolicyDocument) -> Option<EvaluationResult> {
         let ah = policy.schedule.as_ref()?.active_hours.as_ref()?;
         use chrono::Timelike;
-        let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
+        // AAASM-3847: an unparseable timezone must fail closed. Silently
+        // falling back to UTC let an operator's active-hours window be
+        // evaluated in the wrong zone — e.g. a window meant for business hours
+        // in `America/New_York` evaluated in UTC could be wide open when it
+        // should be shut, bypassing the schedule control. Deny when the
+        // configured tz does not parse, matching the cascade twin
+        // `decision.rs::stage_schedule` (AAASM-3133).
+        let Ok(tz) = ah.timezone.parse::<chrono_tz::Tz>() else {
+            return Some(EvaluationResult::deny(format!(
+                "invalid schedule timezone: {}",
+                ah.timezone
+            )));
+        };
         let now = chrono::Utc::now().with_timezone(&tz);
         let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
         if current_hhmm < ah.start || current_hhmm >= ah.end {
@@ -1818,6 +1830,34 @@ mod tests {
         let action = tool_call("any", "");
         // 00:00–23:59 covers almost the whole day — should Allow.
         assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn schedule_invalid_timezone_fails_closed() {
+        // AAASM-3847: an unparseable tz on the single-policy `evaluate_primary`
+        // path must DENY, not silently fall back to UTC. The window is the full
+        // day, so the only reason to deny is the invalid timezone — proving the
+        // fail-closed behaviour rather than a coincidental out-of-window deny.
+        let mut doc = empty_doc();
+        doc.schedule = Some(SchedulePolicy {
+            active_hours: Some(ActiveHours {
+                start: "00:00".to_string(),
+                end: "23:59".to_string(),
+                timezone: "Not/AZone".to_string(),
+            }),
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+        match engine.evaluate(&ctx, &action).decision {
+            PolicyResult::Deny { reason } => {
+                assert!(
+                    reason.contains("invalid schedule timezone"),
+                    "expected invalid-timezone deny, got: {reason}"
+                );
+            }
+            other => panic!("expected fail-closed Deny, got: {other:?}"),
+        }
     }
 
     #[test]
