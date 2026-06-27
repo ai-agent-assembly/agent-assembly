@@ -121,7 +121,8 @@ pub enum CredentialKind {
     /// US Social Security Number in `DDD-DD-DDDD` format.
     SsnPattern,
     // Generic
-    /// High-entropy token (Shannon entropy > 4.5 bits/char, length 20–64 bytes).
+    /// High-entropy or long-hex token: Shannon entropy > 4.5 bits/char (any
+    /// length ≥ 20), or a contiguous hex run ≥ 64 chars.
     GenericHighEntropy,
     // Policy-defined
     /// A pattern defined in the policy document's `data.sensitive_patterns` field.
@@ -366,7 +367,9 @@ impl CredentialScanner {
     ///    auth tokens, cloud credentials, database URLs, and PEM private key headers.
     /// 2. Credit card and SSN digit-sequence scan.
     /// 3. Email address scan.
-    /// 4. High-entropy token scan (Shannon entropy > 4.5 bits/char, length 20–64).
+    /// 4. High-entropy / long-hex token scan (entropy > 4.5 bits/char at any
+    ///    length ≥ 20, or a contiguous hex run ≥ 64 chars — see
+    ///    [`scan_high_entropy`]).
     pub fn scan(&self, text: &str) -> ScanResult {
         if self.disabled {
             return ScanResult { findings: Vec::new() };
@@ -389,7 +392,7 @@ impl CredentialScanner {
         // Phase 3: Email addresses
         scan_emails(text, &mut findings);
 
-        // Phase 4: High-entropy tokens (Shannon entropy > 4.5 bits/char, length 20–64)
+        // Phase 4: High-entropy / long-hex tokens (encoding & length evasions, AAASM-3870)
         scan_high_entropy(text, &mut findings);
 
         findings.sort_by_key(|f| f.offset);
@@ -557,31 +560,118 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Scans `text` for high-entropy whitespace-delimited tokens (> 4.5 bits/char,
-/// length 20–64 bytes) and reports them as [`CredentialKind::GenericHighEntropy`].
-fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let mut offset = 0usize;
-    for token in text.split_whitespace() {
-        let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
-        let whitespace_end = token_offset + token.len();
-        let len = token.len();
-        if (20..=64).contains(&len) && shannon_entropy(token) > 4.5 {
-            // The whitespace token can still carry trailing delimiters when a
-            // secret is embedded in structured text (e.g. `...key"}]}` in compact
-            // JSON). Clamp the finding's `end` at the first token-terminating
-            // character so the span covers only the credential — matching how the
-            // AC literal scan derives its `end`. Detection (offset, count, kind)
-            // is unchanged; only the span boundary is tightened so that once
-            // `redact` coalesces this with an overlapping specific finding, the
-            // merged span no longer swallows valid trailing bytes.
-            let end = token_end(text, token_offset);
-            findings.push(CredentialFinding::new(
-                CredentialKind::GenericHighEntropy,
-                token_offset,
-                end,
-            ));
+/// Minimum token length before the Shannon-entropy gate is applied.
+///
+/// Tokens shorter than this are never flagged as generic high-entropy: short
+/// random-looking strings are too common to redact safely, and a secret short
+/// enough to fit below this bar carries little usable entropy.
+const ENTROPY_TOKEN_MIN_LEN: usize = 20;
+
+/// Shannon-entropy gate, in bits per character.
+///
+/// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
+/// English prose and `snake_case` / `kebab-case` identifiers stay below this.
+/// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
+/// trip this gate — they are caught by the dedicated hex rule (see
+/// [`HEX_RUN_MIN_LEN`]). There is intentionally **no upper length bound**
+/// (AAASM-3870): a long random token is more likely to be a secret, not less, so
+/// unlike the previous 64-byte cap the gate now flags arbitrarily long
+/// high-entropy tokens.
+const ENTROPY_BITS_GATE: f64 = 4.5;
+
+/// Minimum length of a contiguous hex run (`[0-9a-fA-F]`) flagged as a secret.
+///
+/// Set to 64 — the length of a hex-encoded 256-bit key (and of a SHA-256
+/// digest). The threshold is deliberately high to avoid redacting the shorter
+/// hex blobs that pervade normal payloads: 32-char MD5/UUID hex and 40-char git
+/// SHA-1 hashes stay below it and are **not** flagged. The accepted tradeoff is
+/// that hex blobs of 64+ chars — including SHA-256 digests — are redacted; this
+/// is harmless (redacting a public hash leaks nothing) and is the price of
+/// closing the hex-encoded-secret evasion, since a hex secret is byte-for-byte
+/// indistinguishable from a hash of the same length.
+const HEX_RUN_MIN_LEN: usize = 64;
+
+/// Returns `true` if `b` can appear inside a single secret-like token.
+///
+/// Covers the base64 / base64url alphabet (alphanumerics plus `+ / - _`) so a
+/// contiguous encoded blob is treated as one token. `=` padding and quote /
+/// punctuation delimiters are excluded, which keeps JSON values
+/// (`"key":"<secret>"`) and `key=value` assignments split into separate tokens.
+fn is_secret_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_')
+}
+
+/// Returns the byte range of the longest contiguous hex run (`[0-9a-fA-F]`) in
+/// `token`, or `None` if it contains no hex characters.
+fn longest_hex_run(token: &str) -> Option<(usize, usize)> {
+    let bytes = token.as_bytes();
+    let mut best: Option<(usize, usize)> = None;
+    let mut best_len = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() {
+            i += 1;
+            continue;
         }
-        offset = whitespace_end;
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        if i - start > best_len {
+            best_len = i - start;
+            best = Some((start, i));
+        }
+    }
+    best
+}
+
+/// Scans `text` for secret-like tokens and reports them as
+/// [`CredentialKind::GenericHighEntropy`].
+///
+/// A token is a maximal run of [`is_secret_char`] bytes (so it stops at quotes,
+/// whitespace, and `= : . @ /` delimiters, isolating the encoded blob). Two
+/// rules apply, closing the encoding/length evasions tracked in AAASM-3870:
+///
+/// 1. **High Shannon entropy** — a token of length ≥ [`ENTROPY_TOKEN_MIN_LEN`]
+///    whose entropy exceeds [`ENTROPY_BITS_GATE`]. Catches random base64/base85
+///    secrets *of any length*, including the > 64-char tokens the old 20–64 rule
+///    skipped entirely.
+/// 2. **Long hex run** — a contiguous hex sub-run of length ≥ [`HEX_RUN_MIN_LEN`].
+///    Catches hex-encoded secrets, which never reach the entropy gate because hex
+///    entropy is capped at 4.0 bits/char.
+///
+/// Because the token never contains a delimiter, its byte range always lands on
+/// UTF-8 character boundaries, so the finding `end` needs no further clamping.
+fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_secret_char(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_secret_char(bytes[i]) {
+            i += 1;
+        }
+        let token = &text[start..i];
+
+        // Rule 1: long, high-Shannon-entropy token (random base64/base85).
+        if token.len() >= ENTROPY_TOKEN_MIN_LEN && shannon_entropy(token) > ENTROPY_BITS_GATE {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+            continue;
+        }
+
+        // Rule 2: long contiguous hex run (escapes the 4.0-bit entropy gate).
+        if let Some((h_start, h_end)) = longest_hex_run(token) {
+            if h_end - h_start >= HEX_RUN_MIN_LEN {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    start + h_start,
+                    start + h_end,
+                ));
+            }
+        }
     }
 }
 
