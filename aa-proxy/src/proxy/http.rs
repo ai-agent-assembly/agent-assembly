@@ -7,9 +7,10 @@
 //!
 //! Scope is intentionally small: only requests with a literal
 //! `Content-Length` header are fully supported. Requests using
-//! `Transfer-Encoding: chunked` parse the head but leave the body empty —
-//! that variant is rare for LLM POSTs and can be added when needed without
-//! breaking this API.
+//! `Transfer-Encoding: chunked` cannot be inspected by this parser, so the
+//! request side rejects them (fail-closed, AAASM-3864) rather than forwarding
+//! an un-scanned body. The response side still parses the head and leaves a
+//! chunked body empty (the MCP path falls back to a transparent relay).
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -43,8 +44,13 @@ impl HttpRequest {
 /// Read and parse an HTTP/1.1 request from `reader`.
 ///
 /// Reads the request line and headers off the stream, then reads exactly
-/// `Content-Length` bytes of body. Requests without `Content-Length` and
-/// without `Transfer-Encoding: chunked` are treated as having an empty body.
+/// `Content-Length` bytes of body. Requests without `Content-Length` are
+/// treated as having an empty body.
+///
+/// A request advertising `Transfer-Encoding: chunked` is **rejected** with a
+/// [`ProxyError::Config`] error (AAASM-3864): this parser cannot decode a
+/// chunked body, so forwarding it would let an un-scanned body slip past the
+/// credential and MCP gates. Failing closed drops the connection instead.
 ///
 /// Returns `Ok(None)` on a clean EOF before any bytes are read — that
 /// indicates the peer closed the connection between requests.
@@ -82,6 +88,19 @@ where
         } else {
             return Err(ProxyError::Config(format!("malformed header line: {trimmed:?}")));
         }
+    }
+
+    // AAASM-3864 (fail-closed): a chunked body cannot be parsed here, so the
+    // credential scanner and `parse_mcp_request` would see an empty body while
+    // the real payload was forwarded un-inspected. Refuse such requests rather
+    // than silently passing an un-scanned body upstream.
+    if headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"))
+    {
+        return Err(ProxyError::Config(
+            "transfer-encoding: chunked request bodies are not inspectable; refusing (fail-closed)".into(),
+        ));
     }
 
     let content_length: usize = headers
@@ -362,14 +381,22 @@ mod tests {
         assert!(text.ends_with("\r\n\r\nshort"));
     }
 
-    #[tokio::test]
-    async fn serialize_drops_transfer_encoding_header() {
-        let raw = b"POST / HTTP/1.1\r\n\
-                    Host: x.example.com\r\n\
-                    Transfer-Encoding: chunked\r\n\
-                    \r\n";
-        let mut reader = make_reader(raw);
-        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+    #[test]
+    fn serialize_drops_transfer_encoding_header() {
+        // `read_http_request` now rejects chunked requests (AAASM-3864), so the
+        // serializer's Transfer-Encoding stripping is exercised by constructing
+        // the request directly — it remains defence-in-depth for any caller that
+        // hands the serializer a request carrying a stale framing header.
+        let req = HttpRequest {
+            method: "POST".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Host".into(), "x.example.com".into()),
+                ("Transfer-Encoding".into(), "chunked".into()),
+            ],
+            body: Vec::new(),
+        };
         let wire = serialize_http_request(&req, b"hi");
         let text = std::str::from_utf8(&wire).unwrap();
         assert!(
