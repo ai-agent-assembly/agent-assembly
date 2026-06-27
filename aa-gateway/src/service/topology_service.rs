@@ -13,6 +13,7 @@ use aa_proto::assembly::topology::v1::{
 };
 
 use crate::edges::InMemoryEdgeRepo;
+use crate::iam::VerifiedCaller;
 use crate::registry::{AgentRecord, AgentRegistry, AgentStatus};
 
 /// gRPC service implementation for topology queries.
@@ -38,6 +39,27 @@ fn parse_agent_id(hex: &str) -> Result<[u8; 16], Status> {
 
 fn format_id(id: &[u8; 16]) -> String {
     hex::encode(id)
+}
+
+/// Tenant-authorization rule for a topology read (AAASM-3846).
+///
+/// The `auth_interceptor` authenticates the caller and injects a
+/// [`VerifiedCaller`], but the handlers previously discarded it and returned any
+/// agent to any authenticated caller (a post-authN function-level/tenant authz
+/// gap). This mirrors `approval_service::caller_may_act_on`, extended to also
+/// bind the caller's `org_id`: a tenanted caller (a `Some` team/org) may only
+/// read a resource in the same team and org; when either side is untenanted the
+/// read is allowed (the untenanted/single-tenant deployment fallback).
+fn caller_may_read(caller: &VerifiedCaller, resource_team: Option<&str>, resource_org: Option<&str>) -> bool {
+    let team_ok = match (caller.team_id.as_deref(), resource_team) {
+        (Some(caller_team), Some(resource_team)) => caller_team == resource_team,
+        _ => true,
+    };
+    let org_ok = match (caller.org_id.as_deref(), resource_org) {
+        (Some(caller_org), Some(resource_org)) => caller_org == resource_org,
+        _ => true,
+    };
+    team_ok && org_ok
 }
 
 fn status_str(status: AgentStatus) -> &'static str {
@@ -90,6 +112,10 @@ impl TopologyService for TopologyServiceImpl {
         &self,
         request: Request<GetAgentTreeRequest>,
     ) -> Result<Response<GetAgentTreeResponse>, Status> {
+        // AAASM-3846 — read the verified caller (injected by the auth
+        // interceptor) before consuming the request, so the lookup can be bound
+        // to the caller's tenant.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let agent_id = parse_agent_id(&req.agent_id)?;
 
@@ -97,6 +123,14 @@ impl TopologyService for TopologyServiceImpl {
             .registry
             .get(&agent_id)
             .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
+
+        // AAASM-3846 — confine a tenanted caller to its own team/org so one team
+        // cannot read another team's delegation tree.
+        if let Some(caller) = &caller {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
+                return Err(Status::permission_denied("agent belongs to a different tenant"));
+            }
+        }
 
         if record.parent_key.is_some() {
             return Err(Status::failed_precondition(format!(
@@ -113,6 +147,8 @@ impl TopologyService for TopologyServiceImpl {
     }
 
     async fn get_lineage(&self, request: Request<GetLineageRequest>) -> Result<Response<GetLineageResponse>, Status> {
+        // AAASM-3846 — read the verified caller before consuming the request.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let agent_id = parse_agent_id(&req.agent_id)?;
 
@@ -120,6 +156,14 @@ impl TopologyService for TopologyServiceImpl {
             .registry
             .get(&agent_id)
             .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
+
+        // AAASM-3846 — a tenanted caller may only trace lineage for an agent in
+        // its own team/org.
+        if let Some(caller) = &caller {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
+                return Err(Status::permission_denied("agent belongs to a different tenant"));
+            }
+        }
 
         // ancestors[0] is the agent itself; ancestors[last] is the root.
         let mut ancestors = vec![record_to_topology_agent(&record)];
@@ -136,10 +180,22 @@ impl TopologyService for TopologyServiceImpl {
         &self,
         request: Request<GetTeamMembersRequest>,
     ) -> Result<Response<GetTeamMembersResponse>, Status> {
+        // AAASM-3846 — read the verified caller before consuming the request.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
 
         if req.team_id.is_empty() {
             return Err(Status::invalid_argument("team_id must not be empty"));
+        }
+
+        // AAASM-3846 — a tenanted caller may only enumerate its own team's
+        // members, never another team's roster.
+        if let Some(caller) = &caller {
+            if let Some(caller_team) = caller.team_id.as_deref() {
+                if caller_team != req.team_id {
+                    return Err(Status::permission_denied("team belongs to a different tenant"));
+                }
+            }
         }
 
         let member_ids = self.registry.team_members(&req.team_id);
@@ -193,5 +249,146 @@ impl TopologyService for TopologyServiceImpl {
             .map_err(|e| Status::internal(format!("edge store error: {e}")))?;
 
         Ok(Response::new(ReportEdgeResponse { id }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, VecDeque};
+
+    use aa_proto::assembly::topology::v1::topology_service_server::TopologyService;
+
+    /// Build a minimal active [`AgentRecord`] with an explicit tenant.
+    fn make_record(
+        id: [u8; 16],
+        name: &str,
+        parent_key: Option<[u8; 16]>,
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+    ) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: name.into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "pk_test".into(),
+            credential_token: format!("tok_{}", hex::encode(id)),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_owned),
+            depth: if parent_key.is_some() { 1 } else { 0 },
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some(id),
+            children: vec![],
+            parent_key,
+            enforcement_mode: None,
+            org_id: org_id.map(str::to_owned),
+        }
+    }
+
+    fn caller(team: Option<&str>, org: Option<&str>) -> VerifiedCaller {
+        VerifiedCaller {
+            agent_key: [1u8; 16],
+            team_id: team.map(str::to_owned),
+            org_id: org.map(str::to_owned),
+        }
+    }
+
+    fn service_with(records: Vec<AgentRecord>) -> TopologyServiceImpl {
+        let registry = Arc::new(AgentRegistry::new());
+        for r in records {
+            registry.register(r).unwrap();
+        }
+        TopologyServiceImpl::new(registry, InMemoryEdgeRepo::new())
+    }
+
+    #[tokio::test]
+    async fn get_agent_tree_cross_tenant_is_permission_denied() {
+        let root: [u8; 16] = [0xa0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.get_agent_tree(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn get_agent_tree_same_tenant_is_allowed() {
+        let root: [u8; 16] = [0xa1; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-a"), Some("org-a"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
+        assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
+    }
+
+    #[tokio::test]
+    async fn get_lineage_cross_tenant_is_permission_denied() {
+        let root: [u8; 16] = [0xb0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetLineageRequest {
+            agent_id: format_id(&root),
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.get_lineage(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn get_team_members_cross_tenant_is_permission_denied() {
+        let agent: [u8; 16] = [0xc0; 16];
+        let svc = service_with(vec![make_record(agent, "a", None, Some("team-b"), None)]);
+
+        let mut req = Request::new(GetTeamMembersRequest {
+            team_id: "team-b".into(),
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), None));
+
+        let err = svc.get_team_members(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn untenanted_caller_is_allowed_cross_team() {
+        // Single-tenant deployment fallback: an untenanted caller is not confined.
+        let root: [u8; 16] = [0xd0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(None, None));
+
+        let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
+        assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
     }
 }
