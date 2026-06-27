@@ -1,9 +1,10 @@
 name: Docs
 
+# Least-privilege default for every job. The PR/master-push `build` and
+# `verify-commands` jobs only read the repo; the elevated `pages: write` +
+# `id-token: write` scopes are granted to the `deploy` job alone (AAASM-3877).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 on:
   pull_request:
@@ -281,6 +282,11 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    # Pages deployment needs the elevated scopes; scoped here so the
+    # PR-triggered build/verify jobs run with contents:read only (AAASM-3877).
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
