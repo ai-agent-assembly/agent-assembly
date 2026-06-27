@@ -22,10 +22,28 @@
 //! `bpf_send_signal` requires Linux 5.3+. Unmonitored PIDs (not in
 //! `PID_FILTER`) are never inspected, so the probe is a no-op for the rest of
 //! the system.
+//!
+//! ## Best-effort limitations (AAASM-3872)
+//!
+//! This probe is a *best-effort* second line, not a synchronous syscall
+//! firewall:
+//!
+//! - **Kill-after-syscall race.** Enforcement is `bpf_send_signal(SIGKILL)` at
+//!   `sys_enter`. The signal is delivered at the next signal-check point, so
+//!   the *offending* syscall still executes once before the task dies — a
+//!   single `connect`/`sendto`/`write`/`unlink` can land. A truly synchronous
+//!   deny (return `-EPERM` before the handler runs) needs seccomp-BPF or an
+//!   LSM `bpf_lsm` hook, which is out of scope here; see AAASM-3872.
+//! - **ABI guard (fixed here).** The allowlist is keyed on **native x86_64**
+//!   syscall numbers. The x32 compat ABI is now rejected via
+//!   [`aa_ebpf_common::abi::native_syscall_nr`] so a compat number cannot
+//!   alias an allow-listed native one; i386 `int 0x80` compat remains
+//!   undetectable from the tracepoint `id` alone (documented in `abi`).
 
 #![no_std]
 #![no_main]
 
+use aa_ebpf_common::abi::native_syscall_nr;
 use aa_ebpf_common::syscall::MAX_SYSCALL_ALLOWLIST;
 use aya_ebpf::{
     helpers::{bpf_get_current_pid_tgid, bpf_send_signal},
@@ -70,8 +88,27 @@ fn try_syscall_guard(ctx: &TracePointContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    // Read the syscall number from the tracepoint context.
-    let syscall_nr = unsafe { ctx.read_at::<i64>(SYS_ENTER_ID_OFFSET) }? as u32;
+    // Read the raw syscall id from the tracepoint context.
+    let raw_id = unsafe { ctx.read_at::<i64>(SYS_ENTER_ID_OFFSET) }?;
+
+    // ABI guard (AAASM-3872): the allowlist is keyed on x86_64 *native*
+    // syscall numbers. Resolve the native number, rejecting any call we cannot
+    // prove is native — a detectable x32 compat call (carrying
+    // `__X32_SYSCALL_BIT`) or a negative sentinel — so a compat-ABI number can
+    // never alias an allow-listed native one (e.g. i386 execve=11 vs x86_64
+    // munmap=11). Non-native resolves to `None` and is default-denied below.
+    let syscall_nr = match native_syscall_nr(raw_id) {
+        Some(nr) => nr,
+        None => {
+            // Compat-ABI / sentinel: not describable by the native allowlist.
+            // NOTE: SIGKILL is asynchronous — see the kill-after-syscall race
+            // in the module docs; this offending entry may still execute once.
+            unsafe {
+                bpf_send_signal(SIGKILL);
+            }
+            return Ok(());
+        }
+    };
 
     // Allowlisted syscalls proceed untouched.
     if unsafe { SYSCALL_ALLOWLIST.get(&syscall_nr) }.is_some() {
@@ -80,6 +117,11 @@ fn try_syscall_guard(ctx: &TracePointContext) -> Result<(), i64> {
 
     // Default-deny: a monitored PID issued a syscall outside the allowlist —
     // kill it. This is the post-escape containment guarantee.
+    //
+    // NOTE (AAASM-3872, kill-after-syscall): `bpf_send_signal` is asynchronous;
+    // the SIGKILL lands at the next signal-check point, so *this* syscall still
+    // runs once before the task dies. A synchronous deny needs seccomp-BPF/LSM
+    // (out of scope — see module docs).
     unsafe {
         bpf_send_signal(SIGKILL);
     }
