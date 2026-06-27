@@ -153,6 +153,12 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
 ///
 /// When `injected_auth` is `None` the agent's own headers are forwarded
 /// verbatim (the historical, backward-compatible behaviour).
+///
+/// AAASM-3864: any inbound `Connection` header is dropped and a single
+/// `Connection: close` is emitted so the upstream tears the connection down
+/// after one request/response. Combined with the proxy's single-exchange
+/// relay this prevents a second request being pipelined onto the same tunnel
+/// and reaching upstream un-inspected.
 pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], injected_auth: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::with_capacity(req.body.len() + new_body.len() + 256);
     out.extend_from_slice(req.method.as_bytes());
@@ -163,7 +169,10 @@ pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], inje
     out.extend_from_slice(b"\r\n");
 
     for (k, v) in &req.headers {
-        if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
+        if k.eq_ignore_ascii_case("content-length")
+            || k.eq_ignore_ascii_case("transfer-encoding")
+            || k.eq_ignore_ascii_case("connection")
+        {
             continue;
         }
         // When injecting, strip any agent-supplied credential header so it
@@ -181,6 +190,9 @@ pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], inje
         out.extend_from_slice(auth);
         out.extend_from_slice(b"\r\n");
     }
+    // AAASM-3864 (a): force a single request/response per upstream connection so
+    // a follow-up request cannot be pipelined onto the tunnel un-inspected.
+    out.extend_from_slice(b"Connection: close\r\n");
     out.extend_from_slice(b"Content-Length: ");
     out.extend_from_slice(new_body.len().to_string().as_bytes());
     out.extend_from_slice(b"\r\n\r\n");

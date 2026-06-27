@@ -489,7 +489,7 @@ impl ProxyServer {
         // Forward the (consumed) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
         let outgoing = serialize_http_request(&req, &req.body);
-        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
+        let mut client_tls = client_reader.into_inner();
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
@@ -521,39 +521,36 @@ impl ProxyServer {
                         None => resp.body.clone(),
                     };
                     let modified = serialize_http_response(&resp, &body_to_forward);
-                    client_write.write_all(&modified).await?;
+                    client_tls.write_all(&modified).await?;
                 }
                 Ok(None) => {
                     // Upstream closed without writing a response — nothing to forward.
                 }
                 Err(e) => {
                     // Could not parse the response (e.g. chunked, malformed) —
-                    // fall back to transparent copy from where we left off.
+                    // relay the remaining upstream bytes to the client. AAASM-3864
+                    // (a): we relay only upstream→client, never copying further
+                    // client bytes upstream, so no follow-up request can reach
+                    // upstream un-inspected.
                     tracing::warn!(
                         tool_name = %call.tool_name,
                         error = %e,
-                        "MCP response parse failed, falling back to transparent copy",
+                        "MCP response parse failed, relaying remaining upstream bytes",
                     );
                     let mut upstream_read = upstream_reader.into_inner();
-                    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-                    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-                    tokio::select! {
-                        r = client_to_upstream => { r?; }
-                        r = upstream_to_client => { r?; }
-                    }
+                    tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
                 }
             }
         } else {
-            // Not MCP (or RPC failed) — transparent bidirectional copy for
-            // any remaining stream activity (mirrors the historical behaviour).
+            // Not MCP (or RPC failed) — relay only the upstream response back to
+            // the client. AAASM-3864 (a): we never copy further client bytes
+            // upstream, so a follow-up request pipelined on the tunnel cannot
+            // reach upstream un-inspected. The serialized request carries
+            // `Connection: close`, bounding this relay.
             let mut upstream_read = upstream_read;
-            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-            tokio::select! {
-                r = client_to_upstream => { r?; }
-                r = upstream_to_client => { r?; }
-            }
+            tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
         }
+        let _ = client_tls.shutdown().await;
         Ok(())
     }
 
@@ -734,18 +731,17 @@ impl ProxyServer {
             _ => serialize_http_request_with_auth(&req, &req.body, injected_auth_ref),
         };
 
-        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
-        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+        let mut upstream_tls = upstream_tls;
+        upstream_tls.write_all(&outgoing_bytes).await?;
 
-        upstream_write.write_all(&outgoing_bytes).await?;
-
-        let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-        let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-        tokio::select! {
-            r = client_to_upstream => { r?; }
-            r = upstream_to_client => { r?; }
-        }
+        // AAASM-3864 (a): relay only the upstream response back to the client,
+        // then tear the tunnel down. We never copy further client bytes upstream,
+        // so a second request pipelined on this keep-alive tunnel cannot reach
+        // upstream un-inspected. The serialized request carries `Connection:
+        // close`, so upstream closes after one response (bounding this copy).
+        let mut client_tls = client_reader.into_inner();
+        tokio::io::copy(&mut upstream_tls, &mut client_tls).await?;
+        let _ = client_tls.shutdown().await;
         Ok(())
     }
 
