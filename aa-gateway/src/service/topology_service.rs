@@ -251,3 +251,144 @@ impl TopologyService for TopologyServiceImpl {
         Ok(Response::new(ReportEdgeResponse { id }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, VecDeque};
+
+    use aa_proto::assembly::topology::v1::topology_service_server::TopologyService;
+
+    /// Build a minimal active [`AgentRecord`] with an explicit tenant.
+    fn make_record(
+        id: [u8; 16],
+        name: &str,
+        parent_key: Option<[u8; 16]>,
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+    ) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: name.into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "pk_test".into(),
+            credential_token: format!("tok_{}", hex::encode(id)),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_owned),
+            depth: if parent_key.is_some() { 1 } else { 0 },
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some(id),
+            children: vec![],
+            parent_key,
+            enforcement_mode: None,
+            org_id: org_id.map(str::to_owned),
+        }
+    }
+
+    fn caller(team: Option<&str>, org: Option<&str>) -> VerifiedCaller {
+        VerifiedCaller {
+            agent_key: [1u8; 16],
+            team_id: team.map(str::to_owned),
+            org_id: org.map(str::to_owned),
+        }
+    }
+
+    fn service_with(records: Vec<AgentRecord>) -> TopologyServiceImpl {
+        let registry = Arc::new(AgentRegistry::new());
+        for r in records {
+            registry.register(r).unwrap();
+        }
+        TopologyServiceImpl::new(registry, InMemoryEdgeRepo::new())
+    }
+
+    #[tokio::test]
+    async fn get_agent_tree_cross_tenant_is_permission_denied() {
+        let root: [u8; 16] = [0xa0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.get_agent_tree(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn get_agent_tree_same_tenant_is_allowed() {
+        let root: [u8; 16] = [0xa1; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-a"), Some("org-a"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
+        assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
+    }
+
+    #[tokio::test]
+    async fn get_lineage_cross_tenant_is_permission_denied() {
+        let root: [u8; 16] = [0xb0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetLineageRequest {
+            agent_id: format_id(&root),
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.get_lineage(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn get_team_members_cross_tenant_is_permission_denied() {
+        let agent: [u8; 16] = [0xc0; 16];
+        let svc = service_with(vec![make_record(agent, "a", None, Some("team-b"), None)]);
+
+        let mut req = Request::new(GetTeamMembersRequest {
+            team_id: "team-b".into(),
+        });
+        req.extensions_mut().insert(caller(Some("team-a"), None));
+
+        let err = svc.get_team_members(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn untenanted_caller_is_allowed_cross_team() {
+        // Single-tenant deployment fallback: an untenanted caller is not confined.
+        let root: [u8; 16] = [0xd0; 16];
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+
+        let mut req = Request::new(GetAgentTreeRequest {
+            agent_id: format_id(&root),
+            max_depth: 0,
+        });
+        req.extensions_mut().insert(caller(None, None));
+
+        let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
+        assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
+    }
+}
