@@ -14,6 +14,7 @@ use aa_proto::assembly::audit::v1::audit_service_server::AuditService;
 use aa_proto::assembly::audit::v1::{AuditEvent, ReportEventsRequest, ReportEventsResponse, StreamEventsResponse};
 use aa_proto::assembly::common::v1::Decision;
 
+use crate::iam::VerifiedCaller;
 use crate::registry::{convert as registry_convert, AgentRegistry};
 use crate::service::convert;
 
@@ -185,15 +186,52 @@ fn decision_to_audit_event_type(decision: i32) -> AuditEventType {
     }
 }
 
+/// Verify that an event is attributed to the authenticated caller's own agent
+/// identity (AAASM-3869).
+///
+/// `report_events`/`stream_events` run behind the fail-closed auth interceptor,
+/// but `event.agent_id` is attacker-supplied and drives WORM/hash-chained audit
+/// attribution + lineage. Without this check any registered agent could forge
+/// audit history under another agent/tenant. The event's composite `agent_id` is
+/// resolved to the same 16-byte registry key the interceptor derived for the
+/// caller ([`registry_convert::proto_agent_id_to_key`] ↔ [`VerifiedCaller::agent_key`]);
+/// the binding is *per-agent* (stricter than the sibling per-tenant reads) because
+/// audit attribution is inherently self-reported. An absent `agent_id` cannot
+/// identify the caller and is therefore also rejected.
+fn caller_owns_event(caller: &VerifiedCaller, event: &AuditEvent) -> bool {
+    event
+        .agent_id
+        .as_ref()
+        .map(registry_convert::proto_agent_id_to_key)
+        .is_some_and(|key| key == caller.agent_key)
+}
+
 #[tonic::async_trait]
 impl AuditService for AuditServiceImpl {
     async fn report_events(
         &self,
         request: Request<ReportEventsRequest>,
     ) -> Result<Response<ReportEventsResponse>, Status> {
+        // AAASM-3869 — read the verified caller (injected by the fail-closed auth
+        // interceptor) before consuming the request. Its absence means the request
+        // did not authenticate, so fail closed rather than ingest forgeable entries.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned().ok_or_else(|| {
+            Status::unauthenticated("missing verified caller; audit reporting requires authentication")
+        })?;
         let batch = request.into_inner();
-        let mut event_ids = Vec::with_capacity(batch.events.len());
 
+        // AAASM-3869 — reject the whole batch if any event is attributed to a
+        // different agent, so a caller can never forge audit history under another
+        // agent/tenant. Checked before any ingest so a poisoned batch writes nothing.
+        for event in &batch.events {
+            if !caller_owns_event(&caller, event) {
+                return Err(Status::permission_denied(
+                    "audit event agent_id does not match the authenticated caller",
+                ));
+            }
+        }
+
+        let mut event_ids = Vec::with_capacity(batch.events.len());
         for event in &batch.events {
             let id = self.ingest_event(event).await;
             event_ids.push(id);
@@ -206,6 +244,11 @@ impl AuditService for AuditServiceImpl {
         &self,
         request: Request<tonic::Streaming<AuditEvent>>,
     ) -> Result<Response<StreamEventsResponse>, Status> {
+        // AAASM-3869 — read the verified caller before consuming the request and
+        // fail closed when absent; every streamed event must be attributed to it.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned().ok_or_else(|| {
+            Status::unauthenticated("missing verified caller; audit streaming requires authentication")
+        })?;
         let mut stream = request.into_inner();
         let mut events_received: i64 = 0;
 
@@ -213,6 +256,13 @@ impl AuditService for AuditServiceImpl {
             tracing::error!(error = %e, "stream_events receive error");
             Status::internal(format!("stream receive error: {e}"))
         })? {
+            // AAASM-3869 — reject and terminate the stream if an event is
+            // attributed to another agent, preventing cross-agent audit forgery.
+            if !caller_owns_event(&caller, &event) {
+                return Err(Status::permission_denied(
+                    "audit event agent_id does not match the authenticated caller",
+                ));
+            }
             self.ingest_event(&event).await;
             events_received += 1;
         }
