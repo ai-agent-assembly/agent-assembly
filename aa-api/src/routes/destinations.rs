@@ -56,9 +56,11 @@ const SECRET_MASK: &str = "********";
 
 impl From<Destination> for DestinationResponse {
     fn from(d: Destination) -> Self {
-        // AAASM-3688: never return the webhook `secret_header` in cleartext.
-        // Mask it to a fixed sentinel when set so the response still signals
-        // that a secret is configured, without leaking the value.
+        // AAASM-3688 / AAASM-3843: never return a connector secret in cleartext.
+        // Mask each kind's secret-bearing field to a fixed sentinel so the
+        // response still signals that a secret is configured without leaking
+        // the value: webhook `secret_header`, Slack `webhook_url` (bearer-grade),
+        // PagerDuty `routing_key`, OpsGenie `api_key`.
         let config = match d.config {
             DestinationConfig::Webhook {
                 url,
@@ -66,6 +68,18 @@ impl From<Destination> for DestinationResponse {
             } => DestinationConfig::Webhook {
                 url,
                 secret_header: Some(SECRET_MASK.to_string()),
+            },
+            DestinationConfig::Slack { channel_override, .. } => DestinationConfig::Slack {
+                webhook_url: SECRET_MASK.to_string(),
+                channel_override,
+            },
+            DestinationConfig::PagerDuty { severity_map, .. } => DestinationConfig::PagerDuty {
+                routing_key: SECRET_MASK.to_string(),
+                severity_map,
+            },
+            DestinationConfig::OpsGenie { team_id, .. } => DestinationConfig::OpsGenie {
+                api_key: SECRET_MASK.to_string(),
+                team_id,
             },
             other => other,
         };
