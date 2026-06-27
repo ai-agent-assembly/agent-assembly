@@ -28,7 +28,7 @@
 
 use aa_core::audit::AuditEntry;
 use aa_core::{AgentId, SessionId};
-use aa_gateway::secrets::{resolver::resolve_placeholders, SecretInjectionError};
+use aa_gateway::secrets::{resolver::resolve_placeholders, SecretInjectionError, TenantScopedStore};
 use aa_sandbox::error::SandboxError;
 use aa_sandbox::registry::ToolKind;
 use aa_sandbox::wasm_dispatch::{dispatch_wasm_tool, WasmDispatchResult};
@@ -38,6 +38,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::auth::scope::RequireWrite;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -113,6 +114,8 @@ pub struct SandboxDispatchOutcome {
     request_body = DispatchToolRequest,
     responses(
         (status = 200, description = "Tool dispatch resolved (native) or sandboxed (WASM)", body = DispatchToolResponse),
+        (status = 401, description = "Missing or invalid credentials", body = ProblemDetail),
+        (status = 403, description = "Caller lacks the write scope required to dispatch", body = ProblemDetail),
         (status = 422, description = "Unknown placeholder referenced in args", body = ProblemDetail),
         (status = 500, description = "Sandbox dispatch task panicked", body = ProblemDetail),
         (status = 503, description = "Audit pipeline is not connected", body = ProblemDetail),
@@ -121,6 +124,10 @@ pub struct SandboxDispatchOutcome {
 )]
 pub async fn dispatch_tool(
     Extension(state): Extension<AppState>,
+    // AAASM-3845 — dispatching a tool (and resolving `${SECRET}` placeholders)
+    // is a privileged write action: require an authenticated caller holding the
+    // write scope. The caller's verified tenant then scopes secret resolution.
+    RequireWrite(caller): RequireWrite,
     Json(body): Json<DispatchToolRequest>,
 ) -> Result<Json<DispatchToolResponse>, ProblemDetail> {
     // ── WASM dispatch branch ────────────────────────────────────────
@@ -131,7 +138,15 @@ pub async fn dispatch_tool(
     }
 
     // ── Native / secret-injection branch (existing AAASM-1920 path) ──
-    let outcome = resolve_placeholders(&body.args, state.secrets_store.as_ref()).map_err(|e| match e {
+    // Resolve only within the caller's verified tenant namespace so a caller
+    // can never resolve a `${NAME}` owned by another tenant — the tenant is
+    // taken from the authenticated identity, never from the request body.
+    let scoped = TenantScopedStore::for_tenant(
+        state.secrets_store.as_ref(),
+        caller.tenant.org_id.as_deref(),
+        caller.tenant.team_id.as_deref(),
+    );
+    let outcome = resolve_placeholders(&body.args, &scoped).map_err(|e| match e {
         SecretInjectionError::UnknownPlaceholder { name } => {
             ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
                 .with_detail(format!("Unknown placeholder: ${{{name}}}"))
@@ -300,12 +315,42 @@ fn unix_now_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_gateway::secrets::Secret;
+    use crate::auth::scope::Scope;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+    use aa_gateway::secrets::{Secret, SecretsStore, TenantScopedStore};
     use tokio::sync::mpsc;
 
     /// Build the fully-wired in-memory AppState used by the native dispatch path.
     fn state() -> AppState {
         AppState::local_in_memory().expect("in-memory state builds")
+    }
+
+    /// A write-scoped caller bound to a fixed tenant (`org-a` / `team-1`), as
+    /// the auth extractor produces in production (AAASM-3845).
+    fn writer() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "test-writer".to_string(),
+            scopes: vec![Scope::Read, Scope::Write],
+            tenant: Tenant {
+                team_id: Some("team-1".to_string()),
+                org_id: Some("org-a".to_string()),
+            },
+        })
+    }
+
+    /// Register `name`→`value` in `st`'s store under `caller`'s tenant namespace
+    /// so the scoped dispatch path can resolve it.
+    fn register_for(st: &AppState, caller: &AuthenticatedCaller, name: &str, value: &str) {
+        TenantScopedStore::for_tenant(
+            st.secrets_store.as_ref(),
+            caller.tenant.org_id.as_deref(),
+            caller.tenant.team_id.as_deref(),
+        )
+        .register(Secret {
+            name: name.to_string(),
+            value: value.to_string(),
+        })
+        .expect("register secret");
     }
 
     fn req(args: serde_json::Value) -> DispatchToolRequest {
@@ -319,7 +364,7 @@ mod tests {
     async fn passthrough_args_without_placeholders() {
         let st = state();
         let body = req(serde_json::json!({"query": "SELECT 1"}));
-        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+        let resp = dispatch_tool(Extension(st), writer(), Json(body)).await.expect("ok").0;
         // No `${...}` tokens: args echoed verbatim, nothing substituted, no sandbox.
         assert_eq!(resp.resolved_args, serde_json::json!({"query": "SELECT 1"}));
         assert!(resp.names_substituted.is_empty());
@@ -329,15 +374,11 @@ mod tests {
     #[tokio::test]
     async fn resolves_registered_placeholder() {
         let st = state();
-        st.secrets_store
-            .register(Secret {
-                name: "DB_PASSWORD".to_string(),
-                value: "real-secret".to_string(),
-            })
-            .expect("register secret");
+        let caller = writer();
+        register_for(&st, &caller.0, "DB_PASSWORD", "real-secret");
 
         let body = req(serde_json::json!({"password": "${DB_PASSWORD}"}));
-        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+        let resp = dispatch_tool(Extension(st), caller, Json(body)).await.expect("ok").0;
 
         assert_eq!(resp.resolved_args, serde_json::json!({"password": "real-secret"}));
         assert_eq!(resp.names_substituted, vec!["DB_PASSWORD".to_string()]);
@@ -347,11 +388,37 @@ mod tests {
     async fn unknown_placeholder_is_422() {
         let st = state();
         let body = req(serde_json::json!({"token": "${MISSING}"}));
-        let err = dispatch_tool(Extension(st), Json(body))
+        let err = dispatch_tool(Extension(st), writer(), Json(body))
             .await
             .expect_err("unknown placeholder rejected");
         assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
         assert!(err.detail.unwrap().contains("MISSING"));
+    }
+
+    /// AAASM-3845 regression: a secret registered by one tenant must not resolve
+    /// for a caller in a different tenant — it surfaces as an unknown placeholder
+    /// (422) rather than leaking the other tenant's credential.
+    #[tokio::test]
+    async fn cross_tenant_placeholder_is_not_resolved() {
+        let st = state();
+        // org-a / team-1 owns DB_PASSWORD.
+        register_for(&st, &writer().0, "DB_PASSWORD", "real-secret");
+
+        // A different tenant references the same bare name.
+        let attacker = RequireWrite(AuthenticatedCaller {
+            key_id: "attacker".to_string(),
+            scopes: vec![Scope::Read, Scope::Write],
+            tenant: Tenant {
+                team_id: Some("team-1".to_string()),
+                org_id: Some("org-b".to_string()),
+            },
+        });
+        let body = req(serde_json::json!({"password": "${DB_PASSWORD}"}));
+        let err = dispatch_tool(Extension(st), attacker, Json(body))
+            .await
+            .expect_err("cross-tenant placeholder must not resolve");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        assert!(err.detail.unwrap().contains("DB_PASSWORD"));
     }
 
     #[tokio::test]
@@ -361,7 +428,7 @@ mod tests {
         st.audit_sender = Some(tx);
 
         let body = req(serde_json::json!({"q": "noop"}));
-        let resp = dispatch_tool(Extension(st), Json(body)).await.expect("ok").0;
+        let resp = dispatch_tool(Extension(st), writer(), Json(body)).await.expect("ok").0;
         assert!(resp.names_substituted.is_empty());
 
         // The audit path runs only when audit_sender is wired; an entry must be queued.

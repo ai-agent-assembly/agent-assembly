@@ -4950,6 +4950,24 @@ export interface operations {
                     "application/json": components["schemas"]["DispatchToolResponse"];
                 };
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller lacks the write scope required to dispatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
             /** @description Unknown placeholder referenced in args */
             422: {
                 headers: {

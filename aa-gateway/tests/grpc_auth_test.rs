@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use aa_gateway::iam::{auth_interceptor, CREDENTIAL_METADATA_KEY};
-use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
+use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore, TenantScopedStore};
 use aa_gateway::service::{ApprovalServiceImpl, SecretsServiceImpl, TopologyServiceImpl};
 use aa_gateway::{AgentRecord, AgentRegistry, AgentStatus};
 
@@ -262,7 +262,10 @@ async fn secrets_dispatch_with_valid_token_resolves() {
         .register(agent_record([0x07u8; 16], "tok-secrets", None))
         .unwrap();
     let store = InMemorySecretsStore::new();
-    store
+    // AAASM-3845: resolution is scoped to the caller's tenant. The "tok-secrets"
+    // agent is untenanted (team_id/org_id = None), so register the secret under
+    // the untenanted namespace for the dispatch to resolve it.
+    TenantScopedStore::for_tenant(&store, None, None)
         .register(Secret {
             name: "DB_PASSWORD".to_owned(),
             value: "real-secret-abc".to_owned(),
