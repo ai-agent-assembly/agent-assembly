@@ -419,6 +419,20 @@ pub async fn get_agent_graph(
 
     let depth = params.depth.unwrap_or(2).min(5);
 
+    // AAASM-3825: the BFS must not cross a tenant boundary. The root is already
+    // authorized; every other node is admitted to the subgraph only if the
+    // caller is authorized for its owning team (admins see all; a team-scoped
+    // caller sees only its own team; team-less nodes are admin-only). This keeps
+    // both the returned node set and the inter-node edges within the caller's
+    // tenant, mirroring `authorize_agent_team_access`.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let node_authorized = |node: AgentId| -> bool {
+        match agent_team_id(&state, node) {
+            Some(team) => caller.can_access_team(&team),
+            None => is_admin,
+        }
+    };
+
     // BFS: collect unique node IDs within `depth` hops
     let mut visited: HashSet<AgentId> = HashSet::new();
     let mut queue: VecDeque<(AgentId, u32)> = VecDeque::new();
@@ -433,6 +447,10 @@ pub async fn get_agent_graph(
             ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
         })?;
         for edge in outgoing {
+            // Never traverse into another tenant's agent.
+            if !node_authorized(edge.target) {
+                continue;
+            }
             if visited.insert(edge.target) {
                 queue.push_back((edge.target, d + 1));
             }
