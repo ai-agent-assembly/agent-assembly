@@ -10,6 +10,7 @@ use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -54,6 +55,9 @@ pub struct PolicyListFilter {
     tag = "policies"
 )]
 pub async fn list_policies(
+    // AAASM-3865: governance policy YAML is sensitive; require read scope so an
+    // unauthenticated caller cannot dump the full policy set.
+    RequireRead(_caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
     axum::extract::Query(filter): axum::extract::Query<PolicyListFilter>,
@@ -217,6 +221,8 @@ impl IntoResponse for PolicyCreateError {
     tag = "policies"
 )]
 pub async fn get_active_policy(
+    // AAASM-3865: the active policy YAML is sensitive; require read scope.
+    RequireRead(_caller): RequireRead,
     Extension(state): Extension<AppState>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), ProblemDetail> {
     let info = state.policy_engine.active_policy_info();
