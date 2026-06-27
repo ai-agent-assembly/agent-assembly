@@ -652,6 +652,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_destination_rejects_internal_slack_target() {
+        // AAASM-3868: the Slack `webhook_url` is attacker-controlled and must be
+        // routed through the same SSRF egress guard as the generic webhook. A
+        // loopback / cloud-metadata target is refused (400) before dispatch.
+        for url in [
+            "http://127.0.0.1:9/services/x",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let state = AppState::local_in_memory().expect("state builds");
+            let dest = state.destination_store.create(
+                "internal-slack".to_string(),
+                DestinationConfig::Slack {
+                    webhook_url: url.to_string(),
+                    channel_override: None,
+                },
+                true,
+            );
+            let failure = test_destination(writer(), Extension(state), Path(dest.id), None)
+                .await
+                .expect_err("internal slack target rejected before dispatch");
+            assert_eq!(
+                failure.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{url} must be rejected with 400"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn update_preserves_stored_secret_when_masked() {
         let state = AppState::local_in_memory().expect("state builds");
         let dest = state.destination_store.create(

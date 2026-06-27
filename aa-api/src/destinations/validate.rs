@@ -235,6 +235,18 @@ mod tests {
     }
 
     #[test]
+    fn slack_host_allowed_anchors_suffix() {
+        // AAASM-3868: the anchored host check accepts the apex and true
+        // subdomains but rejects look-alike domains that the old
+        // `ends_with("slack.com")` suffix matched.
+        assert!(slack_host_allowed("hooks.slack.com"));
+        assert!(slack_host_allowed("slack.com"));
+        assert!(!slack_host_allowed("evil-slack.com"));
+        assert!(!slack_host_allowed("slack.com.evil.com"));
+        assert!(!slack_host_allowed("notslack.com"));
+    }
+
+    #[test]
     fn slack_http_rejected() {
         assert_eq!(
             validate_config(&slack("http://hooks.slack.com/services/X")),
