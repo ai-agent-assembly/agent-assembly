@@ -101,19 +101,95 @@ pub fn load() -> Result<CliConfig, CliError> {
 
 /// Save the CLI configuration to `~/.aa/config.yaml`.
 ///
-/// Creates the `~/.aa/` directory if it does not exist.
+/// Creates the `~/.aa/` directory if it does not exist. The file holds the
+/// operator bearer token (`api_key`), so on Unix the directory is locked to
+/// `0700` and the file to `0600` — otherwise any local user on a shared host
+/// could read the token from a world-readable `~/.aa/config.yaml`.
 pub fn save(config: &CliConfig) -> Result<(), CliError> {
     let dir = config_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| CliError::Config {
-            path: dir.clone(),
-            source: e,
-        })?;
-    }
+    ensure_config_dir(&dir)?;
     let path = config_path();
     let yaml = serde_yaml::to_string(config)?;
-    std::fs::write(&path, yaml).map_err(|e| CliError::Config { path, source: e })?;
+    write_config_file(&path, &yaml)?;
     Ok(())
+}
+
+/// Create the config directory if missing, restricting it to `0700` on Unix.
+///
+/// `DirBuilder::mode` only applies when the directory is newly created, so an
+/// existing directory (e.g. one left at `0755` by an older version) is tightened
+/// explicitly.
+#[cfg(unix)]
+fn ensure_config_dir(dir: &std::path::Path) -> Result<(), CliError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    if dir.exists() {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| CliError::Config {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| CliError::Config {
+            path: dir.to_path_buf(),
+            source: e,
+        })
+}
+
+/// Create the config directory if missing (non-Unix: no permission control).
+#[cfg(not(unix))]
+fn ensure_config_dir(dir: &std::path::Path) -> Result<(), CliError> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| CliError::Config {
+        path: dir.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Write the config file, restricting it to `0600` on Unix.
+///
+/// The file is created with `0600` via `OpenOptions::mode` (no world-readable
+/// window), and `set_permissions` then tightens any pre-existing file that an
+/// older, vulnerable version may have left at `0644`.
+#[cfg(unix)]
+fn write_config_file(path: &std::path::Path, yaml: &str) -> Result<(), CliError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| CliError::Config {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| CliError::Config {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    file.write_all(yaml.as_bytes()).map_err(|e| CliError::Config {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Write the config file (non-Unix: no permission control).
+#[cfg(not(unix))]
+fn write_config_file(path: &std::path::Path, yaml: &str) -> Result<(), CliError> {
+    std::fs::write(path, yaml).map_err(|e| CliError::Config {
+        path: path.to_path_buf(),
+        source: e,
+    })
 }
 
 /// Resolved connection parameters after merging CLI flags and config file.
