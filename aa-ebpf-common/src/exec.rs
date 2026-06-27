@@ -34,7 +34,52 @@ pub struct ExecEvent {
     /// Null-terminated executable path (up to [`MAX_FILENAME_LEN`] bytes).
     pub filename: [u8; MAX_FILENAME_LEN],
     /// Space-separated argv string (up to [`MAX_ARGS_LEN`] bytes).
+    ///
+    /// **Known limitation (AAASM-3872):** the `sched_process_exec` tracepoint
+    /// that fills this carries only the executable path + pids — it does **not**
+    /// expose argv — so the live probe currently records the truncated 16-byte
+    /// `comm` here, meaning `/bin/sh -c '…'` logs only `sh`. Genuine argv
+    /// capture needs a `syscalls:sys_enter_execve` tracepoint that reads the
+    /// `const char *const *argv` pointer array; [`flatten_argv_bounded`] is the
+    /// shared bounding primitive for that follow-up.
     pub args: [u8; MAX_ARGS_LEN],
+}
+
+/// Flatten an argv vector into the fixed-size, space-separated [`ExecEvent::args`]
+/// buffer, bounded so neither the eBPF verifier nor userspace ever reads past
+/// [`MAX_ARGS_LEN`].
+///
+/// Arguments are joined with a single `0x20` space and the result is truncated
+/// to at most [`MAX_ARGS_LEN`] bytes (no trailing NUL is appended — callers
+/// zero the buffer first and use the returned length). Returns the number of
+/// bytes written.
+///
+/// This is the bounding contract for genuine argv capture (see
+/// [`ExecEvent::args`]); it is unit-tested as plain Rust because the kernel
+/// probe itself cannot run off-Linux.
+#[must_use]
+pub fn flatten_argv_bounded(argv: &[&[u8]], out: &mut [u8; MAX_ARGS_LEN]) -> usize {
+    let mut written = 0usize;
+    for (idx, arg) in argv.iter().enumerate() {
+        if written >= MAX_ARGS_LEN {
+            break;
+        }
+        if idx > 0 {
+            out[written] = b' ';
+            written += 1;
+            if written >= MAX_ARGS_LEN {
+                break;
+            }
+        }
+        for &byte in arg.iter() {
+            if written >= MAX_ARGS_LEN {
+                break;
+            }
+            out[written] = byte;
+            written += 1;
+        }
+    }
+    written
 }
 
 // ---------------------------------------------------------------------------
