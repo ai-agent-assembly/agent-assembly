@@ -1442,6 +1442,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DispatchToolResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '403':
+          description: Caller lacks the write scope required to dispatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
         '422':
           description: Unknown placeholder referenced in args
           content:
