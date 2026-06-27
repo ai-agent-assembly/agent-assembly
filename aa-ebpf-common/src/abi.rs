@@ -79,3 +79,53 @@ pub fn native_syscall_nr(raw_id: i64) -> Option<u32> {
     }
     u32::try_from(raw_id as u64).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_numbers_classify_as_native() {
+        // read=0, write=1, execve=59, a high but valid native number.
+        for nr in [0i64, 1, 2, 59, 257, 511] {
+            assert_eq!(classify_syscall_abi(nr), SyscallAbi::NativeX86_64);
+            assert_eq!(native_syscall_nr(nr), Some(nr as u32));
+        }
+    }
+
+    #[test]
+    fn x32_bit_classifies_as_x32_and_is_rejected() {
+        // x32 read = __X32_SYSCALL_BIT | 0 ; x32 numbers start at the bit.
+        let x32_read = X32_SYSCALL_BIT as i64;
+        let x32_execve = (X32_SYSCALL_BIT | 520) as i64;
+        for id in [x32_read, x32_execve] {
+            assert_eq!(classify_syscall_abi(id), SyscallAbi::X32);
+            assert_eq!(native_syscall_nr(id), None);
+        }
+    }
+
+    #[test]
+    fn negative_sentinel_is_not_native() {
+        assert_eq!(native_syscall_nr(-1), None);
+        // A negative id has no x32 bit semantics; classified as native but
+        // resolves to no native number (default-deny).
+        assert_eq!(classify_syscall_abi(-1), SyscallAbi::NativeX86_64);
+    }
+
+    #[test]
+    fn collision_case_is_disambiguated() {
+        // i386 execve (11) and x86_64 munmap (11) share number 11; only the
+        // native path can produce 11. An x32 call carrying number 11 is
+        // rejected rather than aliasing munmap.
+        assert_eq!(native_syscall_nr(11), Some(11));
+        assert_eq!(native_syscall_nr((X32_SYSCALL_BIT | 11) as i64), None);
+    }
+
+    #[test]
+    fn ids_above_u32_range_are_rejected() {
+        // Garbage id with high bits set (above the x32 bit) is not a usable
+        // native number.
+        let huge = 0x1_0000_0000i64; // bit 32 set, x32 bit clear
+        assert_eq!(native_syscall_nr(huge), None);
+    }
+}
