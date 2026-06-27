@@ -271,6 +271,20 @@ mod tests {
     }
 
     #[test]
+    fn server_side_halt_keys_are_disjoint_from_per_op_ids() {
+        // Per-op ids always carry a colon ("{trace_id}:{span_id}"); the
+        // server-side halt keys must not collide with that namespace.
+        assert!(!GLOBAL_HALT_OP_ID.contains(':'));
+        assert_eq!(agent_halt_op_id("svc-agent"), "agent:svc-agent");
+
+        // An agent-level halt is addressable independently of any op halt.
+        let store = OpControlStore::new();
+        store.apply(&agent_halt_op_id("svc-agent"), OpControlSignal::Terminate);
+        assert_eq!(store.state(&agent_halt_op_id("svc-agent")), Some(OpState::Terminated));
+        assert_eq!(store.state("trace:span"), None);
+    }
+
+    #[test]
     fn distinct_ops_are_independent() {
         let store = OpControlStore::new();
         store.apply("a:1", OpControlSignal::Terminate);

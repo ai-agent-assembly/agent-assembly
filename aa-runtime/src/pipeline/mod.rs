@@ -1987,6 +1987,252 @@ mod tests {
         token.cancel();
     }
 
+    /// AAASM-3873: an agent-level terminate must halt the agent even when the
+    /// request carries **no** trace_id. The kill switch is bound to the
+    /// server-side agent identity the runtime knows (`test-agent`), not the
+    /// agent-supplied trace_id — so an SDK that omits trace_id (the old bypass)
+    /// cannot dodge it.
+    #[tokio::test]
+    async fn op_control_agent_terminate_halts_with_empty_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000); // agent_id = "test-agent"
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // Operator terminates the whole agent (server-side identity), not a
+        // specific op.
+        op_control.apply(
+            &crate::op_control::agent_halt_op_id("test-agent"),
+            OpControlSignal::Terminate,
+        );
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // policy_query_frame leaves trace_id empty — the pre-fix path skipped
+        // op-control entirely here, letting the action through.
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "agent-level terminate must deny even with empty trace_id"
+            );
+            assert!(r.reason.contains("OpTerminatedError"));
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: forging trace_id to an unknown value must not dodge an
+    /// agent-level terminate either — the agent-scoped halt still applies.
+    #[tokio::test]
+    async fn op_control_agent_terminate_halts_with_altered_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        op_control.apply(
+            &crate::op_control::agent_halt_op_id("test-agent"),
+            OpControlSignal::Terminate,
+        );
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // Attacker presents a forged trace_id that matches no op halt.
+        tx.send((
+            0,
+            policy_query_frame_for_op(ActionType::ToolCall, "forged-trace", "forged-span"),
+        ))
+        .await
+        .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "agent-level terminate must deny despite a forged trace_id"
+            );
+            assert!(r.reason.contains("OpTerminatedError"));
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: an agent-level pause blocks a check that carries no trace_id;
+    /// resuming the agent releases it. Mirrors the per-op pause/resume test but
+    /// over the trace_id-independent agent-scoped key.
+    #[tokio::test]
+    async fn op_control_agent_pause_blocks_then_resume_with_empty_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        let agent_key = crate::op_control::agent_halt_op_id("test-agent");
+        op_control.apply(&agent_key, OpControlSignal::Pause);
+        let store_for_resume = op_control.clone();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // Empty trace_id — still blocked by the agent-scoped pause.
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), resp_rx.recv())
+                .await
+                .is_err(),
+            "agent-level pause must block the check until resume"
+        );
+
+        store_for_resume.apply(&agent_key, OpControlSignal::Resume);
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), resp_rx.recv())
+            .await
+            .expect("resume did not release the blocked check")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Allow as i32, "resumed agent must proceed");
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: scoping is precise — a terminate on a *different* op must not
+    /// over-block an unrelated request. A request with no trace_id is allowed
+    /// while another op sits Terminated in the store, proving per-op halts are
+    /// not treated as agent-wide (no false positives from the new agent/global
+    /// consultation).
+    #[tokio::test]
+    async fn op_control_other_op_terminate_does_not_block_normal_request() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // A specific (unrelated) op is terminated.
+        op_control.apply("other-trace:other-span", OpControlSignal::Terminate);
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // A normal request with its own trace_id (and the empty-trace case is
+        // covered above) must still be allowed — the other op's halt is not
+        // agent-wide.
+        tx.send((
+            0,
+            policy_query_frame_for_op(ActionType::ToolCall, "my-trace", "my-span"),
+        ))
+        .await
+        .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Allow as i32,
+                "an unrelated op terminate must not block a normal request"
+            );
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
     /// AAASM-3110: when a gateway is configured but unreachable and the runtime
     /// is in the fail-closed (enforce) posture, a policy check must be DENIED —
     /// never silently allowed by the permissive local default.
