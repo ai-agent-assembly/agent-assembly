@@ -2445,6 +2445,57 @@ mod tests {
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
     }
 
+    // ── budget timezone fail-closed (AAASM-3875) ──────────────────────────────
+
+    #[test]
+    fn parse_budget_tz_none_defaults_to_utc() {
+        // No timezone configured is a deliberate default, not a misconfig —
+        // keep the documented UTC fallback.
+        assert_eq!(parse_budget_tz(None).unwrap(), chrono_tz::UTC);
+    }
+
+    #[test]
+    fn parse_budget_tz_valid_string_parses() {
+        assert_eq!(parse_budget_tz(Some("Asia/Tokyo")).unwrap(), chrono_tz::Asia::Tokyo);
+    }
+
+    #[test]
+    fn parse_budget_tz_invalid_fails_closed() {
+        // AAASM-3875: an unparseable budget timezone must NOT silently fall back
+        // to UTC (which would shift the daily/monthly reset boundaries). It is a
+        // hard configuration error, mirroring the schedule fix (AAASM-3847).
+        match parse_budget_tz(Some("Not/AZone")) {
+            Err(PolicyLoadError::Validation(errs)) => {
+                assert!(
+                    errs.iter().any(|e| e.field == "budget.timezone"),
+                    "expected a budget.timezone validation error, got: {errs:?}"
+                );
+            }
+            other => panic!("expected fail-closed Validation error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_from_file_invalid_budget_tz_fails_closed() {
+        // AAASM-3875: loading a policy whose budget timezone does not parse must
+        // abort the load rather than degrade silently to UTC.
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "version: \"1\"\nbudget:\n  daily_limit_usd: 10.0\n  timezone: \"Not/AZone\"\n"
+        )
+        .unwrap();
+        tmp.flush().unwrap();
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        let result = PolicyEngine::load_from_file(tmp.path(), alert_tx);
+        assert!(
+            matches!(result, Err(PolicyLoadError::Validation(_))),
+            "expected fail-closed Validation error, got: {:?}",
+            result.err()
+        );
+    }
+
     // ── PolicyEvaluator trait impl ────────────────────────────────────────────
 
     #[test]
