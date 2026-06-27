@@ -80,6 +80,59 @@ impl From<Destination> for DestinationResponse {
     }
 }
 
+/// Restore masked secrets on an incoming update from the stored config.
+///
+/// AAASM-3751 / AAASM-3843: every secret-bearing field is returned as
+/// [`SECRET_MASK`] on read. A GET → edit → PUT round-trip would otherwise
+/// write that literal sentinel back, clobbering the real stored secret. When an
+/// incoming secret field equals the mask, replace it with the value already
+/// persisted so the round-trip preserves the stored secret. Applied to every
+/// connector kind's secret-bearing field, not just the webhook `secret_header`.
+fn restore_masked_secrets(incoming: &mut DestinationConfig, stored: Option<DestinationConfig>) {
+    match incoming {
+        DestinationConfig::Webhook { secret_header, .. } => {
+            if secret_header.as_deref() == Some(SECRET_MASK) {
+                *secret_header = match stored {
+                    Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
+                    _ => None,
+                };
+            }
+        }
+        DestinationConfig::Slack { webhook_url, .. } => {
+            if webhook_url == SECRET_MASK {
+                if let Some(DestinationConfig::Slack {
+                    webhook_url: stored_url,
+                    ..
+                }) = stored
+                {
+                    *webhook_url = stored_url;
+                }
+            }
+        }
+        DestinationConfig::PagerDuty { routing_key, .. } => {
+            if routing_key == SECRET_MASK {
+                if let Some(DestinationConfig::PagerDuty {
+                    routing_key: stored_key,
+                    ..
+                }) = stored
+                {
+                    *routing_key = stored_key;
+                }
+            }
+        }
+        DestinationConfig::OpsGenie { api_key, .. } => {
+            if api_key == SECRET_MASK {
+                if let Some(DestinationConfig::OpsGenie {
+                    api_key: stored_key, ..
+                }) = stored
+                {
+                    *api_key = stored_key;
+                }
+            }
+        }
+    }
+}
+
 /// Body for `POST /api/v1/alerts/destinations`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateDestinationRequest {
@@ -372,9 +425,6 @@ pub async fn update_destination(
     body: Bytes,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
     let mut req = parse_update_body(&body)?;
-    if let Some(cfg) = &req.config {
-        validate_config(cfg).map_err(validation_error_to_problem)?;
-    }
     if let Some(name) = &req.name {
         if name.trim().is_empty() {
             return Err(validation_error_to_problem(ValidationError::InvalidConfig(
@@ -383,25 +433,17 @@ pub async fn update_destination(
         }
     }
 
-    // AAASM-3751: `get_destination` masks the webhook `secret_header` to
-    // `SECRET_MASK`. A GET → edit → PUT round-trip would otherwise write that
-    // literal sentinel back, clobbering the real stored secret. When the
-    // incoming secret equals the mask, preserve the existing stored secret
-    // instead of overwriting it.
-    if let Some(DestinationConfig::Webhook {
-        secret_header: Some(incoming),
-        ..
-    }) = &req.config
-    {
-        if incoming == SECRET_MASK {
-            let stored_secret = match state.destination_store.get(&id).map(|d| d.config) {
-                Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
-                _ => None,
-            };
-            if let Some(DestinationConfig::Webhook { secret_header, .. }) = &mut req.config {
-                *secret_header = stored_secret;
-            }
-        }
+    // AAASM-3751 / AAASM-3843: restore any masked secret field from the stored
+    // config *before* validation. A masked Slack `webhook_url` (the sentinel)
+    // would otherwise fail URL validation, and a masked value of any kind must
+    // never overwrite the real stored secret on a GET → edit → PUT round-trip.
+    if let Some(cfg) = &mut req.config {
+        let stored = state.destination_store.get(&id).map(|d| d.config);
+        restore_masked_secrets(cfg, stored);
+    }
+
+    if let Some(cfg) = &req.config {
+        validate_config(cfg).map_err(validation_error_to_problem)?;
     }
 
     let updated = state
