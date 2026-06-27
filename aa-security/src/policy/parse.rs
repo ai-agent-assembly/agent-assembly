@@ -362,6 +362,95 @@ spec:
     }
 
     #[test]
+    fn rejects_misspelled_capability_deny_key() {
+        // `dney` instead of `deny`: previously dropped silently, leaving an
+        // empty (permissive) deny floor. Must now fail closed (AAASM-3874).
+        let yaml = "spec:\n  capabilities:\n    dney:\n      - terminal_exec\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "capabilities" && key == "dney"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_network_allowlist_key() {
+        let yaml = "spec:\n  network:\n    allow_list:\n      - api.openai.com\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, .. } if path == "network"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_spec_section() {
+        // `capabilties` instead of `capabilities`: the whole deny floor would
+        // vanish silently. Must fail closed.
+        let yaml = "spec:\n  capabilties:\n    deny:\n      - file_write\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "spec" && key == "capabilties"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_tool_allow_key() {
+        let yaml = "spec:\n  tools:\n    shell:\n      alow: true\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "tools.shell" && key == "alow"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let yaml = "spec:\n  network:\n    allowlist: []\nnetwrok:\n  allowlist: []\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "(root)" && key == "netwrok"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tool_without_allow_defaults_to_deny() {
+        // Deny-by-default: a tool entry that omits `allow:` must not be
+        // permitted (AAASM-3874, deliberate behaviour change).
+        let yaml = "spec:\n  tools:\n    shell:\n      requires_approval_if: \"command contains \\\"rm\\\"\"\n";
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        let shell = doc.tools.iter().find(|t| t.name == "shell").unwrap();
+        assert!(!shell.allow, "tool without explicit allow must default to deny");
+    }
+
+    #[test]
+    fn accepts_l7_only_spec_sections() {
+        // budget/schedule/data and per-tool limit_per_hour are L7-only; they
+        // are accepted (and ignored here) without being descended into.
+        let yaml = r#"
+spec:
+  scope: global
+  budget:
+    daily_limit_usd: 5.0
+    action_on_exceed: deny
+  schedule:
+    active_hours:
+      start: "09:00"
+  data:
+    credential_action: block
+  tools:
+    read_file:
+      allow: true
+      limit_per_hour: 60
+"#;
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        let read = doc.tools.iter().find(|t| t.name == "read_file").unwrap();
+        assert!(read.allow);
+    }
+
+    #[test]
     fn rejects_unknown_syscall() {
         let yaml = "spec:\n  syscalls:\n    allow:\n      - execve\n";
         let err = PolicyDocument::from_yaml(yaml).unwrap_err();
