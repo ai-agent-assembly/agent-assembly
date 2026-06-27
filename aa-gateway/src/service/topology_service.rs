@@ -13,6 +13,7 @@ use aa_proto::assembly::topology::v1::{
 };
 
 use crate::edges::InMemoryEdgeRepo;
+use crate::iam::VerifiedCaller;
 use crate::registry::{AgentRecord, AgentRegistry, AgentStatus};
 
 /// gRPC service implementation for topology queries.
@@ -38,6 +39,27 @@ fn parse_agent_id(hex: &str) -> Result<[u8; 16], Status> {
 
 fn format_id(id: &[u8; 16]) -> String {
     hex::encode(id)
+}
+
+/// Tenant-authorization rule for a topology read (AAASM-3846).
+///
+/// The `auth_interceptor` authenticates the caller and injects a
+/// [`VerifiedCaller`], but the handlers previously discarded it and returned any
+/// agent to any authenticated caller (a post-authN function-level/tenant authz
+/// gap). This mirrors `approval_service::caller_may_act_on`, extended to also
+/// bind the caller's `org_id`: a tenanted caller (a `Some` team/org) may only
+/// read a resource in the same team and org; when either side is untenanted the
+/// read is allowed (the untenanted/single-tenant deployment fallback).
+fn caller_may_read(caller: &VerifiedCaller, resource_team: Option<&str>, resource_org: Option<&str>) -> bool {
+    let team_ok = match (caller.team_id.as_deref(), resource_team) {
+        (Some(caller_team), Some(resource_team)) => caller_team == resource_team,
+        _ => true,
+    };
+    let org_ok = match (caller.org_id.as_deref(), resource_org) {
+        (Some(caller_org), Some(resource_org)) => caller_org == resource_org,
+        _ => true,
+    };
+    team_ok && org_ok
 }
 
 fn status_str(status: AgentStatus) -> &'static str {
@@ -90,6 +112,10 @@ impl TopologyService for TopologyServiceImpl {
         &self,
         request: Request<GetAgentTreeRequest>,
     ) -> Result<Response<GetAgentTreeResponse>, Status> {
+        // AAASM-3846 — read the verified caller (injected by the auth
+        // interceptor) before consuming the request, so the lookup can be bound
+        // to the caller's tenant.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let agent_id = parse_agent_id(&req.agent_id)?;
 
@@ -97,6 +123,14 @@ impl TopologyService for TopologyServiceImpl {
             .registry
             .get(&agent_id)
             .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
+
+        // AAASM-3846 — confine a tenanted caller to its own team/org so one team
+        // cannot read another team's delegation tree.
+        if let Some(caller) = &caller {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
+                return Err(Status::permission_denied("agent belongs to a different tenant"));
+            }
+        }
 
         if record.parent_key.is_some() {
             return Err(Status::failed_precondition(format!(
@@ -113,6 +147,8 @@ impl TopologyService for TopologyServiceImpl {
     }
 
     async fn get_lineage(&self, request: Request<GetLineageRequest>) -> Result<Response<GetLineageResponse>, Status> {
+        // AAASM-3846 — read the verified caller before consuming the request.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let agent_id = parse_agent_id(&req.agent_id)?;
 
@@ -120,6 +156,14 @@ impl TopologyService for TopologyServiceImpl {
             .registry
             .get(&agent_id)
             .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.agent_id)))?;
+
+        // AAASM-3846 — a tenanted caller may only trace lineage for an agent in
+        // its own team/org.
+        if let Some(caller) = &caller {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
+                return Err(Status::permission_denied("agent belongs to a different tenant"));
+            }
+        }
 
         // ancestors[0] is the agent itself; ancestors[last] is the root.
         let mut ancestors = vec![record_to_topology_agent(&record)];
@@ -136,10 +180,22 @@ impl TopologyService for TopologyServiceImpl {
         &self,
         request: Request<GetTeamMembersRequest>,
     ) -> Result<Response<GetTeamMembersResponse>, Status> {
+        // AAASM-3846 — read the verified caller before consuming the request.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
 
         if req.team_id.is_empty() {
             return Err(Status::invalid_argument("team_id must not be empty"));
+        }
+
+        // AAASM-3846 — a tenanted caller may only enumerate its own team's
+        // members, never another team's roster.
+        if let Some(caller) = &caller {
+            if let Some(caller_team) = caller.team_id.as_deref() {
+                if caller_team != req.team_id {
+                    return Err(Status::permission_denied("team belongs to a different tenant"));
+                }
+            }
         }
 
         let member_ids = self.registry.team_members(&req.team_id);
