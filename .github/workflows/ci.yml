@@ -630,7 +630,7 @@ jobs:
       - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0  # full history needed for buf breaking --against
-      - uses: bufbuild/buf-setup-action@v1.50.0
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Lint proto files
@@ -733,7 +733,7 @@ jobs:
         # Required by aa-proto (transitive dep of aa-runtime) for the
         # multi-layer integration test step.
         run: sudo apt-get install -y protobuf-compiler
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly branch @ 2026-06-27
         with:
           # Do NOT add bpfel-unknown-none to targets: there is no precompiled rust-std
           # for this target. BPF programs are built from source via -Zbuild-std=core
@@ -843,7 +843,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly branch @ 2026-06-27
         with:
           # Same justification as the `ebpf-build` job: bpfel-unknown-none has
           # no precompiled rust-std, so the BPF probes build via
