@@ -829,7 +829,19 @@ impl PolicyEngine {
     fn eval_schedule_stage(policy: &PolicyDocument) -> Option<EvaluationResult> {
         let ah = policy.schedule.as_ref()?.active_hours.as_ref()?;
         use chrono::Timelike;
-        let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
+        // AAASM-3847: an unparseable timezone must fail closed. Silently
+        // falling back to UTC let an operator's active-hours window be
+        // evaluated in the wrong zone — e.g. a window meant for business hours
+        // in `America/New_York` evaluated in UTC could be wide open when it
+        // should be shut, bypassing the schedule control. Deny when the
+        // configured tz does not parse, matching the cascade twin
+        // `decision.rs::stage_schedule` (AAASM-3133).
+        let Ok(tz) = ah.timezone.parse::<chrono_tz::Tz>() else {
+            return Some(EvaluationResult::deny(format!(
+                "invalid schedule timezone: {}",
+                ah.timezone
+            )));
+        };
         let now = chrono::Utc::now().with_timezone(&tz);
         let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
         if current_hhmm < ah.start || current_hhmm >= ah.end {
