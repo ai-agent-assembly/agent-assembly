@@ -688,4 +688,119 @@ mod tests {
         .expect_err("not found");
         assert_eq!(err.status, StatusCode::NOT_FOUND.as_u16());
     }
+
+    #[test]
+    fn from_destination_masks_every_connector_secret() {
+        // AAASM-3843: every connector kind's secret-bearing field is masked on
+        // read; non-secret fields are preserved.
+        let cases = [
+            DestinationConfig::Webhook {
+                url: "https://example.com/hook".to_string(),
+                secret_header: Some("real-secret".to_string()),
+            },
+            DestinationConfig::Slack {
+                webhook_url: "https://hooks.slack.com/services/T/B/secret".to_string(),
+                channel_override: Some("#ops".to_string()),
+            },
+            DestinationConfig::PagerDuty {
+                routing_key: "real-routing-key".to_string(),
+                severity_map: None,
+            },
+            DestinationConfig::OpsGenie {
+                api_key: "real-api-key".to_string(),
+                team_id: "team-1".to_string(),
+            },
+        ];
+        for config in cases {
+            let dest = Destination {
+                id: "dst_1".to_string(),
+                name: "d".to_string(),
+                config,
+                enabled: true,
+                created_at: String::new(),
+                updated_at: String::new(),
+            };
+            match DestinationResponse::from(dest).config {
+                DestinationConfig::Webhook { secret_header, .. } => {
+                    assert_eq!(secret_header.as_deref(), Some(SECRET_MASK));
+                }
+                DestinationConfig::Slack {
+                    webhook_url,
+                    channel_override,
+                } => {
+                    assert_eq!(webhook_url, SECRET_MASK);
+                    assert_eq!(channel_override.as_deref(), Some("#ops"));
+                }
+                DestinationConfig::PagerDuty { routing_key, .. } => {
+                    assert_eq!(routing_key, SECRET_MASK);
+                }
+                DestinationConfig::OpsGenie { api_key, team_id } => {
+                    assert_eq!(api_key, SECRET_MASK);
+                    assert_eq!(team_id, "team-1");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restore_masked_secrets_preserves_stored_for_all_kinds() {
+        // AAASM-3843: a masked sentinel on PUT is restored from the stored
+        // secret for every kind; a genuinely-rotated value is left untouched.
+        let mut slack = DestinationConfig::Slack {
+            webhook_url: SECRET_MASK.to_string(),
+            channel_override: None,
+        };
+        restore_masked_secrets(
+            &mut slack,
+            Some(DestinationConfig::Slack {
+                webhook_url: "https://hooks.slack.com/services/real".to_string(),
+                channel_override: None,
+            }),
+        );
+        assert!(matches!(slack, DestinationConfig::Slack { webhook_url, .. }
+            if webhook_url == "https://hooks.slack.com/services/real"));
+
+        let mut pd = DestinationConfig::PagerDuty {
+            routing_key: SECRET_MASK.to_string(),
+            severity_map: None,
+        };
+        restore_masked_secrets(
+            &mut pd,
+            Some(DestinationConfig::PagerDuty {
+                routing_key: "real-key".to_string(),
+                severity_map: None,
+            }),
+        );
+        assert!(matches!(pd, DestinationConfig::PagerDuty { routing_key, .. }
+            if routing_key == "real-key"));
+
+        let mut og = DestinationConfig::OpsGenie {
+            api_key: SECRET_MASK.to_string(),
+            team_id: "t".to_string(),
+        };
+        restore_masked_secrets(
+            &mut og,
+            Some(DestinationConfig::OpsGenie {
+                api_key: "real-genie".to_string(),
+                team_id: "t".to_string(),
+            }),
+        );
+        assert!(matches!(og, DestinationConfig::OpsGenie { api_key, .. }
+            if api_key == "real-genie"));
+
+        // A non-masked incoming secret is a genuine rotation and must survive.
+        let mut rotated = DestinationConfig::OpsGenie {
+            api_key: "rotated-key".to_string(),
+            team_id: "t".to_string(),
+        };
+        restore_masked_secrets(
+            &mut rotated,
+            Some(DestinationConfig::OpsGenie {
+                api_key: "old-key".to_string(),
+                team_id: "t".to_string(),
+            }),
+        );
+        assert!(matches!(rotated, DestinationConfig::OpsGenie { api_key, .. }
+            if api_key == "rotated-key"));
+    }
 }
