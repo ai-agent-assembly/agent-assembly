@@ -1172,6 +1172,8 @@ paths:
                 $ref: '#/components/schemas/SandboxSummaryResponse'
         '400':
           description: Invalid query parameter
+        '401':
+          description: Missing or invalid credentials
   /api/v1/audit/violations-by-lineage:
     get:
       tags:
@@ -1209,6 +1211,8 @@ paths:
                 $ref: '#/components/schemas/ViolationsByLineageResponse'
         '400':
           description: Invalid query parameter
+        '401':
+          description: Missing or invalid credentials
   /api/v1/auth/token:
     post:
       tags:
@@ -1297,6 +1301,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CapabilityMatrix'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/capability/override:
     get:
       tags:
@@ -1326,6 +1332,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/OverrideRecord'
+        '401':
+          description: Missing or invalid credentials
     post:
       tags:
       - capability
@@ -1389,6 +1397,8 @@ paths:
       responses:
         '204':
           description: Override revoked; cells restored to base policy
+        '403':
+          description: Caller lacks the role required to mutate capability state
         '404':
           description: No active override with this id
           content:
@@ -1507,6 +1517,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ApiKeyResponse'
+        '403':
+          description: Caller lacks the admin role required to read IAM state
     post:
       tags:
       - iam
