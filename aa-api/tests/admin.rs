@@ -12,6 +12,7 @@ mod common;
 
 use std::sync::Arc;
 
+use aa_api::auth::scope::Scope;
 use aa_api::server::build_app;
 use aa_gateway::storage::backend::StorageBackend;
 use aa_gateway::storage::{RetentionConfig, RetentionEngine, SqliteBackend, SqliteConfig};
@@ -245,6 +246,102 @@ async fn post_run_returns_503_when_retention_engine_is_unconfigured() {
                 .uri("/api/v1/admin/retention-policy/run")
                 .header("content-type", "application/json")
                 .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ── AAASM-3844: function-level authorization regression tests ───────────────
+//
+// The retention handlers were registered under `require_authentication`
+// (authN only), so any authenticated caller — including a read-only key —
+// could read, mutate, or trigger a destructive retention pass. Each handler
+// now requires `RequireAdmin`; these tests pin the 403 for a non-admin caller
+// and confirm an admin caller still passes the authz gate.
+
+#[tokio::test]
+async fn get_retention_policy_rejects_read_only_caller_with_403() {
+    let (token, entry) = common::generate_test_api_key("ro-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/admin/retention-policy")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn put_retention_policy_rejects_read_only_caller_with_403() {
+    let (token, entry) = common::generate_test_api_key("ro-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let req_body = serde_json::json!({
+        "hot_days": 1,
+        "warm_days": 2,
+        "cold_action": "drop",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/retention-policy")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn post_run_retention_policy_rejects_read_only_caller_with_403() {
+    let (token, entry) = common::generate_test_api_key("ro-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let req_body = serde_json::json!({ "dry_run": true });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/retention-policy/run")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(req_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_caller_passes_authz_gate_on_retention_policy() {
+    // An admin caller must clear the authz gate — proving the new extractor
+    // is not a blanket deny. The engine is unconfigured in this fixture, so
+    // the request proceeds past authz and surfaces the 503 from
+    // `require_engine`, not a 403.
+    let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/admin/retention-policy")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
