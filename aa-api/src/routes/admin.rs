@@ -13,6 +13,7 @@ use axum::Json;
 
 use aa_gateway::storage::{ColdAction, RetentionConfig, RetentionEngine, RetentionStats};
 
+use crate::auth::scope::RequireAdmin;
 use crate::error::ProblemDetail;
 use crate::models::retention::{
     ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, RunRetentionRequest, UpdateRetentionPolicyRequest,
@@ -78,6 +79,7 @@ fn stats_to_dto(stats: RetentionStats) -> RetentionRunStatsDto {
     tag = "admin"
 )]
 pub async fn get_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
 ) -> Result<Json<RetentionPolicyDocument>, ProblemDetail> {
     let engine = require_engine(&state)?;
@@ -149,6 +151,7 @@ fn merge_request_into_config(base: &RetentionConfig, req: &UpdateRetentionPolicy
     tag = "admin"
 )]
 pub async fn update_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(req): Json<UpdateRetentionPolicyRequest>,
 ) -> Result<Json<RetentionPolicyDocument>, ProblemDetail> {
@@ -181,6 +184,7 @@ pub async fn update_retention_policy(
     tag = "admin"
 )]
 pub async fn run_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(req): Json<RunRetentionRequest>,
 ) -> Result<Json<RetentionRunStatsDto>, ProblemDetail> {
@@ -223,6 +227,8 @@ pub async fn run_retention_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::scope::Scope;
+    use crate::auth::{AuthenticatedCaller, Tenant};
     use crate::state::LocalAuth;
 
     /// Hardened state wires a real SQLite-backed RetentionEngine.
@@ -232,11 +238,25 @@ mod tests {
             .expect("hardened state builds")
     }
 
+    /// An admin-scoped `RequireAdmin` for invoking the handlers directly in
+    /// unit tests (these bypass the router, so the extractor is constructed
+    /// by hand). The 403 path for non-admin callers is covered end-to-end in
+    /// `tests/admin.rs`.
+    fn admin_auth() -> RequireAdmin {
+        RequireAdmin(AuthenticatedCaller {
+            key_id: "test-admin".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: Tenant::default(),
+        })
+    }
+
     #[tokio::test]
     async fn handlers_503_without_retention_engine() {
         // local_in_memory leaves retention_engine None → every handler 503s.
         let state = AppState::local_in_memory().expect("state builds");
-        let err = get_retention_policy(Extension(state)).await.expect_err("503 expected");
+        let err = get_retention_policy(admin_auth(), Extension(state))
+            .await
+            .expect_err("503 expected");
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE.as_u16());
         assert_eq!(err.error_code, Some("retention_engine_unavailable"));
     }
@@ -250,7 +270,7 @@ mod tests {
             cold_action: ColdActionDto::Drop,
             archive_url: None,
         };
-        let doc = update_retention_policy(Extension(state), Json(req))
+        let doc = update_retention_policy(admin_auth(), Extension(state), Json(req))
             .await
             .expect("applied")
             .0;
@@ -269,7 +289,7 @@ mod tests {
             cold_action: ColdActionDto::Drop,
             archive_url: None,
         };
-        let err = update_retention_policy(Extension(state), Json(req))
+        let err = update_retention_policy(admin_auth(), Extension(state), Json(req))
             .await
             .expect_err("rejected");
         assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
@@ -280,7 +300,7 @@ mod tests {
     async fn run_once_executes_real_pass() {
         let state = hardened().await;
         let req = RunRetentionRequest { dry_run: false };
-        let dto = run_retention_policy(Extension(state), Json(req))
+        let dto = run_retention_policy(admin_auth(), Extension(state), Json(req))
             .await
             .expect("run ok")
             .0;
@@ -295,7 +315,7 @@ mod tests {
         let dry_pref_before = engine_before.current_config().dry_run;
 
         let req = RunRetentionRequest { dry_run: true };
-        let dto = run_retention_policy(Extension(state.clone()), Json(req))
+        let dto = run_retention_policy(admin_auth(), Extension(state.clone()), Json(req))
             .await
             .expect("dry run ok")
             .0;
