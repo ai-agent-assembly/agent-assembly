@@ -82,6 +82,43 @@ pub fn flatten_argv_bounded(argv: &[&[u8]], out: &mut [u8; MAX_ARGS_LEN]) -> usi
     written
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joins_args_with_single_space() {
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[b"/bin/sh", b"-c", b"echo hi"], &mut out);
+        assert_eq!(&out[..n], b"/bin/sh -c echo hi");
+    }
+
+    #[test]
+    fn empty_argv_writes_nothing() {
+        let mut out = [0u8; MAX_ARGS_LEN];
+        assert_eq!(flatten_argv_bounded(&[], &mut out), 0);
+    }
+
+    #[test]
+    fn truncates_at_max_args_len() {
+        let big = [b'a'; MAX_ARGS_LEN + 64];
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[&big], &mut out);
+        assert_eq!(n, MAX_ARGS_LEN);
+        assert!(out.iter().all(|&b| b == b'a'));
+    }
+
+    #[test]
+    fn truncation_can_drop_a_trailing_separator() {
+        // Fill the buffer exactly, then a further arg cannot even add its
+        // separator — bounding must not panic or overflow.
+        let exact = [b'x'; MAX_ARGS_LEN];
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[&exact, b"dropped"], &mut out);
+        assert_eq!(n, MAX_ARGS_LEN);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ProcessExitEvent — ring-buffer event from the sched_process_exit tracepoint
 // ---------------------------------------------------------------------------
